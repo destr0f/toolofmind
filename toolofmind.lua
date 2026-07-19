@@ -970,7 +970,6 @@
   local boostDirectRemoteSource = "ещё не использовался"
   local boostStatusParagraph = nil
   local miscRewardStatusParagraph = nil
-  local rewardRemoteInfo = {}
   local rewardLastResult = {}
   local rewardNextAttempt = {}
   local rewardServerTime = nil
@@ -1141,49 +1140,6 @@
       )
   end
 
-  local function ensureRewardInvokeCaptureHook()
-      local state = env.PSX_OG_RewardInvokeCaptureState
-      if type(state) ~= "table" then
-          state = {}
-          env.PSX_OG_RewardInvokeCaptureState = state
-      end
-
-      if env.PSX_OG_RewardInvokeCaptureInstalled == true then
-          return state, true
-      end
-      if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
-          state.error = "hookmetamethod/getnamecallmethod недоступен"
-          return state, false
-      end
-
-      local oldNamecall
-      local function captureNamecall(self, ...)
-          local current = env.PSX_OG_RewardInvokeCaptureState
-          if current and current.active
-              and getnamecallmethod() == "InvokeServer"
-              and typeof(self) == "Instance"
-              and self.ClassName == "RemoteFunction" then
-              current.remote = self
-          end
-          return oldNamecall(self, ...)
-      end
-
-      local wrapped = type(newcclosure) == "function"
-          and newcclosure(captureNamecall)
-          or captureNamecall
-      local installed, hookResult = pcall(function()
-          oldNamecall = hookmetamethod(game, "__namecall", wrapped)
-      end)
-      if not installed or type(oldNamecall) ~= "function" then
-          state.error = tostring(hookResult or "не удалось установить InvokeServer hook")
-          return state, false
-      end
-
-      env.PSX_OG_RewardInvokeCaptureInstalled = true
-      state.error = nil
-      return state, true
-  end
-
   local function getRewardServerTime(library)
       local now = os.clock()
       if now >= rewardNextTimeSync then
@@ -1204,66 +1160,21 @@
       return os.time()
   end
 
-  local function invokeAutoReward(library, commandName, fallbackIndex)
+  local function invokeAutoReward(library, commandName)
       local network = library and library.Network
-      local captureState, captureReady = ensureRewardInvokeCaptureHook()
-      local networkOk, networkResult, networkMessage = false, nil, nil
-
-      if network and type(network.Invoke) == "function" then
-          if captureReady then
-              captureState.commandName = commandName
-              captureState.remote = nil
-              captureState.active = true
-          end
-
-          networkOk, networkResult, networkMessage = pcall(network.Invoke, commandName)
-
-          if captureReady then
-              captureState.active = false
-              local capturedRemote = captureState.remote
-              if capturedRemote and capturedRemote.Parent then
-                  local _, capturedIndex, capturedSource = cacheNetworkRemote(
-                      "RemoteFunction\0" .. commandName,
-                      capturedRemote,
-                      "captured from Network.Invoke"
-                  )
-                  rewardRemoteInfo[commandName] = {
-                      index = capturedIndex,
-                      source = capturedSource
-                  }
-              end
-          end
-
-          if networkOk and networkResult then
-              return true, "Network.Invoke"
-          end
+      if not network or type(network.Invoke) ~= "function" then
+          return false, "Library.Network.Invoke недоступен"
       end
 
-      local lookupOk, remote, remoteIndex, remoteSource = pcall(
-          findNetworkRemote,
-          commandName,
-          "RemoteFunction",
-          fallbackIndex
-      )
-      if not lookupOk or not remote then
-          return false, networkMessage or networkResult or remote or "RemoteFunction не найден"
+      local invokeOk, result = pcall(network.Invoke, commandName)
+      if not invokeOk then
+          return false, tostring(result)
+      end
+      if result then
+          return true, "Network.Invoke"
       end
 
-      rewardRemoteInfo[commandName] = {
-          index = remoteIndex,
-          source = remoteSource
-      }
-      local directOk, directResult, directMessage = pcall(function()
-          return remote:InvokeServer()
-      end)
-      if directOk and directResult then
-          return true, string.format(
-              "direct [%s], %s",
-              tostring(remoteIndex or "?"),
-              tostring(remoteSource)
-          )
-      end
-      return false, directMessage or directResult or networkMessage or networkResult or "сервер отклонил награду"
+      return false, "сервер отклонил награду"
   end
 
   local function formatBoostTime(seconds)
@@ -3567,23 +3478,41 @@ task.spawn(function()
   end)
 
   task.spawn(function()
-      while task.wait(0.5) do
+      local lastRenderedStatus = nil
+      local nextStatusRender = 0
+
+      while task.wait(1) do
           if not isScriptRunning() then break end
+
+          local rankEnabled = _G.AutoRankRewards == true
+          local vipEnabled = _G.AutoVIPRewards == true
+          if not rankEnabled and not vipEnabled then
+              local disabledStatus = "Автосбор выключен"
+              if lastRenderedStatus ~= disabledStatus and miscRewardStatusParagraph then
+                  lastRenderedStatus = disabledStatus
+                  pcall(function()
+                      miscRewardStatusParagraph:SetDesc(disabledStatus)
+                  end)
+              end
+              continue
+          end
 
           local library = getPSXLibrary()
           local saveData = getSaveData()
           local statusLines = {}
+          local now = os.clock()
 
           if not library or not saveData then
               table.insert(statusLines, "Ожидание Library.Save...")
           else
               local serverNow = getRewardServerTime(library)
-              local now = os.clock()
 
               local rankInfo = library.Directory
                   and library.Directory.Ranks
                   and library.Directory.Ranks[saveData.Rank]
-              if not rankInfo then
+              if not rankEnabled then
+                  table.insert(statusLines, "Rank Rewards: выкл")
+              elseif not rankInfo then
                   table.insert(statusLines, "Rank Rewards: данные текущего ранга не найдены")
               elseif type(rankInfo.rewards) == "table" and #rankInfo.rewards == 0 then
                   table.insert(statusLines, "Rank Rewards: у текущего ранга нет награды")
@@ -3595,23 +3524,17 @@ task.spawn(function()
                       and ("через " .. formatBoostTime(rankRemaining))
                       or "готово"
 
-                  if _G.AutoRankRewards
-                      and rankRemaining <= 0
+                  if rankRemaining <= 0
                       and now >= (rewardNextAttempt["Redeem Rank Rewards"] or 0) then
-                      rewardNextAttempt["Redeem Rank Rewards"] = now + 5
-                      local success, method = invokeAutoReward(
-                          library,
-                          "Redeem Rank Rewards",
-                          10
-                      )
+                      rewardNextAttempt["Redeem Rank Rewards"] = now + 30
+                      local success, method = invokeAutoReward(library, "Redeem Rank Rewards")
                       rewardLastResult["Redeem Rank Rewards"] = success
                           and ("забрано через " .. tostring(method))
                           or ("ошибка: " .. tostring(method))
                   end
 
                   table.insert(statusLines, string.format(
-                      "Rank Rewards: %s | %s%s",
-                      _G.AutoRankRewards and "вкл" or "выкл",
+                      "Rank Rewards: вкл | %s%s",
                       rankState,
                       rewardLastResult["Redeem Rank Rewards"]
                           and (" | " .. rewardLastResult["Redeem Rank Rewards"])
@@ -3619,53 +3542,43 @@ task.spawn(function()
                   ))
               end
 
-              local vipCooldown = 14400
-              local vipTimer = tonumber(saveData.VIPCooldown) or 0
-              local vipRemaining = math.max(0, vipCooldown - (serverNow - vipTimer))
-              local vipState = vipRemaining > 0
-                  and ("через " .. formatBoostTime(vipRemaining))
-                  or "готово"
+              if not vipEnabled then
+                  table.insert(statusLines, "VIP Rewards: выкл")
+              else
+                  local vipCooldown = 14400
+                  local vipTimer = tonumber(saveData.VIPCooldown) or 0
+                  local vipRemaining = math.max(0, vipCooldown - (serverNow - vipTimer))
+                  local vipState = vipRemaining > 0
+                      and ("через " .. formatBoostTime(vipRemaining))
+                      or "готово"
 
-              if _G.AutoVIPRewards
-                  and vipRemaining <= 0
-                  and now >= (rewardNextAttempt["Redeem VIP Rewards"] or 0) then
-                  rewardNextAttempt["Redeem VIP Rewards"] = now + 5
-                  local success, method = invokeAutoReward(
-                      library,
-                      "Redeem VIP Rewards",
-                      97
-                  )
-                  rewardLastResult["Redeem VIP Rewards"] = success
-                      and ("забрано через " .. tostring(method))
-                      or ("ошибка: " .. tostring(method))
-              end
-
-              table.insert(statusLines, string.format(
-                  "VIP Rewards: %s | %s%s",
-                  _G.AutoVIPRewards and "вкл" or "выкл",
-                  vipState,
-                  rewardLastResult["Redeem VIP Rewards"]
-                      and (" | " .. rewardLastResult["Redeem VIP Rewards"])
-                      or ""
-              ))
-
-              for _, commandName in ipairs({"Redeem Rank Rewards", "Redeem VIP Rewards"}) do
-                  local info = rewardRemoteInfo[commandName]
-                  if info then
-                      table.insert(statusLines, string.format(
-                          "%s: remote [%s], %s",
-                          commandName,
-                          tostring(info.index or "?"),
-                          tostring(info.source)
-                      ))
+                  if vipRemaining <= 0
+                      and now >= (rewardNextAttempt["Redeem VIP Rewards"] or 0) then
+                      rewardNextAttempt["Redeem VIP Rewards"] = now + 30
+                      local success, method = invokeAutoReward(library, "Redeem VIP Rewards")
+                      rewardLastResult["Redeem VIP Rewards"] = success
+                          and ("забрано через " .. tostring(method))
+                          or ("ошибка: " .. tostring(method))
                   end
-              end
 
+                  table.insert(statusLines, string.format(
+                      "VIP Rewards: вкл | %s%s",
+                      vipState,
+                      rewardLastResult["Redeem VIP Rewards"]
+                          and (" | " .. rewardLastResult["Redeem VIP Rewards"])
+                          or ""
+                  ))
+              end
           end
 
-          if miscRewardStatusParagraph then
+          local statusText = table.concat(statusLines, "\n")
+          if miscRewardStatusParagraph
+              and statusText ~= lastRenderedStatus
+              and now >= nextStatusRender then
+              lastRenderedStatus = statusText
+              nextStatusRender = now + 5
               pcall(function()
-                  miscRewardStatusParagraph:SetDesc(table.concat(statusLines, "\n"))
+                  miscRewardStatusParagraph:SetDesc(statusText)
               end)
           end
       end
