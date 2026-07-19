@@ -1,4 +1,4 @@
-local VERSION = "1.2.4"
+local VERSION = "1.2.5"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -1745,7 +1745,7 @@ Desc = "Runtime discovery is starting...",
 local PerformanceSection = PetsTab:Section({ Title = "Farm Performance", Box = true, Opened = true })
 PerformanceSection:Dropdown({
 Title = "Tracked Currency",
-Desc = "Auto follows the selected world; spending starts a fresh rate window",
+Desc = "Auto follows the selected world; spending starts a fresh measurement session",
 Values = CurrencyChoices,
 Value = "Auto",
 Multi = false,
@@ -1759,7 +1759,7 @@ end,
 })
 rateParagraph = PerformanceSection:Paragraph({
 Title = "Currency per Minute",
-Desc = "Enable Pet Farm to begin measuring earnings.",
+Desc = "Enable Pet Farm to measure the full farming session, including rare chest payouts.",
 })
 local LootSection = LootTab:Section({ Title = "Loot Magnet", Box = true, Opened = true })
 LootSection:Paragraph({
@@ -1860,31 +1860,40 @@ table.clear(currencySamples)
 rateText = currencyName .. "/min: currency not found in player data"
 else
 local now = os.clock()
-local previous = currencySamples[#currencySamples]
-if previous and currentAmount < previous.Value then
+local previousValue = currencySamples.LastValue
+if currencySamples.StartTime == nil
+or previousValue == nil
+or currentAmount < previousValue
+then
 table.clear(currencySamples)
+currencySamples.StartTime = now
+currencySamples.StartValue = currentAmount
+elseif currentAmount > previousValue then
+currencySamples.LastGainAt = now
+currencySamples.LastGain = currentAmount - previousValue
 end
-table.insert(currencySamples, { Time = now, Value = currentAmount })
-while #currencySamples > 1 and now - currencySamples[1].Time > 60 do
-table.remove(currencySamples, 1)
-end
-local first = currencySamples[1]
-local elapsed = now - first.Time
-local gained = math.max(0, currentAmount - first.Value)
-if elapsed < 2 then
+currencySamples.LastValue = currentAmount
+local elapsed = now - currencySamples.StartTime
+local gained = math.max(0, currentAmount - currencySamples.StartValue)
+if gained <= 0 then
 rateText = string.format(
-"%s/min: collecting data...\nBalance: %s",
+"%s/min: waiting for first payout...\nSession: %ds | balance: %s",
 currencyName,
+math.floor(elapsed + 0.5),
 formatRateNumber(currentAmount)
 )
 else
 local perMinute = (gained / elapsed) * 60
+local sinceLastGain = currencySamples.LastGainAt
+and math.max(0, now - currencySamples.LastGainAt)
+or elapsed
 rateText = string.format(
-"%s/min: %s\nGained: +%s | window: %ds | balance: %s",
+"%s/min: %s\nSession: +%s over %ds | last payout: %ds ago | balance: %s",
 currencyName,
 formatRateNumber(perMinute),
 formatRateNumber(gained),
 math.floor(elapsed + 0.5),
+math.floor(sinceLastGain + 0.5),
 formatRateNumber(currentAmount)
 )
 end
