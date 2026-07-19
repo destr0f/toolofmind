@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
--- Pet farming, loot magnet and anti-AFK only.
+-- Pet farming, loot magnet, anti-AFK and develop-only automation tests.
 
-local VERSION = "1.2.5"
+local VERSION = "1.2.6-dev.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -66,7 +66,14 @@ local config = {
     Orbs = false,
     Lootbags = false,
     AntiAFK = true,
+    AutoTechDiamondPack = false,
 }
+
+local DIAMOND_PACK_TIER = 4
+local DIAMOND_PACK_MINIMUM = 1e12
+local DIAMOND_PACK_INTERVAL = 180
+local diamondPackNextCheck = 0
+local diamondPackBusy = false
 
 env.PSX_OG_SLIM_TOKEN = token
 
@@ -233,6 +240,49 @@ local function getCurrentCurrency(currencyName)
         if normalizeCurrencyName(object.Name) == wanted then
             local amount = readCurrencyNumber(object)
             if amount ~= nil then return amount end
+        end
+    end
+    return nil
+end
+
+local function parseShortAmount(value)
+    if type(value) == "number" then return value end
+    if type(value) ~= "string" then return nil end
+
+    local compact = string.lower(value)
+    compact = string.gsub(compact, "[,%s]", "")
+    local numberText, suffix = string.match(compact, "^([%d%.]+)([kmbt]?)")
+    local amount = tonumber(numberText)
+    if not amount then return nil end
+
+    local multipliers = { k = 1e3, m = 1e6, b = 1e9, t = 1e12 }
+    return amount * (multipliers[suffix] or 1)
+end
+
+local function getDiamondPackCost()
+    local framework = ReplicatedStorage:FindFirstChild("Framework")
+    local modules = framework and framework:FindFirstChild("Modules")
+    local directory = modules and modules:FindFirstChild("1 - Directory")
+    local configModule = directory and directory:FindFirstChild("ExclusiveShopConfig")
+    if not configModule then return nil end
+
+    local ok, shopConfig = pcall(require, configModule)
+    if not ok or type(shopConfig) ~= "table" or type(shopConfig.DiamondPacks) ~= "table" then
+        return nil
+    end
+
+    local pack = shopConfig.DiamondPacks[DIAMOND_PACK_TIER]
+    if type(pack) ~= "table" then return nil end
+
+    for _, key in ipairs({ "displayCost", "DisplayCost", "currencyCost", "CurrencyCost", "cost", "Cost", "price", "Price" }) do
+        local parsed = parseShortAmount(pack[key])
+        if parsed then return parsed end
+    end
+    for key, value in pairs(pack) do
+        local keyName = string.lower(tostring(key))
+        if string.find(keyName, "cost", 1, true) or string.find(keyName, "price", 1, true) then
+            local parsed = parseShortAmount(value)
+            if parsed then return parsed end
         end
     end
     return nil
@@ -1568,7 +1618,7 @@ local function runtimePetCounts(petIds)
     return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
 end
 
-local statusParagraph, healthParagraph, rateParagraph
+local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph
 local function setStatus(text)
     if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
@@ -1577,6 +1627,60 @@ local function setHealth(text)
 end
 local function setRate(text)
     if rateParagraph then pcall(function() rateParagraph:SetDesc(text) end) end
+end
+local function setDiamondPackStatus(text)
+    if diamondPackParagraph then pcall(function() diamondPackParagraph:SetDesc(text) end) end
+end
+
+local function runDiamondPackCheck()
+    if diamondPackBusy then return end
+    diamondPackBusy = true
+
+    local balance = getCurrentCurrency("Tech Coins")
+    local balanceText = balance ~= nil and formatRateNumber(balance) or "unknown"
+    local status
+
+    if balance == nil then
+        status = "Local check: Tech Coins balance was not found; no request sent."
+    else
+        local network = networkReady()
+        if not network then
+            status = "Local check: Library.Network is not ready; no request sent."
+        else
+            local packCost = getDiamondPackCost()
+            local shouldBuy = balance >= DIAMOND_PACK_MINIMUM
+            local safeProbe = not shouldBuy and packCost ~= nil and balance < packCost
+
+            if shouldBuy or safeProbe then
+                local callOk, accepted, serverMessage = pcall(function()
+                    return network.Invoke("Buy DiamondPack", DIAMOND_PACK_TIER)
+                end)
+                if not callOk then
+                    status = "Transport error: " .. tostring(accepted)
+                elseif accepted then
+                    status = (shouldBuy and "Server purchase succeeded" or "WARNING: probe unexpectedly purchased the pack")
+                        .. " | balance before: " .. balanceText
+                else
+                    local reason = serverMessage ~= nil and tostring(serverMessage)
+                        or "request rejected (insufficient funds expected)"
+                    status = "Server reached: " .. reason
+                        .. " | balance: " .. balanceText
+                        .. " | required floor: 1T"
+                end
+            elseif packCost == nil then
+                status = "Local safety hold: pack price could not be read, so an underfunded probe was not sent."
+            else
+                status = "Local threshold hold: " .. balanceText
+                    .. " is enough for the " .. formatRateNumber(packCost)
+                    .. " pack but below the configured 1T minimum; no request sent."
+            end
+        end
+    end
+
+    diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
+    diamondPackBusy = false
+    trace("diamond pack", status)
+    setDiamondPackStatus(status .. "\nNext check in 3 minutes.")
 end
 
 local function allocatorPass()
@@ -1957,6 +2061,26 @@ MiscSection:Toggle({
     Callback = function(value) config.AntiAFK = value == true end,
 })
 
+local DiamondPackSection = MiscTab:Section({ Title = "Develop: Diamond Pack", Box = true, Opened = true })
+DiamondPackSection:Toggle({
+    Title = "Auto Best Tech Diamond Pack",
+    Desc = "Every 3 minutes: buys tier 4 only at 1T+ Tech Coins; safely probes the server while truly underfunded",
+    Value = false,
+    Callback = function(value)
+        config.AutoTechDiamondPack = value == true
+        diamondPackNextCheck = 0
+        if config.AutoTechDiamondPack then
+            setDiamondPackStatus("Enabled. The first server check will run now.")
+        else
+            setDiamondPackStatus("Disabled. No purchase requests will be sent.")
+        end
+    end,
+})
+diamondPackParagraph = DiamondPackSection:Paragraph({
+    Title = "Tier 4 Server Check",
+    Desc = "Disabled. Uses Library.Network.Invoke(\"Buy DiamondPack\", 4); no session remote index is stored.",
+})
+
 local shutdownStarted = false
 
 local function hideInterface()
@@ -1981,6 +2105,7 @@ local function shutdown(reason)
     shutdownStarted = true
     trace("stop requested", tostring(reason or "reload"))
     config.PetFarm = false
+    config.AutoTechDiamondPack = false
     farmResetRequested = false
     if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
     disconnectAll()
@@ -2019,6 +2144,22 @@ MiscSection:Button({
         shutdown("button")
     end,
 })
+
+task.spawn(function()
+    while task.wait(1) do
+        if not running() then break end
+        if config.AutoTechDiamondPack and not diamondPackBusy and os.clock() >= diamondPackNextCheck then
+            local ok, problem = pcall(runDiamondPackCheck)
+            if not ok then
+                diamondPackBusy = false
+                diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
+                local status = "Worker error: " .. tostring(problem)
+                trace("diamond pack", status)
+                setDiamondPackStatus(status .. "\nNext retry in 3 minutes.")
+            end
+        end
+    end
+end)
 
 task.spawn(function()
     local activeCurrency, lastRateText = nil, nil
