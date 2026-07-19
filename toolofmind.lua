@@ -1,4 +1,4 @@
-local VERSION = "1.1.2"
+local VERSION = "1.2.0"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -78,6 +78,32 @@ trace("02 Library required")
 trace("03 WindUI download")
 local windSource = game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua")
 trace("04 WindUI received", #windSource)
+local function replacePlain(source, needle, replacement)
+local startAt, replacements = 1, 0
+while true do
+local first, last = string.find(source, needle, startAt, true)
+if not first then break end
+source = string.sub(source, 1, first - 1) .. replacement .. string.sub(source, last + 1)
+startAt = first + #replacement
+replacements = replacements + 1
+end
+return source, replacements
+end
+local resizePatchCount = 0
+local patchedCount
+windSource, patchedCount = replacePlain(
+windSource,
+'an(ax.ImageLabel,0.1,{ImageTransparency=0.35}):Play()',
+'do local resizeIcon=ax:FindFirstChildWhichIsA("ImageLabel");if resizeIcon then an(resizeIcon,0.1,{ImageTransparency=0.35}):Play()end end'
+)
+resizePatchCount = resizePatchCount + patchedCount
+windSource, patchedCount = replacePlain(
+windSource,
+'an(ax.ImageLabel,0.17,{ImageTransparency=0.8}):Play()',
+'do local resizeIcon=ax:FindFirstChildWhichIsA("ImageLabel");if resizeIcon then an(resizeIcon,0.17,{ImageTransparency=0.8}):Play()end end'
+)
+resizePatchCount = resizePatchCount + patchedCount
+trace("04 WindUI resize guard", resizePatchCount)
 local windChunk, windError = loadstring(windSource)
 windSource = nil
 if not windChunk then error("WindUI compile failed: " .. tostring(windError), 0) end
@@ -260,6 +286,7 @@ local BossChestZones
 local coinRecords = {}
 local requestAllocatorPulse
 local releaseAssignmentsForCoin
+local requestFarmReset
 local function getPlayerZone()
 if os.clock() < nextZoneCheck then return currentZone end
 nextZoneCheck = os.clock() + 0.1
@@ -490,6 +517,8 @@ removedUntil[id] = nil
 end
 local pets = data.pets or data.Pets
 if pets ~= nil then record.Pets = normalizePetSet(pets) end
+local farmingPets = data.petsFarming or data.PetsFarming
+if farmingPets ~= nil then record.PetsFarming = normalizePetSet(farmingPets) end
 if fromEvent and type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
 return record
 end
@@ -504,6 +533,7 @@ if record then
 record.Health = 0
 record.Removed = true
 record.Pets = {}
+record.PetsFarming = {}
 end
 coinRecords[id] = nil
 peakHealth[id] = nil
@@ -659,6 +689,9 @@ cachedWorld = nil
 nextWorldCheck = 0
 nextWorkspaceScanAt = 0
 nextSnapshotAt = 0
+if config.PetFarm and type(requestFarmReset) == "function" then
+requestFarmReset("world changed")
+end
 end))
 end)
 end
@@ -700,6 +733,16 @@ if bossZone and namesMatch(bossZone, zone) and typeof(record.Position) == "Vecto
 return record.Position
 end
 end
+local map = workspace:FindFirstChild("__MAP")
+local areas = map and map:FindFirstChild("Areas")
+if areas then
+for _, area in ipairs(areas:GetChildren()) do
+if namesMatch(area.Name, zone) then
+local cf = getBounds(area)
+if cf then return cf.Position end
+end
+end
+end
 return nil
 end
 local function recordInZone(record, zone, zoneAnchor)
@@ -707,10 +750,12 @@ if not recordAlive(record) or not zone then return false end
 local normalizedName = normalize(record.Name)
 local bossZone = BossChestZones[normalizedName]
 if bossZone and namesMatch(bossZone, zone) then return true end
-if zoneAnchor and record.Position and (record.Position - zoneAnchor).Magnitude <= 180 then return true end
 if record.Area and namesMatch(record.Area, zone) then return true end
+if record.Name and namesMatch(record.Name, zone) then return true end
 local detected = record.Position and areaForPosition(record.Position)
-return detected ~= nil and namesMatch(detected, zone)
+if detected ~= nil then return namesMatch(detected, zone) end
+return zoneAnchor ~= nil and record.Position ~= nil
+and (record.Position - zoneAnchor).Magnitude <= 240
 end
 local function orderedTargets(mode)
 refreshWorkspaceCoins()
@@ -746,7 +791,12 @@ end
 local petStates = {}
 local rejectedUntil = {}
 local releaseWait = {}
-local farmWasEnabled = false
+local farmResetRunning = false
+local farmResetRequested = false
+local farmResetReason = "startup"
+local farmSelectionSignature = nil
+local allocatorBusy = false
+local allocatorRequested = false
 local driverStatus = "waiting for first target"
 local controllerHandlers = {}
 local nextControllerLookup = {}
@@ -829,15 +879,15 @@ end
 end
 if bestScore > 0 then petRuntime = bestTable end
 end
-local function runtimeActiveCount()
-if type(petRuntime) ~= "table" then return nil end
+local function runtimeTargetCount(model)
+if type(petRuntime) ~= "table" or not model then return nil end
+local target = model:FindFirstChild("POS")
+if not target then return nil end
 local count = 0
 for _, runtimeState in pairs(petRuntime) do
-if type(runtimeState) == "table" and runtimeState.owner == player and runtimeState.farming then
-local target = runtimeState.target
-local coinModel = target and target.Parent or nil
-local coinId = coinModel and (readObjectValue(coinModel, "ID") or coinModel.Name) or nil
-if coinId ~= nil and recordAlive(coinRecords[tostring(coinId)]) then count = count + 1 end
+if type(runtimeState) == "table" and runtimeState.owner == player
+and runtimeState.farming and runtimeState.target == target then
+count = count + 1
 end
 end
 return count
@@ -878,13 +928,14 @@ end
 local function callPetController(signalName, model)
 local handler = resolveControllerHandler(signalName)
 if handler then
-local activeBefore = runtimeActiveCount()
+local targetCountBefore = runtimeTargetCount(model)
 local ok, problem = pcall(handler, model)
 if ok then
 inspectControllerHandler(handler)
 runtimeDriverReady = petRuntime ~= nil
-local activeAfter = runtimeActiveCount()
-if activeBefore ~= nil and activeAfter ~= nil and activeAfter <= activeBefore then
+local targetCountAfter = runtimeTargetCount(model)
+if targetCountBefore ~= nil and targetCountAfter ~= nil
+and targetCountAfter <= targetCountBefore then
 driverStatus = "game handler rejected target"
 return false
 end
@@ -911,7 +962,9 @@ driverStatus = "Library.Signal fallback"
 local deadline = os.clock() + 0.25
 repeat
 RunService.Heartbeat:Wait()
-until not running() or not config.PetFarm or coinPetRevision > revision or os.clock() >= deadline
+until not running() or not config.PetFarm or farmResetRunning or farmResetRequested
+or coinPetRevision > revision or os.clock() >= deadline
+if farmResetRunning or farmResetRequested then return false end
 if coinPetRevision <= revision then driverStatus = "signal sent; awaiting server" end
 return true
 end
@@ -1003,28 +1056,145 @@ end
 end
 return true
 end
-local function clearAssignments(sendBack)
-if sendBack then
-local groups = {}
+local function currentFarmSignature()
+return table.concat({
+tostring(config.Mode),
+tostring(getSelectedWorld() or ""),
+tostring(getSelectedZone() or ""),
+}, "|")
+end
+local function addAssignedPet(groups, allPets, coinId, petId)
+if petId == nil then return end
+petId = tostring(petId)
+allPets[petId] = true
+if coinId == nil then return end
+coinId = tostring(coinId)
+local pets = groups[coinId]
+if not pets then pets = {}; groups[coinId] = pets end
+pets[petId] = true
+end
+local function collectAssignmentsForReset()
+resolveControllerHandler("Select Coin")
+local groups, allPets = {}, {}
+local equipped = {}
+for _, petId in ipairs(getEquippedPetIds()) do
+equipped[tostring(petId)] = true
+allPets[tostring(petId)] = true
+end
 for petId, state in pairs(petStates) do
-local ids = groups[state.CoinId]
-if not ids then ids = {}; groups[state.CoinId] = ids end
-table.insert(ids, tostring(petId))
+addAssignedPet(groups, allPets, state.CoinId, petId)
 end
-task.spawn(function()
-local network = networkReady()
-if not network then return end
-for coinId, petIds in pairs(groups) do
-pcall(network.Invoke, "Leave Coin", tostring(coinId), petIds)
-for _, petId in ipairs(petIds) do
-pcall(network.Fire, "Change Pet Target", petId, "Player")
+for _, record in pairs(coinRecords) do
+if recordAlive(record) then
+for _, petSet in ipairs({ record.Pets or {}, record.PetsFarming or {} }) do
+for petId in pairs(petSet) do
+petId = tostring(petId)
+if equipped[petId] then addAssignedPet(groups, allPets, record.Id, petId) end
 end
 end
-end)
+end
+end
+if type(petRuntime) == "table" then
+for key, runtimeState in pairs(petRuntime) do
+if type(runtimeState) == "table" and runtimeState.owner == player then
+local petId = tostring(runtimeState.uid or key)
+local target = runtimeState.target
+local coinModel = runtimeState.farming and target and target.Parent or nil
+local coinId = coinModel and (readObjectValue(coinModel, "ID") or coinModel.Name) or nil
+if runtimeState.farming then addAssignedPet(groups, allPets, coinId, petId) end
+if runtimeState.selectionFunc then pcall(runtimeState.selectionFunc) end
+runtimeState.selectionFunc = nil
+runtimeState.farming = false
+runtimeState.target = nil
+runtimeState.follower = nil
+runtimeState.arrived = false
+if type(runtimeState.targetuid) == "number" then
+runtimeState.targetuid = runtimeState.targetuid + 1
+end
+end
+end
+end
+return groups, allPets
+end
+local function clearAssignments(sendBack)
+local groups, allPets = collectAssignmentsForReset()
+local network = sendBack and networkReady() or nil
+if network then
+local ok, snapshot = pcall(network.Invoke, "Get Coins")
+if ok and type(snapshot) == "table" then
+for coinId, data in pairs(snapshot) do
+if type(data) == "table" then
+local serverSets = {
+normalizePetSet(data.pets or data.Pets),
+normalizePetSet(data.petsFarming or data.PetsFarming),
+}
+for _, petSet in ipairs(serverSets) do
+for petId in pairs(petSet) do
+petId = tostring(petId)
+if allPets[petId] then addAssignedPet(groups, allPets, coinId, petId) end
+end
+end
+end
+end
+end
 end
 table.clear(petStates)
 table.clear(rejectedUntil)
 table.clear(releaseWait)
+for _, record in pairs(coinRecords) do
+for petId in pairs(allPets) do
+if record.Pets then record.Pets[petId] = nil end
+if record.PetsFarming then record.PetsFarming[petId] = nil end
+end
+end
+if not sendBack then return true end
+if not network then return false end
+for coinId, petSet in pairs(groups) do
+local petIds = {}
+for petId in pairs(petSet) do table.insert(petIds, petId) end
+table.sort(petIds)
+if #petIds > 0 then pcall(network.Invoke, "Leave Coin", coinId, petIds) end
+end
+for petId in pairs(allPets) do
+pcall(network.Fire, "Change Pet Target", petId, "Player")
+end
+return true
+end
+requestFarmReset = function(reason)
+farmResetReason = tostring(reason or "configuration changed")
+farmSelectionSignature = currentFarmSignature()
+farmResetRequested = true
+if farmResetRunning or not running() then return end
+farmResetRunning = true
+task.spawn(function()
+while running() and allocatorBusy do RunService.Heartbeat:Wait() end
+if not running() then farmResetRunning = false; return end
+repeat
+farmResetRequested = false
+driverStatus = "resetting: " .. farmResetReason
+local networkCleaned = clearAssignments(true)
+nextSnapshotAt = 0
+if config.PetFarm and not networkCleaned then
+driverStatus = "waiting for Network before reset"
+while running() and config.PetFarm and not farmResetRequested and not networkReady() do
+RunService.Heartbeat:Wait()
+end
+if running() and config.PetFarm and networkReady() then farmResetRequested = true end
+end
+RunService.Heartbeat:Wait()
+until not running() or not farmResetRequested
+farmResetRunning = false
+if not running() then return end
+if farmResetRequested then
+requestFarmReset(farmResetReason)
+return
+end
+farmSelectionSignature = currentFarmSignature()
+driverStatus = config.PetFarm and "reset complete" or "farm disabled"
+if config.PetFarm and type(requestAllocatorPulse) == "function" then
+requestAllocatorPulse()
+end
+end)
 end
 local function dispatchPlan(record, petIds, groupMode)
 if not recordAlive(record) or #petIds == 0 then return end
@@ -1048,11 +1218,14 @@ stateTokens[petId] = state
 end
 local firedAny = false
 if groupMode then
+if not farmResetRunning and not farmResetRequested then
 firedAny = callPetController("Group Select Coin", model)
+end
 else
 for _, petId in ipairs(petIds) do
 local state = stateTokens[petId]
-if running() and config.PetFarm and recordAlive(record) and petStates[petId] == state then
+if running() and config.PetFarm and not farmResetRunning and not farmResetRequested
+and recordAlive(record) and petStates[petId] == state then
 local ok = callPetController("Select Coin", model)
 firedAny = ok or firedAny
 if not ok then petStates[petId] = nil end
@@ -1129,8 +1302,6 @@ local statusParagraph
 local function setStatus(text)
 if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
-local allocatorBusy = false
-local allocatorRequested = false
 local function allocatorPass()
 if allocatorBusy then
 allocatorRequested = true
@@ -1142,22 +1313,31 @@ allocatorRequested = false
 local ok, problem = pcall(function()
 if os.clock() >= nextSnapshotAt and not snapshotBusy then task.spawn(refreshCoinSnapshot) end
 connectCoinSignals()
-if not config.PetFarm then
-if farmWasEnabled then clearAssignments(true) end
-farmWasEnabled = false
+if not config.PetFarm or farmResetRunning or farmResetRequested then return end
+local signature = currentFarmSignature()
+if farmSelectionSignature ~= signature then
+requestFarmReset("selection changed")
 return
 end
-farmWasEnabled = true
 local petIds = getEquippedPetIds()
 local equipped = {}
 for _, petId in ipairs(petIds) do equipped[petId] = true end
 if not syncRuntimeAssignments(equipped) then syncServerAssignments(equipped) end
+local targets = orderedTargets(config.Mode)
+local targetIds = {}
+for _, record in ipairs(targets) do targetIds[tostring(record.Id)] = true end
+for _, state in pairs(petStates) do
+local coinId = tostring(state.CoinId)
+if recordAlive(coinRecords[coinId]) and not targetIds[coinId] then
+requestFarmReset("active target left selected zone")
+return
+end
+end
 local freePets = {}
 for _, petId in ipairs(petIds) do
 if not petStates[petId] and not releaseWait[petId] then table.insert(freePets, petId) end
 end
 if #freePets == 0 then return end
-local targets = orderedTargets(config.Mode)
 local usable = {}
 for _, record in ipairs(targets) do
 if os.clock() >= (rejectedUntil[record.Id] or 0) then table.insert(usable, record) end
@@ -1169,10 +1349,11 @@ local plans = {}
 if config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only" then
 local groupTarget
 for _, state in pairs(petStates) do
-local record = coinRecords[state.CoinId]
+local coinId = tostring(state.CoinId)
+local record = coinRecords[coinId]
 local matchesMode = config.Mode == "Boss Chest Only" and isBossChest(record)
 or config.Mode == "All on Strongest Regular" and not isBossChest(record)
-if matchesMode and recordAlive(record) then
+if matchesMode and recordAlive(record) and targetIds[coinId] then
 groupTarget = record
 break
 end
@@ -1182,7 +1363,8 @@ plans[groupTarget.Id] = { Record = groupTarget, Pets = freePets }
 else
 local claimed = {}
 for _, state in pairs(petStates) do
-if recordAlive(coinRecords[state.CoinId]) then claimed[state.CoinId] = true end
+local coinId = tostring(state.CoinId)
+if targetIds[coinId] and recordAlive(coinRecords[coinId]) then claimed[coinId] = true end
 end
 local unique = {}
 for _, record in ipairs(usable) do
@@ -1298,8 +1480,10 @@ Title = "Enable Pet Farm",
 Desc = "Targets are locked until the coin is completely destroyed",
 Value = false,
 Callback = function(value)
-config.PetFarm = value == true
-requestAllocatorPulse()
+local enabled = value == true
+if config.PetFarm == enabled then return end
+config.PetFarm = enabled
+requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
 end,
 })
 PetsSection:Dropdown({
@@ -1308,7 +1492,11 @@ Values = { "Different Strongest", "Different Weakest", "All on Strongest Regular
 Value = "Different Strongest",
 Multi = false,
 AllowNone = false,
-Callback = function(value) config.Mode = value end,
+Callback = function(value)
+if config.Mode == value then return end
+config.Mode = value
+if config.PetFarm then requestFarmReset("assignment mode changed") end
+end,
 })
 local worldValues = { "Current World" }
 for _, worldName in ipairs(WorldOrder) do table.insert(worldValues, worldName) end
@@ -1339,8 +1527,10 @@ Value = "Current World",
 Multi = false,
 AllowNone = false,
 Callback = function(value)
+local changed = config.World ~= value
 config.World = value
 refreshZoneDropdown(true)
+if changed and config.PetFarm then requestFarmReset("world selection changed") end
 end,
 })
 local initialZones = getZoneOptions("Current World")
@@ -1351,7 +1541,11 @@ Values = initialZones,
 Value = "Player Zone",
 Multi = false,
 AllowNone = false,
-Callback = function(value) config.Zone = value end,
+Callback = function(value)
+if config.Zone == value then return end
+config.Zone = value
+if config.PetFarm then requestFarmReset("zone selection changed") end
+end,
 })
 lastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(initialZones, "\0")
 statusParagraph = PetsSection:Paragraph({
@@ -1379,8 +1573,13 @@ Callback = function(value) config.AntiAFK = value == true end,
 local function shutdown()
 if not running() then return end
 config.PetFarm = false
-clearAssignments(true)
+farmResetRequested = false
 env.PSX_OG_SLIM_TOKEN = nil
+local shutdownDeadline = os.clock() + 1
+while (farmResetRunning or allocatorBusy) and os.clock() < shutdownDeadline do
+RunService.Heartbeat:Wait()
+end
+clearAssignments(true)
 disconnectAll()
 if env.PSX_OG_SLIM_CLEANUP == shutdown then env.PSX_OG_SLIM_CLEANUP = nil end
 if env.PSX_OG_UI_CLEANUP == shutdown then env.PSX_OG_UI_CLEANUP = nil end
