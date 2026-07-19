@@ -3,7 +3,7 @@
 -- deliberately paces heavy UI startup stages through PSX_OG_SAFE_BOOT.
 
 local env = type(getgenv) == "function" and getgenv() or _G
-local LOADER_VERSION = "1.0.0"
+local LOADER_VERSION = "1.1.0"
 local DEFAULT_MAIN_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/main/toolofmind.lua"
 local TRACE_FILE = "PSX_OG_loader_trace.txt"
 local ERROR_FILE = "PSX_OG_loader_error.txt"
@@ -94,14 +94,11 @@ local function downloadMain()
     local lastError = nil
 
     for attempt = 1, 3 do
-        local separator = string.find(baseUrl, "?", 1, true) and "&" or "?"
-        local requestUrl = baseUrl
-            .. separator .. "psx_loader=" .. tostring(game.PlaceId)
-            .. "_" .. tostring(math.floor(os.clock() * 1000))
-
         trace("03 downloading main", "attempt=" .. tostring(attempt))
         local success, response = pcall(function()
-            return game:HttpGet(requestUrl)
+            -- Keep this identical to the request path proven by the diagnostic
+            -- loader. Some executors crash on raw GitHub URLs with query data.
+            return game:HttpGet(baseUrl)
         end)
 
         if success
@@ -159,10 +156,20 @@ local function run()
     return result
 end
 
-local success, result = xpcall(run, captureError)
-if not success then
-    warn("[PSX LOADER] Startup failed:\n" .. tostring(result))
-    error(result, 0)
-end
+-- The loader itself is normally entered through loadstring(game:HttpGet(...))().
+-- Do not start a second HttpGet while that outer request is still on the executor
+-- stack: a few executors crash natively instead of raising a catchable Lua error.
+state.Phase = "scheduled"
+task.defer(function()
+    task.wait(0.15)
 
-return result
+    local success, result = xpcall(run, captureError)
+    if not success then
+        warn("[PSX LOADER] Startup failed:\n" .. tostring(result))
+        return
+    end
+
+    state.Result = result
+end)
+
+return state
