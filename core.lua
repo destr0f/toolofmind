@@ -3,6 +3,8 @@
   -- ====================================================================================
   
   local env = getgenv()
+  local createNativeUI = env.PSX_OG_NATIVE_UI_FACTORY or createNativeUI
+  env.PSX_OG_NATIVE_UI_FACTORY = nil
 
   -- Native/executor crashes cannot be caught by pcall. The production loader keeps
   -- tracing enabled and deliberately yields between heavy startup stages.

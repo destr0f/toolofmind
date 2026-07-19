@@ -1,1 +1,1 @@
-require("./build_standalone.js");
+require("./build_modular.js");
