@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet and anti-AFK only.
 
-local VERSION = "1.2.2"
+local VERSION = "1.2.3"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -766,7 +766,7 @@ local cachedPetIds = {}
 local nextPetScanAt = 0
 local function getEquippedPetIds()
     if os.clock() < nextPetScanAt then return cachedPetIds end
-    nextPetScanAt = os.clock() + 0.2
+    nextPetScanAt = os.clock() + 0.1
     local save
     if Library.Save and type(Library.Save.Get) == "function" then
         pcall(function() save = Library.Save.Get() end)
@@ -1010,6 +1010,7 @@ local function resolveControllerHandler(signalName)
     if handler then
         controllerHandlers[signalName] = handler
         inspectControllerHandler(handler)
+        runtimeDriverReady = petRuntime ~= nil
     end
     return handler
 end
@@ -1081,7 +1082,7 @@ local function getRecordModel(record)
 end
 
 local function syncRuntimeAssignments(equipped)
-    if not runtimeDriverReady or type(petRuntime) ~= "table" then return false end
+    if not runtimeDriverReady or type(petRuntime) ~= "table" then return false, nil end
 
     local now = os.clock()
     local observed, runtimeSeen, localPets = {}, {}, 0
@@ -1104,7 +1105,7 @@ local function syncRuntimeAssignments(equipped)
         end
     end
 
-    if localPets == 0 then return false end
+    if localPets == 0 then return true, runtimeSeen end
 
     for petId, coinId in pairs(observed) do
         releaseWait[petId] = nil
@@ -1164,7 +1165,7 @@ local function syncRuntimeAssignments(equipped)
             end
         end
     end
-    return true
+    return true, runtimeSeen
 end
 
 local function currentFarmSignature()
@@ -1487,7 +1488,9 @@ local function allocatorPass()
         local equipped = {}
         for _, petId in ipairs(petIds) do equipped[petId] = true end
 
-        if not syncRuntimeAssignments(equipped) then syncServerAssignments(equipped) end
+        if not runtimeDriverReady then resolveControllerHandler("Select Coin") end
+        local usingRuntime, runtimeSeen = syncRuntimeAssignments(equipped)
+        if not usingRuntime then syncServerAssignments(equipped) end
 
         local targets = orderedTargets(config.Mode)
         local targetIds = {}
@@ -1502,7 +1505,10 @@ local function allocatorPass()
 
         local freePets = {}
         for _, petId in ipairs(petIds) do
-            if not petStates[petId] and not releaseWait[petId] then table.insert(freePets, petId) end
+            local runtimeReady = not usingRuntime or runtimeSeen[petId] ~= nil
+            if runtimeReady and not petStates[petId] and not releaseWait[petId] then
+                table.insert(freePets, petId)
+            end
         end
         if #freePets == 0 then return end
 
@@ -1569,6 +1575,44 @@ requestAllocatorPulse = function()
     allocatorRequested = true
     if not allocatorBusy and running() then task.defer(allocatorPass) end
 end
+
+local petLifecycleSignals = {}
+local function connectPetLifecycleSignal(name, removed)
+    if petLifecycleSignals[name] then return true end
+    local signal = Library and Library.Signal
+    if not signal or type(signal.Fired) ~= "function" then return false end
+
+    local eventOk, event = pcall(signal.Fired, name)
+    if not eventOk or not event or type(event.Connect) ~= "function" then return false end
+    local connected, connection = pcall(function()
+        return event:Connect(function(rawPetId)
+            local petId = rawPetId ~= nil and tostring(rawPetId) or nil
+            nextPetScanAt = 0
+            if removed and petId then
+                petStates[petId] = nil
+                releaseWait[petId] = nil
+            end
+            if config.PetFarm then
+                driverStatus = removed and "pet unequipped; assignments reconciled"
+                    or "equipped pet detected; assigning target"
+                requestAllocatorPulse()
+            end
+        end)
+    end)
+    if not connected or not connection then return false end
+    petLifecycleSignals[name] = connection
+    track(connection)
+    return true
+end
+
+task.spawn(function()
+    while running() do
+        local added = connectPetLifecycleSignal("Added Client Pet", false)
+        local removed = connectPetLifecycleSignal("Removed Client Pet", true)
+        if added and removed then break end
+        task.wait(0.5)
+    end
+end)
 
 task.spawn(function()
     while running() do
