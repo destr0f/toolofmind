@@ -6,7 +6,7 @@
 -- WindUI bundled SHA256: db2abdef56e94d0ad0655cefc980484198ef17e3996a82a898caec6100ee1401
 
 local __psxEnv = type(getgenv) == "function" and getgenv() or _G
-local __PSX_LOADER_VERSION = "3.4.0"
+local __PSX_LOADER_VERSION = "3.5.0"
 local __PSX_TRACE_FILE = "PSX_OG_loader_trace.txt"
 local __PSX_ERROR_FILE = "PSX_OG_loader_error.txt"
 local __PSX_WIND_RAW_SIZE = 254937
@@ -1237,7 +1237,6 @@ task.defer(function()
         end
 
         __psxTrace("05 main buffer complete", "bytes=" .. tostring(mainOffset))
-        task.wait(0.1)
         __psxTrace("06 creating main source")
         local mainSource = buffer.tostring(mainBuffer)
         mainBuffer = nil
