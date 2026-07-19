@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet and anti-AFK only.
 
-local VERSION = "1.2.0"
+local VERSION = "1.2.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -870,6 +870,8 @@ local farmSelectionSignature = nil
 local allocatorBusy = false
 local allocatorRequested = false
 local driverStatus = "waiting for first target"
+local idleRecoveryCount = 0
+local lastRecovery = "none"
 local controllerHandlers = {}
 local nextControllerLookup = {}
 local petRuntime = nil
@@ -1118,6 +1120,7 @@ local function syncRuntimeAssignments(equipped)
             state.Phase = "locked"
             state.Runtime = true
             state.ConfirmedAt = now
+            state.RuntimeIdleChecks = nil
         end
     end
 
@@ -1128,11 +1131,21 @@ local function syncRuntimeAssignments(equipped)
             releaseWait[petId] = nil
         elseif not recordAlive(record) then
             queuePetRelease(petId, now)
-        elseif observed[petId] == nil and state.Phase == "pending" then
+        elseif observed[petId] == nil then
             local runtimeState = runtimeSeen[petId]
-            if runtimeState and runtimeState.farming == false
-                and now - (state.StartedAt or now) > 0.2 then
-                petStates[petId] = nil
+            if runtimeState and runtimeState.farming == false then
+                state.RuntimeIdleChecks = (state.RuntimeIdleChecks or 0) + 1
+                if state.RuntimeIdleChecks >= 2 then
+                    petStates[petId] = nil
+                    releaseWait[petId] = nil
+                    idleRecoveryCount = idleRecoveryCount + 1
+                    local petLabel = tostring(petId)
+                    lastRecovery = "idle lock on " .. string.sub(petLabel, 1, 8)
+                    driverStatus = "idle pet recovered; assigning next target"
+                    trace("pet recovery", petLabel)
+                end
+            else
+                state.RuntimeIdleChecks = nil
             end
         end
     end
@@ -1423,9 +1436,30 @@ local function assignmentCount()
     return count
 end
 
-local statusParagraph
+local function runtimePetCounts(petIds)
+    if not runtimeDriverReady or type(petRuntime) ~= "table" then return nil end
+    local equipped = {}
+    for _, petId in ipairs(petIds) do equipped[tostring(petId)] = true end
+
+    local seen, active = 0, 0
+    for key, runtimeState in pairs(petRuntime) do
+        if type(runtimeState) == "table" and runtimeState.owner == player then
+            local petId = tostring(runtimeState.uid or key)
+            if equipped[petId] then
+                seen = seen + 1
+                if runtimeState.farming then active = active + 1 end
+            end
+        end
+    end
+    return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
+end
+
+local statusParagraph, healthParagraph
 local function setStatus(text)
     if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
+end
+local function setHealth(text)
+    if healthParagraph then pcall(function() healthParagraph:SetDesc(text) end) end
 end
 
 local function allocatorPass()
@@ -1587,38 +1621,43 @@ track(player.Idled:Connect(function()
 end))
 
 WindUI:AddTheme({
-    Name = "PSX Slim",
-    Accent = Color3.fromRGB(56, 189, 248),
-    Background = Color3.fromRGB(11, 18, 32),
-    Outline = Color3.fromRGB(125, 211, 252),
+    Name = "PSX Aurora",
+    Accent = Color3.fromRGB(99, 102, 241),
+    Background = Color3.fromRGB(8, 15, 29),
+    Outline = Color3.fromRGB(34, 211, 238),
     Text = Color3.fromRGB(248, 250, 252),
-    Placeholder = Color3.fromRGB(148, 163, 184),
-    Button = Color3.fromRGB(23, 36, 58),
-    Icon = Color3.fromRGB(186, 230, 253),
+    Placeholder = Color3.fromRGB(165, 180, 252),
+    Button = Color3.fromRGB(24, 34, 58),
+    Icon = Color3.fromRGB(103, 232, 249),
 })
 
 local Window = WindUI:CreateWindow({
-    Title = "PSX OG | Slim Farm",
-    Author = "Pet farm, loot and anti-AFK",
+    Title = "PSX OG | Nova Farm",
+    Icon = "sparkles",
+    Author = "Adaptive routing | v" .. VERSION,
     Folder = "PSX_Slim_Farm",
-    Size = UDim2.fromOffset(680, 470),
-    MinSize = Vector2.new(560, 380),
-    MaxSize = Vector2.new(980, 700),
+    Size = UDim2.fromOffset(720, 520),
+    MinSize = Vector2.new(590, 400),
+    MaxSize = Vector2.new(1024, 760),
     ToggleKey = Enum.KeyCode.RightShift,
     Transparent = true,
-    Theme = "PSX Slim",
+    Theme = "PSX Aurora",
     Resizable = true,
-    SideBarWidth = 175,
+    SideBarWidth = 185,
     HideSearchBar = true,
     ScrollBarEnabled = true,
     Acrylic = false,
 })
 
-local PetsTab = Window:Tab({ Title = "Pet Farm" })
-local LootTab = Window:Tab({ Title = "Loot" })
-local MiscTab = Window:Tab({ Title = "Misc" })
+local PetsTab = Window:Tab({ Title = "Pet Farm", Icon = "paw-print" })
+local LootTab = Window:Tab({ Title = "Loot", Icon = "package-open" })
+local MiscTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
 
-local PetsSection = PetsTab:Section({ Title = "Pet Farm", Box = true, Opened = true })
+local PetsSection = PetsTab:Section({ Title = "Farm Control", Box = true, Opened = true })
+PetsSection:Paragraph({
+    Title = "Adaptive Pet Allocator",
+    Desc = "Zone-aware target locks with live idle-pet recovery. Pets stay on a coin until the game confirms that they are free.",
+})
 PetsSection:Toggle({
     Title = "Enable Pet Farm",
     Desc = "Targets are locked until the coin is completely destroyed",
@@ -1646,6 +1685,7 @@ PetsSection:Dropdown({
 local worldValues = { "Current World" }
 for _, worldName in ipairs(WorldOrder) do table.insert(worldValues, worldName) end
 local zoneDropdown, lastZoneSignature
+local TargetSection = PetsTab:Section({ Title = "Target Location", Box = true, Opened = true })
 
 local function refreshZoneDropdown(force)
     if not zoneDropdown then return end
@@ -1668,7 +1708,7 @@ local function refreshZoneDropdown(force)
     end
 end
 
-PetsSection:Dropdown({
+TargetSection:Dropdown({
     Title = "World",
     Desc = "Current World follows teleports and updates its zone list",
     Values = worldValues,
@@ -1684,7 +1724,7 @@ PetsSection:Dropdown({
 })
 
 local initialZones = getZoneOptions("Current World")
-zoneDropdown = PetsSection:Dropdown({
+zoneDropdown = TargetSection:Dropdown({
     Title = "Zone",
     Desc = "Player Zone follows your character dynamically",
     Values = initialZones,
@@ -1699,12 +1739,21 @@ zoneDropdown = PetsSection:Dropdown({
 })
 lastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(initialZones, "\0")
 
-statusParagraph = PetsSection:Paragraph({
-    Title = "Farm Status",
+local MonitorSection = PetsTab:Section({ Title = "Live Monitor", Box = true, Opened = true })
+statusParagraph = MonitorSection:Paragraph({
+    Title = "Assignment Status",
     Desc = "Waiting for the game pet controller and location data...",
+})
+healthParagraph = MonitorSection:Paragraph({
+    Title = "Controller Health",
+    Desc = "Runtime discovery is starting...",
 })
 
 local LootSection = LootTab:Section({ Title = "Loot Magnet", Box = true, Opened = true })
+LootSection:Paragraph({
+    Title = "Instant Collection",
+    Desc = "Pull nearby drops to your character while pet farming continues independently.",
+})
 LootSection:Toggle({
     Title = "Collect Orbs",
     Value = false,
@@ -1717,6 +1766,10 @@ LootSection:Toggle({
 })
 
 local MiscSection = MiscTab:Section({ Title = "Session", Box = true, Opened = true })
+MiscSection:Paragraph({
+    Title = "Session Protection",
+    Desc = "Keep the session active and stop every worker cleanly when you are done.",
+})
 MiscSection:Toggle({
     Title = "Anti-AFK",
     Desc = "Prevents the Roblox idle kick",
@@ -1747,6 +1800,7 @@ env.PSX_OG_UI_CLEANUP = shutdown
 MiscSection:Button({
     Title = "STOP SCRIPT",
     Desc = "Return pets, stop all workers and close the menu",
+    Icon = "power",
     Callback = shutdown,
 })
 
@@ -1755,20 +1809,33 @@ task.spawn(function()
         if not running() then break end
         refreshZoneDropdown(false)
         local targets, world, zone = orderedTargets(config.Mode)
-        local equippedCount = #getEquippedPetIds()
+        local equippedIds = getEquippedPetIds()
+        local equippedCount = #equippedIds
         local assignedCount = assignmentCount()
         local networkState = networkReady() and "ready" or "waiting"
         local signalState = Library.Signal and type(Library.Signal.Fire) == "function" and "ready" or "waiting"
+        local controllerState = runtimeDriverReady and "linked" or signalState
+        local runtimeActive, runtimeIdle, runtimeMissing = runtimePetCounts(equippedIds)
+        local runtimeLine = runtimeActive ~= nil
+            and string.format("Runtime: %d active | %d ready | %d unseen", runtimeActive, runtimeIdle, runtimeMissing)
+            or "Runtime: discovering game pet state"
         setStatus(string.format(
-            "World: %s | Zone: %s\nTargets: %d | pets: %d/%d | idle: %d | Network: %s | Select Coin: %s\nDriver: %s",
+            "%s  >  %s\nTargets: %d | reserved: %d/%d | local idle: %d\n%s",
             tostring(world or "unknown"),
             tostring(zone or "unknown"),
             #targets,
             assignedCount,
             equippedCount,
             math.max(equippedCount - assignedCount, 0),
+            runtimeLine
+        ))
+        setHealth(string.format(
+            "Network: %s | pet controller: %s | allocator: %s\nRecoveries: %d | last: %s\nDriver: %s",
             networkState,
-            signalState,
+            controllerState,
+            farmResetRunning and "reconfiguring" or "stable",
+            idleRecoveryCount,
+            lastRecovery,
             driverStatus
         ))
     end
