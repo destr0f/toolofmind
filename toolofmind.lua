@@ -4,6 +4,35 @@
   
   local env = getgenv()
 
+  -- Native/executor crashes cannot be caught by pcall. When the diagnostic loader
+  -- enables this flag, every completed startup stage is persisted to a small file.
+  local bootTraceEnabled = env.PSX_OG_TRACE_BOOT == true
+  local bootTraceLines = {}
+  local function bootTrace(stage)
+      if not bootTraceEnabled then return end
+      local sourceLine = nil
+      pcall(function()
+          if debug and type(debug.info) == "function" then
+              sourceLine = debug.info(2, "l")
+          end
+      end)
+      local line = string.format(
+          "[%0.3f] %s%s",
+          os.clock(),
+          tostring(stage),
+          sourceLine and (" | line=" .. tostring(sourceLine)) or ""
+      )
+      table.insert(bootTraceLines, line)
+      pcall(function()
+          if type(writefile) == "function" then
+              writefile("PSX_OG_boot_trace.txt", table.concat(bootTraceLines, "\n"))
+          end
+      end)
+      print("[PSX BOOT] " .. tostring(stage))
+  end
+
+  bootTrace("01 main chunk entered")
+
   -- Отключаем состояние экспериментального reward-hook из предыдущего запуска.
   if type(env.PSX_OG_RewardInvokeCaptureState) == "table" then
       env.PSX_OG_RewardInvokeCaptureState.active = false
@@ -28,6 +57,7 @@
   end
 
   disconnectRunConnections()
+  bootTrace("02 previous run disconnected")
 
   local function trackRunConnection(connection)
       table.insert(env.PSX_OG_RunConnections, connection)
@@ -59,8 +89,6 @@
       EggDelay = 0.12,
       AutoBoosts = false,
       BoostRenewBefore = 5,
-      AutoRankRewards = false,
-      AutoVIPRewards = false,
       EnabledBoosts = {
           ["Super Lucky"] = true,
           ["Ultra Lucky"] = true,
@@ -81,7 +109,16 @@
   end
 
   -- Фиксируем проверенный релиз: /latest не должен незаметно менять API меню между запусками.
-  local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua"))()
+  bootTrace("03 WindUI download started")
+  local windSource = game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua")
+  bootTrace("04 WindUI downloaded")
+  local windChunk, windCompileError = loadstring(windSource)
+  if not windChunk then error("WindUI compile failed: " .. tostring(windCompileError), 0) end
+  bootTrace("05 WindUI compiled")
+  local WindUI = windChunk()
+  windSource = nil
+  windChunk = nil
+  bootTrace("06 WindUI initialized")
 
   WindUI:AddTheme({
       Name = "PSX Glass",
@@ -111,6 +148,7 @@
       ScrollBarEnabled = true,
       Acrylic = false
   })
+  bootTrace("07 main window created")
 
   local function destroyWindUI()
       local destroyed = false
@@ -543,9 +581,7 @@
           .. "|" .. tostring(getSelectedFarmZone() or "Неизвестная зона")
   end
   
-  -- Кэш актуальных точек появления монет. Он обновляется во время игры,
-  -- поэтому координаты из старой локации не используются после телепорта.
-  local CoinPositionCache = {}
+  -- Пространственная привязка монет к областям живёт только пока существуют модели.
   local CoinSpatialAreaCache = setmetatable({}, { __mode = "k" })
   
   getCoinPosition = function(coinModel)
@@ -581,26 +617,6 @@
       if anyPart then return anyPart.Position end
   
       return coinModel:GetPivot().Position
-  end
-  
-  local function refreshCoinPositionCache()
-      local currentThings = workspace:FindFirstChild("__THINGS")
-      coinsFolder = currentThings and currentThings:FindFirstChild("Coins")
-      table.clear(CoinPositionCache)
-      if not coinsFolder then return end
-  
-      for _, coinModel in ipairs(coinsFolder:GetChildren()) do
-          local position = getCoinPosition(coinModel)
-          if position then
-              local area = getCoinAreaName(coinModel) or "Неизвестная зона"
-              CoinPositionCache[area] = CoinPositionCache[area] or {}
-              table.insert(CoinPositionCache[area], {
-                  Id = coinModel.Name,
-                  Position = position,
-                  Instance = coinModel
-              })
-          end
-      end
   end
   
   -- Поиск монеты (исходная логика)
@@ -669,13 +685,6 @@
       -- Возвращаем сам объект только для ограничения трёх кликов.
       return closestCoin, closestPos
   end
-  
-  task.spawn(function()
-      while task.wait(0.5) do
-          if not isScriptRunning() then break end
-          refreshCoinPositionCache()
-      end
-  end)
   
   local function formatCurrency(amount)
       amount = tonumber(amount) or 0
@@ -974,12 +983,6 @@
   local boostDirectRemoteIndex = nil
   local boostDirectRemoteSource = "ещё не использовался"
   local boostStatusParagraph = nil
-  local miscRewardStatusParagraph = nil
-  local rewardLastResult = {}
-  local rewardNextAttempt = {}
-  local rewardServerTime = nil
-  local rewardServerClock = nil
-  local rewardNextTimeSync = 0
   local eggDropdown = nil
   local eggCatalogParagraph = nil
   local eggStatusParagraph = nil
@@ -989,6 +992,7 @@
   local loadedEggsById = {}
   local lastEggCatalogSignature = nil
   local fastEggGateArmed = false
+  local eggAnimationGateActive = false
   local uiLastDescription = {}
   local uiNextDescriptionUpdate = {}
 
@@ -1099,43 +1103,6 @@
           tostring(remoteIndex or "?"),
           tostring(remoteSource)
       )
-  end
-
-  local function getRewardServerTime(library)
-      local now = os.clock()
-      if now >= rewardNextTimeSync then
-          rewardNextTimeSync = now + 60
-          local network = library and library.Network
-          if network and type(network.Invoke) == "function" then
-              local success, serverTime = pcall(network.Invoke, "Get OSTime")
-              if success and tonumber(serverTime) then
-                  rewardServerTime = tonumber(serverTime)
-                  rewardServerClock = now
-              end
-          end
-      end
-
-      if rewardServerTime and rewardServerClock then
-          return rewardServerTime + (now - rewardServerClock)
-      end
-      return os.time()
-  end
-
-  local function invokeAutoReward(library, commandName)
-      local network = library and library.Network
-      if not network or type(network.Invoke) ~= "function" then
-          return false, "Library.Network.Invoke недоступен"
-      end
-
-      local invokeOk, result = pcall(network.Invoke, commandName)
-      if not invokeOk then
-          return false, tostring(result)
-      end
-      if result then
-          return true, "Network.Invoke"
-      end
-
-      return false, "сервер отклонил награду"
   end
 
   local function formatBoostTime(seconds)
@@ -1338,9 +1305,13 @@
   end
 
   local function setEggAnimationGate(enabled)
+      enabled = enabled == true
+      if not enabled and not eggAnimationGateActive then return end
+
       local library = getPSXLibrary()
       if library and library.Variables then
-          pcall(function() library.Variables.OpeningEgg = enabled == true end)
+          local success = pcall(function() library.Variables.OpeningEgg = enabled end)
+          if success then eggAnimationGateActive = enabled end
       end
   end
 
@@ -1424,6 +1395,8 @@
       return false, failureText
   end
   
+  bootTrace("08 core helpers declared")
+  task.wait()
   -- ВКЛАДКИ WINDUI
   local OverviewTab = Window:Tab({ Title = "Обзор", Icon = "layout-dashboard" })
   local ClickFarmTab = Window:Tab({ Title = "Клик-фарм", Icon = "mouse-pointer-click" })
@@ -1431,8 +1404,9 @@
   local LootTab = Window:Tab({ Title = "Лут", Icon = "package-open" })
   local BoostsTab = Window:Tab({ Title = "Бусты", Icon = "zap" })
   local EggTab = Window:Tab({ Title = "Яйца", Icon = "egg" })
-  local MiscTab = Window:Tab({ Title = "Разное", Icon = "gift" })
   local SettingsTab = Window:Tab({ Title = "Настройки", Icon = "settings" })
+  bootTrace("09 tabs created")
+  task.wait()
 
   local OverviewSection = OverviewTab:Section({ Title = "Состояние", Box = true, Opened = true })
   OverviewSection:Paragraph({
@@ -1488,6 +1462,8 @@
       Callback = function(value) _G.FarmDelay = value / 100 end
   })
 
+  bootTrace("10 overview and click-farm menu created")
+  task.wait()
   local PetBaseSection = PetsTab:Section({ Title = "Автофарм питомцев", Box = true, Opened = true })
   PetBaseSection:Toggle({
       Title = "Фармить монеты питомцами",
@@ -1638,14 +1614,18 @@
       Callback = function(value) _G.FarmZone = value end
   })
 
-  refreshZoneDropdown(true)
+  lastZoneOptionsSignature = tostring(_G.FarmLocation) .. "|" .. table.concat(initialZoneOptions, "\0")
 
   local currentZoneParagraph = PetBaseSection:Paragraph({
       Title = "Активный фильтр",
       Desc = "Определение мира и позиции игрока..."
   })
 
-  rebuildPetModeSettings("По разным сильным обычным целям")
+  if not petModeSettingsSection then
+      rebuildPetModeSettings("По разным сильным обычным целям")
+  end
+  bootTrace("11 pet menu created")
+  task.wait()
 
   local LootSection = LootTab:Section({ Title = "Автосбор", Box = true, Opened = true })
   LootSection:Toggle({
@@ -1699,32 +1679,11 @@
       Desc = "Ожидание данных Library.Save..."
   })
 
-  local RewardsSection = MiscTab:Section({ Title = "Автонаграды", Box = true, Opened = true })
-  RewardsSection:Toggle({
-      Title = "Автосбор Rank Rewards",
-      Desc = "Забирает награду ранга сразу после окончания RankTimer",
-      Value = false,
-      Callback = function(value)
-          _G.AutoRankRewards = value == true
-          rewardNextAttempt["Redeem Rank Rewards"] = 0
-      end
-  })
-  RewardsSection:Toggle({
-      Title = "Автосбор VIP Rewards",
-      Desc = "Забирает VIP-награду после четырёхчасового кулдауна",
-      Value = false,
-      Callback = function(value)
-          _G.AutoVIPRewards = value == true
-          rewardNextAttempt["Redeem VIP Rewards"] = 0
-      end
-  })
-  miscRewardStatusParagraph = RewardsSection:Paragraph({
-      Title = "Состояние наград",
-      Desc = "Автосбор выключен"
-  })
-
+  bootTrace("12 loot and boost menus created")
+  task.wait()
   local EggSection = EggTab:Section({ Title = "Автооткрытие", Box = true, Opened = true })
-  local initialEggOptions, initialEggLabel = refreshEggDropdown(false)
+  local initialEggOptions = {"Нажми «Обновить список яиц»"}
+  local initialEggLabel = initialEggOptions[1]
   eggDropdown = EggSection:Dropdown({
       Title = "Яйцо",
       Desc = "● загружено в текущем мире, ○ есть в общем каталоге; сервер требует находиться рядом",
@@ -1745,7 +1704,7 @@
   })
   eggCatalogParagraph = EggSection:Paragraph({
       Title = "Каталог",
-      Desc = "Сканирование яиц текущего мира..."
+      Desc = "Список загружается по кнопке или при включении автооткрытия"
   })
   EggSection:Dropdown({
       Title = "Количество за открытие",
@@ -1782,14 +1741,15 @@
           _G.AutoEgg = value == true
           fastEggGateArmed = false
           setEggAnimationGate(false)
+          if _G.AutoEgg then refreshEggDropdown(true) end
       end
   })
   eggStatusParagraph = EggSection:Paragraph({
       Title = "Состояние",
       Desc = eggStatusText
   })
-  refreshEggDropdown(true)
-
+  bootTrace("13 egg menu created without catalog scan")
+  task.wait()
   local AppearanceSection = SettingsTab:Section({ Title = "Интерфейс", Box = true, Opened = true })
   AppearanceSection:Slider({
       Title = "Прозрачность окна",
@@ -1830,6 +1790,8 @@
           destroyWindUI()
       end
   })
+  bootTrace("14 complete menu tree created")
+  task.wait()
   
   -- ====================================================================================
   -- ГОРЯЧАЯ КЛАВИША [F] ДЛЯ АВТОФАРМА
@@ -1848,12 +1810,14 @@
   -- ====================================================================================
   -- 1. ИДЕАЛЬНЫЙ АВТОФАРМ (ПОДХОД + КАМЕРА + ДВА РЕЖИМА)
   -- ====================================================================================
+  local clickFarmWasActive = false
   trackRunConnection(RunService.RenderStepped:Connect(function()
-      local char = localPlayer.Character
-      local root = char and char:FindFirstChild("HumanoidRootPart")
-      
       -- Разморозка и возврат камеры при выключении
-      if not _G.AutoFarm or _G.AutoPetCoins or not isScriptRunning() then 
+      if not _G.AutoFarm or _G.AutoPetCoins or not isScriptRunning() then
+          if not clickFarmWasActive then return end
+          clickFarmWasActive = false
+          local char = localPlayer.Character
+          local root = char and char:FindFirstChild("HumanoidRootPart")
           lastChestTarget = nil
           pcall(function()
               if root and root.Anchored then 
@@ -1866,9 +1830,13 @@
                   end
               end
           end)
-          return 
+          return
       end
-      
+
+      clickFarmWasActive = true
+      local char = localPlayer.Character
+      local root = char and char:FindFirstChild("HumanoidRootPart")
+
       local coinTarget, coinPos = getClosestCoinPosition()
       if not coinPos then
           lastChestTarget = nil
@@ -1946,32 +1914,11 @@
           end
       end
   end))
+  bootTrace("15 click-farm connection registered")
   
   -- ====================================================================================
   -- 1.5. АВТОФАРМ ПИТОМЦАМИ ЧЕРЕЗ REMOTE-КАРТУ
   -- ====================================================================================
-  local function selectCoinWithOnePet(coin)
-      local library = getPSXLibrary()
-      local signal = library and library.Signal
-      if not signal or type(signal.Fire) ~= "function" then return false end
-      local success = pcall(signal.Fire, "Select Coin", coin)
-      if success and type(library.RenderStepped) == "function" then
-          pcall(library.RenderStepped)
-      end
-      return success
-  end
-
-  local function selectCoinWithAllPets(coin)
-      local library = getPSXLibrary()
-      local signal = library and library.Signal
-      if not signal or type(signal.Fire) ~= "function" then return false end
-      local success = pcall(signal.Fire, "Group Select Coin", coin)
-      if success and type(library.RenderStepped) == "function" then
-          pcall(library.RenderStepped)
-      end
-      return success
-  end
-  
   local function getEquippedPetIds()
       local library = getPSXLibrary()
       local saveData
@@ -2145,25 +2092,6 @@
       return acceptedPets
   end
   
-  local function findCoinByNetworkId(coinId)
-      if not coinsFolder or coinId == nil then return nil end
-      coinId = tostring(coinId)
-      for _, coin in ipairs(coinsFolder:GetChildren()) do
-          if getCoinNetworkId(coin) == coinId then return coin end
-      end
-      return nil
-  end
-  
-  local function getServerCoinTargets()
-      local library = getPSXLibrary()
-      local network = library and library.Network
-      if not network or type(network.Invoke) ~= "function" then return nil end
-  
-      local success, targets = pcall(network.Invoke, "Get Coin Targets")
-      if success and type(targets) == "table" then return targets end
-      return nil
-  end
-  
   local function getCoinHealth(coin)
       local healthObject = coin:FindFirstChild("Health_Attr")
       if healthObject then
@@ -2300,14 +2228,6 @@
       return bestCoin
   end
 
-  local function getStrongestUnclaimedCoin(claimedCoins, failedCoins)
-      return getPriorityCoin(claimedCoins, failedCoins, true)
-  end
-
-  local function getWeakestUnclaimedCoin(claimedCoins, failedCoins)
-      return getPriorityCoin(claimedCoins, failedCoins, false)
-  end
-
   local function getStrongestBossChest(failedCoins)
       return getPriorityCoin({}, failedCoins, true, function(coin)
           return isBossChestCoin(coin)
@@ -2326,290 +2246,6 @@
       end)
   end
 
-  task.spawn(function()
-      local claimedCoins = {}
-      local failedCoins = {}
-      local lastAssignment = -math.huge
-      local lastTargetSync = -math.huge
-      local assignmentSyncDelay = 0.06
-      local targetSyncDelay = 0.15
-      local unconfirmedTimeout = 0.35
-      local failedCoinCooldown = 0.75
-      while false and task.wait(0.02) do
-          if not isScriptRunning() then break end
-          if not _G.AutoPetCoins then
-              table.clear(claimedCoins)
-              table.clear(failedCoins)
-              lastAssignment = -math.huge
-              lastTargetSync = -math.huge
-              continue
-          end
-  
-          -- Не переключаемся на новую монету, пока текущая ещё существует.
-          local now = os.clock()
-          for coin, expiresAt in pairs(failedCoins) do
-              if not coin.Parent or now >= expiresAt then failedCoins[coin] = nil end
-          end
-  
-          local equippedPetIds = getEquippedPetIds()
-          local equippedPetSet = {}
-          for _, petId in ipairs(equippedPetIds) do equippedPetSet[tostring(petId)] = true end
-  
-          if now - lastTargetSync >= targetSyncDelay then
-              lastTargetSync = now
-              local targets = getServerCoinTargets()
-              if targets then
-                  local serverClaimedCoins = {}
-                  for petId, target in pairs(targets) do
-                      if equippedPetSet[tostring(petId)] and type(target) == "table" and target.t == "Coin" then
-                          local coin = findCoinByNetworkId(target.id)
-                          if coin then serverClaimedCoins[coin] = true end
-                      end
-                  end
-  
-                  for coin, assignedAt in pairs(claimedCoins) do
-                      if serverClaimedCoins[coin] then
-                          claimedCoins[coin] = now
-                      elseif now - assignedAt >= unconfirmedTimeout then
-                          claimedCoins[coin] = nil
-                          failedCoins[coin] = now + failedCoinCooldown
-                      end
-                  end
-                  for coin in pairs(serverClaimedCoins) do
-                      claimedCoins[coin] = now
-                  end
-              end
-          end
-  
-          local claimedCount = 0
-          local targetWasRemoved = false
-          for coin in pairs(claimedCoins) do
-              if not coin.Parent or not coinIsInLocation(coin) then
-                  claimedCoins[coin] = nil
-                  targetWasRemoved = true
-              else
-                  claimedCount = claimedCount + 1
-              end
-          end
-  
-          local equippedPetCount = #equippedPetIds
-          if targetWasRemoved then
-              local library = getPSXLibrary()
-              if library and type(library.RenderStepped) == "function" then
-                  pcall(library.RenderStepped)
-              else
-                  task.wait()
-              end
-          end
-  
-          if claimedCount < equippedPetCount
-              and (targetWasRemoved or os.clock() - lastAssignment >= assignmentSyncDelay) then
-              local coin = getStrongestUnclaimedCoin(claimedCoins, failedCoins)
-              if coin and selectCoinWithOnePet(coin) then
-                  claimedCoins[coin] = os.clock()
-                  lastAssignment = os.clock()
-              end
-          end
-      end
-  end)
-  
-  -- ====================================================================================
-  -- 2. БЕЗОПАСНЫЙ МАГНИТ (БЕЗ ЛАГОВ)
-  -- ====================================================================================
-  local confirmedPetCoins = {}
-  local confirmedCoinPets = {}
-  local rejectedCoins = {}
-  local pendingCoin = nil
-  local pendingCoinId = nil
-  local pendingSince = 0
-  local nextAssignmentAt = 0
-  local joinObserverInstalled = false
-  
-  local function clearPetAssignment(petId)
-      petId = tostring(petId)
-      local coin = confirmedPetCoins[petId]
-      if coin and confirmedCoinPets[coin] == petId then
-          confirmedCoinPets[coin] = nil
-      end
-      confirmedPetCoins[petId] = nil
-  end
-  
-  local function onJoinCoinObserved(coinId, requestedPets, joinedPets)
-      if not _G.AutoPetCoins or not pendingCoin then return end
-      if tostring(coinId) ~= tostring(pendingCoinId) then return end
-  
-      local coin = pendingCoin
-      local acceptedAny = false
-      if type(joinedPets) == "table" then
-          for petId, accepted in pairs(joinedPets) do
-              if accepted then
-                  petId = tostring(petId)
-                  clearPetAssignment(petId)
-  
-                  local previousPet = confirmedCoinPets[coin]
-                  if previousPet and previousPet ~= petId then
-                      confirmedPetCoins[previousPet] = nil
-                  end
-  
-                  confirmedPetCoins[petId] = coin
-                  confirmedCoinPets[coin] = petId
-                  acceptedAny = true
-              end
-          end
-      end
-  
-      if not acceptedAny and coin and coin.Parent then
-          rejectedCoins[coin] = os.clock() + 0.6
-      end
-      pendingCoin = nil
-      pendingCoinId = nil
-      pendingSince = 0
-  end
-  
-  task.spawn(function()
-      while false and task.wait(0.02) do
-          if not isScriptRunning() then break end
-  
-          if not joinObserverInstalled then
-              joinObserverInstalled = installJoinCoinObserver(onJoinCoinObserved)
-          end
-  
-          if not _G.AutoPetCoins then
-              table.clear(confirmedPetCoins)
-              table.clear(confirmedCoinPets)
-              table.clear(rejectedCoins)
-              pendingCoin = nil
-              pendingCoinId = nil
-              pendingSince = 0
-              nextAssignmentAt = 0
-              continue
-          end
-  
-          if not joinObserverInstalled then continue end
-  
-          local now = os.clock()
-          local equippedPetIds = getEquippedPetIds()
-          local equippedPetSet = {}
-          for _, petId in ipairs(equippedPetIds) do
-              equippedPetSet[tostring(petId)] = true
-          end
-  
-          for petId, coin in pairs(confirmedPetCoins) do
-              if not equippedPetSet[petId]
-                  or not coin.Parent then
-                  local wasDestroyed = not coin.Parent
-                  clearPetAssignment(petId)
-                  if wasDestroyed then
-                      -- Ждём, пока штатный Pets-скрипт увидит удаление цели и
-                      -- переведёт именно освободившегося питомца в состояние Player.
-                      nextAssignmentAt = math.max(nextAssignmentAt, now + 0.12)
-                  end
-              end
-          end
-  
-          for coin, expiresAt in pairs(rejectedCoins) do
-              if not coin.Parent or now >= expiresAt then rejectedCoins[coin] = nil end
-          end
-  
-          if pendingCoin and (not pendingCoin.Parent or now - pendingSince >= 0.5) then
-              if pendingCoin.Parent then rejectedCoins[pendingCoin] = now + 0.6 end
-              pendingCoin = nil
-              pendingCoinId = nil
-              pendingSince = 0
-          end
-  
-          local activePetCount = 0
-          for petId in pairs(confirmedPetCoins) do
-              if equippedPetSet[petId] then activePetCount = activePetCount + 1 end
-          end
-  
-          if activePetCount < #equippedPetIds
-              and not pendingCoin
-              and now >= nextAssignmentAt then
-              local claimedCoins = {}
-              for coin in pairs(confirmedCoinPets) do claimedCoins[coin] = true end
-  
-              local coin = getStrongestUnclaimedCoin(claimedCoins, rejectedCoins)
-              if coin then
-                  pendingCoin = coin
-                  pendingCoinId = getCoinNetworkId(coin)
-                  pendingSince = now
-  
-                  if not selectCoinWithOnePet(coin) then
-                      rejectedCoins[coin] = now + 0.6
-                      pendingCoin = nil
-                      pendingCoinId = nil
-                      pendingSince = 0
-                  end
-              end
-          end
-      end
-  
-      local observer = env.PSX_OG_JoinObserver
-      if observer then observer.Callback = nil end
-  end)
-  
-  -- Консервативный распределитель: одно назначение на монету и никаких
-  -- повторных Select Coin, пока сама модель цели не удалена из workspace.
-  local observer = env.PSX_OG_JoinObserver
-  if observer then observer.Callback = nil end
-  
-  task.spawn(function()
-    local assignedCoins = {}
-    local lastSelectionAt = -math.huge
-    local urgentAssignments = 0
-    local urgentReadyAt = 0
-    local selectionSpacing = 0.35
-    local petReleaseDelay = 0.12
-  
-    while false and task.wait(0.05) do
-          if not isScriptRunning() then break end
-  
-          if not _G.AutoPetCoins then
-            table.clear(assignedCoins)
-            lastSelectionAt = -math.huge
-            urgentAssignments = 0
-            urgentReadyAt = 0
-            continue
-          end
-  
-        local now = os.clock()
-        local assignedCount = 0
-        for coin in pairs(assignedCoins) do
-            if not coin.Parent or getCoinHealth(coin) <= 0 then
-                assignedCoins[coin] = nil
-                urgentAssignments = urgentAssignments + 1
-                urgentReadyAt = math.max(urgentReadyAt, now + petReleaseDelay)
-            else
-                assignedCount = assignedCount + 1
-            end
-          end
-  
-        local equippedPetCount = #getEquippedPetIds()
-        if assignedCount < equippedPetCount
-            and ((urgentAssignments > 0 and now >= urgentReadyAt)
-                or (urgentAssignments == 0 and now - lastSelectionAt >= selectionSpacing)) then
-              if urgentAssignments > 0 then
-                  local library = getPSXLibrary()
-                  if library and type(library.RenderStepped) == "function" then
-                      pcall(library.RenderStepped)
-                  else
-                      task.wait()
-                  end
-              end
-  
-              local coin = getStrongestUnclaimedCoin(assignedCoins, {})
-              if coin and selectCoinWithOnePet(coin) then
-                  assignedCoins[coin] = true
-                  lastSelectionAt = os.clock()
-                  if urgentAssignments > 0 then urgentAssignments = urgentAssignments - 1 end
-              elseif urgentAssignments > 0 then
-                  urgentAssignments = urgentAssignments - 1
-              end
-          end
-      end
-  end)
-  
 local function getMarkerPetUID(marker)
     local idObject = marker:FindFirstChild("ID_Attr")
     if idObject then
@@ -2649,7 +2285,8 @@ task.spawn(function()
     local rejectedCoins = {}
     local lockedGroupCoin = nil
     local previousMode = _G.PetFarmMode
-    local previousContext = getFarmContextKey()
+    local previousContext = nil
+    local allocatorWasEnabled = false
     local bigCoinHealthAnchor = 0
     local requestSerial = 0
 
@@ -2785,15 +2422,24 @@ task.spawn(function()
     while task.wait(_G.AutoPetCoins and ACTIVE_TICK or IDLE_TICK) do
         if not isScriptRunning() then break end
 
-        local currentThings = workspace:FindFirstChild("__THINGS")
-        coinsFolder = currentThings and currentThings:FindFirstChild("Coins")
-
         if not _G.AutoPetCoins then
-            resetAllState()
-            previousMode = _G.PetFarmMode
-            previousContext = getFarmContextKey()
+            if allocatorWasEnabled then
+                resetAllState()
+                previousMode = _G.PetFarmMode
+                previousContext = nil
+                allocatorWasEnabled = false
+            end
             continue
         end
+
+        if not allocatorWasEnabled then
+            allocatorWasEnabled = true
+            previousMode = _G.PetFarmMode
+            previousContext = nil
+        end
+
+        local currentThings = workspace:FindFirstChild("__THINGS")
+        coinsFolder = currentThings and currentThings:FindFirstChild("Coins")
 
         local now = os.clock()
         local mode = _G.PetFarmMode or "DifferentStrongest"
@@ -2962,308 +2608,8 @@ task.spawn(function()
         end
     end
 end)
+bootTrace("16 pet allocator registered")
 
--- Штатный планировщик: Select Coin обновляет внутреннее состояние Pets-скрипта,
--- а резервирование слотов не позволяет повторно выбрать уже занятого питомца.
-task.spawn(function()
-    local petAssignments = {}
-    local pendingRequests = {}
-    local rejectedTargets = {}
-    local lockedGroupCoin = nil
-    local previousMode = _G.PetFarmMode
-    local previousContext = getFarmContextKey()
-    local autoWasEnabled = false
-    local releaseReadyAt = 0
-    local releaseNeedsSync = false
-    local bigCoinHealthAnchor = 0
-
-    local FAILURE_COOLDOWN = 0.12
-    local RELEASE_FRAME_DELAY = 0.01
-
-    local function targetIsAlive(coin)
-        return coin and coin.Parent and getCoinHealth(coin) > 0
-    end
-
-    local function getRequestKey(coin)
-        local coinId = getCoinNetworkId(coin)
-        return coinId and tostring(coinId) or nil
-    end
-
-    local function resetTransientState()
-        table.clear(rejectedTargets)
-        lockedGroupCoin = nil
-        bigCoinHealthAnchor = 0
-    end
-
-    local function resetAllState()
-        table.clear(petAssignments)
-        table.clear(pendingRequests)
-        resetTransientState()
-        releaseReadyAt = 0
-        releaseNeedsSync = false
-    end
-
-    local function updateBigCoinHealthAnchor()
-        if not coinsFolder then return nil end
-
-        local currentAnchor = 0
-        for _, coin in ipairs(coinsFolder:GetChildren()) do
-            if coinCanBeFarmed(coin)
-                and coinIsInLocation(coin)
-                and not isBossChestCoin(coin) then
-                currentAnchor = math.max(currentAnchor, getCoinPriorityHealth(coin))
-            end
-        end
-
-        bigCoinHealthAnchor = currentAnchor
-        if bigCoinHealthAnchor <= 0 then return nil end
-
-        local thresholdPercent = math.clamp(tonumber(_G.BigCoinThreshold) or 65, 10, 100)
-        return bigCoinHealthAnchor * (thresholdPercent / 100)
-    end
-
-    local function rememberAcceptedPet(petId, coin)
-        petId = tostring(petId)
-        if targetIsAlive(coin) then
-            petAssignments[petId] = {
-                Coin = coin,
-                AssignedAt = os.clock()
-            }
-            return true
-        end
-        return false
-    end
-
-    local function adoptServerAssignments(equippedPetSet)
-        local targets = getServerCoinTargets()
-        if type(targets) ~= "table" then return end
-
-        for petId, target in pairs(targets) do
-            petId = tostring(petId)
-            if equippedPetSet[petId] and type(target) == "table" and target.t == "Coin" then
-                local coin = findCoinByNetworkId(target.id)
-                if coin then rememberAcceptedPet(petId, coin) end
-            end
-        end
-    end
-
-    local function countPendingSlots()
-        local count = 0
-        for _, request in pairs(pendingRequests) do
-            local confirmedCount = 0
-            for _ in pairs(request.ConfirmedPets or {}) do
-                confirmedCount = confirmedCount + 1
-            end
-            count = count + math.max(0, (request.Slots or 1) - confirmedCount)
-        end
-        return count
-    end
-
-    local function hasUnconfirmedRequest()
-        for _, request in pairs(pendingRequests) do
-            local confirmedCount = 0
-            for _ in pairs(request.ConfirmedPets or {}) do
-                confirmedCount = confirmedCount + 1
-            end
-            if confirmedCount < (request.Slots or 1) then
-                return true
-            end
-        end
-        return false
-    end
-
-    local function countActiveAssignments(equippedPetSet)
-        local count = 0
-        for petId, state in pairs(petAssignments) do
-            if equippedPetSet[petId] and targetIsAlive(state.Coin) then
-                count = count + 1
-            end
-        end
-        return count
-    end
-
-    local function buildClaimedCoins()
-        local claimedCoins = {}
-        for _, state in pairs(petAssignments) do
-            if targetIsAlive(state.Coin) then
-                claimedCoins[state.Coin] = true
-            end
-        end
-        for _, request in pairs(pendingRequests) do
-            if targetIsAlive(request.Coin) then
-                claimedCoins[request.Coin] = true
-            end
-        end
-        return claimedCoins
-    end
-
-    local function beginSelection(coin, slots, selectAll)
-        local key = getRequestKey(coin)
-        if not key or pendingRequests[key] or not targetIsAlive(coin) then return false end
-
-        pendingRequests[key] = {
-            Coin = coin,
-            Slots = slots,
-            ConfirmedPets = {},
-            StartedAt = os.clock()
-        }
-
-        local selected = selectAll and selectCoinWithAllPets(coin)
-            or selectCoinWithOnePet(coin)
-        if not selected then
-            pendingRequests[key] = nil
-            rejectedTargets[coin] = os.clock() + FAILURE_COOLDOWN
-            return false
-        end
-        return true
-    end
-
-    while false and task.wait(0.02) do
-        if not isScriptRunning() then break end
-
-        local currentThings = workspace:FindFirstChild("__THINGS")
-        coinsFolder = currentThings and currentThings:FindFirstChild("Coins")
-
-        if not _G.AutoPetCoins then
-            resetAllState()
-            autoWasEnabled = false
-            previousMode = _G.PetFarmMode
-            previousContext = getFarmContextKey()
-            continue
-        end
-
-        local now = os.clock()
-        local mode = _G.PetFarmMode or "DifferentStrongest"
-        local context = getFarmContextKey()
-        if mode ~= previousMode or context ~= previousContext then
-            resetTransientState()
-            previousMode = mode
-            previousContext = context
-        end
-
-        local equippedPetIds = getEquippedPetIds()
-        local equippedPetSet = {}
-        for _, rawPetId in ipairs(equippedPetIds) do
-            equippedPetSet[tostring(rawPetId)] = true
-        end
-
-        if #equippedPetIds == 0 then
-            resetAllState()
-            continue
-        end
-
-        if not autoWasEnabled then
-            adoptServerAssignments(equippedPetSet)
-            autoWasEnabled = true
-        end
-
-        local livePetCoins = readLiveCoinPetAssignments(equippedPetSet)
-        for petId, liveCoin in pairs(livePetCoins) do
-            local liveKey = getRequestKey(liveCoin)
-            local request = liveKey and pendingRequests[liveKey]
-            if request then
-                request.ConfirmedPets[petId] = true
-            end
-            local state = petAssignments[petId]
-            if not state or not targetIsAlive(state.Coin) then
-                rememberAcceptedPet(petId, liveCoin)
-            end
-        end
-
-        local releasedAny = false
-        for petId, state in pairs(petAssignments) do
-            if not equippedPetSet[petId] or not targetIsAlive(state.Coin) then
-                petAssignments[petId] = nil
-                releasedAny = true
-            end
-        end
-
-        if releasedAny then
-            releaseNeedsSync = true
-            releaseReadyAt = math.max(releaseReadyAt, now + RELEASE_FRAME_DELAY)
-        end
-
-        for key, request in pairs(pendingRequests) do
-            if not targetIsAlive(request.Coin) then
-                pendingRequests[key] = nil
-            elseif now - (request.StartedAt or now) >= 0.45 then
-                local confirmedCount = 0
-                for _ in pairs(request.ConfirmedPets or {}) do
-                    confirmedCount = confirmedCount + 1
-                end
-
-                pendingRequests[key] = nil
-                if confirmedCount == 0 and targetIsAlive(request.Coin) then
-                    rejectedTargets[request.Coin] = now + FAILURE_COOLDOWN
-                end
-            end
-        end
-
-        for coin, expiresAt in pairs(rejectedTargets) do
-            if not coin.Parent or now >= expiresAt then
-                rejectedTargets[coin] = nil
-            end
-        end
-
-        if releaseNeedsSync then
-            if now < releaseReadyAt then continue end
-
-            local library = getPSXLibrary()
-            if library and type(library.RenderStepped) == "function" then
-                pcall(library.RenderStepped)
-            else
-                task.wait()
-            end
-            releaseNeedsSync = false
-        end
-
-        local activeCount = countActiveAssignments(equippedPetSet)
-        local pendingSlots = countPendingSlots()
-        local availableSlots = math.max(0, #equippedPetIds - activeCount - pendingSlots)
-        if availableSlots == 0 then continue end
-        if hasUnconfirmedRequest() then continue end
-
-        local isGroupMode = mode == "AllOneBossChest" or mode == "AllOneBigCoin"
-        if isGroupMode then
-            if lockedGroupCoin and not targetIsAlive(lockedGroupCoin) then
-                lockedGroupCoin = nil
-            end
-
-            if not lockedGroupCoin then
-                if mode == "AllOneBossChest" then
-                    lockedGroupCoin = getStrongestBossChest(rejectedTargets)
-                else
-                    local minimumHealth = updateBigCoinHealthAnchor()
-                    if minimumHealth then
-                        lockedGroupCoin = getStrongestRegularTarget({}, rejectedTargets, minimumHealth)
-                    end
-                end
-            end
-
-            if not lockedGroupCoin or rejectedTargets[lockedGroupCoin] then continue end
-
-            if activeCount == 0 and pendingSlots == 0 then
-                beginSelection(lockedGroupCoin, #equippedPetIds, true)
-            else
-                beginSelection(lockedGroupCoin, 1, false)
-            end
-            continue
-        end
-
-        local claimedCoins = buildClaimedCoins()
-        local coin
-        if mode == "DifferentWeakest" then
-            coin = getWeakestRegularTarget(claimedCoins, rejectedTargets)
-        else
-            coin = getStrongestRegularTarget(claimedCoins, rejectedTargets)
-        end
-
-        if coin then
-            beginSelection(coin, 1, false)
-        end
-    end
-
-end)
 
 local function countFarmableTargetsInZone()
     if not coinsFolder then return 0 end
@@ -3279,6 +2625,11 @@ end
 task.spawn(function()
     while task.wait(_G.AutoPetCoins and 0.5 or 2) do
         if not isScriptRunning() then break end
+        if not _G.AutoPetCoins and not _G.AutoFarm then
+            setDescriptionCached(currentZoneParagraph, "Фарм выключен — сканирование зоны приостановлено", 2)
+            continue
+        end
+
         refreshZoneDropdown(false)
         local loadedWorld = getCurrentWorldName()
         local selectedWorld = getSelectedFarmWorld() or "мир не определён"
@@ -3297,6 +2648,7 @@ end)
 task.spawn(function()
     while task.wait(0.2) do
           if not isScriptRunning() then break end
+          if not _G.AutoOrbs and not _G.AutoLootbags then continue end
   
           local root = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
           
@@ -3348,13 +2700,18 @@ task.spawn(function()
   task.spawn(function()
       while task.wait(_G.AutoEgg and 1 or 3) do
           if not isScriptRunning() then break end
-          refreshEggDropdown(false)
+          if _G.AutoEgg then refreshEggDropdown(false) end
       end
   end)
 
   task.spawn(function()
       while task.wait(_G.AutoBoosts and 0.25 or 2) do
           if not isScriptRunning() then break end
+
+          if not _G.AutoBoosts then
+              setDescriptionCached(boostStatusParagraph, "Автобуст выключен", 2)
+              continue
+          end
 
           local saveData = getSaveData()
           local library = getPSXLibrary()
@@ -3470,110 +2827,6 @@ task.spawn(function()
       end
   end)
 
-  task.spawn(function()
-      local lastRenderedStatus = nil
-      local nextStatusRender = 0
-
-      while task.wait(1) do
-          if not isScriptRunning() then break end
-
-          local rankEnabled = _G.AutoRankRewards == true
-          local vipEnabled = _G.AutoVIPRewards == true
-          if not rankEnabled and not vipEnabled then
-              local disabledStatus = "Автосбор выключен"
-              if lastRenderedStatus ~= disabledStatus and miscRewardStatusParagraph then
-                  if setDescriptionCached(miscRewardStatusParagraph, disabledStatus, 2) then
-                      lastRenderedStatus = disabledStatus
-                  end
-              end
-              continue
-          end
-
-          local library = getPSXLibrary()
-          local saveData = getSaveData()
-          local statusLines = {}
-          local now = os.clock()
-
-          if not library or not saveData then
-              table.insert(statusLines, "Ожидание Library.Save...")
-          else
-              local serverNow = getRewardServerTime(library)
-
-              local rankInfo = library.Directory
-                  and library.Directory.Ranks
-                  and library.Directory.Ranks[saveData.Rank]
-              if not rankEnabled then
-                  table.insert(statusLines, "Rank Rewards: выкл")
-              elseif not rankInfo then
-                  table.insert(statusLines, "Rank Rewards: данные текущего ранга не найдены")
-              elseif type(rankInfo.rewards) == "table" and #rankInfo.rewards == 0 then
-                  table.insert(statusLines, "Rank Rewards: у текущего ранга нет награды")
-              else
-                  local rankCooldown = tonumber(rankInfo.rewardCooldown) or 0
-                  local rankTimer = tonumber(saveData.RankTimer) or 0
-                  local rankRemaining = math.max(0, rankCooldown - (serverNow - rankTimer))
-                  local rankState = rankRemaining > 0
-                      and ("через " .. formatBoostTime(rankRemaining))
-                      or "готово"
-
-                  if rankRemaining <= 0
-                      and now >= (rewardNextAttempt["Redeem Rank Rewards"] or 0) then
-                      rewardNextAttempt["Redeem Rank Rewards"] = now + 30
-                      local success, method = invokeAutoReward(library, "Redeem Rank Rewards")
-                      rewardLastResult["Redeem Rank Rewards"] = success
-                          and ("забрано через " .. tostring(method))
-                          or ("ошибка: " .. tostring(method))
-                  end
-
-                  table.insert(statusLines, string.format(
-                      "Rank Rewards: вкл | %s%s",
-                      rankState,
-                      rewardLastResult["Redeem Rank Rewards"]
-                          and (" | " .. rewardLastResult["Redeem Rank Rewards"])
-                          or ""
-                  ))
-              end
-
-              if not vipEnabled then
-                  table.insert(statusLines, "VIP Rewards: выкл")
-              else
-                  local vipCooldown = 14400
-                  local vipTimer = tonumber(saveData.VIPCooldown) or 0
-                  local vipRemaining = math.max(0, vipCooldown - (serverNow - vipTimer))
-                  local vipState = vipRemaining > 0
-                      and ("через " .. formatBoostTime(vipRemaining))
-                      or "готово"
-
-                  if vipRemaining <= 0
-                      and now >= (rewardNextAttempt["Redeem VIP Rewards"] or 0) then
-                      rewardNextAttempt["Redeem VIP Rewards"] = now + 30
-                      local success, method = invokeAutoReward(library, "Redeem VIP Rewards")
-                      rewardLastResult["Redeem VIP Rewards"] = success
-                          and ("забрано через " .. tostring(method))
-                          or ("ошибка: " .. tostring(method))
-                  end
-
-                  table.insert(statusLines, string.format(
-                      "VIP Rewards: вкл | %s%s",
-                      vipState,
-                      rewardLastResult["Redeem VIP Rewards"]
-                          and (" | " .. rewardLastResult["Redeem VIP Rewards"])
-                          or ""
-                  ))
-              end
-          end
-
-          local statusText = table.concat(statusLines, "\n")
-          if miscRewardStatusParagraph
-              and statusText ~= lastRenderedStatus
-              and now >= nextStatusRender then
-              if setDescriptionCached(miscRewardStatusParagraph, statusText, 2) then
-                  lastRenderedStatus = statusText
-                  nextStatusRender = now + 5
-              end
-          end
-      end
-  end)
 
   local function setEggStatus(text)
       eggStatusText = tostring(text or "")
@@ -3852,6 +3105,7 @@ task.spawn(function()
   -- ====================================================================================
   task.spawn(function()
       local lastCurrencyName = _G.TrackedCurrency
+      local lastIdleText = nil
   
       while task.wait(1) do
           if not isScriptRunning() then break end
@@ -3861,20 +3115,20 @@ task.spawn(function()
               table.clear(currencySamples)
           end
   
-          local targetCount = countFarmableTargetsInZone()
           if not _G.AutoFarm and not _G.AutoPetCoins then
               table.clear(currencySamples)
-  
-              if currencyTrackerLabel then
-                  pcall(function()
-                      currencyTrackerLabel:Set(
-                          _G.TrackedCurrency .. "/мин: фарм выключен"
-                          .. " | целей в зоне: " .. tostring(targetCount)
-                      )
-                  end)
+
+              local idleText = _G.TrackedCurrency .. "/мин: фарм выключен"
+              if currencyTrackerLabel and idleText ~= lastIdleText then
+                  local updated = pcall(function() currencyTrackerLabel:Set(idleText) end)
+                  if updated then lastIdleText = idleText end
               end
-          else
-              local currentAmount = getCurrentCurrency(_G.TrackedCurrency)
+              continue
+          end
+
+          lastIdleText = nil
+          local targetCount = countFarmableTargetsInZone()
+          local currentAmount = getCurrentCurrency(_G.TrackedCurrency)
   
               if currentAmount == nil then
                   table.clear(currencySamples)
@@ -3927,9 +3181,9 @@ task.spawn(function()
                       end)
                   end
               end
-          end
       end
   end)
+  bootTrace("17 background workers registered")
   
   -- ====================================================================================
   -- 5. АНТИ-АФК
@@ -3944,3 +3198,4 @@ task.spawn(function()
   end))
   
   pcall(function() OverviewTab:Select() end)
+  bootTrace("18 startup complete")
