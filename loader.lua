@@ -6,7 +6,7 @@
 -- WindUI bundled SHA256: db2abdef56e94d0ad0655cefc980484198ef17e3996a82a898caec6100ee1401
 
 local __psxEnv = type(getgenv) == "function" and getgenv() or _G
-local __PSX_LOADER_VERSION = "3.8.0"
+local __PSX_LOADER_VERSION = "3.9.0"
 local __PSX_TRACE_FILE = "PSX_OG_loader_trace.txt"
 local __PSX_ERROR_FILE = "PSX_OG_loader_error.txt"
 local __PSX_WIND_RAW_SIZE = 254937
@@ -1016,36 +1016,22 @@ local function __psxCaptureError(problem)
     return message
 end
 
-local function __psxWaitForGameReady()
-    __psxTrace("01 waiting for game")
-    local loaded = false
-    pcall(function() loaded = game:IsLoaded() end)
-    if not loaded then game.Loaded:Wait() end
-
+local function __psxCheckGameReady()
+    __psxTrace("01 checking game")
     local Players = game:GetService("Players")
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
-    local RunService = game:GetService("RunService")
-    local deadline = os.clock() + 30
     local player = Players.LocalPlayer
-    while not player and os.clock() < deadline do
-        task.wait(0.05)
-        player = Players.LocalPlayer
-    end
-    if not player then error("LocalPlayer did not appear within 30 seconds", 0) end
+    if not player then error("LocalPlayer is not ready; run the loader after joining", 0) end
 
     local playerScripts = player:FindFirstChild("PlayerScripts")
-        or player:WaitForChild("PlayerScripts", 20)
-    if not playerScripts then error("PlayerScripts did not load", 0) end
+    if not playerScripts then error("PlayerScripts is not ready; run the loader again", 0) end
 
     local framework = ReplicatedStorage:FindFirstChild("Framework")
-        or ReplicatedStorage:WaitForChild("Framework", 20)
-    local library = framework and (
-        framework:FindFirstChild("Library")
-        or framework:WaitForChild("Library", 20)
-    )
-    if not library then error("ReplicatedStorage.Framework.Library did not load", 0) end
+    local library = framework and framework:FindFirstChild("Library")
+    if not library then
+        error("ReplicatedStorage.Framework.Library is not ready; run the loader again", 0)
+    end
 
-    for _ = 1, 3 do RunService.Heartbeat:Wait() end
     __psxTrace("02 game ready", "place=" .. tostring(game.PlaceId))
 end
 
@@ -1064,7 +1050,6 @@ local function __psxDecodeBase85(data, expectedLength)
     local outputPosition = 0
     local accumulator = 0
     local digitCount = 0
-    local nextYield = 32768
 
     for index = 1, #data do
         local value = decode[string.byte(data, index)]
@@ -1088,10 +1073,6 @@ local function __psxDecodeBase85(data, expectedLength)
             end
         end
 
-        if index >= nextYield then
-            task.wait()
-            nextYield = index + 32768
-        end
     end
 
     if outputPosition ~= expectedLength then
@@ -1104,14 +1085,7 @@ local function __psxDecodeBase85(data, expectedLength)
     return output
 end
 
-local function __psxDecompressLzss(
-    input,
-    inputLength,
-    expectedLength,
-    progressPhase,
-    returnBuffer,
-    allowYield
-)
+local function __psxDecompressLzss(input, inputLength, expectedLength, progressPhase, returnBuffer)
     local output = buffer.create(expectedLength)
     local inputPosition = 0
     local outputPosition = 0
@@ -1160,9 +1134,6 @@ local function __psxDecompressLzss(
                     tostring(outputPosition) .. "/" .. tostring(expectedLength)
                 )
             end
-            if allowYield ~= false then
-                task.wait()
-            end
             nextYield = outputPosition + 16384
         end
     end
@@ -1192,11 +1163,8 @@ __psxTrace(
     "version=" .. __PSX_LOADER_VERSION .. " | bytes=116376"
 )
 
-task.defer(function()
-    task.wait(0.15)
-
-    local success, problem = xpcall(function()
-        __psxWaitForGameReady()
+local success, problem = xpcall(function()
+        __psxCheckGameReady()
 
         local mainBlockCount = #__psxMainBlocks
         local mainBuffer = buffer.create(__PSX_MAIN_RAW_SIZE)
@@ -1222,8 +1190,7 @@ task.defer(function()
                 block.PackedSize,
                 block.RawSize,
                 "04 main block " .. tostring(index) .. " progress",
-                true,
-                false
+                true
             )
             mainPacked = nil
 
@@ -1280,25 +1247,20 @@ task.defer(function()
         windChunk = nil
         __psxTrace("13 WindUI chunk ready")
 
-        game:GetService("RunService").Heartbeat:Wait()
-        task.wait(0.1)
-        __psxTrace("14 executing main")
-        __psxState.Result = mainChunk()
-        mainChunk = nil
-
         __psxState.Running = false
         __psxState.Ready = true
         __psxState.FinishedAt = os.clock()
+        task.defer(mainChunk)
+        mainChunk = nil
         __psxTrace(
-            "15 main ready",
+            "14 main queued; loader releasing",
             string.format("%.2fs", __psxState.FinishedAt - __psxState.StartedAt)
         )
     end, __psxCaptureError)
 
-    if not success then
-        __psxEnv.PSX_OG_BUNDLED_WINDUI_CHUNK = nil
-        warn("[PSX LOADER] Startup failed:\n" .. tostring(problem))
-    end
-end)
+if not success then
+    __psxEnv.PSX_OG_BUNDLED_WINDUI_CHUNK = nil
+    warn("[PSX LOADER] Startup failed:\n" .. tostring(problem))
+end
 
 return __psxState
