@@ -6,7 +6,7 @@
 -- WindUI bundled SHA256: db2abdef56e94d0ad0655cefc980484198ef17e3996a82a898caec6100ee1401
 
 local __psxEnv = type(getgenv) == "function" and getgenv() or _G
-local __PSX_LOADER_VERSION = "3.3.0"
+local __PSX_LOADER_VERSION = "3.4.0"
 local __PSX_TRACE_FILE = "PSX_OG_loader_trace.txt"
 local __PSX_ERROR_FILE = "PSX_OG_loader_error.txt"
 local __PSX_WIND_RAW_SIZE = 254937
@@ -1242,15 +1242,11 @@ task.defer(function()
         local mainSource = buffer.tostring(mainBuffer)
         mainBuffer = nil
         __psxTrace("07 main source ready", "bytes=" .. tostring(#mainSource))
-        task.wait(0.1)
-
         __psxTrace("08 compiling main")
         local mainChunk, mainError = loadstring(mainSource)
         mainSource = nil
         if not mainChunk then error("Main compile failed: " .. tostring(mainError), 0) end
         __psxTrace("09 main chunk ready")
-        task.wait(0.1)
-
         __psxTrace("10 decoding WindUI payload")
         local windPacked = __psxDecodeBase85(__psxWindPayload, __PSX_WIND_PACKED_SIZE)
         __psxWindPayload = nil
