@@ -1,1 +1,1 @@
-require("./build_binary_loader.js");
+require("./build_standalone.js");

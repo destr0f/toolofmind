@@ -1,0 +1,755 @@
+-- Lightweight Roblox UI used by the standalone PSX OG build.
+-- The module returns a factory with the small WindUI-compatible surface that
+-- the hub uses: Window, Tab, Section and the five control types.
+
+return function()
+    local Players = game:GetService("Players")
+    local UserInputService = game:GetService("UserInputService")
+    local CoreGui = game:GetService("CoreGui")
+
+    local palette = {
+        accent = Color3.fromRGB(56, 189, 248),
+        background = Color3.fromRGB(11, 18, 32),
+        panel = Color3.fromRGB(17, 27, 46),
+        card = Color3.fromRGB(23, 36, 58),
+        cardHover = Color3.fromRGB(30, 48, 76),
+        outline = Color3.fromRGB(73, 99, 132),
+        text = Color3.fromRGB(248, 250, 252),
+        muted = Color3.fromRGB(148, 163, 184),
+        danger = Color3.fromRGB(248, 113, 113),
+    }
+
+    local library = { Windows = {}, Theme = palette }
+
+    local function create(className, properties, parent)
+        local object = Instance.new(className)
+        for property, value in pairs(properties or {}) do
+            object[property] = value
+        end
+        if parent then object.Parent = parent end
+        return object
+    end
+
+    local function corner(parent, radius)
+        return create("UICorner", { CornerRadius = UDim.new(0, radius or 10) }, parent)
+    end
+
+    local function stroke(parent, color, transparency)
+        return create("UIStroke", {
+            Color = color or palette.outline,
+            Transparency = transparency or 0,
+            Thickness = 1,
+        }, parent)
+    end
+
+    local function padding(parent, left, right, top, bottom)
+        return create("UIPadding", {
+            PaddingLeft = UDim.new(0, left or 0),
+            PaddingRight = UDim.new(0, right or left or 0),
+            PaddingTop = UDim.new(0, top or left or 0),
+            PaddingBottom = UDim.new(0, bottom or top or left or 0),
+        }, parent)
+    end
+
+    local function connect(bucket, signal, callback)
+        local connection = signal:Connect(callback)
+        table.insert(bucket, connection)
+        return connection
+    end
+
+    local function call(callback, ...)
+        if type(callback) ~= "function" then return end
+        local arguments = table.pack(...)
+        task.spawn(function()
+            local ok, problem = pcall(callback, table.unpack(arguments, 1, arguments.n))
+            if not ok then warn("[PSX UI] callback failed: " .. tostring(problem)) end
+        end)
+    end
+
+    local function textLabel(parent, text, size, color, bold)
+        return create("TextLabel", {
+            BackgroundTransparency = 1,
+            Size = size or UDim2.new(1, 0, 0, 20),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            Font = bold and Enum.Font.GothamSemibold or Enum.Font.Gotham,
+            Text = tostring(text or ""),
+            TextColor3 = color or palette.text,
+            TextSize = bold and 14 or 12,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+        }, parent)
+    end
+
+    local function addHover(connections, button, normal, hovered)
+        connect(connections, button.MouseEnter, function()
+            button.BackgroundColor3 = hovered
+        end)
+        connect(connections, button.MouseLeave, function()
+            button.BackgroundColor3 = normal
+        end)
+    end
+
+    function library:AddTheme(theme)
+        if type(theme) ~= "table" then return end
+        palette.accent = theme.Accent or palette.accent
+        palette.background = theme.Background or palette.background
+        palette.outline = theme.Outline or palette.outline
+        palette.text = theme.Text or palette.text
+        palette.muted = theme.Placeholder or palette.muted
+        palette.card = theme.Button or palette.card
+    end
+
+    function library:CreateWindow(options)
+        options = options or {}
+        local connections = {}
+        local window = {
+            Connections = connections,
+            Tabs = {},
+            Destroyed = false,
+            SelectedTab = nil,
+        }
+
+        local parent = CoreGui
+        if type(gethui) == "function" then
+            local ok, result = pcall(gethui)
+            if ok and result then parent = result end
+        elseif Players.LocalPlayer then
+            parent = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui") or CoreGui
+        end
+
+        local previous = parent:FindFirstChild("PSX_OG_NativeUI")
+        if previous then pcall(function() previous:Destroy() end) end
+
+        local screen = create("ScreenGui", {
+            Name = "PSX_OG_NativeUI",
+            ResetOnSpawn = false,
+            IgnoreGuiInset = false,
+            ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+            DisplayOrder = 999999,
+        })
+        if type(syn) == "table" and type(syn.protect_gui) == "function" then
+            pcall(syn.protect_gui, screen)
+        end
+        screen.Parent = parent
+
+        local requestedSize = options.Size or UDim2.fromOffset(760, 540)
+        local width = math.max(520, tonumber(requestedSize.X.Offset) or 760)
+        local height = math.max(360, tonumber(requestedSize.Y.Offset) or 540)
+        local minimum = options.MinSize or Vector2.new(520, 360)
+        local maximum = options.MaxSize or Vector2.new(1200, 850)
+        local sidebarWidth = math.clamp(tonumber(options.SideBarWidth) or 180, 150, 240)
+
+        local root = create("Frame", {
+            Name = "Window",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(width, height),
+            BackgroundColor3 = palette.background,
+            BackgroundTransparency = 0.06,
+            BorderSizePixel = 0,
+            ClipsDescendants = true,
+        }, screen)
+        corner(root, 14)
+        stroke(root, palette.outline, 0.18)
+
+        local top = create("Frame", {
+            Name = "TitleBar",
+            Size = UDim2.new(1, 0, 0, 48),
+            BackgroundColor3 = palette.panel,
+            BackgroundTransparency = 0.02,
+            BorderSizePixel = 0,
+        }, root)
+
+        local title = textLabel(top, options.Title or "PSX OG", UDim2.new(1, -150, 0, 20), palette.text, true)
+        title.Position = UDim2.fromOffset(18, 8)
+        title.TextSize = 16
+        local author = textLabel(top, options.Author or "Native UI", UDim2.new(1, -150, 0, 15), palette.muted, false)
+        author.Position = UDim2.fromOffset(18, 27)
+        author.TextSize = 11
+
+        local hideButton = create("TextButton", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -12, 0.5, 0),
+            Size = UDim2.fromOffset(32, 30),
+            BackgroundColor3 = palette.card,
+            BorderSizePixel = 0,
+            Font = Enum.Font.GothamBold,
+            Text = "×",
+            TextColor3 = palette.text,
+            TextSize = 18,
+            AutoButtonColor = false,
+        }, top)
+        corner(hideButton, 8)
+        addHover(connections, hideButton, palette.card, palette.cardHover)
+
+        local sidebar = create("ScrollingFrame", {
+            Name = "Sidebar",
+            Position = UDim2.fromOffset(0, 48),
+            Size = UDim2.new(0, sidebarWidth, 1, -48),
+            BackgroundColor3 = palette.panel,
+            BackgroundTransparency = 0.15,
+            BorderSizePixel = 0,
+            ScrollBarThickness = 3,
+            ScrollBarImageColor3 = palette.accent,
+            CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        }, root)
+        padding(sidebar, 10, 10, 12, 12)
+        local sidebarLayout = create("UIListLayout", {
+            Padding = UDim.new(0, 7),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }, sidebar)
+
+        local content = create("Frame", {
+            Name = "Content",
+            Position = UDim2.fromOffset(sidebarWidth, 48),
+            Size = UDim2.new(1, -sidebarWidth, 1, -48),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ClipsDescendants = true,
+        }, root)
+
+        local resizeGrip = create("TextButton", {
+            Name = "Resize",
+            AnchorPoint = Vector2.new(1, 1),
+            Position = UDim2.fromScale(1, 1),
+            Size = UDim2.fromOffset(24, 24),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Text = "◢",
+            TextColor3 = palette.muted,
+            TextSize = 15,
+            ZIndex = 20,
+        }, root)
+
+        window.Screen = screen
+        window.Root = root
+        window.Sidebar = sidebar
+        window.Content = content
+
+        local function selectTab(tab)
+            if window.Destroyed or not tab then return end
+            window.SelectedTab = tab
+            for _, candidate in ipairs(window.Tabs) do
+                local selected = candidate == tab
+                candidate.Page.Visible = selected
+                candidate.Button.BackgroundColor3 = selected and palette.accent or palette.card
+                candidate.Button.TextColor3 = selected and palette.background or palette.text
+            end
+        end
+
+        function window:Tab(tabOptions)
+            tabOptions = tabOptions or {}
+            local tab = { Window = window, Sections = {} }
+            local tabButton = create("TextButton", {
+                Name = tostring(tabOptions.Title or "Tab"),
+                Size = UDim2.new(1, 0, 0, 38),
+                BackgroundColor3 = palette.card,
+                BorderSizePixel = 0,
+                AutoButtonColor = false,
+                Font = Enum.Font.GothamSemibold,
+                Text = tostring(tabOptions.Title or "Tab"),
+                TextColor3 = palette.text,
+                TextSize = 13,
+                TextXAlignment = Enum.TextXAlignment.Left,
+            }, sidebar)
+            padding(tabButton, 13, 10, 0, 0)
+            corner(tabButton, 9)
+            connect(connections, tabButton.MouseEnter, function()
+                if window.SelectedTab ~= tab then tabButton.BackgroundColor3 = palette.cardHover end
+            end)
+            connect(connections, tabButton.MouseLeave, function()
+                if window.SelectedTab ~= tab then tabButton.BackgroundColor3 = palette.card end
+            end)
+
+            local page = create("ScrollingFrame", {
+                Name = tostring(tabOptions.Title or "Tab") .. "Page",
+                Size = UDim2.fromScale(1, 1),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                ScrollBarThickness = 4,
+                ScrollBarImageColor3 = palette.accent,
+                CanvasSize = UDim2.new(),
+                AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                Visible = false,
+            }, content)
+            padding(page, 14, 14, 14, 14)
+            create("UIListLayout", {
+                Padding = UDim.new(0, 12),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            }, page)
+
+            tab.Button = tabButton
+            tab.Page = page
+
+            function tab:Select()
+                selectTab(self)
+            end
+
+            local function card(section, shade)
+                local frame = create("Frame", {
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundColor3 = shade or palette.card,
+                    BackgroundTransparency = 0.08,
+                    BorderSizePixel = 0,
+                }, section.Body)
+                corner(frame, 9)
+                stroke(frame, palette.outline, 0.55)
+                return frame
+            end
+
+            local function addTextStack(parentObject, titleText, descriptionText, rightPadding)
+                local stack = create("Frame", {
+                    Size = UDim2.new(1, -(rightPadding or 0), 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundTransparency = 1,
+                }, parentObject)
+                create("UIListLayout", {
+                    Padding = UDim.new(0, 3),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                }, stack)
+                local heading = textLabel(stack, titleText, UDim2.new(1, 0, 0, 18), palette.text, true)
+                local description = textLabel(stack, descriptionText, UDim2.new(1, 0, 0, 15), palette.muted, false)
+                description.Visible = tostring(descriptionText or "") ~= ""
+                return stack, heading, description
+            end
+
+            function tab:Section(sectionOptions)
+                sectionOptions = sectionOptions or {}
+                local section = { Tab = tab, Controls = {}, Destroyed = false }
+                local frame = create("Frame", {
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundColor3 = palette.panel,
+                    BackgroundTransparency = 0.1,
+                    BorderSizePixel = 0,
+                }, page)
+                corner(frame, 11)
+                stroke(frame, palette.outline, 0.35)
+                padding(frame, 10, 10, 10, 10)
+                create("UIListLayout", {
+                    Padding = UDim.new(0, 8),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                }, frame)
+
+                local sectionTitle = textLabel(frame, sectionOptions.Title or "Section", UDim2.new(1, 0, 0, 20), palette.text, true)
+                sectionTitle.TextSize = 15
+                local body = create("Frame", {
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundTransparency = 1,
+                }, frame)
+                create("UIListLayout", {
+                    Padding = UDim.new(0, 7),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                }, body)
+
+                section.Frame = frame
+                section.Body = body
+
+                function section:Destroy()
+                    if self.Destroyed then return end
+                    self.Destroyed = true
+                    pcall(function() frame:Destroy() end)
+                end
+
+                function section:Paragraph(controlOptions)
+                    controlOptions = controlOptions or {}
+                    local control = {}
+                    local frameObject = card(section)
+                    padding(frameObject, 12, 12, 10, 10)
+                    local _, heading, description = addTextStack(
+                        frameObject,
+                        controlOptions.Title or "Information",
+                        controlOptions.Desc or "",
+                        0
+                    )
+                    control.Frame = frameObject
+                    control.TitleLabel = heading
+                    control.DescLabel = description
+                    function control:SetDesc(value)
+                        description.Text = tostring(value or "")
+                        description.Visible = description.Text ~= ""
+                    end
+                    function control:SetTitle(value)
+                        heading.Text = tostring(value or "")
+                    end
+                    table.insert(section.Controls, control)
+                    return control
+                end
+
+                function section:Toggle(controlOptions)
+                    controlOptions = controlOptions or {}
+                    local control = { Value = controlOptions.Value == true }
+                    local frameObject = card(section)
+                    padding(frameObject, 12, 12, 10, 10)
+                    addTextStack(frameObject, controlOptions.Title or "Toggle", controlOptions.Desc or "", 60)
+                    local hit = create("TextButton", {
+                        Size = UDim2.fromScale(1, 1),
+                        BackgroundTransparency = 1,
+                        BorderSizePixel = 0,
+                        Text = "",
+                        ZIndex = 4,
+                    }, frameObject)
+                    local indicator = create("TextLabel", {
+                        AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, 0, 0.5, 0),
+                        Size = UDim2.fromOffset(48, 25),
+                        BackgroundColor3 = palette.outline,
+                        BorderSizePixel = 0,
+                        Font = Enum.Font.GothamBold,
+                        TextColor3 = palette.text,
+                        TextSize = 11,
+                        ZIndex = 5,
+                    }, frameObject)
+                    corner(indicator, 13)
+
+                    local function render()
+                        indicator.Text = control.Value and "ON" or "OFF"
+                        indicator.BackgroundColor3 = control.Value and palette.accent or palette.outline
+                        indicator.TextColor3 = control.Value and palette.background or palette.text
+                    end
+                    function control:Set(value)
+                        value = value == true
+                        if self.Value == value then render() return end
+                        self.Value = value
+                        render()
+                        call(controlOptions.Callback, value)
+                    end
+                    connect(connections, hit.MouseButton1Click, function()
+                        control:Set(not control.Value)
+                    end)
+                    render()
+                    control.Frame = frameObject
+                    table.insert(section.Controls, control)
+                    return control
+                end
+
+                function section:Dropdown(controlOptions)
+                    controlOptions = controlOptions or {}
+                    local control = {
+                        Values = type(controlOptions.Values) == "table" and table.clone(controlOptions.Values) or {},
+                        Value = controlOptions.Value,
+                        Open = false,
+                    }
+                    local frameObject = card(section)
+                    padding(frameObject, 12, 12, 10, 10)
+                    create("UIListLayout", {
+                        Padding = UDim.new(0, 8),
+                        SortOrder = Enum.SortOrder.LayoutOrder,
+                    }, frameObject)
+                    addTextStack(frameObject, controlOptions.Title or "Dropdown", controlOptions.Desc or "", 0)
+                    local selectButton = create("TextButton", {
+                        Size = UDim2.new(1, 0, 0, 34),
+                        AutomaticSize = Enum.AutomaticSize.None,
+                        BackgroundColor3 = palette.panel,
+                        BorderSizePixel = 0,
+                        AutoButtonColor = false,
+                        Font = Enum.Font.Gotham,
+                        Text = tostring(control.Value or control.Values[1] or "Select"),
+                        TextColor3 = palette.text,
+                        TextSize = 12,
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                    }, frameObject)
+                    corner(selectButton, 8)
+                    stroke(selectButton, palette.outline, 0.45)
+                    addHover(connections, selectButton, palette.panel, palette.cardHover)
+
+                    local optionsFrame = create("ScrollingFrame", {
+                        Size = UDim2.new(1, 0, 0, 0),
+                        BackgroundColor3 = palette.panel,
+                        BorderSizePixel = 0,
+                        ScrollBarThickness = 3,
+                        ScrollBarImageColor3 = palette.accent,
+                        CanvasSize = UDim2.new(),
+                        Visible = false,
+                    }, frameObject)
+                    corner(optionsFrame, 8)
+                    local optionsLayout = create("UIListLayout", {
+                        Padding = UDim.new(0, 3),
+                        SortOrder = Enum.SortOrder.LayoutOrder,
+                    }, optionsFrame)
+
+                    local function setOpen(open)
+                        control.Open = open == true
+                        optionsFrame.Visible = control.Open
+                        optionsFrame.Size = UDim2.new(1, 0, 0, control.Open and math.min(#control.Values * 31, 186) or 0)
+                    end
+
+                    local function rebuildOptions()
+                        for _, child in ipairs(optionsFrame:GetChildren()) do
+                            if child ~= optionsLayout and not child:IsA("UICorner") then child:Destroy() end
+                        end
+                        for index, value in ipairs(control.Values) do
+                            local optionValue = value
+                            local option = create("TextButton", {
+                                LayoutOrder = index,
+                                Size = UDim2.new(1, -4, 0, 28),
+                                BackgroundColor3 = palette.card,
+                                BorderSizePixel = 0,
+                                AutoButtonColor = false,
+                                Font = Enum.Font.Gotham,
+                                Text = tostring(value),
+                                TextColor3 = palette.text,
+                                TextSize = 12,
+                                TextTruncate = Enum.TextTruncate.AtEnd,
+                            }, optionsFrame)
+                            corner(option, 6)
+                            addHover(connections, option, palette.card, palette.cardHover)
+                            connect(connections, option.MouseButton1Click, function()
+                                control:Select(optionValue)
+                            end)
+                        end
+                        optionsFrame.CanvasSize = UDim2.fromOffset(0, #control.Values * 31)
+                        if control.Open then setOpen(true) end
+                    end
+
+                    function control:Refresh(values)
+                        self.Values = type(values) == "table" and table.clone(values) or {}
+                        local found = false
+                        for _, value in ipairs(self.Values) do
+                            if value == self.Value then found = true break end
+                        end
+                        if not found then
+                            self.Value = self.Values[1]
+                            selectButton.Text = tostring(self.Value or "Select")
+                        end
+                        rebuildOptions()
+                    end
+
+                    function control:Select(value)
+                        local found = false
+                        for _, candidate in ipairs(self.Values) do
+                            if candidate == value then found = true break end
+                        end
+                        if not found and #self.Values > 0 then return end
+                        self.Value = value
+                        selectButton.Text = tostring(value or "Select")
+                        setOpen(false)
+                        call(controlOptions.Callback, value)
+                    end
+
+                    connect(connections, selectButton.MouseButton1Click, function()
+                        setOpen(not control.Open)
+                    end)
+                    rebuildOptions()
+                    setOpen(false)
+                    control.Frame = frameObject
+                    table.insert(section.Controls, control)
+                    return control
+                end
+
+                function section:Slider(controlOptions)
+                    controlOptions = controlOptions or {}
+                    local range = type(controlOptions.Value) == "table" and controlOptions.Value or {}
+                    local minimumValue = tonumber(range.Min) or 0
+                    local maximumValue = tonumber(range.Max) or 100
+                    local stepValue = math.max(tonumber(controlOptions.Step) or 1, 0.000001)
+                    local control = { Value = math.clamp(tonumber(range.Default) or minimumValue, minimumValue, maximumValue) }
+                    local frameObject = card(section)
+                    padding(frameObject, 12, 12, 10, 10)
+                    create("UIListLayout", {
+                        Padding = UDim.new(0, 8),
+                        SortOrder = Enum.SortOrder.LayoutOrder,
+                    }, frameObject)
+                    addTextStack(frameObject, controlOptions.Title or "Slider", controlOptions.Desc or "", 0)
+                    local sliderRow = create("Frame", {
+                        Size = UDim2.new(1, 0, 0, 34),
+                        BackgroundTransparency = 1,
+                    }, frameObject)
+                    local valueLabel = create("TextLabel", {
+                        AnchorPoint = Vector2.new(1, 0),
+                        Position = UDim2.new(1, 0, 0, 0),
+                        Size = UDim2.fromOffset(58, 28),
+                        BackgroundColor3 = palette.panel,
+                        BorderSizePixel = 0,
+                        Font = Enum.Font.GothamSemibold,
+                        TextColor3 = palette.text,
+                        TextSize = 12,
+                    }, sliderRow)
+                    corner(valueLabel, 7)
+                    local track = create("TextButton", {
+                        AnchorPoint = Vector2.new(0, 0.5),
+                        Position = UDim2.new(0, 0, 0.5, 0),
+                        Size = UDim2.new(1, -70, 0, 9),
+                        BackgroundColor3 = palette.outline,
+                        BorderSizePixel = 0,
+                        Text = "",
+                        AutoButtonColor = false,
+                    }, sliderRow)
+                    corner(track, 5)
+                    local fill = create("Frame", {
+                        Size = UDim2.new(0, 0, 1, 0),
+                        BackgroundColor3 = palette.accent,
+                        BorderSizePixel = 0,
+                    }, track)
+                    corner(fill, 5)
+
+                    local function render()
+                        local ratio = maximumValue == minimumValue and 0 or (control.Value - minimumValue) / (maximumValue - minimumValue)
+                        fill.Size = UDim2.new(math.clamp(ratio, 0, 1), 0, 1, 0)
+                        valueLabel.Text = math.abs(control.Value - math.floor(control.Value)) < 0.0001
+                            and tostring(math.floor(control.Value))
+                            or string.format("%.2f", control.Value)
+                    end
+                    local function setFromX(x)
+                        if track.AbsoluteSize.X <= 0 then return end
+                        local ratio = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+                        local raw = minimumValue + (maximumValue - minimumValue) * ratio
+                        local stepped = minimumValue + math.floor(((raw - minimumValue) / stepValue) + 0.5) * stepValue
+                        control:Set(math.clamp(stepped, minimumValue, maximumValue))
+                    end
+                    function control:Set(value)
+                        value = math.clamp(tonumber(value) or self.Value, minimumValue, maximumValue)
+                        if math.abs(value - self.Value) < 0.000001 then render() return end
+                        self.Value = value
+                        render()
+                        call(controlOptions.Callback, value)
+                    end
+
+                    local dragging = false
+                    connect(connections, track.MouseButton1Down, function(x)
+                        dragging = true
+                        setFromX(x)
+                    end)
+                    connect(connections, UserInputService.InputChanged, function(input)
+                        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                            setFromX(input.Position.X)
+                        end
+                    end)
+                    connect(connections, UserInputService.InputEnded, function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+                    end)
+                    render()
+                    control.Frame = frameObject
+                    table.insert(section.Controls, control)
+                    return control
+                end
+
+                function section:Button(controlOptions)
+                    controlOptions = controlOptions or {}
+                    local control = {}
+                    local button = create("TextButton", {
+                        Size = UDim2.new(1, 0, 0, 0),
+                        AutomaticSize = Enum.AutomaticSize.Y,
+                        BackgroundColor3 = palette.card,
+                        BackgroundTransparency = 0.02,
+                        BorderSizePixel = 0,
+                        AutoButtonColor = false,
+                        Text = "",
+                    }, body)
+                    corner(button, 9)
+                    stroke(button, palette.outline, 0.45)
+                    padding(button, 12, 12, 10, 10)
+                    addTextStack(button, controlOptions.Title or "Button", controlOptions.Desc or "", 0)
+                    addHover(connections, button, palette.card, palette.cardHover)
+                    connect(connections, button.MouseButton1Click, function()
+                        call(controlOptions.Callback)
+                    end)
+                    control.Frame = button
+                    table.insert(section.Controls, control)
+                    return control
+                end
+
+                table.insert(tab.Sections, section)
+                return section
+            end
+
+            connect(connections, tabButton.MouseButton1Click, function() selectTab(tab) end)
+            table.insert(window.Tabs, tab)
+            if #window.Tabs == 1 then selectTab(tab) end
+            return tab
+        end
+
+        local shown = true
+        local function setShown(value)
+            shown = value == true
+            root.Visible = shown
+        end
+        connect(connections, hideButton.MouseButton1Click, function() setShown(false) end)
+        connect(connections, UserInputService.InputBegan, function(input, processed)
+            if not processed and input.KeyCode == (options.ToggleKey or Enum.KeyCode.RightShift) then
+                setShown(not shown)
+            end
+        end)
+
+        local draggingWindow = false
+        local dragOrigin
+        local positionOrigin
+        connect(connections, top.InputBegan, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                draggingWindow = true
+                dragOrigin = input.Position
+                positionOrigin = root.Position
+            end
+        end)
+        connect(connections, UserInputService.InputChanged, function(input)
+            if draggingWindow and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local delta = input.Position - dragOrigin
+                root.Position = UDim2.new(
+                    positionOrigin.X.Scale,
+                    positionOrigin.X.Offset + delta.X,
+                    positionOrigin.Y.Scale,
+                    positionOrigin.Y.Offset + delta.Y
+                )
+            end
+        end)
+        connect(connections, UserInputService.InputEnded, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingWindow = false end
+        end)
+
+        local resizing = false
+        local resizeOrigin
+        local sizeOrigin
+        connect(connections, resizeGrip.MouseButton1Down, function(x, y)
+            resizing = true
+            resizeOrigin = Vector2.new(x, y)
+            sizeOrigin = root.AbsoluteSize
+        end)
+        connect(connections, UserInputService.InputChanged, function(input)
+            if resizing and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local current = Vector2.new(input.Position.X, input.Position.Y)
+                local delta = current - resizeOrigin
+                root.Size = UDim2.fromOffset(
+                    math.clamp(sizeOrigin.X + delta.X, minimum.X, maximum.X),
+                    math.clamp(sizeOrigin.Y + delta.Y, minimum.Y, maximum.Y)
+                )
+            end
+        end)
+        connect(connections, UserInputService.InputEnded, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then resizing = false end
+        end)
+
+        function window:SetBackgroundTransparency(value)
+            root.BackgroundTransparency = math.clamp(tonumber(value) or 0, 0, 0.95)
+        end
+
+        function window:SetBackgroundImageTransparency(_value)
+            -- Kept for compatibility; the native UI has no background image.
+        end
+
+        function window:Destroy()
+            if self.Destroyed then return end
+            self.Destroyed = true
+            for _, connection in ipairs(connections) do
+                pcall(function() connection:Disconnect() end)
+            end
+            table.clear(connections)
+            pcall(function() screen:Destroy() end)
+        end
+
+        table.insert(library.Windows, window)
+        return window
+    end
+
+    function library:Destroy()
+        for _, window in ipairs(self.Windows) do
+            pcall(function() window:Destroy() end)
+        end
+        table.clear(self.Windows)
+    end
+
+    return library
+end
