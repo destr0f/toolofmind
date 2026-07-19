@@ -1,4 +1,4 @@
-local VERSION = "1.2.6-dev.2"
+local VERSION = "1.2.6-dev.3"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -250,7 +250,7 @@ if not amount then return nil end
 local multipliers = { k = 1e3, m = 1e6, b = 1e9, t = 1e12 }
 return amount * (multipliers[suffix] or 1)
 end
-local function getDiamondPackCost()
+local function getDiamondPackCost(tier)
 local framework = ReplicatedStorage:FindFirstChild("Framework")
 local modules = framework and framework:FindFirstChild("Modules")
 local directory = modules and modules:FindFirstChild("1 - Directory")
@@ -260,7 +260,7 @@ local ok, shopConfig = pcall(require, configModule)
 if not ok or type(shopConfig) ~= "table" or type(shopConfig.DiamondPacks) ~= "table" then
 return nil
 end
-local pack = shopConfig.DiamondPacks[DIAMOND_PACK_TIER]
+local pack = shopConfig.DiamondPacks[tonumber(tier) or DIAMOND_PACK_TIER]
 if type(pack) ~= "table" then return nil end
 for _, key in ipairs({ "displayCost", "DisplayCost", "currencyCost", "CurrencyCost", "cost", "Cost", "price", "Price" }) do
 local parsed = parseShortAmount(pack[key])
@@ -1595,6 +1595,53 @@ trace(string.lower(state.Label) .. " reward", reply)
 setRewardLine(kind, reply)
 return succeeded
 end
+local function runManualDiamondPackTest(tier)
+tier = tonumber(tier)
+if not tier or tier < 1 or tier > 4 then return end
+if diamondPackBusy then
+setDiamondPackStatus("Another Diamond Pack request is already running.")
+return
+end
+diamondPackBusy = true
+local network = networkReady()
+local balance = getCurrentCurrency("Tech Coins")
+local balanceText = balance ~= nil and formatRateNumber(balance) or "unknown"
+local packCost = getDiamondPackCost(tier)
+local costText = packCost ~= nil and formatRateNumber(packCost) or "unknown"
+local status
+if not network then
+status = string.format("Tier %d manual test | Local error: Library.Network is not ready; no request sent.", tier)
+else
+local callOk, accepted, serverMessage = pcall(function()
+return network.Invoke("Buy DiamondPack", tier)
+end)
+if not callOk then
+status = string.format("Tier %d manual test | Transport error: %s", tier, tostring(accepted))
+elseif accepted then
+status = string.format(
+"Tier %d manual test | Server accepted: real purchase succeeded | balance before: %s",
+tier,
+balanceText
+)
+else
+local reason = serverMessage ~= nil and tostring(serverMessage)
+or "request rejected (insufficient funds/tier unavailable)"
+status = string.format(
+"Tier %d manual test | Server reached: %s | balance: %s | detected price: %s",
+tier,
+reason,
+balanceText,
+costText
+)
+end
+end
+if config.AutoTechDiamondPack then
+diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
+end
+diamondPackBusy = false
+trace("diamond pack", status)
+setDiamondPackStatus(status .. "\nManual test complete; automatic tier 4 settings were not changed.")
+end
 local function runDiamondPackCheck()
 if diamondPackBusy then return end
 diamondPackBusy = true
@@ -2003,9 +2050,28 @@ end
 end,
 })
 diamondPackParagraph = DiamondPackSection:Paragraph({
-Title = "Tier 4 Server Check",
-Desc = "Disabled. Uses Library.Network.Invoke(\"Buy DiamondPack\", 4); no session remote index is stored.",
+Title = "Diamond Pack Server Status",
+Desc = "Auto tier 4 is disabled. Manual tier 3/2/1 tests below send one real server purchase request.",
 })
+for _, tier in ipairs({ 3, 2, 1 }) do
+local selectedTier = tier
+DiamondPackSection:Button({
+Title = "Test Diamond Pack Tier " .. tostring(selectedTier),
+Desc = "Sends one Buy DiamondPack request. If the balance is sufficient, this performs a real purchase.",
+Callback = function()
+task.spawn(function()
+if not running() then return end
+local ok, problem = pcall(runManualDiamondPackTest, selectedTier)
+if not ok then
+diamondPackBusy = false
+local status = "Tier " .. tostring(selectedTier) .. " manual test | Worker error: " .. tostring(problem)
+trace("diamond pack", status)
+setDiamondPackStatus(status)
+end
+end)
+end,
+})
+end
 local RewardsSection = MiscTab:Section({ Title = "Develop: Auto Rewards", Box = true, Opened = true })
 RewardsSection:Toggle({
 Title = "Auto VIP Rewards",
