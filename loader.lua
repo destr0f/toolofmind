@@ -5,7 +5,7 @@
 -- WindUI bundled SHA256: e8b69bf934fd71ef334c5486218bef9a993564f17328aae78b09988febfc0923
 
 local env=type(getgenv)=="function"and getgenv()or _G
-local VERSION="4.0.0"
+local VERSION="4.0.1"
 local BASE=tostring(env.PSX_OG_PAYLOAD_BASE_URL or"https://raw.githubusercontent.com/destr0f/toolofmind/main/payload/")
 local MAIN_RAW=139648
 local MAIN_PACKED=35586
@@ -13,74 +13,44 @@ local WIND_RAW=254933
 local WIND_PACKED=72858
 local MAIN_PARTS={
     {
-        File = "main-c85d75e22a0ae2eaa9cc-01.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
+        File = "main-c85d75e22a0ae2eaa9cc-01-16a27758402d.psx",
+        PackedSize = 16384,
+        EncodedChars = 20480
     },
     {
-        File = "main-c85d75e22a0ae2eaa9cc-02.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
+        File = "main-c85d75e22a0ae2eaa9cc-02-a64bbbc8cbf2.psx",
+        PackedSize = 16384,
+        EncodedChars = 20480
     },
     {
-        File = "main-c85d75e22a0ae2eaa9cc-03.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
-    },
-    {
-        File = "main-c85d75e22a0ae2eaa9cc-04.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
-    },
-    {
-        File = "main-c85d75e22a0ae2eaa9cc-05.psx",
+        File = "main-c85d75e22a0ae2eaa9cc-03-77f28517a4ba.psx",
         PackedSize = 2818,
         EncodedChars = 3525
     }
 }
 local WIND_PARTS={
     {
-        File = "wind-e8b69bf934fd71ef334c-01.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
+        File = "wind-e8b69bf934fd71ef334c-01-7099c3ad0dd3.psx",
+        PackedSize = 16384,
+        EncodedChars = 20480
     },
     {
-        File = "wind-e8b69bf934fd71ef334c-02.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
+        File = "wind-e8b69bf934fd71ef334c-02-c664e3b014a5.psx",
+        PackedSize = 16384,
+        EncodedChars = 20480
     },
     {
-        File = "wind-e8b69bf934fd71ef334c-03.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
+        File = "wind-e8b69bf934fd71ef334c-03-f459a595fbbd.psx",
+        PackedSize = 16384,
+        EncodedChars = 20480
     },
     {
-        File = "wind-e8b69bf934fd71ef334c-04.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
+        File = "wind-e8b69bf934fd71ef334c-04-a9793bfa4082.psx",
+        PackedSize = 16384,
+        EncodedChars = 20480
     },
     {
-        File = "wind-e8b69bf934fd71ef334c-05.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
-    },
-    {
-        File = "wind-e8b69bf934fd71ef334c-06.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
-    },
-    {
-        File = "wind-e8b69bf934fd71ef334c-07.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
-    },
-    {
-        File = "wind-e8b69bf934fd71ef334c-08.psx",
-        PackedSize = 8192,
-        EncodedChars = 10240
-    },
-    {
-        File = "wind-e8b69bf934fd71ef334c-09.psx",
+        File = "wind-e8b69bf934fd71ef334c-05-2e365c033f89.psx",
         PackedSize = 7322,
         EncodedChars = 9155
     }
@@ -246,7 +216,7 @@ local function worker()
  local ok,problem=xpcall(run,capture)
  if not ok then env.PSX_OG_BUNDLED_WINDUI_CHUNK=nil warn("[PSX LOADER] Startup failed:\n"..tostring(problem))end
 end
-trace("00 staged loader entered","version="..VERSION.." | source-bytes=9612")
+trace("00 staged loader entered","version="..VERSION.." | source-bytes=9002")
 state.Phase="queued"
 task.defer(worker)
 return state
