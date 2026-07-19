@@ -10,7 +10,7 @@ const payloadDirectory = path.join(root, "payload");
 
 // Filled after the payload commit is published. A commit-pinned jsDelivr URL
 // avoids mutable branch caches and raw.githubusercontent request behaviour.
-const PAYLOAD_COMMIT = null;
+const PAYLOAD_COMMIT = "a81dd0b9504d60e67ec24b8d357192d76875800e";
 
 const mainVendorSource = fs.readFileSync(mainPath, "utf8").replace(/^\uFEFF/, "");
 const mainSource = mainVendorSource
