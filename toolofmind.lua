@@ -4,31 +4,38 @@
   
   local env = getgenv()
 
-  -- Native/executor crashes cannot be caught by pcall. When the diagnostic loader
-  -- enables this flag, every completed startup stage is persisted to a small file.
+  -- Native/executor crashes cannot be caught by pcall. The production loader keeps
+  -- tracing enabled and deliberately yields between heavy startup stages.
   local bootTraceEnabled = env.PSX_OG_TRACE_BOOT == true
+  local safeBootEnabled = env.PSX_OG_SAFE_BOOT == true
+  local safeBootDelay = math.clamp(tonumber(env.PSX_OG_SAFE_BOOT_DELAY) or 0.03, 0, 0.25)
   local bootTraceLines = {}
   local function bootTrace(stage)
-      if not bootTraceEnabled then return end
-      local sourceLine = nil
-      pcall(function()
-          if debug and type(debug.info) == "function" then
-              sourceLine = debug.info(2, "l")
-          end
-      end)
-      local line = string.format(
-          "[%0.3f] %s%s",
-          os.clock(),
-          tostring(stage),
-          sourceLine and (" | line=" .. tostring(sourceLine)) or ""
-      )
-      table.insert(bootTraceLines, line)
-      pcall(function()
-          if type(writefile) == "function" then
-              writefile("PSX_OG_boot_trace.txt", table.concat(bootTraceLines, "\n"))
-          end
-      end)
-      print("[PSX BOOT] " .. tostring(stage))
+      if bootTraceEnabled then
+          local sourceLine = nil
+          pcall(function()
+              if debug and type(debug.info) == "function" then
+                  sourceLine = debug.info(2, "l")
+              end
+          end)
+          local line = string.format(
+              "[%0.3f] %s%s",
+              os.clock(),
+              tostring(stage),
+              sourceLine and (" | line=" .. tostring(sourceLine)) or ""
+          )
+          table.insert(bootTraceLines, line)
+          pcall(function()
+              if type(writefile) == "function" then
+                  writefile("PSX_OG_boot_trace.txt", table.concat(bootTraceLines, "\n"))
+              end
+          end)
+          print("[PSX BOOT] " .. tostring(stage))
+      end
+
+      if safeBootEnabled then
+          task.wait(safeBootDelay)
+      end
   end
 
   bootTrace("01 main chunk entered")
@@ -113,10 +120,10 @@
   local windSource = game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua")
   bootTrace("04 WindUI downloaded")
   local windChunk, windCompileError = loadstring(windSource)
+  windSource = nil
   if not windChunk then error("WindUI compile failed: " .. tostring(windCompileError), 0) end
   bootTrace("05 WindUI compiled")
   local WindUI = windChunk()
-  windSource = nil
   windChunk = nil
   bootTrace("06 WindUI initialized")
 

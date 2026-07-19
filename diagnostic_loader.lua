@@ -1,5 +1,7 @@
 local env = getgenv()
 env.PSX_OG_TRACE_BOOT = true
+env.PSX_OG_SAFE_BOOT = true
+env.PSX_OG_SAFE_BOOT_DELAY = tonumber(env.PSX_OG_SAFE_BOOT_DELAY) or 0.03
 
 local traceLines = {}
 local function persist(name, text)
