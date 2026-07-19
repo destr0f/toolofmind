@@ -6,7 +6,7 @@
 -- WindUI bundled SHA256: db2abdef56e94d0ad0655cefc980484198ef17e3996a82a898caec6100ee1401
 
 local __psxEnv = type(getgenv) == "function" and getgenv() or _G
-local __PSX_LOADER_VERSION = "3.0.0"
+local __PSX_LOADER_VERSION = "3.1.0"
 local __PSX_TRACE_FILE = "PSX_OG_loader_trace.txt"
 local __PSX_ERROR_FILE = "PSX_OG_loader_error.txt"
 local __PSX_WIND_RAW_SIZE = 254937
@@ -1006,11 +1006,11 @@ local function __psxDecodeBase85(data, expectedLength)
     return output
 end
 
-local function __psxDecompressLzss(input, inputLength, expectedLength)
+local function __psxDecompressLzss(input, inputLength, expectedLength, progressPhase)
     local output = buffer.create(expectedLength)
     local inputPosition = 0
     local outputPosition = 0
-    local nextYield = 65536
+    local nextYield = 16384
 
     while inputPosition < inputLength do
         local token = buffer.readu8(input, inputPosition)
@@ -1036,16 +1036,27 @@ local function __psxDecompressLzss(input, inputLength, expectedLength)
                 error("Invalid back-reference in compressed payload", 0)
             end
 
-            for _ = 1, length do
-                local value = buffer.readu8(output, outputPosition - distance)
-                buffer.writeu8(output, outputPosition, value)
-                outputPosition = outputPosition + 1
+            local sourcePosition = outputPosition - distance
+            local available = distance
+            local remaining = length
+            while remaining > 0 do
+                local copyLength = math.min(available, remaining)
+                buffer.copy(output, outputPosition, output, sourcePosition, copyLength)
+                outputPosition = outputPosition + copyLength
+                remaining = remaining - copyLength
+                available = available + copyLength
             end
         end
 
         if outputPosition >= nextYield then
+            if progressPhase then
+                __psxTrace(
+                    progressPhase,
+                    tostring(outputPosition) .. "/" .. tostring(expectedLength)
+                )
+            end
             task.wait()
-            nextYield = outputPosition + 65536
+            nextYield = outputPosition + 16384
         end
     end
 
@@ -1079,42 +1090,46 @@ task.defer(function()
     local success, problem = xpcall(function()
         __psxWaitForGameReady()
 
-        __psxTrace("03 decoding WindUI payload")
+        __psxTrace("03 decoding main payload")
+        local mainPacked = __psxDecodeBase85(__psxMainPayload, __PSX_MAIN_PACKED_SIZE)
+        __psxMainPayload = nil
+        __psxTrace("04 decompressing main", "raw=" .. tostring(__PSX_MAIN_RAW_SIZE))
+        local mainSource = __psxDecompressLzss(
+            mainPacked,
+            __PSX_MAIN_PACKED_SIZE,
+            __PSX_MAIN_RAW_SIZE,
+            "04 main progress"
+        )
+        mainPacked = nil
+
+        __psxTrace("05 compiling main")
+        local mainChunk, mainError = loadstring(mainSource)
+        mainSource = nil
+        if not mainChunk then error("Main compile failed: " .. tostring(mainError), 0) end
+        __psxTrace("06 main chunk ready")
+        pcall(function() collectgarbage("collect") end)
+        task.wait(0.05)
+
+        __psxTrace("07 decoding WindUI payload")
         local windPacked = __psxDecodeBase85(__psxWindPayload, __PSX_WIND_PACKED_SIZE)
         __psxWindPayload = nil
-        __psxTrace("04 decompressing WindUI", "raw=" .. tostring(__PSX_WIND_RAW_SIZE))
+        __psxTrace("08 decompressing WindUI", "raw=" .. tostring(__PSX_WIND_RAW_SIZE))
         local windSource = __psxDecompressLzss(
             windPacked,
             __PSX_WIND_PACKED_SIZE,
-            __PSX_WIND_RAW_SIZE
+            __PSX_WIND_RAW_SIZE,
+            "08 WindUI progress"
         )
         windPacked = nil
 
-        __psxTrace("05 compiling WindUI")
+        __psxTrace("09 compiling WindUI")
         local windChunk, windError = loadstring(windSource)
         windSource = nil
         if not windChunk then error("WindUI compile failed: " .. tostring(windError), 0) end
         __psxEnv.PSX_OG_BUNDLED_WINDUI_CHUNK = windChunk
         windChunk = nil
-        __psxTrace("06 WindUI chunk ready")
-        task.wait()
-
-        __psxTrace("07 decoding main payload")
-        local mainPacked = __psxDecodeBase85(__psxMainPayload, __PSX_MAIN_PACKED_SIZE)
-        __psxMainPayload = nil
-        __psxTrace("08 decompressing main", "raw=" .. tostring(__PSX_MAIN_RAW_SIZE))
-        local mainSource = __psxDecompressLzss(
-            mainPacked,
-            __PSX_MAIN_PACKED_SIZE,
-            __PSX_MAIN_RAW_SIZE
-        )
-        mainPacked = nil
-
-        __psxTrace("09 compiling main")
-        local mainChunk, mainError = loadstring(mainSource)
-        mainSource = nil
-        if not mainChunk then error("Main compile failed: " .. tostring(mainError), 0) end
-        __psxTrace("10 main compiled")
+        __psxTrace("10 WindUI chunk ready")
+        pcall(function() collectgarbage("collect") end)
 
         game:GetService("RunService").Heartbeat:Wait()
         task.wait(0.05)
