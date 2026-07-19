@@ -116,15 +116,30 @@
   end
 
   -- Фиксируем проверенный релиз: /latest не должен незаметно менять API меню между запусками.
-  bootTrace("03 WindUI download started")
-  local windSource = game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua")
-  bootTrace("04 WindUI downloaded")
-  local windChunk, windCompileError = loadstring(windSource)
-  windSource = nil
+  local windChunk = env.PSX_OG_BUNDLED_WINDUI_CHUNK
+  local bundledWindUI = type(windChunk) == "function"
+  local windCompileError = nil
+
+  if bundledWindUI then
+      env.PSX_OG_BUNDLED_WINDUI_CHUNK = nil
+      bootTrace("03 bundled WindUI selected")
+      bootTrace("04 bundled WindUI ready")
+  else
+      bootTrace("03 WindUI download started")
+      local windSource = game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua")
+      bootTrace("04 WindUI downloaded")
+      windChunk, windCompileError = loadstring(windSource)
+      windSource = nil
+  end
+
   if not windChunk then error("WindUI compile failed: " .. tostring(windCompileError), 0) end
   bootTrace("05 WindUI compiled")
-  local WindUI = windChunk()
+
+  local windInitialized, WindUI = pcall(windChunk)
   windChunk = nil
+  if not windInitialized then
+      error("WindUI initialization failed: " .. tostring(WindUI), 0)
+  end
   bootTrace("06 WindUI initialized")
 
   WindUI:AddTheme({
