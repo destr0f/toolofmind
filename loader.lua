@@ -6,7 +6,7 @@
 -- WindUI bundled SHA256: db2abdef56e94d0ad0655cefc980484198ef17e3996a82a898caec6100ee1401
 
 local __psxEnv = type(getgenv) == "function" and getgenv() or _G
-local __PSX_LOADER_VERSION = "3.5.0"
+local __PSX_LOADER_VERSION = "3.6.0"
 local __PSX_TRACE_FILE = "PSX_OG_loader_trace.txt"
 local __PSX_ERROR_FILE = "PSX_OG_loader_error.txt"
 local __PSX_WIND_RAW_SIZE = 254937
@@ -1219,12 +1219,19 @@ task.defer(function()
 
             __psxTrace(
                 "04 main block",
-                tostring(index) .. "/" .. tostring(mainBlockCount) .. " | complete"
+                tostring(index) .. "/" .. tostring(mainBlockCount) .. " | decompressed"
             )
             buffer.copy(mainBuffer, mainOffset, mainBlockBuffer, 0, block.RawSize)
             mainOffset = mainOffset + block.RawSize
             mainBlockBuffer = nil
-            task.wait(0.08)
+            __psxTrace(
+                "04 main block",
+                tostring(index) .. "/" .. tostring(mainBlockCount)
+                .. " | copied | total=" .. tostring(mainOffset)
+            )
+            if index < mainBlockCount then
+                task.wait(0.08)
+            end
         end
 
         __psxMainBlocks = nil
