@@ -5,10 +5,10 @@
 -- WindUI bundled SHA256: 6cbaf0350fc5550eff5dd9fb8eb9545b12c40fce40365db73cbd7a0e1744d1f8
 
 local env=type(getgenv)=="function"and getgenv()or _G
-local VERSION="4.1.0"
-local BASE=tostring(env.PSX_OG_PAYLOAD_BASE_URL or "https://cdn.jsdelivr.net/gh/destr0f/toolofmind@fa8abe0a3a325b19efec39b5385c6621a86067ae/payload/")
-local MAIN={File="main-c85d75e22a0ae2eaa9cc-22cf456ce330.bin",Packed=35586,Raw=139648}
-local WIND={File="wind-6cbaf0350fc5550eff5d-694f8ceb4749.bin",Packed=72858,Raw=254933}
+local VERSION="4.1.1-payload"
+local BASE=tostring(env.PSX_OG_PAYLOAD_BASE_URL or "https://raw.githubusercontent.com/destr0f/toolofmind/main/payload/")
+local MAIN={Parts={{File="main-c85d75e22a0ae2eaa9cc-22cf456ce330.bin",Size=35586}},Packed=35586,Raw=139648}
+local WIND={Parts={{File="wind-6cbaf0350fc5550eff5d-01-fe4e0b3e95fc.bin",Size=24576},{File="wind-6cbaf0350fc5550eff5d-02-b593c0eb4817.bin",Size=24576},{File="wind-6cbaf0350fc5550eff5d-03-21d4b4e8fff4.bin",Size=23706}},Packed=72858,Raw=254933}
 
 local old=env.PSX_OG_LOADER_STATE
 if type(old)=="table"then old.Running=false old.Superseded=true end
@@ -44,30 +44,52 @@ local function checkReady()
  if not framework or not framework:FindFirstChild("Library")then error("Framework.Library is not ready; run again",0)end
  trace("02 game ready","place="..tostring(game.PlaceId))
 end
-local function cacheName(item)return"PSX_OG_payload_"..item.File end
-local function readCache(item)
- local ok,data=pcall(readfile,cacheName(item))
- if ok and type(data)=="string"and#data==item.Packed then return data end
+local function cacheName(part)return"PSX_OG_payload_"..part.File end
+local function readCache(part)
+ local ok,data=pcall(readfile,cacheName(part))
+ if ok and type(data)=="string"and#data==part.Size then return data end
  return nil
 end
 local function cachePayload(item,kind)
- local data=readCache(item)
- if data then trace("03 binary cached",kind.." | bytes="..#data)return end
- trace("03 binary download",kind.." | expected="..item.Packed)
- local ok,response=pcall(function()return game:HttpGet(BASE..item.File)end)
- if not ok then error(kind.." download failed: "..tostring(response),0)end
- trace("03 binary received",kind.." | bytes="..tostring(type(response)=="string"and#response or 0))
- if type(response)~="string"or#response~=item.Packed then error(kind.." binary size mismatch",0)end
- trace("03 binary writing",kind)
- local wrote,writeError=pcall(writefile,cacheName(item),response)
- if not wrote then error(kind.." cache write failed: "..tostring(writeError),0)end
- trace("03 binary saved",kind)
+ for index,part in ipairs(item.Parts)do
+  local label=kind.." "..index.."/"..#item.Parts
+  local data=readCache(part)
+  if data then
+   trace("03 binary cached",label.." | bytes="..#data)
+  else
+   trace("03 binary download",label.." | expected="..part.Size)
+   local ok,response=pcall(function()return game:HttpGet(BASE..part.File)end)
+   if not ok then error(label.." download failed: "..tostring(response),0)end
+   trace("03 binary received",label.." | bytes="..tostring(type(response)=="string"and#response or 0))
+   if type(response)~="string"or#response~=part.Size then error(label.." binary size mismatch",0)end
+   trace("03 binary writing",label)
+   local wrote,writeError=pcall(writefile,cacheName(part),response)
+   if not wrote then error(label.." cache write failed: "..tostring(writeError),0)end
+   trace("03 binary saved",label)
+  end
+  data=nil
+  if index<#item.Parts then task.wait(.15)end
+ end
 end
 local function toBuffer(data)
  if type(buffer.fromstring)=="function"then return buffer.fromstring(data)end
  local output=buffer.create(#data)
  if type(buffer.writestring)~="function"then error("buffer.fromstring or buffer.writestring required",0)end
  buffer.writestring(output,0,data)
+ return output
+end
+local function readPacked(item,kind)
+ local output=buffer.create(item.Packed)
+ local offset=0
+ for index,part in ipairs(item.Parts)do
+  trace("04 binary reading",kind.." "..index.."/"..#item.Parts)
+  local data=readCache(part)
+  if not data then error(kind.." binary cache missing: "..part.File,0)end
+  local source=toBuffer(data)data=nil
+  buffer.copy(output,offset,source,0,part.Size)
+  source=nil offset=offset+part.Size
+ end
+ if offset~=item.Packed then error(kind.." assembled binary size mismatch",0)end
  return output
 end
 local function decompress(input,inputLength,expected)
@@ -99,10 +121,7 @@ local function decompress(input,inputLength,expected)
  return output
 end
 local function compilePayload(item,kind)
- trace("04 binary reading",kind)
- local data=readCache(item)
- if not data then error(kind.." binary cache missing",0)end
- local packed=toBuffer(data)data=nil
+ local packed=readPacked(item,kind)
  trace("05 decompressing",kind.." | raw="..item.Raw)
  local raw=decompress(packed,item.Packed,item.Raw)packed=nil
  trace("06 creating source",kind)
@@ -119,7 +138,7 @@ local function run()
  if type(readfile)~="function"or type(writefile)~="function"then error("readfile/writefile required",0)end
  env.PSX_OG_TRACE_BOOT=true env.PSX_OG_SAFE_BOOT=true
  env.PSX_OG_SAFE_BOOT_DELAY=math.clamp(tonumber(env.PSX_OG_SAFE_BOOT_DELAY)or.03,.01,.25)
- trace("03 preparing binary cache","requests=2")
+ trace("03 preparing binary cache","requests="..tostring(#MAIN.Parts+#WIND.Parts))
  cachePayload(MAIN,"Main")
  task.wait(.2)
  cachePayload(WIND,"WindUI")
@@ -138,7 +157,7 @@ local function worker()
  local ok,problem=xpcall(run,capture)
  if not ok then env.PSX_OG_BUNDLED_WINDUI_CHUNK=nil warn("[PSX LOADER] Startup failed:\n"..tostring(problem))end
 end
-trace("00 binary loader entered","version="..VERSION.." | source-bytes=6935")
+trace("00 binary loader entered","version="..VERSION.." | source-bytes=7710")
 state.Phase="queued"
 task.defer(worker)
 return state
