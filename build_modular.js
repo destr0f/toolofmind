@@ -11,7 +11,7 @@ const toolPath = path.join(root, "toolofmind.lua");
 
 // Set after publishing the generated core payload. The final loader always
 // reads an immutable commit URL, never the moving main branch.
-const PAYLOAD_COMMIT = null;
+const PAYLOAD_COMMIT = "7d45ec0756cad4f01c7b3daad1c1b5581944472f";
 
 function cleanLua(source) {
     return source

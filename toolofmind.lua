@@ -3,8 +3,8 @@
 -- Embedded native UI SHA256: ab2fe301ec8f0b12f7d58d147de87c66476d850361034b83f8693c5a5555c1ca
 
 local env=type(getgenv)=="function"and getgenv()or _G
-local VERSION="5.1.0-payload"
-local CORE_URL="https://raw.githubusercontent.com/destr0f/toolofmind/main/payload/core-0b354fd6385ebc352c9e.lua"
+local VERSION="5.1.0"
+local CORE_URL="https://raw.githubusercontent.com/destr0f/toolofmind/7d45ec0756cad4f01c7b3daad1c1b5581944472f/payload/core-0b354fd6385ebc352c9e.lua"
 local CORE_SIZE=104836
 local old=env.PSX_OG_LOADER_STATE
 if type(old)=="table"then old.Running=false old.Superseded=true end
@@ -29,7 +29,7 @@ local function capture(problem)
  persist("PSX_OG_loader_error.txt",table.concat(state.Trace,"\n").."\n\n"..message)
  return message
 end
-trace("00 modular loader entered","version="..VERSION.." | source-bytes=26080")
+trace("00 modular loader entered","version="..VERSION.." | source-bytes=26108")
 local createNativeUI=(function()
 return function()
 local Players = game:GetService("Players")
