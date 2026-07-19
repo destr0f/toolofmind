@@ -3,7 +3,7 @@
 -- deliberately paces heavy UI startup stages through PSX_OG_SAFE_BOOT.
 
 local env = type(getgenv) == "function" and getgenv() or _G
-local LOADER_VERSION = "1.1.0"
+local LOADER_VERSION = "1.2.0"
 local DEFAULT_MAIN_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/main/toolofmind.lua"
 local TRACE_FILE = "PSX_OG_loader_trace.txt"
 local ERROR_FILE = "PSX_OG_loader_error.txt"
@@ -89,29 +89,113 @@ local function waitForGameReady()
     trace("02 game ready", "place=" .. tostring(game.PlaceId))
 end
 
+local function readField(container, key)
+    if type(container) ~= "table" then return nil end
+    local success, value = pcall(function()
+        return rawget(container, key)
+    end)
+    return success and value or nil
+end
+
+local function resolveRequestTransport()
+    local candidates = {}
+    local seen = {}
+
+    local function add(label, candidate)
+        if type(candidate) == "function" and not seen[candidate] then
+            seen[candidate] = true
+            table.insert(candidates, {
+                Label = label,
+                Call = candidate
+            })
+        end
+    end
+
+    add("PSX_OG_REQUEST", readField(env, "PSX_OG_REQUEST"))
+    add("request", readField(env, "request"))
+    add("http_request", readField(env, "http_request"))
+    add("httprequest", readField(env, "httprequest"))
+    add("_G.request", readField(_G, "request"))
+    add("_G.http_request", readField(_G, "http_request"))
+
+    for _, entry in ipairs({
+        { "syn.request", "syn" },
+        { "http.request", "http" },
+        { "fluxus.request", "fluxus" },
+        { "krnl.request", "krnl" }
+    }) do
+        local owner = readField(env, entry[2]) or readField(_G, entry[2])
+        add(entry[1], readField(owner, "request"))
+    end
+
+    return candidates[1], #candidates
+end
+
+local function unpackResponse(response)
+    if type(response) == "string" then
+        return response, 200
+    end
+    if type(response) ~= "table" then
+        return nil, nil
+    end
+
+    local body = response.Body
+        or response.body
+        or response.ResponseBody
+        or response.responseBody
+    local status = tonumber(
+        response.StatusCode
+        or response.Status
+        or response.status
+        or response.status_code
+    )
+    return body, status
+end
+
 local function downloadMain()
     local baseUrl = tostring(env.PSX_OG_MAIN_URL or DEFAULT_MAIN_URL)
     local lastError = nil
+    local transport, transportCount = resolveRequestTransport()
+
+    if not transport then
+        error(
+            "No safe executor HTTP transport found. The second game:HttpGet is disabled "
+            .. "because it crashes this executor. Expected request/http_request/syn.request.",
+            0
+        )
+    end
+
+    state.Transport = transport.Label
+    trace("03 main transport", transport.Label .. " | candidates=" .. tostring(transportCount))
 
     for attempt = 1, 3 do
-        trace("03 downloading main", "attempt=" .. tostring(attempt))
+        trace("04 downloading main", "attempt=" .. tostring(attempt))
         local success, response = pcall(function()
-            -- Keep this identical to the request path proven by the diagnostic
-            -- loader. Some executors crash on raw GitHub URLs with query data.
-            return game:HttpGet(baseUrl)
+            return transport.Call({
+                Url = baseUrl,
+                Method = "GET",
+                Headers = {
+                    ["Cache-Control"] = "no-cache",
+                    ["Pragma"] = "no-cache"
+                }
+            })
         end)
+        local body, status = unpackResponse(response)
 
         if success
-            and type(response) == "string"
-            and #response >= 10000
-            and not string.find(response, "<!DOCTYPE html", 1, true) then
-            trace("04 main downloaded", "bytes=" .. tostring(#response))
-            return response
+            and type(body) == "string"
+            and #body >= 10000
+            and (status == nil or (status >= 200 and status < 300))
+            and not string.find(body, "<!DOCTYPE html", 1, true) then
+            trace("05 main downloaded", "bytes=" .. tostring(#body))
+            return body
         end
 
-        lastError = success
-            and ("invalid response, bytes=" .. tostring(type(response) == "string" and #response or 0))
-            or tostring(response)
+        lastError = success and string.format(
+            "invalid response, status=%s bytes=%d",
+            tostring(status),
+            type(body) == "string" and #body or 0
+        ) or tostring(response)
         if attempt < 3 then task.wait(0.4 * attempt) end
     end
 
@@ -134,25 +218,25 @@ local function run()
     )
 
     local source = downloadMain()
-    trace("05 compiling main")
+    trace("06 compiling main")
     local chunk, compileError = loadstring(source)
 
     -- This separation is intentional. A direct loadstring(HttpGet()) call keeps
     -- the large source string alive on the same executor stack during startup.
     source = nil
     if not chunk then error("Main compile failed: " .. tostring(compileError), 0) end
-    trace("06 main compiled")
+    trace("07 main compiled")
 
     game:GetService("RunService").Heartbeat:Wait()
     task.wait(0.05)
-    trace("07 executing main")
+    trace("08 executing main")
     local result = chunk()
     chunk = nil
 
     state.Running = false
     state.Ready = true
     state.FinishedAt = os.clock()
-    trace("08 main ready", string.format("%.2fs", state.FinishedAt - state.StartedAt))
+    trace("09 main ready", string.format("%.2fs", state.FinishedAt - state.StartedAt))
     return result
 end
 
