@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet and anti-AFK only.
 
-local VERSION = "1.2.1"
+local VERSION = "1.2.2"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -1777,21 +1777,55 @@ MiscSection:Toggle({
     Callback = function(value) config.AntiAFK = value == true end,
 })
 
-local function shutdown()
-    if not running() then return end
-    config.PetFarm = false
-    farmResetRequested = false
-    env.PSX_OG_SLIM_TOKEN = nil
+local shutdownStarted = false
+
+local function hideInterface()
+    for _, key in ipairs({ "ScreenGui", "NotificationGui", "DropdownGui", "TooltipGui" }) do
+        local gui = WindUI and WindUI[key]
+        if gui then pcall(function() gui.Enabled = false end) end
+    end
+end
+
+local function finishShutdown()
     local shutdownDeadline = os.clock() + 1
     while (farmResetRunning or allocatorBusy) and os.clock() < shutdownDeadline do
         RunService.Heartbeat:Wait()
     end
-    clearAssignments(true)
+
+    local cleaned, problem = pcall(clearAssignments, true)
+    if not cleaned then warn("[PSX SLIM] shutdown cleanup: " .. tostring(problem)) end
+end
+
+local function shutdown(reason)
+    if shutdownStarted then return end
+    shutdownStarted = true
+    trace("stop requested", tostring(reason or "reload"))
+    config.PetFarm = false
+    farmResetRequested = false
+    if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
     disconnectAll()
     if env.PSX_OG_SLIM_CLEANUP == shutdown then env.PSX_OG_SLIM_CLEANUP = nil end
     if env.PSX_OG_UI_CLEANUP == shutdown then env.PSX_OG_UI_CLEANUP = nil end
-    pcall(function() Window:Destroy() end)
-    pcall(function() WindUI:Destroy() end)
+
+    hideInterface()
+    local destroyed, problem = pcall(function() Window:Destroy() end)
+    if not destroyed then
+        warn("[PSX SLIM] window destroy: " .. tostring(problem))
+        pcall(function() WindUI:Destroy() end)
+    end
+
+    task.delay(0.6, function()
+        for _, key in ipairs({ "ScreenGui", "NotificationGui", "DropdownGui", "TooltipGui" }) do
+            local gui = WindUI and WindUI[key]
+            if gui then pcall(function() gui:Destroy() end) end
+        end
+    end)
+
+    if reason == "button" then
+        task.spawn(finishShutdown)
+    else
+        finishShutdown()
+    end
 end
 
 env.PSX_OG_SLIM_CLEANUP = shutdown
@@ -1799,9 +1833,11 @@ env.PSX_OG_UI_CLEANUP = shutdown
 
 MiscSection:Button({
     Title = "STOP SCRIPT",
-    Desc = "Return pets, stop all workers and close the menu",
+    Desc = "Stops workers instantly; pet cleanup finishes in the background",
     Icon = "power",
-    Callback = shutdown,
+    Callback = function()
+        shutdown("button")
+    end,
 })
 
 task.spawn(function()
