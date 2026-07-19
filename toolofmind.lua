@@ -1,4 +1,4 @@
-local VERSION = "1.1.1"
+local VERSION = "1.1.2"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -259,6 +259,7 @@ local currentZone, currentZoneAnchor, nextZoneCheck = nil, nil, 0
 local BossChestZones
 local coinRecords = {}
 local requestAllocatorPulse
+local releaseAssignmentsForCoin
 local function getPlayerZone()
 if os.clock() < nextZoneCheck then return currentZone end
 nextZoneCheck = os.clock() + 0.1
@@ -507,7 +508,8 @@ end
 coinRecords[id] = nil
 peakHealth[id] = nil
 removedUntil[id] = os.clock() + 0.75
-if fromEvent and type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(id) end
+if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
 end
 local nextWorkspaceScanAt = 0
 local function refreshWorkspaceCoins()
@@ -631,7 +633,6 @@ coinEventRevision = coinEventRevision + 1
 coinPetRevision = coinPetRevision + 1
 record.Pets = normalizePetSet(pets)
 record.EventRevision = coinEventRevision
-if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
 else
 nextSnapshotAt = 0
 end
@@ -650,6 +651,7 @@ table.clear(peakHealth)
 table.clear(removalRevisions)
 table.clear(removedUntil)
 table.clear(boundsCache)
+if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(nil) end
 currentZone = nil
 currentZoneAnchor = nil
 nextZoneCheck = 0
@@ -743,12 +745,36 @@ return targets, world, zone
 end
 local petStates = {}
 local rejectedUntil = {}
+local releaseWait = {}
 local farmWasEnabled = false
 local driverStatus = "waiting for first target"
 local controllerHandlers = {}
 local nextControllerLookup = {}
 local petRuntime = nil
 local runtimeDriverReady = false
+local function queuePetRelease(petId, now)
+petStates[petId] = nil
+releaseWait[petId] = {
+ReadyAt = now + 0.04,
+ForceAt = now + 0.25,
+}
+end
+releaseAssignmentsForCoin = function(rawId)
+if rawId == nil then
+table.clear(petStates)
+table.clear(rejectedUntil)
+table.clear(releaseWait)
+return
+end
+local coinId = tostring(rawId)
+local now = os.clock()
+for petId, state in pairs(petStates) do
+if tostring(state.CoinId) == coinId then
+queuePetRelease(petId, now)
+end
+end
+rejectedUntil[coinId] = nil
+end
 local function functionUpvalues(callback)
 local values = {}
 if type(callback) ~= "function" then return values end
@@ -909,31 +935,72 @@ return nil
 end
 local function syncRuntimeAssignments(equipped)
 if not runtimeDriverReady or type(petRuntime) ~= "table" then return false end
-local fresh, localPets = {}, 0
+local now = os.clock()
+local observed, runtimeSeen, localPets = {}, {}, 0
 for key, runtimeState in pairs(petRuntime) do
 if type(runtimeState) == "table" and runtimeState.owner == player then
 local petId = tostring(runtimeState.uid or key)
 if equipped[petId] then
 localPets = localPets + 1
+runtimeSeen[petId] = runtimeState
 local target = runtimeState.target
 local coinModel = runtimeState.farming and target and target.Parent or nil
 if coinModel and coinModel.Parent then
 local coinId = readObjectValue(coinModel, "ID") or coinModel.Name
 local record = coinId ~= nil and coinRecords[tostring(coinId)] or nil
 if coinId ~= nil and recordAlive(record) then
-fresh[petId] = {
-CoinId = tostring(coinId),
-Phase = "locked",
-Runtime = true,
-}
+observed[petId] = tostring(coinId)
 end
 end
 end
 end
 end
 if localPets == 0 then return false end
-table.clear(petStates)
-for petId, state in pairs(fresh) do petStates[petId] = state end
+for petId, coinId in pairs(observed) do
+releaseWait[petId] = nil
+local state = petStates[petId]
+if not state or tostring(state.CoinId) ~= coinId then
+petStates[petId] = {
+CoinId = coinId,
+Phase = "locked",
+Runtime = true,
+ConfirmedAt = now,
+}
+else
+state.Phase = "locked"
+state.Runtime = true
+state.ConfirmedAt = now
+end
+end
+for petId, state in pairs(petStates) do
+local record = coinRecords[tostring(state.CoinId)]
+if not equipped[petId] then
+petStates[petId] = nil
+releaseWait[petId] = nil
+elseif not recordAlive(record) then
+queuePetRelease(petId, now)
+elseif observed[petId] == nil and state.Phase == "pending" then
+local runtimeState = runtimeSeen[petId]
+if runtimeState and runtimeState.farming == false
+and now - (state.StartedAt or now) > 0.2 then
+petStates[petId] = nil
+end
+end
+end
+for petId, releaseState in pairs(releaseWait) do
+if not equipped[petId] then
+releaseWait[petId] = nil
+else
+local runtimeState = runtimeSeen[petId]
+if runtimeState and runtimeState.farming == false then
+releaseWait[petId] = nil
+elseif runtimeState == nil and now >= (releaseState.ReadyAt or now) then
+releaseWait[petId] = nil
+elseif now >= (releaseState.ForceAt or math.huge) then
+releaseWait[petId] = nil
+end
+end
+end
 return true
 end
 local function clearAssignments(sendBack)
@@ -957,6 +1024,7 @@ end)
 end
 table.clear(petStates)
 table.clear(rejectedUntil)
+table.clear(releaseWait)
 end
 local function dispatchPlan(record, petIds, groupMode)
 if not recordAlive(record) or #petIds == 0 then return end
@@ -969,7 +1037,12 @@ end
 local coinId = tostring(record.Id)
 local stateTokens = {}
 for _, petId in ipairs(petIds) do
-local state = { CoinId = coinId, Phase = "pending", StartedAt = os.clock() }
+local state = {
+CoinId = coinId,
+Phase = "pending",
+StartedAt = os.clock(),
+StartedHealth = tonumber(record.Health),
+}
 petStates[petId] = state
 stateTokens[petId] = state
 end
@@ -995,38 +1068,55 @@ end
 end
 local function syncServerAssignments(equipped)
 local now = os.clock()
-local authoritative = {}
+local observed = {}
 for _, record in pairs(coinRecords) do
 if recordAlive(record) then
 for petId in pairs(record.Pets or {}) do
 petId = tostring(petId)
-if equipped[petId] then authoritative[petId] = tostring(record.Id) end
+if equipped[petId] then
+local choices = observed[petId]
+if not choices then choices = {}; observed[petId] = choices end
+choices[tostring(record.Id)] = record
 end
 end
 end
-for petId, coinId in pairs(authoritative) do
+end
+for petId, choices in pairs(observed) do
+releaseWait[petId] = nil
 local state = petStates[petId]
-if not state or state.CoinId ~= coinId or state.Phase ~= "locked" then
+local coinId = state and tostring(state.CoinId) or nil
+if not coinId or not choices[coinId] then
+local bestRevision = -1
+coinId = nil
+for candidateId, record in pairs(choices) do
+local revision = tonumber(record.EventRevision) or 0
+if revision > bestRevision
+or revision == bestRevision and (coinId == nil or candidateId < coinId) then
+coinId = candidateId
+bestRevision = revision
+end
+end
+end
+if not state or tostring(state.CoinId) ~= coinId then
 petStates[petId] = { CoinId = coinId, Phase = "locked", ConfirmedAt = now }
 else
+state.Phase = "locked"
 state.ConfirmedAt = now
-state.MissingSince = nil
 end
 end
 for petId, state in pairs(petStates) do
-local record = coinRecords[state.CoinId]
-if not equipped[petId] or not recordAlive(record) then
+local record = coinRecords[tostring(state.CoinId)]
+if not equipped[petId] then
 petStates[petId] = nil
-elseif not authoritative[petId] then
-if state.Phase == "pending" then
-if now - (state.StartedAt or now) > 0.4 then
-petStates[petId] = nil
-rejectedUntil[state.CoinId] = now + 0.08
+releaseWait[petId] = nil
+elseif not recordAlive(record) then
+queuePetRelease(petId, now)
 end
-else
-state.MissingSince = state.MissingSince or now
-if now - state.MissingSince > 0.05 then petStates[petId] = nil end
 end
+for petId, releaseState in pairs(releaseWait) do
+if not equipped[petId] or observed[petId] ~= nil
+or now >= (releaseState.ReadyAt or now) then
+releaseWait[petId] = nil
 end
 end
 end
@@ -1064,7 +1154,7 @@ for _, petId in ipairs(petIds) do equipped[petId] = true end
 if not syncRuntimeAssignments(equipped) then syncServerAssignments(equipped) end
 local freePets = {}
 for _, petId in ipairs(petIds) do
-if not petStates[petId] then table.insert(freePets, petId) end
+if not petStates[petId] and not releaseWait[petId] then table.insert(freePets, petId) end
 end
 if #freePets == 0 then return end
 local targets = orderedTargets(config.Mode)
@@ -1115,7 +1205,8 @@ claimed[record.Id] = true
 end
 end
 local groupMode = config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only"
-for _, plan in pairs(plans) do dispatchPlan(plan.Record, plan.Pets, groupMode) end
+local useGroupHandler = groupMode and assignmentCount() == 0 and #freePets == #petIds
+for _, plan in pairs(plans) do dispatchPlan(plan.Record, plan.Pets, useGroupHandler) end
 end)
 if not ok then driverStatus = "allocator error: " .. tostring(problem) end
 until not allocatorRequested or not running()
