@@ -5,8 +5,8 @@
 -- WindUI bundled SHA256: 6cbaf0350fc5550eff5dd9fb8eb9545b12c40fce40365db73cbd7a0e1744d1f8
 
 local env=type(getgenv)=="function"and getgenv()or _G
-local VERSION="4.1.0-payload"
-local BASE=tostring(env.PSX_OG_PAYLOAD_BASE_URL or "https://raw.githubusercontent.com/destr0f/toolofmind/main/payload/")
+local VERSION="4.1.0"
+local BASE=tostring(env.PSX_OG_PAYLOAD_BASE_URL or "https://cdn.jsdelivr.net/gh/destr0f/toolofmind@fa8abe0a3a325b19efec39b5385c6621a86067ae/payload/")
 local MAIN={File="main-c85d75e22a0ae2eaa9cc-22cf456ce330.bin",Packed=35586,Raw=139648}
 local WIND={File="wind-6cbaf0350fc5550eff5d-694f8ceb4749.bin",Packed=72858,Raw=254933}
 
@@ -138,7 +138,7 @@ local function worker()
  local ok,problem=xpcall(run,capture)
  if not ok then env.PSX_OG_BUNDLED_WINDUI_CHUNK=nil warn("[PSX LOADER] Startup failed:\n"..tostring(problem))end
 end
-trace("00 binary loader entered","version="..VERSION.." | source-bytes=6913")
+trace("00 binary loader entered","version="..VERSION.." | source-bytes=6935")
 state.Phase="queued"
 task.defer(worker)
 return state
