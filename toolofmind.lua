@@ -2659,6 +2659,16 @@ task.spawn(function()
     local SLOW_TARGET_SYNC_DELAY = 1.5
     local FAST_TARGET_SYNC_ATTEMPTS = 3
     local FAILURE_COOLDOWN = 0.15
+    local ACTIVE_TICK = 0.05
+    local IDLE_TICK = 0.5
+    local PET_LIST_REFRESH_INTERVAL = 0.5
+    local LIVE_ASSIGNMENT_SCAN_INTERVAL = 0.1
+    local cachedNormalizedPetIds = {}
+    local cachedEquippedPetSet = {}
+    local cachedLivePetCoins = {}
+    local cachedOccupiedCoins = {}
+    local nextPetListRefresh = 0
+    local nextLiveAssignmentScan = 0
 
     local function targetIsAlive(coin)
         return coin and coin.Parent and getCoinHealth(coin) > 0
@@ -2672,10 +2682,16 @@ task.spawn(function()
         table.clear(rejectedCoins)
         lockedGroupCoin = nil
         bigCoinHealthAnchor = 0
+        nextLiveAssignmentScan = 0
     end
 
     local function resetAllState()
         table.clear(petStates)
+        table.clear(cachedNormalizedPetIds)
+        table.clear(cachedEquippedPetSet)
+        table.clear(cachedLivePetCoins)
+        table.clear(cachedOccupiedCoins)
+        nextPetListRefresh = 0
         resetTransientState()
     end
 
@@ -2741,8 +2757,8 @@ task.spawn(function()
                         state.Phase = "assigned"
                         state.AcceptedAt = finishedAt
                         state.NextSyncAt = finishedAt + TARGET_SYNC_DELAY
-                        state.NextFarmAt = finishedAt + 0.25
-                        state.FarmAttemptsRemaining = 8
+                        state.NextFarmAt = finishedAt + 0.35
+                        state.FarmAttemptsRemaining = 2
                         state.ArrivalFarmSent = false
                         state.MissingSince = nil
                         state.HadLiveConfirmation = false
@@ -2766,7 +2782,7 @@ task.spawn(function()
         end)
     end
 
-    while task.wait(_G.AutoPetCoins and 0.02 or 0.25) do
+    while task.wait(_G.AutoPetCoins and ACTIVE_TICK or IDLE_TICK) do
         if not isScriptRunning() then break end
 
         local currentThings = workspace:FindFirstChild("__THINGS")
@@ -2789,21 +2805,30 @@ task.spawn(function()
             previousContext = context
         end
 
-        local equippedPetIds = getEquippedPetIds()
-        local normalizedPetIds = {}
-        local equippedPetSet = {}
-        for _, rawPetId in ipairs(equippedPetIds) do
-            local petId = tostring(rawPetId)
-            table.insert(normalizedPetIds, petId)
-            equippedPetSet[petId] = true
+        if now >= nextPetListRefresh then
+            nextPetListRefresh = now + PET_LIST_REFRESH_INTERVAL
+            table.clear(cachedNormalizedPetIds)
+            table.clear(cachedEquippedPetSet)
+            for _, rawPetId in ipairs(getEquippedPetIds()) do
+                local petId = tostring(rawPetId)
+                table.insert(cachedNormalizedPetIds, petId)
+                cachedEquippedPetSet[petId] = true
+            end
         end
+        local normalizedPetIds = cachedNormalizedPetIds
+        local equippedPetSet = cachedEquippedPetSet
 
         if #normalizedPetIds == 0 then
             resetAllState()
             continue
         end
 
-        local livePetCoins, occupiedCoins = readLiveCoinPetAssignments(equippedPetSet)
+        if now >= nextLiveAssignmentScan then
+            nextLiveAssignmentScan = now + LIVE_ASSIGNMENT_SCAN_INTERVAL
+            cachedLivePetCoins, cachedOccupiedCoins = readLiveCoinPetAssignments(equippedPetSet)
+        end
+        local livePetCoins = cachedLivePetCoins
+        local occupiedCoins = cachedOccupiedCoins
 
         for coin, expiresAt in pairs(rejectedCoins) do
             if not coin.Parent or now >= expiresAt then rejectedCoins[coin] = nil end
@@ -2834,7 +2859,9 @@ task.spawn(function()
                 state.MissingSince = nil
                 state.HadLiveConfirmation = true
                 state.SyncAttemptsRemaining = 0
-                state.LocalBound = bindLocalPetTargetByUID(petId, state.Coin)
+                if not state.LocalBound then
+                    state.LocalBound = bindLocalPetTargetByUID(petId, state.Coin)
+                end
                 state.NextSyncAt = now + TARGET_SYNC_DELAY
             end
         end
@@ -2860,7 +2887,7 @@ task.spawn(function()
                 elseif (state.FarmAttemptsRemaining or 0) > 0 and now >= (state.NextFarmAt or 0) then
                     fireFarmCoinByUID(petId, state.Coin)
                     state.FarmAttemptsRemaining = state.FarmAttemptsRemaining - 1
-                    state.NextFarmAt = now + 0.25
+                    state.NextFarmAt = now + 0.5
                 end
                 if not liveIsDesired and now >= (state.NextSyncAt or 0) then
                     syncPetTargetByUID(petId, state.Coin)
