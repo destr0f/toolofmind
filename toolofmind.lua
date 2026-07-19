@@ -14,16 +14,20 @@
       env.PSX_OG_BoostRemoteCaptureState.remote = nil
   end
 
-  if type(env.PSX_OG_RunConnections) == "table" then
-      for _, connection in ipairs(env.PSX_OG_RunConnections) do
-          pcall(function()
-              if connection and type(connection.Disconnect) == "function" then
-                  connection:Disconnect()
-              end
-          end)
+  local function disconnectRunConnections()
+      if type(env.PSX_OG_RunConnections) == "table" then
+          for _, connection in ipairs(env.PSX_OG_RunConnections) do
+              pcall(function()
+                  if connection and type(connection.Disconnect) == "function" then
+                      connection:Disconnect()
+                  end
+              end)
+          end
       end
+      env.PSX_OG_RunConnections = {}
   end
-  env.PSX_OG_RunConnections = {}
+
+  disconnectRunConnections()
 
   local function trackRunConnection(connection)
       table.insert(env.PSX_OG_RunConnections, connection)
@@ -76,7 +80,8 @@
       pcall(env.PSX_OG_UI_CLEANUP)
   end
 
-  local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+  -- Фиксируем проверенный релиз: /latest не должен незаметно менять API меню между запусками.
+  local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua"))()
 
   WindUI:AddTheme({
       Name = "PSX Glass",
@@ -984,6 +989,27 @@
   local loadedEggsById = {}
   local lastEggCatalogSignature = nil
   local fastEggGateArmed = false
+  local uiLastDescription = {}
+  local uiNextDescriptionUpdate = {}
+
+  local function setDescriptionCached(control, text, minimumInterval)
+      if not control then return false end
+
+      text = tostring(text or "")
+      if uiLastDescription[control] == text then return true end
+
+      local now = os.clock()
+      if now < (uiNextDescriptionUpdate[control] or 0) then return false end
+
+      local success = pcall(function()
+          control:SetDesc(text)
+      end)
+      if success then
+          uiLastDescription[control] = text
+          uiNextDescriptionUpdate[control] = now + math.max(0, tonumber(minimumInterval) or 0)
+      end
+      return success
+  end
 
   local function getSaveData()
       local library = getPSXLibrary()
@@ -1034,78 +1060,13 @@
       return definition.aliases[1]
   end
 
-  local function ensureBoostRemoteCaptureHook()
-      local state = env.PSX_OG_BoostRemoteCaptureState
-      if type(state) ~= "table" then
-          state = {}
-          env.PSX_OG_BoostRemoteCaptureState = state
-      end
-
-      if env.PSX_OG_BoostRemoteCaptureInstalled == true then
-          return state, true
-      end
-      if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
-          state.error = "hookmetamethod/getnamecallmethod недоступен"
-          return state, false
-      end
-
-      local oldNamecall
-      local function captureNamecall(self, ...)
-          local current = env.PSX_OG_BoostRemoteCaptureState
-          if current and current.active
-              and getnamecallmethod() == "FireServer"
-              and typeof(self) == "Instance"
-              and self.ClassName == "RemoteEvent"
-              and select(1, ...) == current.expectedBoost then
-              current.remote = self
-          end
-          return oldNamecall(self, ...)
-      end
-
-      local wrapped = type(newcclosure) == "function"
-          and newcclosure(captureNamecall)
-          or captureNamecall
-      local installed, hookResult = pcall(function()
-          oldNamecall = hookmetamethod(game, "__namecall", wrapped)
-      end)
-      if not installed or type(oldNamecall) ~= "function" then
-          state.error = tostring(hookResult or "не удалось установить __namecall hook")
-          return state, false
-      end
-
-      env.PSX_OG_BoostRemoteCaptureInstalled = true
-      state.error = nil
-      return state, true
-  end
-
   local function sendBoostThroughNetwork(library, boostName)
       local network = library and library.Network
       if not network or type(network.Fire) ~= "function" then
           return false, "Library.Network.Fire недоступен"
       end
 
-      local captureState, captureReady = ensureBoostRemoteCaptureHook()
-      if captureReady then
-          captureState.expectedBoost = boostName
-          captureState.remote = nil
-          captureState.active = true
-      end
-
       local success, err = pcall(network.Fire, "Activate Boost", boostName)
-      if captureReady then
-          captureState.active = false
-          local capturedRemote = captureState.remote
-          if capturedRemote and capturedRemote.Parent then
-              local _, capturedIndex, capturedSource = cacheNetworkRemote(
-                  "RemoteEvent\0Activate Boost",
-                  capturedRemote,
-                  "captured from Network.Fire"
-              )
-              boostDirectRemoteIndex = capturedIndex
-              boostDirectRemoteSource = capturedSource
-          end
-      end
-
       return success, success and "Network.Fire" or tostring(err)
   end
 
@@ -1366,11 +1327,11 @@
           local distanceText = targetInfo and targetInfo.distance < math.huge
               and string.format(" | до выбранного %.1f", targetInfo.distance)
               or " | выбранное яйцо не загружено"
-          pcall(function()
-              eggCatalogParagraph:SetDesc(
-                  string.format("● текущий мир: %d | всего в каталоге: %d%s", loadedCount, totalCount, distanceText)
-              )
-          end)
+          setDescriptionCached(
+              eggCatalogParagraph,
+              string.format("● текущий мир: %d | всего в каталоге: %d%s", loadedCount, totalCount, distanceText),
+              1
+          )
       end
 
       return options, selectedLabel
@@ -1485,7 +1446,7 @@
   })
   currencyTrackerLabel = {
       Set = function(_, text)
-          pcall(function() currencyTrackerParagraph:SetDesc(text) end)
+          setDescriptionCached(currencyTrackerParagraph, text, 0.5)
       end
   }
 
@@ -1554,10 +1515,17 @@
       ["По разным слабым обычным целям"] = "DifferentWeakest"
   }
   local petModeSettingsSection = nil
+  local lastPetModeSettingsLabel = nil
 
   local function rebuildPetModeSettings(modeLabel)
+      if petModeSettingsSection and lastPetModeSettingsLabel == modeLabel then
+          return
+      end
+
       if petModeSettingsSection then
-          pcall(function() petModeSettingsSection:Destroy() end)
+          local destroyed = pcall(function() petModeSettingsSection:Destroy() end)
+          if not destroyed then return end
+          petModeSettingsSection = nil
       end
 
       petModeSettingsSection = PetsTab:Section({
@@ -1565,6 +1533,7 @@
           Box = true,
           Opened = true
       })
+      lastPetModeSettingsLabel = modeLabel
 
       local mode = petModesByLabel[modeLabel] or "DifferentStrongest"
       if mode == "AllOneBossChest" then
@@ -1846,6 +1815,7 @@
           if env.PSX_OG_UI_CLEANUP == destroyWindUI then
               env.PSX_OG_UI_CLEANUP = nil
           end
+          disconnectRunConnections()
           setEggAnimationGate(false)
           pcall(function()
               local char = localPlayer.Character
@@ -3280,20 +3250,20 @@ local function countFarmableTargetsInZone()
 end
 
 task.spawn(function()
-    while task.wait(0.25) do
+    while task.wait(_G.AutoPetCoins and 0.5 or 2) do
         if not isScriptRunning() then break end
         refreshZoneDropdown(false)
         local loadedWorld = getCurrentWorldName()
         local selectedWorld = getSelectedFarmWorld() or "мир не определён"
         local zoneName = getSelectedFarmZone() or "зона не определена"
         local targetCount = countFarmableTargetsInZone()
-        pcall(function()
-            currentZoneParagraph:SetDesc(
-                "Загружен: " .. loadedWorld
+        setDescriptionCached(
+            currentZoneParagraph,
+            "Загружен: " .. loadedWorld
                 .. " | фильтр: " .. selectedWorld .. " / " .. zoneName
-                .. " | целей: " .. tostring(targetCount)
-            )
-        end)
+                .. " | целей: " .. tostring(targetCount),
+            1
+        )
     end
 end)
 
@@ -3349,14 +3319,14 @@ task.spawn(function()
   -- 3. АВТОБУСТЫ + ОЧЕРЕДЬ ЯИЦ + ПРОПУСК АНИМАЦИИ
   -- ====================================================================================
   task.spawn(function()
-      while task.wait(1) do
+      while task.wait(_G.AutoEgg and 1 or 3) do
           if not isScriptRunning() then break end
           refreshEggDropdown(false)
       end
   end)
 
   task.spawn(function()
-      while task.wait(0.25) do
+      while task.wait(_G.AutoBoosts and 0.25 or 2) do
           if not isScriptRunning() then break end
 
           local saveData = getSaveData()
@@ -3469,11 +3439,7 @@ task.spawn(function()
               end
           end
 
-          if boostStatusParagraph then
-              pcall(function()
-                  boostStatusParagraph:SetDesc(table.concat(statusLines, "\n"))
-              end)
-          end
+          setDescriptionCached(boostStatusParagraph, table.concat(statusLines, "\n"), 1)
       end
   end)
 
@@ -3489,10 +3455,9 @@ task.spawn(function()
           if not rankEnabled and not vipEnabled then
               local disabledStatus = "Автосбор выключен"
               if lastRenderedStatus ~= disabledStatus and miscRewardStatusParagraph then
-                  lastRenderedStatus = disabledStatus
-                  pcall(function()
-                      miscRewardStatusParagraph:SetDesc(disabledStatus)
-                  end)
+                  if setDescriptionCached(miscRewardStatusParagraph, disabledStatus, 2) then
+                      lastRenderedStatus = disabledStatus
+                  end
               end
               continue
           end
@@ -3575,20 +3540,17 @@ task.spawn(function()
           if miscRewardStatusParagraph
               and statusText ~= lastRenderedStatus
               and now >= nextStatusRender then
-              lastRenderedStatus = statusText
-              nextStatusRender = now + 5
-              pcall(function()
-                  miscRewardStatusParagraph:SetDesc(statusText)
-              end)
+              if setDescriptionCached(miscRewardStatusParagraph, statusText, 2) then
+                  lastRenderedStatus = statusText
+                  nextStatusRender = now + 5
+              end
           end
       end
   end)
 
   local function setEggStatus(text)
       eggStatusText = tostring(text or "")
-      if eggStatusParagraph then
-          pcall(function() eggStatusParagraph:SetDesc(eggStatusText) end)
-      end
+      setDescriptionCached(eggStatusParagraph, eggStatusText, 0.05)
   end
 
   local fastEggEventCount = 0
@@ -3669,9 +3631,8 @@ task.spawn(function()
   local nextEggRequestAt = 0
   local eggRequestStartedAt = 0
   local eggRequestSequence = 0
-  local initialListenerOk, initialListenerResult = pcall(installFastEggEventListener)
-  local fastEggListenerInstalled = initialListenerOk and initialListenerResult == true
-  local nextFastEggListenerAttempt = fastEggListenerInstalled and math.huge or (os.clock() + 1)
+  local fastEggListenerInstalled = false
+  local nextFastEggListenerAttempt = 0
 
   local function syncEggToggleState()
       local skipValue = SkipAnimToggle and SkipAnimToggle.Value
@@ -3698,13 +3659,15 @@ task.spawn(function()
   end
 
   task.spawn(function()
-      while task.wait(0.03) do
+      while task.wait(_G.AutoEgg and 0.03 or 0.5) do
           if not isScriptRunning() then break end
 
           syncEggToggleState()
           local now = os.clock()
 
-          if not fastEggListenerInstalled and now >= nextFastEggListenerAttempt then
+          if _G.AutoEgg
+              and not fastEggListenerInstalled
+              and now >= nextFastEggListenerAttempt then
               nextFastEggListenerAttempt = now + 1
               local listenerOk, listenerResult = pcall(installFastEggEventListener)
               fastEggListenerInstalled = listenerOk and listenerResult == true
@@ -3802,15 +3765,14 @@ task.spawn(function()
       if not isScriptRunning() then return end
 
       local shouldBlockAnimation = _G.SkipAnim and _G.AutoEgg and fastEggGateArmed
+      if not shouldBlockAnimation then return end
 
       pcall(function()
           local library = getPSXLibrary()
-          if shouldBlockAnimation and library and library.Variables then
+          if library and library.Variables then
               -- Open Eggs.lua сразу выходит из обработчика "Open Egg", когда флаг уже true.
               library.Variables.OpeningEgg = true
           end
-
-          if not shouldBlockAnimation then return end
 
           local libraryEggUI = library and library.GUI and library.GUI.EggOpenInfo
           if libraryEggUI then
