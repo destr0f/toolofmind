@@ -1,1 +1,1 @@
-require("./build_modular.js");
+require("./build_slim.js");
