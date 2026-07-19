@@ -1,4 +1,4 @@
-local VERSION = "1.2.3"
+local VERSION = "1.2.4"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -54,6 +54,7 @@ PetFarm = false,
 Mode = "Different Strongest",
 World = "Current World",
 Zone = "Player Zone",
+TrackedCurrency = "Auto",
 Orbs = false,
 Lootbags = false,
 AntiAFK = true,
@@ -132,10 +133,107 @@ if a == b then return true end
 if #a < 4 or #b < 4 then return false end
 return string.find(a, b, 1, true) ~= nil or string.find(b, a, 1, true) ~= nil
 end
+local function formatRateNumber(amount)
+amount = tonumber(amount) or 0
+if amount ~= amount or amount == math.huge or amount == -math.huge then return "0" end
+local suffixes = {
+{ 1e33, "Dc" }, { 1e30, "No" }, { 1e27, "Oc" }, { 1e24, "Sp" },
+{ 1e21, "Sx" }, { 1e18, "Qi" }, { 1e15, "Qa" }, { 1e12, "T" },
+{ 1e9, "B" }, { 1e6, "M" }, { 1e3, "K" },
+}
+for _, suffix in ipairs(suffixes) do
+if math.abs(amount) >= suffix[1] then
+local scaled = amount / suffix[1]
+local pattern = math.abs(scaled) >= 100 and "%.0f%s"
+or math.abs(scaled) >= 10 and "%.1f%s" or "%.2f%s"
+return string.format(pattern, scaled, suffix[2])
+end
+end
+return tostring(math.floor(amount + 0.5))
+end
+local function normalizeCurrencyName(name)
+local normalized = string.lower(tostring(name or ""))
+normalized = string.gsub(normalized, "[%s_%-]", "")
+return normalized
+end
+local function readCurrencyNumber(value)
+if type(value) == "number" then return value end
+if type(value) == "string" then return tonumber(value) end
+if type(value) == "table" then
+for _, key in ipairs({ "Value", "value", "Amount", "amount" }) do
+local nested = value[key]
+if type(nested) == "number" then return nested end
+if type(nested) == "string" and tonumber(nested) then return tonumber(nested) end
+end
+end
+if typeof(value) == "Instance" and (value:IsA("IntValue") or value:IsA("NumberValue")) then
+return value.Value
+end
+return nil
+end
+local function readCurrencyFromTable(container, currencyName)
+if type(container) ~= "table" then return nil end
+local wanted = normalizeCurrencyName(currencyName)
+for key, value in pairs(container) do
+if normalizeCurrencyName(key) == wanted then
+local amount = readCurrencyNumber(value)
+if amount ~= nil then return amount end
+end
+end
+return nil
+end
+local function getCurrentCurrency(currencyName)
+local save
+if Library.Save and type(Library.Save.Get) == "function" then
+pcall(function() save = Library.Save.Get() end)
+end
+if type(save) == "table" then
+local amount = readCurrencyFromTable(save, currencyName)
+or readCurrencyFromTable(save.Currency, currencyName)
+or readCurrencyFromTable(save.Currencies, currencyName)
+if amount ~= nil then return amount end
+end
+local wanted = normalizeCurrencyName(currencyName)
+local attributesOk, attributes = pcall(function() return player:GetAttributes() end)
+if attributesOk then
+for key, value in pairs(attributes) do
+if normalizeCurrencyName(key) == wanted then
+local amount = readCurrencyNumber(value)
+if amount ~= nil then return amount end
+end
+end
+end
+for _, object in ipairs(player:GetDescendants()) do
+if normalizeCurrencyName(object.Name) == wanted then
+local amount = readCurrencyNumber(object)
+if amount ~= nil then return amount end
+end
+end
+return nil
+end
 local WorldOrder = {
 "Spawn World", "Fantasy World", "Tech World", "Axolotl Ocean",
 "Pixel World", "Cat World", "The Void", "Doodle World",
 "Kawaii World", "Dog World", "Diamond Mine", "Christmas Event", "Trading Plaza",
+}
+local CurrencyChoices = {
+"Auto", "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
+"Rainbow Coins", "Cartoon Coins", "Gingerbread",
+}
+local CurrencyByWorld = {
+["Spawn World"] = "Coins",
+["Fantasy World"] = "Fantasy Coins",
+["Tech World"] = "Tech Coins",
+["Axolotl Ocean"] = "Rainbow Coins",
+["Pixel World"] = "Rainbow Coins",
+["Cat World"] = "Rainbow Coins",
+["The Void"] = "Rainbow Coins",
+["Doodle World"] = "Cartoon Coins",
+["Kawaii World"] = "Cartoon Coins",
+["Dog World"] = "Cartoon Coins",
+["Diamond Mine"] = "Diamonds",
+["Christmas Event"] = "Gingerbread",
+["Trading Plaza"] = "Coins",
 }
 local WorldZones = {
 ["Spawn World"] = {
@@ -429,6 +527,11 @@ end
 local function getSelectedWorld()
 return config.World == "Current World" and getCurrentWorld() or config.World
 end
+local function getTrackedCurrencyName()
+if config.TrackedCurrency ~= "Auto" then return config.TrackedCurrency end
+return CurrencyByWorld[getSelectedWorld()] or "Coins"
+end
+local currencySamples = {}
 local function getSelectedZone()
 if config.Zone == "Player Zone" then return getPlayerZone() end
 return ZoneAliases[config.Zone] or config.Zone
@@ -1328,12 +1431,15 @@ end
 end
 return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
 end
-local statusParagraph, healthParagraph
+local statusParagraph, healthParagraph, rateParagraph
 local function setStatus(text)
 if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
 local function setHealth(text)
 if healthParagraph then pcall(function() healthParagraph:SetDesc(text) end) end
+end
+local function setRate(text)
+if rateParagraph then pcall(function() rateParagraph:SetDesc(text) end) end
 end
 local function allocatorPass()
 if allocatorBusy then
@@ -1636,6 +1742,25 @@ healthParagraph = MonitorSection:Paragraph({
 Title = "Controller Health",
 Desc = "Runtime discovery is starting...",
 })
+local PerformanceSection = PetsTab:Section({ Title = "Farm Performance", Box = true, Opened = true })
+PerformanceSection:Dropdown({
+Title = "Tracked Currency",
+Desc = "Auto follows the selected world; spending starts a fresh rate window",
+Values = CurrencyChoices,
+Value = "Auto",
+Multi = false,
+AllowNone = false,
+Callback = function(value)
+if config.TrackedCurrency == value then return end
+config.TrackedCurrency = value
+table.clear(currencySamples)
+setRate("Collecting a fresh currency sample...")
+end,
+})
+rateParagraph = PerformanceSection:Paragraph({
+Title = "Currency per Minute",
+Desc = "Enable Pet Farm to begin measuring earnings.",
+})
 local LootSection = LootTab:Section({ Title = "Loot Magnet", Box = true, Opened = true })
 LootSection:Paragraph({
 Title = "Instant Collection",
@@ -1715,6 +1840,62 @@ Callback = function()
 shutdown("button")
 end,
 })
+task.spawn(function()
+local activeCurrency, lastRateText = nil, nil
+while task.wait(1) do
+if not running() then break end
+local currencyName = getTrackedCurrencyName()
+if currencyName ~= activeCurrency then
+activeCurrency = currencyName
+table.clear(currencySamples)
+end
+local rateText
+if not config.PetFarm then
+table.clear(currencySamples)
+rateText = currencyName .. "/min: farm disabled"
+else
+local currentAmount = getCurrentCurrency(currencyName)
+if currentAmount == nil then
+table.clear(currencySamples)
+rateText = currencyName .. "/min: currency not found in player data"
+else
+local now = os.clock()
+local previous = currencySamples[#currencySamples]
+if previous and currentAmount < previous.Value then
+table.clear(currencySamples)
+end
+table.insert(currencySamples, { Time = now, Value = currentAmount })
+while #currencySamples > 1 and now - currencySamples[1].Time > 60 do
+table.remove(currencySamples, 1)
+end
+local first = currencySamples[1]
+local elapsed = now - first.Time
+local gained = math.max(0, currentAmount - first.Value)
+if elapsed < 2 then
+rateText = string.format(
+"%s/min: collecting data...\nBalance: %s",
+currencyName,
+formatRateNumber(currentAmount)
+)
+else
+local perMinute = (gained / elapsed) * 60
+rateText = string.format(
+"%s/min: %s\nGained: +%s | window: %ds | balance: %s",
+currencyName,
+formatRateNumber(perMinute),
+formatRateNumber(gained),
+math.floor(elapsed + 0.5),
+formatRateNumber(currentAmount)
+)
+end
+end
+end
+if rateText ~= lastRateText then
+lastRateText = rateText
+setRate(rateText)
+end
+end
+end)
 task.spawn(function()
 while task.wait(0.4) do
 if not running() then break end
