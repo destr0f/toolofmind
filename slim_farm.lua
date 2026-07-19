@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet and anti-AFK only.
 
-local VERSION = "1.0.0"
+local VERSION = "1.0.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -584,10 +584,16 @@ local function orderedTargets(mode)
     table.sort(targets, function(left, right)
         local leftMax = tonumber(left.MaxHealth) or tonumber(left.Health) or 0
         local rightMax = tonumber(right.MaxHealth) or tonumber(right.Health) or 0
-        if leftMax ~= rightMax then return strongest and leftMax > rightMax or leftMax < rightMax end
+        if leftMax ~= rightMax then
+            if strongest then return leftMax > rightMax end
+            return leftMax < rightMax
+        end
         local leftHealth = tonumber(left.Health) or 0
         local rightHealth = tonumber(right.Health) or 0
-        if leftHealth ~= rightHealth then return strongest and leftHealth > rightHealth or leftHealth < rightHealth end
+        if leftHealth ~= rightHealth then
+            if strongest then return leftHealth > rightHealth end
+            return leftHealth < rightHealth
+        end
         return left.Id < right.Id
     end)
     return targets, zone
