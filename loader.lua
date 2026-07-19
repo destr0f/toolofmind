@@ -6,7 +6,7 @@
 -- WindUI bundled SHA256: db2abdef56e94d0ad0655cefc980484198ef17e3996a82a898caec6100ee1401
 
 local __psxEnv = type(getgenv) == "function" and getgenv() or _G
-local __PSX_LOADER_VERSION = "3.7.0"
+local __PSX_LOADER_VERSION = "3.8.0"
 local __PSX_TRACE_FILE = "PSX_OG_loader_trace.txt"
 local __PSX_ERROR_FILE = "PSX_OG_loader_error.txt"
 local __PSX_WIND_RAW_SIZE = 254937
@@ -1104,7 +1104,14 @@ local function __psxDecodeBase85(data, expectedLength)
     return output
 end
 
-local function __psxDecompressLzss(input, inputLength, expectedLength, progressPhase, returnBuffer)
+local function __psxDecompressLzss(
+    input,
+    inputLength,
+    expectedLength,
+    progressPhase,
+    returnBuffer,
+    allowYield
+)
     local output = buffer.create(expectedLength)
     local inputPosition = 0
     local outputPosition = 0
@@ -1153,7 +1160,9 @@ local function __psxDecompressLzss(input, inputLength, expectedLength, progressP
                     tostring(outputPosition) .. "/" .. tostring(expectedLength)
                 )
             end
-            task.wait()
+            if allowYield ~= false then
+                task.wait()
+            end
             nextYield = outputPosition + 16384
         end
     end
@@ -1213,7 +1222,8 @@ task.defer(function()
                 block.PackedSize,
                 block.RawSize,
                 "04 main block " .. tostring(index) .. " progress",
-                true
+                true,
+                false
             )
             mainPacked = nil
 
