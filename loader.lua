@@ -1,4 +1,4 @@
-local VERSION = "1.0.1"
+local VERSION = "1.1.0"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -52,6 +52,8 @@ local connections = {}
 local config = {
 PetFarm = false,
 Mode = "Different Strongest",
+World = "Current World",
+Zone = "Player Zone",
 Orbs = false,
 Lootbags = false,
 AntiAFK = true,
@@ -104,6 +106,70 @@ if a == b then return true end
 if #a < 4 or #b < 4 then return false end
 return string.find(a, b, 1, true) ~= nil or string.find(b, a, 1, true) ~= nil
 end
+local WorldOrder = {
+"Spawn World", "Fantasy World", "Tech World", "Axolotl Ocean",
+"Pixel World", "Cat World", "The Void", "Doodle World",
+"Kawaii World", "Dog World", "Diamond Mine", "Christmas Event", "Trading Plaza",
+}
+local WorldZones = {
+["Spawn World"] = {
+"Shop", "Town", "Forest", "Beach", "Mine", "Winter", "Glacier",
+"Desert", "Volcano", "Cave", "VIP", "Tech Entry",
+},
+["Fantasy World"] = {
+"Fantasy Shop", "Enchanted Forest", "Portals", "Ancient Island", "Samurai Island",
+"Candy Island", "Haunted Island", "Hell Island", "Heaven Island", "Heaven's Gate",
+},
+["Tech World"] = {
+"Tech Shop", "Tech City", "Dark Tech", "Steampunk", "Steampunk Chest",
+"Alien Lab", "Alien Forest", "Giant Alien Chest", "Glitch", "Hacker Portal",
+},
+["Axolotl Ocean"] = { "Axolotl Ocean", "Axolotl Deep Ocean", "Axolotl Cave" },
+["Pixel World"] = { "Pixel Forest", "Pixel Kyoto", "Pixel Alps", "Pixel Vault" },
+["Cat World"] = { "Cat Paradise", "Cat Backyard", "Cat Taiga", "Cat Kingdom", "Cat Throne Room" },
+["The Void"] = { "The Void" },
+["Doodle World"] = {
+"Doodle Shop", "Doodle Meadow", "Doodle Peaks", "Doodle Farm", "Doodle Barn",
+"Doodle Oasis", "Doodle Woodlands", "Doodle Safari", "Doodle Fairyland", "Doodle Cave",
+},
+["Kawaii World"] = { "Kawaii Tokyo", "Kawaii Village", "Kawaii Candyland", "Kawaii Temple", "Kawaii Dojo" },
+["Dog World"] = { "Dog Park", "Dog City", "Dog Firehouse", "Dog Mansion", "Dog Club" },
+["Diamond Mine"] = { "Paradise Cave", "Cyber Cavern", "Mystic Mine" },
+["Christmas Event"] = { "Christmas Event" },
+["Trading Plaza"] = { "Trading Plaza" },
+}
+local ZoneAliases = {
+["Fantasy Shop"] = "Shop",
+["Tech Shop"] = "Shop",
+["Doodle Shop"] = "Shop",
+["Steampunk Chest Area"] = "Steampunk Chest",
+}
+local WorldAliases = {
+["spawn"] = "Spawn World",
+["spawn world"] = "Spawn World",
+["fantasy"] = "Fantasy World",
+["fantasy world"] = "Fantasy World",
+["tech"] = "Tech World",
+["tech world"] = "Tech World",
+["axolotl"] = "Axolotl Ocean",
+["axolotl ocean"] = "Axolotl Ocean",
+["pixel"] = "Pixel World",
+["pixel world"] = "Pixel World",
+["cat"] = "Cat World",
+["cat world"] = "Cat World",
+["void"] = "The Void",
+["the void"] = "The Void",
+["doodle"] = "Doodle World",
+["doodle world"] = "Doodle World",
+["kawaii"] = "Kawaii World",
+["kawaii world"] = "Kawaii World",
+["dog"] = "Dog World",
+["dog world"] = "Dog World",
+["diamond mine"] = "Diamond Mine",
+["christmas"] = "Christmas Event",
+["christmas event"] = "Christmas Event",
+["trading plaza"] = "Trading Plaza",
+}
 local function readObjectValue(object, name)
 if not object then return nil end
 local child = object:FindFirstChild(name .. "_Attr") or object:FindFirstChild(name)
@@ -269,12 +335,104 @@ BossChestZones = {
 ["hacker chest"] = "Hacker Portal",
 ["giant hacker chest"] = "Hacker Portal",
 }
+local cachedWorld, nextWorldCheck = nil, 0
+local function resolveWorldName(rawWorld)
+if rawWorld == nil then return nil end
+local alias = WorldAliases[normalize(rawWorld)]
+if alias then return alias end
+for _, worldName in ipairs(WorldOrder) do
+if namesMatch(rawWorld, worldName) then return worldName end
+end
+return tostring(rawWorld)
+end
+local function getLiveAreaNames()
+local names = {}
+local map = workspace:FindFirstChild("__MAP")
+local areas = map and map:FindFirstChild("Areas")
+if areas then
+for _, area in ipairs(areas:GetChildren()) do table.insert(names, area.Name) end
+table.sort(names)
+end
+return names
+end
+local function getCurrentWorld()
+if os.clock() < nextWorldCheck and cachedWorld then return cachedWorld end
+nextWorldCheck = os.clock() + 0.25
+local worldCmds = Library and Library.WorldCmds
+if worldCmds and type(worldCmds.Get) == "function" then
+local ok, rawWorld = pcall(worldCmds.Get)
+if ok and rawWorld then
+cachedWorld = resolveWorldName(rawWorld)
+return cachedWorld
+end
+end
+local counts = {}
+for _, record in pairs(coinRecords) do
+local worldName = resolveWorldName(record.World)
+if worldName then counts[worldName] = (counts[worldName] or 0) + 1 end
+end
+local bestWorld, bestCount = nil, 0
+for worldName, count in pairs(counts) do
+if count > bestCount then bestWorld, bestCount = worldName, count end
+end
+if not bestWorld then
+local liveAreas = getLiveAreaNames()
+for worldName, zones in pairs(WorldZones) do
+local score = 0
+for _, areaName in ipairs(liveAreas) do
+for _, zoneName in ipairs(zones) do
+if namesMatch(areaName, ZoneAliases[zoneName] or zoneName) then
+score = score + 1
+break
+end
+end
+end
+if score > bestCount then bestWorld, bestCount = worldName, score end
+end
+end
+cachedWorld = bestWorld or "Unknown World"
+return cachedWorld
+end
+local function worldMatches(rawWorld, displayWorld)
+if rawWorld == nil or rawWorld == "" then return true end
+return namesMatch(resolveWorldName(rawWorld), displayWorld)
+end
+local function getSelectedWorld()
+return config.World == "Current World" and getCurrentWorld() or config.World
+end
+local function getSelectedZone()
+if config.Zone == "Player Zone" then return getPlayerZone() end
+return ZoneAliases[config.Zone] or config.Zone
+end
+local function getZoneOptions(worldChoice)
+local options, seen = {}, {}
+local resolvedWorld = worldChoice == "Current World" and getCurrentWorld() or worldChoice
+local function add(zoneName)
+local key = normalize(zoneName)
+if key ~= "" and not seen[key] then
+seen[key] = true
+table.insert(options, tostring(zoneName))
+end
+end
+if worldChoice == "Current World" then add("Player Zone") end
+for _, zoneName in ipairs(WorldZones[resolvedWorld] or {}) do add(zoneName) end
+if worldChoice == "Current World" then
+for _, zoneName in ipairs(getLiveAreaNames()) do add(zoneName) end
+end
+for _, record in pairs(coinRecords) do
+if worldMatches(record.World, resolvedWorld) then
+add(BossChestZones[normalize(record.Name)] or record.Area)
+end
+end
+return options, resolvedWorld
+end
 local peakHealth = {}
 local snapshotBusy = false
 local nextSnapshotAt = 0
 local coinSignalsReady = false
 local coinGeneration = 0
 local coinEventRevision = 0
+local coinPetRevision = 0
 local removalRevisions = {}
 local function normalizePetSet(rawPets)
 local result = {}
@@ -304,6 +462,7 @@ coinRecords[id] = record
 local health = tonumber(data.h or data.Health or data.health)
 local maxHealth = tonumber(data.mh or data.MaxHealth or data.maxHealth)
 local position = data.p or data.Position or data.position
+local world = data.w or data.World or data.world
 if typeof(position) == "CFrame" then position = position.Position end
 if data.a ~= nil or data.Area ~= nil or data.area ~= nil then
 record.Area = tostring(data.a or data.Area or data.area)
@@ -311,6 +470,7 @@ end
 if data.n ~= nil or data.Name ~= nil or data.name ~= nil then
 record.Name = tostring(data.n or data.Name or data.name)
 end
+if world ~= nil then record.World = tostring(world) end
 if typeof(position) == "Vector3" then record.Position = position end
 if health ~= nil then record.Health = health end
 if maxHealth ~= nil then record.MaxHealth = maxHealth end
@@ -360,6 +520,7 @@ record.Model = model
 record.Position = getInstancePosition(model) or record.Position
 record.Area = readObjectValue(model, "Area") or record.Area
 record.Name = readObjectValue(model, "Name") or record.Name or model.Name
+record.World = readObjectValue(model, "World") or record.World
 local health = tonumber(readObjectValue(model, "Health"))
 if health ~= nil then
 if record.FromServer and tonumber(record.Health) ~= nil then
@@ -455,6 +616,7 @@ connect("Update Coin Pets", function(id, pets)
 local record = coinRecords[tostring(id)]
 if record then
 coinEventRevision = coinEventRevision + 1
+coinPetRevision = coinPetRevision + 1
 record.Pets = normalizePetSet(pets)
 record.EventRevision = coinEventRevision
 else
@@ -469,6 +631,7 @@ local worldChanged = signal.Fired("World Changed")
 track(worldChanged:Connect(function()
 coinGeneration = coinGeneration + 1
 coinEventRevision = 0
+coinPetRevision = 0
 table.clear(coinRecords)
 table.clear(peakHealth)
 table.clear(removalRevisions)
@@ -476,6 +639,8 @@ table.clear(boundsCache)
 currentZone = nil
 currentZoneAnchor = nil
 nextZoneCheck = 0
+cachedWorld = nil
+nextWorldCheck = 0
 nextWorkspaceScanAt = 0
 nextSnapshotAt = 0
 end))
@@ -510,25 +675,38 @@ end
 local function isBossChest(record)
 return BossChestNames[normalize(record and record.Name)] == true
 end
-local function recordInZone(record, zone)
+local function findZoneAnchor(zone)
+if currentZoneAnchor and namesMatch(zone, currentZone) then return currentZoneAnchor end
+for _, record in pairs(coinRecords) do
+local bossZone = BossChestZones[normalize(record.Name)]
+if bossZone and namesMatch(bossZone, zone) and typeof(record.Position) == "Vector3" then
+return record.Position
+end
+end
+return nil
+end
+local function recordInZone(record, zone, zoneAnchor)
 if not recordAlive(record) or not zone then return false end
 local normalizedName = normalize(record.Name)
 local bossZone = BossChestZones[normalizedName]
 if bossZone and namesMatch(bossZone, zone) then return true end
-if currentZoneAnchor and record.Position and namesMatch(zone, currentZone)
-and (record.Position - currentZoneAnchor).Magnitude <= 180 then return true end
+if zoneAnchor and record.Position and (record.Position - zoneAnchor).Magnitude <= 180 then return true end
 if record.Area and namesMatch(record.Area, zone) then return true end
 local detected = record.Position and areaForPosition(record.Position)
 return detected ~= nil and namesMatch(detected, zone)
 end
 local function orderedTargets(mode)
 refreshWorkspaceCoins()
-local zone = getPlayerZone()
+local world = getSelectedWorld()
+local zone = getSelectedZone()
+local zoneAnchor = findZoneAnchor(zone)
 local targets = {}
 for _, record in pairs(coinRecords) do
 local boss = isBossChest(record)
 local allowed = mode == "Boss Chest Only" and boss or mode ~= "Boss Chest Only" and not boss
-if allowed and recordInZone(record, zone) then table.insert(targets, record) end
+if allowed and worldMatches(record.World, world) and recordInZone(record, zone, zoneAnchor) then
+table.insert(targets, record)
+end
 end
 local strongest = mode ~= "Different Weakest"
 table.sort(targets, function(left, right)
@@ -546,94 +724,183 @@ return leftHealth < rightHealth
 end
 return left.Id < right.Id
 end)
-return targets, zone
+return targets, world, zone
 end
 local petStates = {}
 local rejectedUntil = {}
 local farmWasEnabled = false
-local function returnPet(petId)
-local network = networkReady()
-if network then pcall(network.Fire, "Change Pet Target", tostring(petId), "Player") end
+local driverStatus = "waiting for first target"
+local controllerHandlers = {}
+local nextControllerLookup = {}
+local function resolveControllerHandler(signalName)
+local cached = controllerHandlers[signalName]
+if type(cached) == "function" then return cached end
+if os.clock() < (nextControllerLookup[signalName] or 0) then return nil end
+nextControllerLookup[signalName] = os.clock() + 1
+local getter = type(getconnections) == "function" and getconnections
+or type(get_signal_cons) == "function" and get_signal_cons
+local signal = Library and Library.Signal
+if type(getter) ~= "function" or not signal or type(signal.Fired) ~= "function" then return nil end
+local eventOk, event = pcall(signal.Fired, signalName)
+if not eventOk or not event then return nil end
+local listOk, list = pcall(getter, event)
+if not listOk or type(list) ~= "table" then return nil end
+local candidates, preferred = {}, nil
+for _, connection in pairs(list) do
+local functionOk, callback = pcall(function() return connection.Function end)
+if functionOk and type(callback) == "function" then
+table.insert(candidates, callback)
+if debug and type(debug.info) == "function" then
+local sourceOk, source = pcall(debug.info, callback, "s")
+if sourceOk and string.find(string.lower(tostring(source)), "pets", 1, true) then
+preferred = callback
+end
+end
+end
+end
+local handler = preferred or (#candidates == 1 and candidates[1] or nil)
+if handler then controllerHandlers[signalName] = handler end
+return handler
+end
+local function callPetController(signalName, model)
+local handler = resolveControllerHandler(signalName)
+if handler then
+local ok, problem = pcall(handler, model)
+if ok then
+driverStatus = "game Pets handler"
+return true
+end
+controllerHandlers[signalName] = nil
+nextControllerLookup[signalName] = 0
+driverStatus = "handler error: " .. tostring(problem)
+end
+local signal = Library and Library.Signal
+if not signal or type(signal.Fire) ~= "function" then
+driverStatus = "Library.Signal.Fire unavailable"
+return false
+end
+local revision = coinPetRevision
+local ok, problem = pcall(signal.Fire, signalName, model)
+if not ok then
+driverStatus = "signal error: " .. tostring(problem)
+return false
+end
+driverStatus = "Library.Signal fallback"
+local deadline = os.clock() + 0.75
+repeat
+RunService.Heartbeat:Wait()
+until not running() or not config.PetFarm or coinPetRevision > revision or os.clock() >= deadline
+if coinPetRevision <= revision then driverStatus = "signal sent; awaiting server" end
+return true
+end
+local function getRecordModel(record)
+if record and record.Model and record.Model.Parent then return record.Model end
+local things = workspace:FindFirstChild("__THINGS")
+local folder = things and things:FindFirstChild("Coins")
+if not folder or not record then return nil end
+local direct = folder:FindFirstChild(tostring(record.Id))
+if direct then
+record.Model = direct
+return direct
+end
+for _, model in ipairs(folder:GetChildren()) do
+if tostring(readObjectValue(model, "ID") or model.Name) == tostring(record.Id) then
+record.Model = model
+return model
+end
+end
+return nil
 end
 local function clearAssignments(sendBack)
 if sendBack then
-for petId in pairs(petStates) do returnPet(petId) end
+local groups = {}
+for petId, state in pairs(petStates) do
+local ids = groups[state.CoinId]
+if not ids then ids = {}; groups[state.CoinId] = ids end
+table.insert(ids, tostring(petId))
+end
+task.spawn(function()
+local network = networkReady()
+if not network then return end
+for coinId, petIds in pairs(groups) do
+pcall(network.Invoke, "Leave Coin", tostring(coinId), petIds)
+for _, petId in ipairs(petIds) do
+pcall(network.Fire, "Change Pet Target", petId, "Player")
+end
+end
+end)
 end
 table.clear(petStates)
 table.clear(rejectedUntil)
 end
-local function acceptedPet(response, petId)
-if response == true then return true end
-if type(response) ~= "table" then return false end
-if response[petId] ~= nil then return response[petId] ~= false end
-for key, value in pairs(response) do
-if tostring(key) == petId then return value ~= false end
-if tostring(value) == petId then return true end
-end
-return false
-end
-local function sendFarmCommands(petId, coinId, expectedState)
-local network = networkReady()
-if not network or petStates[petId] ~= expectedState then return end
-pcall(network.Fire, "Change Pet Target", petId, "Coin", coinId)
-pcall(network.Fire, "Farm Coin", coinId, petId)
-end
-local function dispatchPlan(record, petIds)
+local function dispatchPlan(record, petIds, groupMode)
 if not recordAlive(record) or #petIds == 0 then return end
+local model = getRecordModel(record)
+if not model or not model:FindFirstChild("POS") then
+driverStatus = "coin model/POS unavailable"
+rejectedUntil[record.Id] = os.clock() + 0.4
+return
+end
 local coinId = tostring(record.Id)
 local stateTokens = {}
 for _, petId in ipairs(petIds) do
-local state = { CoinId = coinId, Phase = "joining", StartedAt = os.clock() }
+local state = { CoinId = coinId, Phase = "pending", StartedAt = os.clock() }
 petStates[petId] = state
 stateTokens[petId] = state
 end
-task.spawn(function()
-local network = networkReady()
-if not network then
+local firedAny = false
+if groupMode then
+firedAny = callPetController("Group Select Coin", model)
+else
+for _, petId in ipairs(petIds) do
+local state = stateTokens[petId]
+if running() and config.PetFarm and recordAlive(record) and petStates[petId] == state then
+local ok = callPetController("Select Coin", model)
+firedAny = ok or firedAny
+if not ok then petStates[petId] = nil end
+end
+end
+end
+if not firedAny then
 for petId, state in pairs(stateTokens) do
 if petStates[petId] == state then petStates[petId] = nil end
 end
-return
-end
-local ok, response = pcall(network.Invoke, "Join Coin", coinId, petIds)
-local anyAccepted = false
-for petId, state in pairs(stateTokens) do
-if petStates[petId] == state and config.PetFarm and running() and recordAlive(record) then
-local accepted = ok and (acceptedPet(response, petId) or (record.Pets and record.Pets[petId]))
-if accepted then
-anyAccepted = true
-state.Phase = "locked"
-sendFarmCommands(petId, coinId, state)
-task.delay(0.12, function()
-if running() and config.PetFarm and recordAlive(record) then
-sendFarmCommands(petId, coinId, state)
-end
-end)
-task.delay(0.45, function()
-if running() and config.PetFarm and recordAlive(record) then
-local current = petStates[petId]
-if current == state then
-local net = networkReady()
-if net then pcall(net.Fire, "Farm Coin", coinId, petId) end
+rejectedUntil[coinId] = os.clock() + 0.4
 end
 end
-end)
-else
-petStates[petId] = nil
-end
-end
-end
-if not anyAccepted then rejectedUntil[coinId] = os.clock() + 0.5 end
-end)
-end
-local function adoptServerAssignments(equipped)
+local function syncServerAssignments(equipped)
+local now = os.clock()
+local authoritative = {}
 for _, record in pairs(coinRecords) do
 if recordAlive(record) then
 for petId in pairs(record.Pets or {}) do
 petId = tostring(petId)
-if equipped[petId] and not petStates[petId] then
-petStates[petId] = { CoinId = record.Id, Phase = "locked", Adopted = true }
+if equipped[petId] then authoritative[petId] = tostring(record.Id) end
 end
+end
+end
+for petId, coinId in pairs(authoritative) do
+local state = petStates[petId]
+if not state or state.CoinId ~= coinId or state.Phase ~= "locked" then
+petStates[petId] = { CoinId = coinId, Phase = "locked", ConfirmedAt = now }
+else
+state.ConfirmedAt = now
+state.MissingSince = nil
+end
+end
+for petId, state in pairs(petStates) do
+local record = coinRecords[state.CoinId]
+if not equipped[petId] or not recordAlive(record) then
+petStates[petId] = nil
+elseif not authoritative[petId] then
+if state.Phase == "pending" then
+if now - (state.StartedAt or now) > 1.25 then
+petStates[petId] = nil
+rejectedUntil[state.CoinId] = now + 0.35
+end
+else
+state.MissingSince = state.MissingSince or now
+if now - state.MissingSince > 0.75 then petStates[petId] = nil end
 end
 end
 end
@@ -662,13 +929,7 @@ RunService.Heartbeat:Wait()
 local petIds = getEquippedPetIds()
 local equipped = {}
 for _, petId in ipairs(petIds) do equipped[petId] = true end
-for petId, state in pairs(petStates) do
-local record = coinRecords[state.CoinId]
-if not equipped[petId] or not recordAlive(record) or (state.Phase == "joining" and os.clock() - state.StartedAt > 2) then
-petStates[petId] = nil
-end
-end
-adoptServerAssignments(equipped)
+syncServerAssignments(equipped)
 local freePets = {}
 for _, petId in ipairs(petIds) do
 if not petStates[petId] then table.insert(freePets, petId) end
@@ -722,7 +983,8 @@ table.insert(plan.Pets, petId)
 claimed[record.Id] = true
 end
 end
-for _, plan in pairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
+local groupMode = config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only"
+for _, plan in pairs(plans) do dispatchPlan(plan.Record, plan.Pets, groupMode) end
 end
 end)
 task.spawn(function()
@@ -795,7 +1057,7 @@ Acrylic = false,
 local PetsTab = Window:Tab({ Title = "Pet Farm" })
 local LootTab = Window:Tab({ Title = "Loot" })
 local MiscTab = Window:Tab({ Title = "Misc" })
-local PetsSection = PetsTab:Section({ Title = "Current Zone Farm", Box = true, Opened = true })
+local PetsSection = PetsTab:Section({ Title = "Pet Farm", Box = true, Opened = true })
 PetsSection:Toggle({
 Title = "Enable Pet Farm",
 Desc = "Targets are locked until the coin is completely destroyed",
@@ -810,9 +1072,53 @@ Multi = false,
 AllowNone = false,
 Callback = function(value) config.Mode = value end,
 })
+local worldValues = { "Current World" }
+for _, worldName in ipairs(WorldOrder) do table.insert(worldValues, worldName) end
+local zoneDropdown, lastZoneSignature
+local function refreshZoneDropdown(force)
+if not zoneDropdown then return end
+local options, resolvedWorld = getZoneOptions(config.World)
+local signature = config.World .. "|" .. tostring(resolvedWorld) .. "|" .. table.concat(options, "\0")
+if not force and signature == lastZoneSignature then return end
+local selected = config.Zone
+local valid = false
+for _, option in ipairs(options) do
+if option == selected then valid = true; break end
+end
+if not valid then selected = config.World == "Current World" and "Player Zone" or options[1] end
+lastZoneSignature = signature
+zoneDropdown:Refresh(options)
+if selected then
+config.Zone = selected
+pcall(function() zoneDropdown:Select(selected) end)
+end
+end
+PetsSection:Dropdown({
+Title = "World",
+Desc = "Current World follows teleports and updates its zone list",
+Values = worldValues,
+Value = "Current World",
+Multi = false,
+AllowNone = false,
+Callback = function(value)
+config.World = value
+refreshZoneDropdown(true)
+end,
+})
+local initialZones = getZoneOptions("Current World")
+zoneDropdown = PetsSection:Dropdown({
+Title = "Zone",
+Desc = "Player Zone follows your character dynamically",
+Values = initialZones,
+Value = "Player Zone",
+Multi = false,
+AllowNone = false,
+Callback = function(value) config.Zone = value end,
+})
+lastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(initialZones, "\0")
 statusParagraph = PetsSection:Paragraph({
 Title = "Farm Status",
-Desc = "Waiting for Library.Network and the current zone...",
+Desc = "Waiting for the game pet controller and location data...",
 })
 local LootSection = LootTab:Section({ Title = "Loot Magnet", Box = true, Opened = true })
 LootSection:Toggle({
@@ -853,14 +1159,21 @@ Callback = shutdown,
 task.spawn(function()
 while task.wait(0.4) do
 if not running() then break end
-local targets, zone = orderedTargets(config.Mode)
+refreshZoneDropdown(false)
+local targets, world, zone = orderedTargets(config.Mode)
+local equippedCount = #getEquippedPetIds()
 local networkState = networkReady() and "ready" or "waiting"
+local signalState = Library.Signal and type(Library.Signal.Fire) == "function" and "ready" or "waiting"
 setStatus(string.format(
-"Zone: %s | targets: %d | assigned pets: %d | Network: %s",
+"World: %s | Zone: %s\nTargets: %d | pets: %d/%d | Network: %s | Select Coin: %s\nDriver: %s",
+tostring(world or "unknown"),
 tostring(zone or "unknown"),
 #targets,
 assignmentCount(),
-networkState
+equippedCount,
+networkState,
+signalState,
+driverStatus
 ))
 end
 end)
