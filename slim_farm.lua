@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and develop-only automation tests.
 
-local VERSION = "1.2.6-dev.1"
+local VERSION = "1.2.6-dev.2"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -67,6 +67,8 @@ local config = {
     Lootbags = false,
     AntiAFK = true,
     AutoTechDiamondPack = false,
+    AutoVIPRewards = false,
+    AutoRankRewards = false,
 }
 
 local DIAMOND_PACK_TIER = 4
@@ -74,6 +76,26 @@ local DIAMOND_PACK_MINIMUM = 1e12
 local DIAMOND_PACK_INTERVAL = 180
 local diamondPackNextCheck = 0
 local diamondPackBusy = false
+local VIP_REWARD_COOLDOWN = 14400
+local REWARD_RETRY_DELAY = 60
+local rewardServerTime
+local rewardClockStarted
+local rewardStates = {
+    VIP = {
+        Label = "VIP",
+        Command = "Redeem VIP Rewards",
+        ConfigKey = "AutoVIPRewards",
+        ProbePending = false,
+        NextAttempt = 0,
+    },
+    Rank = {
+        Label = "Rank",
+        Command = "Redeem Rank Rewards",
+        ConfigKey = "AutoRankRewards",
+        ProbePending = false,
+        NextAttempt = 0,
+    },
+}
 
 env.PSX_OG_SLIM_TOKEN = token
 
@@ -1618,7 +1640,9 @@ local function runtimePetCounts(petIds)
     return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
 end
 
-local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph
+local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph, rewardParagraph
+local rewardLines = { VIP = "Disabled.", Rank = "Disabled." }
+local lastRewardText
 local function setStatus(text)
     if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
@@ -1630,6 +1654,101 @@ local function setRate(text)
 end
 local function setDiamondPackStatus(text)
     if diamondPackParagraph then pcall(function() diamondPackParagraph:SetDesc(text) end) end
+end
+local function setRewardLine(kind, text)
+    rewardLines[kind] = text
+    local combined = "VIP: " .. tostring(rewardLines.VIP) .. "\nRank: " .. tostring(rewardLines.Rank)
+    if combined == lastRewardText then return end
+    lastRewardText = combined
+    if rewardParagraph then pcall(function() rewardParagraph:SetDesc(combined) end) end
+end
+
+local function formatRewardTime(seconds)
+    seconds = math.max(0, math.floor((tonumber(seconds) or 0) + 0.5))
+    local days = math.floor(seconds / 86400)
+    local hours = math.floor(seconds % 86400 / 3600)
+    local minutes = math.floor(seconds % 3600 / 60)
+    local secs = seconds % 60
+    if days > 0 then return string.format("%dd %02dh %02dm", days, hours, minutes) end
+    if hours > 0 then return string.format("%dh %02dm %02ds", hours, minutes, secs) end
+    return string.format("%dm %02ds", minutes, secs)
+end
+
+local function getRewardSave()
+    if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
+    local save
+    pcall(function() save = Library.Save.Get() end)
+    return type(save) == "table" and save or nil
+end
+
+local function getRewardServerTime()
+    if rewardServerTime ~= nil and rewardClockStarted ~= nil then
+        return rewardServerTime + (os.clock() - rewardClockStarted)
+    end
+
+    local network = networkReady()
+    if not network then return nil end
+    local ok, value = pcall(function() return network.Invoke("Get OSTime") end)
+    value = ok and tonumber(value) or nil
+    if value == nil then return nil end
+    rewardServerTime = value
+    rewardClockStarted = os.clock()
+    return value
+end
+
+local function getRewardTiming(kind)
+    local save = getRewardSave()
+    if not save then return nil, nil, "player save is unavailable" end
+    local serverTime = getRewardServerTime()
+    if serverTime == nil then return nil, nil, "server clock is unavailable" end
+
+    if kind == "VIP" then
+        local lastClaim = tonumber(save.VIPCooldown)
+        if lastClaim == nil then return nil, VIP_REWARD_COOLDOWN, "VIPCooldown is unavailable" end
+        return math.max(0, VIP_REWARD_COOLDOWN - (serverTime - lastClaim)), VIP_REWARD_COOLDOWN
+    end
+
+    local rankTimer = tonumber(save.RankTimer)
+    local ranks = Library.Directory and Library.Directory.Ranks
+    local rankData = type(ranks) == "table" and ranks[save.Rank] or nil
+    if type(rankData) ~= "table" then return nil, nil, "rank data is unavailable" end
+    if type(rankData.rewards) == "table" and #rankData.rewards == 0 then
+        return nil, nil, "current rank has no rewards"
+    end
+    local cooldown = tonumber(rankData.rewardCooldown)
+    if rankTimer == nil or cooldown == nil then return nil, cooldown, "rank timer is unavailable" end
+    return math.max(0, cooldown - (serverTime - rankTimer)), cooldown
+end
+
+local function invokeReward(kind)
+    local state = rewardStates[kind]
+    local network = networkReady()
+    local reply
+    local succeeded = false
+
+    if not network then
+        reply = "Local error: Library.Network is not ready; no request sent."
+    else
+        local callOk, accepted, serverMessage = pcall(function()
+            return network.Invoke(state.Command)
+        end)
+        if not callOk then
+            reply = "Transport error: " .. tostring(accepted)
+        elseif accepted then
+            succeeded = true
+            reply = "Server accepted: reward redeemed."
+        else
+            local reason = serverMessage ~= nil and tostring(serverMessage)
+                or "request rejected (cooldown/not eligible)"
+            reply = "Server reached: " .. reason
+        end
+    end
+
+    state.LastReply = reply
+    state.LastSucceeded = succeeded
+    trace(string.lower(state.Label) .. " reward", reply)
+    setRewardLine(kind, reply)
+    return succeeded
 end
 
 local function runDiamondPackCheck()
@@ -2081,6 +2200,42 @@ diamondPackParagraph = DiamondPackSection:Paragraph({
     Desc = "Disabled. Uses Library.Network.Invoke(\"Buy DiamondPack\", 4); no session remote index is stored.",
 })
 
+local RewardsSection = MiscTab:Section({ Title = "Develop: Auto Rewards", Box = true, Opened = true })
+RewardsSection:Toggle({
+    Title = "Auto VIP Rewards",
+    Desc = "Runs one server probe immediately, then redeems automatically when the four-hour timer is ready",
+    Value = false,
+    Callback = function(value)
+        local enabled = value == true
+        config.AutoVIPRewards = enabled
+        local state = rewardStates.VIP
+        state.ProbePending = enabled
+        state.NextAttempt = 0
+        state.LastReply = nil
+        state.LastSucceeded = nil
+        setRewardLine("VIP", enabled and "Enabled; initial server probe pending..." or "Disabled.")
+    end,
+})
+RewardsSection:Toggle({
+    Title = "Auto Rank Rewards",
+    Desc = "Runs one server probe immediately, then follows the current rank reward cooldown",
+    Value = false,
+    Callback = function(value)
+        local enabled = value == true
+        config.AutoRankRewards = enabled
+        local state = rewardStates.Rank
+        state.ProbePending = enabled
+        state.NextAttempt = 0
+        state.LastReply = nil
+        state.LastSucceeded = nil
+        setRewardLine("Rank", enabled and "Enabled; initial server probe pending..." or "Disabled.")
+    end,
+})
+rewardParagraph = RewardsSection:Paragraph({
+    Title = "Reward Server Status",
+    Desc = "VIP: Disabled.\nRank: Disabled.",
+})
+
 local shutdownStarted = false
 
 local function hideInterface()
@@ -2106,6 +2261,8 @@ local function shutdown(reason)
     trace("stop requested", tostring(reason or "reload"))
     config.PetFarm = false
     config.AutoTechDiamondPack = false
+    config.AutoVIPRewards = false
+    config.AutoRankRewards = false
     farmResetRequested = false
     if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
     disconnectAll()
@@ -2156,6 +2313,47 @@ task.spawn(function()
                 local status = "Worker error: " .. tostring(problem)
                 trace("diamond pack", status)
                 setDiamondPackStatus(status .. "\nNext retry in 3 minutes.")
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    local order = { "VIP", "Rank" }
+    while task.wait(1) do
+        if not running() then break end
+        local now = os.clock()
+
+        for _, kind in ipairs(order) do
+            local state = rewardStates[kind]
+            if config[state.ConfigKey] then
+                if state.ProbePending then
+                    state.ProbePending = false
+                    local succeeded = invokeReward(kind)
+                    local _, cooldown = getRewardTiming(kind)
+                    state.NextAttempt = now + (succeeded and (cooldown or REWARD_RETRY_DELAY) or REWARD_RETRY_DELAY)
+                else
+                    local remaining, cooldown, timingError = getRewardTiming(kind)
+                    if remaining == nil then
+                        if timingError ~= "current rank has no rewards" and now >= state.NextAttempt then
+                            local succeeded = invokeReward(kind)
+                            state.NextAttempt = now + (succeeded and (cooldown or REWARD_RETRY_DELAY) or REWARD_RETRY_DELAY)
+                        else
+                            local prefix = state.LastReply and (state.LastReply .. " | ") or ""
+                            setRewardLine(kind, prefix .. "Timer: " .. tostring(timingError))
+                        end
+                    elseif remaining > 0 then
+                        local prefix = state.LastReply and (state.LastReply .. " | ") or ""
+                        setRewardLine(kind, prefix .. "ready in " .. formatRewardTime(remaining))
+                    elseif now >= state.NextAttempt then
+                        local succeeded = invokeReward(kind)
+                        state.NextAttempt = now + (succeeded and (cooldown or REWARD_RETRY_DELAY) or REWARD_RETRY_DELAY)
+                    else
+                        local prefix = state.LastReply and (state.LastReply .. " | ") or ""
+                        local waitLabel = state.LastSucceeded and "next check in " or "retry in "
+                        setRewardLine(kind, prefix .. waitLabel .. formatRewardTime(state.NextAttempt - now))
+                    end
+                end
             end
         end
     end
