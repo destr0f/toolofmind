@@ -307,6 +307,8 @@
       return names
   end
 
+  local getServerCurrentWorldName
+  local getServerZoneNames
   local cachedCurrentWorld = nil
   local nextCurrentWorldRefresh = 0
 
@@ -316,6 +318,14 @@
           return cachedCurrentWorld
       end
       nextCurrentWorldRefresh = now + 0.25
+
+      if type(getServerCurrentWorldName) == "function" then
+          local serverWorld = getServerCurrentWorldName()
+          if serverWorld then
+              cachedCurrentWorld = serverWorld
+              return cachedCurrentWorld
+          end
+      end
 
       local evidence = getLiveMapAreaNames()
       local bestWorld, bestScore = nil, 0
@@ -366,6 +376,15 @@
           end
       end
 
+      if type(getServerZoneNames) == "function" then
+          for _, zoneName in ipairs(getServerZoneNames(resolvedWorld)) do
+              if not seen[zoneName] then
+                  seen[zoneName] = true
+                  table.insert(options, zoneName)
+              end
+          end
+      end
+
       return options, resolvedWorld
   end
   
@@ -387,6 +406,7 @@
   end
   
   local getCoinPosition
+  local getServerDedicatedChestZoneAtPosition
 
   local DedicatedChestZoneByCoinName = {
       ["giant alien chest"] = "Giant Alien Chest",
@@ -555,7 +575,9 @@
       local character = localPlayer.Character
       local root = character and character:FindFirstChild("HumanoidRootPart")
       cachedPlayerArea = root and (
-          getDedicatedChestZoneAtPosition(root.Position)
+          (type(getServerDedicatedChestZoneAtPosition) == "function"
+              and getServerDedicatedChestZoneAtPosition(root.Position))
+          or getDedicatedChestZoneAtPosition(root.Position)
           or getAreaForPosition(root.Position)
       ) or nil
       return cachedPlayerArea
@@ -1532,12 +1554,12 @@
       elseif mode == "DifferentWeakest" then
           petModeSettingsSection:Paragraph({
               Title = "Раздельный фарм слабых",
-              Desc = "Каждый питомец получает отдельную слабую цель. Обычные Chest разрешены, босс-сундуки исключены."
+              Desc = "Каждый питомец получает отдельную слабую цель. Если целей меньше питомцев, оставшиеся подключаются к лучшим доступным. Босс-сундуки исключены."
           })
       else
           petModeSettingsSection:Paragraph({
               Title = "Раздельный фарм сильных",
-              Desc = "Каждый питомец получает отдельную прочную цель. Обычные Chest разрешены, босс-сундуки исключены."
+              Desc = "Цели сортируются по серверному HP, каждый питомец получает следующую по силе. При нехватке целей питомцы не простаивают. Босс-сундуки исключены."
           })
       end
   end
@@ -1947,6 +1969,600 @@
       return value ~= nil and tostring(value) or coin.Name
   end
 
+  local getCoinHealth
+  local getCoinPriorityHealth
+  local readCoinBool
+  local coinCanBeFarmed
+  local getCoinName
+  local normalizeCoinName
+  local BossChestNames
+
+  -- Серверный каталог монет является главным источником состояния. Модели в
+  -- Workspace используются только для локальной анимации движения питомца.
+  local serverCoinRecords = {}
+  local serverCoinSnapshotReady = false
+  local serverCoinNetworkReady = false
+  local serverCoinFetchInFlight = false
+  local serverCoinFetchRequested = true
+  local serverCoinNextFetchAt = 0
+  local serverCoinEventRevision = 0
+  local serverCoinRemovalRevisions = {}
+  local serverChestAnchors = {}
+  local allocatorWakeRevision = 0
+
+  local function wakePetAllocator()
+      allocatorWakeRevision = allocatorWakeRevision + 1
+  end
+
+  local function refreshCoinsFolderReference()
+      local currentThings = workspace:FindFirstChild("__THINGS")
+      coinsFolder = currentThings and currentThings:FindFirstChild("Coins")
+      return coinsFolder
+  end
+
+  local function resolveDisplayWorldName(rawWorld)
+      if rawWorld == nil then return nil end
+      for _, worldName in ipairs(WorldOrder) do
+          if areaNamesMatch(rawWorld, worldName) then
+              return worldName
+          end
+      end
+      return tostring(rawWorld)
+  end
+
+  local function worldNamesMatch(rawWorld, displayWorld)
+      if rawWorld == nil or rawWorld == "" or displayWorld == nil then return true end
+      return areaNamesMatch(rawWorld, displayWorld)
+          or resolveDisplayWorldName(rawWorld) == displayWorld
+  end
+
+  local function getServerCoinDedicatedZone(record)
+      if type(record) ~= "table" then return nil end
+      return DedicatedChestZoneByCoinName[normalizeAreaName(record.Name)]
+  end
+
+  local function normalizeNetworkPetSet(rawPets)
+      local result = {}
+      if type(rawPets) ~= "table" then return result end
+
+      for key, value in pairs(rawPets) do
+          local petId = nil
+          if type(key) == "number" then
+              if type(value) == "table" then
+                  petId = rawget(value, "uid") or rawget(value, "id")
+              else
+                  petId = value
+              end
+          elseif value == true then
+              petId = key
+          elseif type(value) == "table" then
+              petId = rawget(value, "uid") or rawget(value, "id") or key
+          elseif type(value) == "string" then
+              petId = value
+          elseif value ~= false and value ~= nil then
+              petId = key
+          end
+
+          if petId ~= nil then
+              result[tostring(petId)] = true
+          end
+      end
+      return result
+  end
+
+  local function updateServerChestAnchor(record)
+      local zoneName = getServerCoinDedicatedZone(record)
+      if not zoneName or typeof(record.Position) ~= "Vector3" then return end
+      local worldName = resolveDisplayWorldName(record.World) or tostring(record.World or "")
+      serverChestAnchors[worldName .. "|" .. zoneName] = record.Position
+  end
+
+  local function applyServerCoinData(rawCoinId, data, fromEvent)
+      if rawCoinId == nil or type(data) ~= "table" then return nil end
+      local coinId = tostring(rawCoinId)
+      local record = serverCoinRecords[coinId]
+      if not record then
+          record = {
+              IsServerCoinRecord = true,
+              Id = coinId,
+              PetSet = {}
+          }
+          serverCoinRecords[coinId] = record
+      end
+
+      local area = rawget(data, "a") or rawget(data, "Area") or rawget(data, "area")
+      local world = rawget(data, "w") or rawget(data, "World") or rawget(data, "world")
+      local name = rawget(data, "n") or rawget(data, "Name") or rawget(data, "name")
+      local position = rawget(data, "p") or rawget(data, "Position") or rawget(data, "position")
+      local health = tonumber(rawget(data, "h") or rawget(data, "Health") or rawget(data, "health"))
+      local maxHealth = tonumber(rawget(data, "mh") or rawget(data, "MaxHealth") or rawget(data, "maxHealth"))
+
+      if area ~= nil then record.Area = tostring(area) end
+      if world ~= nil then record.World = tostring(world) end
+      if name ~= nil then record.Name = tostring(name) end
+      if typeof(position) == "Vector3" then record.Position = position end
+      if health ~= nil then record.Health = health end
+      if maxHealth ~= nil then record.MaxHealth = maxHealth end
+      record.Health = tonumber(record.Health) or 0
+      record.MaxHealth = math.max(tonumber(record.MaxHealth) or record.Health, record.Health)
+      record.Removed = false
+
+      local rawPets = rawget(data, "pets") or rawget(data, "Pets")
+      if rawPets ~= nil then
+          record.PetSet = normalizeNetworkPetSet(rawPets)
+      end
+
+      if fromEvent then
+          serverCoinEventRevision = serverCoinEventRevision + 1
+          record.EventRevision = serverCoinEventRevision
+          serverCoinRemovalRevisions[coinId] = nil
+      end
+      updateServerChestAnchor(record)
+      return record
+  end
+
+  local function removeServerCoin(rawCoinId, fromEvent)
+      local coinId = tostring(rawCoinId)
+      local record = serverCoinRecords[coinId]
+      if fromEvent then
+          serverCoinEventRevision = serverCoinEventRevision + 1
+          serverCoinRemovalRevisions[coinId] = serverCoinEventRevision
+      end
+      if record then
+          record.Health = 0
+          record.Removed = true
+          record.PetSet = {}
+          if fromEvent then
+              record.EventRevision = serverCoinEventRevision
+          end
+          serverCoinRecords[coinId] = nil
+      end
+      wakePetAllocator()
+  end
+
+  local function requestServerCoinRefresh(immediate)
+      serverCoinFetchRequested = true
+      if immediate then serverCoinNextFetchAt = 0 end
+      wakePetAllocator()
+  end
+
+  local function connectNamedSignal(signalFactory, signalName, handler)
+      local signal
+      local success = pcall(function() signal = signalFactory(signalName) end)
+      if not success or not signal or type(signal.Connect) ~= "function" then
+          return false
+      end
+
+      local connected, connection = pcall(function()
+          return signal:Connect(function(...)
+              local handled, message = pcall(handler, ...)
+              if not handled then
+                  warn("[PSX farm] " .. tostring(signalName) .. ": " .. tostring(message))
+              end
+          end)
+      end)
+      if connected and connection then
+          trackRunConnection(connection)
+          return true
+      end
+      return false
+  end
+
+  local function ensureServerCoinNetwork()
+      if serverCoinNetworkReady then return true end
+      local library = getPSXLibrary()
+      local network = library and library.Network
+      if not network or type(network.Invoke) ~= "function" or type(network.Fired) ~= "function" then
+          return false
+      end
+      if library.Loaded ~= nil and library.Loaded ~= true then return false end
+
+      local fired = function(name) return network.Fired(name) end
+      connectNamedSignal(fired, "New Coin", function(coinId, data)
+          applyServerCoinData(coinId, data, true)
+          wakePetAllocator()
+      end)
+      connectNamedSignal(fired, "Update Coin Pets", function(coinId, pets)
+          local record = serverCoinRecords[tostring(coinId)]
+          if record then
+              record.PetSet = normalizeNetworkPetSet(pets)
+              serverCoinEventRevision = serverCoinEventRevision + 1
+              record.EventRevision = serverCoinEventRevision
+          else
+              requestServerCoinRefresh(true)
+          end
+          wakePetAllocator()
+      end)
+      connectNamedSignal(fired, "Update Coin Health", function(coinId, health)
+          local record = serverCoinRecords[tostring(coinId)]
+          if record then
+              record.Health = tonumber(health) or record.Health or 0
+              serverCoinEventRevision = serverCoinEventRevision + 1
+              record.EventRevision = serverCoinEventRevision
+              if record.Health <= 0 then record.Removed = true end
+          else
+              requestServerCoinRefresh(true)
+          end
+          wakePetAllocator()
+      end)
+      connectNamedSignal(fired, "Remove Coin", function(coinId)
+          removeServerCoin(coinId, true)
+      end)
+
+      local librarySignal = library.Signal
+      if librarySignal and type(librarySignal.Fired) == "function" then
+          connectNamedSignal(function(name) return librarySignal.Fired(name) end, "World Changed", function()
+              for _, record in pairs(serverCoinRecords) do
+                  record.Health = 0
+                  record.Removed = true
+              end
+              table.clear(serverCoinRecords)
+              table.clear(serverCoinRemovalRevisions)
+              table.clear(serverChestAnchors)
+              serverCoinSnapshotReady = false
+              cachedCurrentWorld = nil
+              nextCurrentWorldRefresh = 0
+              requestServerCoinRefresh(true)
+          end)
+      end
+
+      serverCoinNetworkReady = true
+      requestServerCoinRefresh(true)
+      return true
+  end
+
+  local function refreshServerCoinSnapshot()
+      if serverCoinFetchInFlight or not ensureServerCoinNetwork() then return false end
+      local library = getPSXLibrary()
+      local network = library and library.Network
+      if not network or type(network.Invoke) ~= "function" then return false end
+
+      serverCoinFetchInFlight = true
+      serverCoinFetchRequested = false
+      local eventRevisionAtStart = serverCoinEventRevision
+      local success, response = pcall(network.Invoke, "Get Coins")
+      local now = os.clock()
+
+      local processed = success and type(response) == "table"
+      if processed then
+          local processSuccess, processError = pcall(function()
+              local seen = {}
+              for coinId, data in pairs(response) do
+                  if type(data) == "table" then
+                      coinId = tostring(coinId)
+                      local removalRevision = tonumber(serverCoinRemovalRevisions[coinId]) or 0
+                      local existing = serverCoinRecords[coinId]
+                      local existingRevision = existing and (tonumber(existing.EventRevision) or 0) or 0
+                      if removalRevision <= eventRevisionAtStart then
+                          seen[coinId] = true
+                          serverCoinRemovalRevisions[coinId] = nil
+                          if existingRevision <= eventRevisionAtStart then
+                              applyServerCoinData(coinId, data, false)
+                          end
+                      end
+                  end
+              end
+
+              local staleIds = {}
+              for coinId, record in pairs(serverCoinRecords) do
+                  if not seen[coinId] and (tonumber(record.EventRevision) or 0) <= eventRevisionAtStart then
+                      table.insert(staleIds, coinId)
+                  end
+              end
+              for _, coinId in ipairs(staleIds) do removeServerCoin(coinId, false) end
+          end)
+          processed = processSuccess
+          if not processSuccess then
+              warn("[PSX farm] Get Coins apply failed: " .. tostring(processError))
+          end
+      end
+
+      if processed then
+          serverCoinSnapshotReady = true
+          serverCoinNextFetchAt = now + 4
+          cachedCurrentWorld = nil
+          nextCurrentWorldRefresh = 0
+          wakePetAllocator()
+      else
+          serverCoinFetchRequested = true
+          serverCoinNextFetchAt = now + 0.5
+      end
+
+      serverCoinFetchInFlight = false
+      return processed
+  end
+
+  getServerCurrentWorldName = function()
+      local library = getPSXLibrary()
+      local worldCmds = library and library.WorldCmds
+      if worldCmds and type(worldCmds.Get) == "function" then
+          local success, rawWorld = pcall(worldCmds.Get)
+          if success and rawWorld then return resolveDisplayWorldName(rawWorld) end
+      end
+
+      local worldCounts = {}
+      local bestWorld, bestCount = nil, 0
+      for _, record in pairs(serverCoinRecords) do
+          local displayName = resolveDisplayWorldName(record.World)
+          if displayName then
+              worldCounts[displayName] = (worldCounts[displayName] or 0) + 1
+              if worldCounts[displayName] > bestCount then
+                  bestWorld, bestCount = displayName, worldCounts[displayName]
+              end
+          end
+      end
+      if bestWorld then return bestWorld end
+      return nil
+  end
+
+  getServerZoneNames = function(displayWorld)
+      local names, seen = {}, {}
+      for _, record in pairs(serverCoinRecords) do
+          if worldNamesMatch(record.World, displayWorld) then
+              local dedicatedZone = getServerCoinDedicatedZone(record)
+              local zoneName = dedicatedZone or record.Area
+              if zoneName and zoneName ~= "" and not seen[zoneName] then
+                  seen[zoneName] = true
+                  table.insert(names, zoneName)
+              end
+          end
+      end
+      for key in pairs(serverChestAnchors) do
+          local worldName, zoneName = string.match(key, "^(.-)|(.+)$")
+          if worldNamesMatch(worldName, displayWorld) and not seen[zoneName] then
+              seen[zoneName] = true
+              table.insert(names, zoneName)
+          end
+      end
+      table.sort(names)
+      return names
+  end
+
+  getServerDedicatedChestZoneAtPosition = function(position)
+      if typeof(position) ~= "Vector3" then return nil end
+      local currentWorld = getServerCurrentWorldName() or getCurrentWorldName()
+      local bestZone, bestDistance = nil, math.huge
+      for key, anchorPosition in pairs(serverChestAnchors) do
+          local worldName, zoneName = string.match(key, "^(.-)|(.+)$")
+          if worldNamesMatch(worldName, currentWorld) then
+              local distance = (position - anchorPosition).Magnitude
+              if distance < bestDistance then
+                  bestZone, bestDistance = zoneName, distance
+              end
+          end
+      end
+      return bestDistance <= DEDICATED_CHEST_ZONE_RADIUS and bestZone or nil
+  end
+
+  local function isServerCoinRecord(target)
+      return type(target) == "table" and target.IsServerCoinRecord == true and target.Id ~= nil
+  end
+
+  local function getFarmTargetId(target)
+      if isServerCoinRecord(target) then return tostring(target.Id) end
+      return getCoinNetworkId(target)
+  end
+
+  local function getFarmTargetModel(target)
+      if not isServerCoinRecord(target) then return target end
+      if target.Model and target.Model.Parent then return target.Model end
+
+      local folder = refreshCoinsFolderReference()
+      if not folder then return nil end
+      local direct = folder:FindFirstChild(tostring(target.Id))
+      if direct then
+          target.Model = direct
+          return direct
+      end
+
+      for _, model in ipairs(folder:GetChildren()) do
+          if tostring(getCoinNetworkId(model)) == tostring(target.Id) then
+              target.Model = model
+              return model
+          end
+      end
+      return nil
+  end
+
+  local function getFarmTargetPosition(target)
+      if isServerCoinRecord(target) and typeof(target.Position) == "Vector3" then
+          return target.Position
+      end
+      return getCoinPosition(getFarmTargetModel(target))
+  end
+
+  local function getFarmTargetCurrentHealth(target)
+      if isServerCoinRecord(target) then return tonumber(target.Health) or 0 end
+      return getCoinHealth and getCoinHealth(target) or 0
+  end
+
+  local function getFarmTargetMaxHealth(target)
+      if isServerCoinRecord(target) then
+          return math.max(tonumber(target.MaxHealth) or 0, tonumber(target.Health) or 0)
+      end
+      return getCoinPriorityHealth and getCoinPriorityHealth(target) or getFarmTargetCurrentHealth(target)
+  end
+
+  local function getFarmTargetName(target)
+      if isServerCoinRecord(target) then return tostring(target.Name or target.Id or "") end
+      return getCoinName and getCoinName(target) or tostring(target and target.Name or "")
+  end
+
+  local function getServerAnchorForZone(worldName, zoneName)
+      for key, anchorPosition in pairs(serverChestAnchors) do
+          local anchorWorld, anchorZone = string.match(key, "^(.-)|(.+)$")
+          if worldNamesMatch(anchorWorld, worldName) and areaNamesMatch(anchorZone, zoneName) then
+              return anchorPosition
+          end
+      end
+      return nil
+  end
+
+  local function serverCoinIsInLocation(record)
+      local selectedWorld = getSelectedFarmWorld()
+      if record.World and selectedWorld and not worldNamesMatch(record.World, selectedWorld) then
+          return false
+      end
+
+      local selectedZone = getSelectedFarmZone()
+      if not selectedZone then return false end
+
+      local dedicatedZone = getServerCoinDedicatedZone(record)
+      if dedicatedZone then
+          return areaNamesMatch(dedicatedZone, selectedZone)
+      end
+      if areaNamesMatch(record.Area, selectedZone) then return true end
+
+      local anchor = getServerAnchorForZone(selectedWorld, selectedZone)
+      return anchor ~= nil
+          and typeof(record.Position) == "Vector3"
+          and (record.Position - anchor).Magnitude <= DEDICATED_CHEST_ZONE_RADIUS
+  end
+
+  local function farmTargetCanBeUsed(target)
+      if isServerCoinRecord(target) then
+          if target.Removed or (tonumber(target.Health) or 0) <= 0 then return false end
+          return serverCoinIsInLocation(target)
+      end
+      return coinCanBeFarmed and coinCanBeFarmed(target) and coinIsInLocation(target)
+  end
+
+  local function farmTargetIsAlive(target)
+      if isServerCoinRecord(target) then
+          return not target.Removed and (tonumber(target.Health) or 0) > 0
+      end
+      return target and target.Parent and getFarmTargetCurrentHealth(target) > 0
+  end
+
+  local function farmTargetIsBossChest(target)
+      return BossChestNames[normalizeCoinName(getFarmTargetName(target))] == true
+  end
+
+  local function collectFarmTargets()
+      local targets = {}
+      if serverCoinSnapshotReady then
+          for _, record in pairs(serverCoinRecords) do
+              if farmTargetCanBeUsed(record) then table.insert(targets, record) end
+          end
+          return targets
+      end
+
+      local folder = refreshCoinsFolderReference()
+      if folder then
+          for _, coin in ipairs(folder:GetChildren()) do
+              if farmTargetCanBeUsed(coin) then table.insert(targets, coin) end
+          end
+      end
+      return targets
+  end
+
+  local function getOrderedFarmTargets(strongestFirst, claimedIds, rejectedIds, filter)
+      local targets = {}
+      for _, target in ipairs(collectFarmTargets()) do
+          local targetId = tostring(getFarmTargetId(target) or "")
+          if targetId ~= ""
+              and not (claimedIds and claimedIds[targetId])
+              and not (rejectedIds and rejectedIds[targetId])
+              and (not filter or filter(target)) then
+              table.insert(targets, target)
+          end
+      end
+
+      table.sort(targets, function(left, right)
+          local leftHealth = getFarmTargetCurrentHealth(left)
+          local rightHealth = getFarmTargetCurrentHealth(right)
+          if leftHealth ~= rightHealth then
+              return strongestFirst and leftHealth > rightHealth or not strongestFirst and leftHealth < rightHealth
+          end
+
+          local leftMax = getFarmTargetMaxHealth(left)
+          local rightMax = getFarmTargetMaxHealth(right)
+          if leftMax ~= rightMax then
+              return strongestFirst and leftMax > rightMax or not strongestFirst and leftMax < rightMax
+          end
+          return tostring(getFarmTargetId(left)) < tostring(getFarmTargetId(right))
+      end)
+      return targets
+  end
+
+  local function getRegularTargetOrder(strongestFirst, claimedIds, rejectedIds, minimumMaxHealth)
+      return getOrderedFarmTargets(strongestFirst, claimedIds, rejectedIds, function(target)
+          return not farmTargetIsBossChest(target)
+              and (not minimumMaxHealth or getFarmTargetMaxHealth(target) >= minimumMaxHealth)
+      end)
+  end
+
+  local function getBossTargetOrder(rejectedIds)
+      return getOrderedFarmTargets(true, nil, rejectedIds, farmTargetIsBossChest)
+  end
+
+  local function getBigTargetMinimumHealth()
+      local largestMaxHealth = 0
+      for _, target in ipairs(getRegularTargetOrder(true)) do
+          largestMaxHealth = math.max(largestMaxHealth, getFarmTargetMaxHealth(target))
+      end
+      if largestMaxHealth <= 0 then return nil end
+      local threshold = math.clamp(tonumber(_G.BigCoinThreshold) or 65, 10, 100) / 100
+      return largestMaxHealth * threshold
+  end
+
+  local function findFarmTargetById(targetId)
+      targetId = tostring(targetId)
+      local record = serverCoinRecords[targetId]
+      if record and farmTargetIsAlive(record) then return record end
+
+      local folder = refreshCoinsFolderReference()
+      if not folder then return nil end
+      local direct = folder:FindFirstChild(targetId)
+      if direct and farmTargetIsAlive(direct) then return direct end
+      for _, coin in ipairs(folder:GetChildren()) do
+          if tostring(getCoinNetworkId(coin)) == targetId and farmTargetIsAlive(coin) then
+              return coin
+          end
+      end
+      return nil
+  end
+
+  local function readAuthoritativePetTargets(equippedPetSet)
+      local petTargets, occupiedTargetIds = {}, {}
+      if serverCoinSnapshotReady then
+          local targetIds = {}
+          for targetId in pairs(serverCoinRecords) do table.insert(targetIds, targetId) end
+          table.sort(targetIds)
+          for _, targetId in ipairs(targetIds) do
+              local record = serverCoinRecords[targetId]
+              if farmTargetIsAlive(record) then
+                  for petId in pairs(record.PetSet or {}) do
+                      petId = tostring(petId)
+                      if equippedPetSet[petId] and not petTargets[petId] then
+                          petTargets[petId] = record
+                          occupiedTargetIds[targetId] = true
+                      end
+                  end
+              end
+          end
+          return petTargets, occupiedTargetIds
+      end
+
+      local folder = refreshCoinsFolderReference()
+      if not folder then return petTargets, occupiedTargetIds end
+      for _, coin in ipairs(folder:GetChildren()) do
+          local pets = coin:FindFirstChild("Pets")
+          if pets and farmTargetIsAlive(coin) then
+              for _, marker in ipairs(pets:GetChildren()) do
+                  local idObject = marker:FindFirstChild("ID_Attr")
+                  local petId = idObject and tostring(idObject.Value)
+                      or tostring(marker:GetAttribute("ID_Attr") or marker:GetAttribute("ID") or marker.Name)
+                  if equippedPetSet[petId] then
+                      petTargets[petId] = coin
+                      occupiedTargetIds[tostring(getFarmTargetId(coin))] = true
+                  end
+              end
+          end
+      end
+      return petTargets, occupiedTargetIds
+  end
+
   local cachedPetRuntimeStates = nil
   local lastPetRuntimeScan = 0
 
@@ -1965,7 +2581,7 @@
           return cachedPetRuntimeStates
       end
 
-      if os.clock() - lastPetRuntimeScan < 2 then return nil end
+      if os.clock() - lastPetRuntimeScan < 0.25 then return nil end
       lastPetRuntimeScan = os.clock()
 
       local getGCObjects = getgc
@@ -1987,7 +2603,8 @@
       return nil
   end
 
-  local function bindLocalPetTargetByUID(petId, coin)
+  local function bindLocalPetTargetByUID(petId, target)
+      local coin = getFarmTargetModel(target)
       local pos = coin and coin:FindFirstChild("POS")
       if not pos then return false end
 
@@ -2012,7 +2629,8 @@
       return true
   end
 
-  local function localPetArrivedAtCoin(petId, coin)
+  local function localPetArrivedAtCoin(petId, target)
+      local coin = getFarmTargetModel(target)
       local pos = coin and coin:FindFirstChild("POS")
       if not pos then return false end
 
@@ -2025,43 +2643,41 @@
           and state.arrived == true
   end
   
-  local function syncPetTargetByUID(petId, coin)
+  local function syncPetTargetByUID(petId, target)
       local library = getPSXLibrary()
       local network = library and library.Network
       if not network or type(network.Fire) ~= "function" then return false end
 
       petId = tostring(petId)
-      local coinId = getCoinNetworkId(coin)
+      local coinId = getFarmTargetId(target)
       if not coinId then return false end
 
-      local targetSent = pcall(network.Fire, "Change Pet Target", petId, "Coin", coinId)
-      local farmSent = pcall(network.Fire, "Farm Coin", coinId, petId)
-      return targetSent and farmSent
+      return pcall(network.Fire, "Change Pet Target", petId, "Coin", coinId)
   end
 
-  local function fireFarmCoinByUID(petId, coin)
+  local function fireFarmCoinByUID(petId, target)
       local library = getPSXLibrary()
       local network = library and library.Network
       if not network or type(network.Fire) ~= "function" then return false end
 
-      local coinId = getCoinNetworkId(coin)
+      local coinId = getFarmTargetId(target)
       if not coinId then return false end
       return pcall(network.Fire, "Farm Coin", coinId, tostring(petId))
   end
 
-  local function joinPetsToCoinByUID(coin, petIds)
+  local function joinPetsToCoinByUID(target, petIds)
       local acceptedPets = {}
       local library = getPSXLibrary()
       local network = library and library.Network
       if not network
           or type(network.Invoke) ~= "function"
           or type(network.Fire) ~= "function"
-          or not coin
+          or not target
           or #petIds == 0 then
           return acceptedPets
       end
 
-      local coinId = getCoinNetworkId(coin)
+      local coinId = getFarmTargetId(target)
       if not coinId then return acceptedPets end
 
       local normalizedPetIds = {}
@@ -2082,6 +2698,9 @@
                       if tostring(responsePetId) == petId then
                           accepted = responseValue
                           break
+                      elseif tostring(responseValue) == petId then
+                          accepted = true
+                          break
                       end
                   end
               end
@@ -2092,7 +2711,7 @@
       return acceptedPets
   end
   
-  local function getCoinHealth(coin)
+  getCoinHealth = function(coin)
       local healthObject = coin:FindFirstChild("Health_Attr")
       if healthObject then
           local success, value = pcall(function() return healthObject.Value end)
@@ -2104,14 +2723,14 @@
 
   local CoinPeakHealth = setmetatable({}, { __mode = "k" })
 
-  local function getCoinPriorityHealth(coin)
+  getCoinPriorityHealth = function(coin)
       local currentHealth = getCoinHealth(coin)
       local peakHealth = math.max(CoinPeakHealth[coin] or 0, currentHealth)
       CoinPeakHealth[coin] = peakHealth
       return peakHealth
   end
   
-  local function readCoinBool(coin, name)
+  readCoinBool = function(coin, name)
       local object = coin:FindFirstChild(name .. "_Attr")
       if object then
           local success, value = pcall(function() return object.Value end)
@@ -2122,7 +2741,7 @@
       return coin:GetAttribute(name)
   end
   
-  local function coinCanBeFarmed(coin)
+  coinCanBeFarmed = function(coin)
       if not coin or not coin.Parent or not coin:FindFirstChild("POS") then return false end
       if getCoinHealth(coin) <= 0 then return false end
       if readCoinBool(coin, "IsFalling") == true then return false end
@@ -2130,7 +2749,7 @@
       return true
   end
   
-  local function getCoinName(coin)
+  getCoinName = function(coin)
       local nameObject = coin and coin:FindFirstChild("Name_Attr")
       if nameObject then
           local success, value = pcall(function() return nameObject.Value end)
@@ -2143,7 +2762,7 @@
       return coin and coin.Name or ""
   end
 
-  local function normalizeCoinName(name)
+  normalizeCoinName = function(name)
       name = string.lower(tostring(name or ""))
       name = string.gsub(name, "[%p_]+", " ")
       name = string.gsub(name, "%s+", " ")
@@ -2152,7 +2771,7 @@
 
   -- Только постоянные гигантские/AFK-сундуки из конечных зон.
   -- Обычные случайные Chest (например Enchanted Forest Chest) сюда не входят.
-  local BossChestNames = {
+  BossChestNames = {
       ["magma chest"] = true,
       ["volcano magma chest"] = true,
       ["giant tech chest"] = true,
@@ -2193,184 +2812,95 @@
       ["giant afk chest"] = true
   }
 
-  local function isBossChestCoin(coin)
-      return BossChestNames[normalizeCoinName(getCoinName(coin))] == true
-  end
-
-  local function getPriorityCoin(claimedCoins, failedCoins, strongestFirst, coinFilter)
-      if not coinsFolder then return nil end
-
-      claimedCoins = claimedCoins or {}
-      failedCoins = failedCoins or {}
-      local bestCoin = nil
-      local bestHealth = strongestFirst and -math.huge or math.huge
-      local bestId = nil
-
-      for _, coin in ipairs(coinsFolder:GetChildren()) do
-          if not claimedCoins[coin]
-              and not failedCoins[coin]
-              and coinCanBeFarmed(coin)
-              and coinIsInLocation(coin) then
-              local health = getCoinPriorityHealth(coin)
-              if not coinFilter or coinFilter(coin, health) then
-                  local coinId = tostring(getCoinNetworkId(coin) or coin.Name)
-                  local isBetter = strongestFirst and (health > bestHealth
-                          or health == bestHealth and (not bestId or coinId < bestId))
-                      or not strongestFirst and (health < bestHealth
-                          or health == bestHealth and (not bestId or coinId < bestId))
-                  if isBetter then
-                      bestCoin, bestHealth, bestId = coin, health, coinId
-                  end
-              end
-          end
-      end
-
-      return bestCoin
-  end
-
-  local function getStrongestBossChest(failedCoins)
-      return getPriorityCoin({}, failedCoins, true, function(coin)
-          return isBossChestCoin(coin)
-      end)
-  end
-
-  local function getStrongestRegularTarget(claimedCoins, failedCoins, minimumHealth)
-      return getPriorityCoin(claimedCoins, failedCoins, true, function(coin, health)
-          return not isBossChestCoin(coin) and (not minimumHealth or health >= minimumHealth)
-      end)
-  end
-
-  local function getWeakestRegularTarget(claimedCoins, failedCoins)
-      return getPriorityCoin(claimedCoins, failedCoins, false, function(coin)
-          return not isBossChestCoin(coin)
-      end)
-  end
-
-local function getMarkerPetUID(marker)
-    local idObject = marker:FindFirstChild("ID_Attr")
-    if idObject then
-        local success, value = pcall(function() return idObject.Value end)
-        if success and value ~= nil then return tostring(value) end
-    end
-    local value = marker:GetAttribute("ID_Attr")
-        or marker:GetAttribute("ID")
-    if value ~= nil then return tostring(value) end
-    return marker.Name
-end
-
-local function readLiveCoinPetAssignments(equippedPetSet)
-    local petCoins = {}
-    local occupiedCoins = {}
-    if not coinsFolder then return petCoins, occupiedCoins end
-
-    for _, coin in ipairs(coinsFolder:GetChildren()) do
-        local pets = coin:FindFirstChild("Pets")
-        if pets and getCoinHealth(coin) > 0 then
-            for _, marker in ipairs(pets:GetChildren()) do
-                local petId = getMarkerPetUID(marker)
-                if equippedPetSet[petId] then
-                    petCoins[petId] = coin
-                    occupiedCoins[coin] = true
-                end
-            end
-        end
-    end
-    return petCoins, occupiedCoins
-end
-
--- UID-распределитель: petUID блокируется за одной целью до её уничтожения.
--- Серверный Join Coin является авторитетным подтверждением назначения.
+-- Событийный UID-распределитель. После успешного Join Coin цель неизменна до
+-- Update Coin Health <= 0 / Remove Coin, поэтому питомцы не меняются монетами.
 task.spawn(function()
     local petStates = {}
-    local rejectedCoins = {}
-    local lockedGroupCoin = nil
+    local rejectedTargetIds = {}
+    local lockedGroupTargetId = nil
     local previousMode = _G.PetFarmMode
     local previousContext = nil
     local allocatorWasEnabled = false
-    local bigCoinHealthAnchor = 0
     local requestSerial = 0
+    local cachedPetIds = {}
+    local cachedEquippedPetSet = {}
+    local nextPetRefreshAt = 0
 
     local JOIN_RETRY_DELAY = 0.12
-    local MAX_JOIN_RETRIES = 2
-    local TARGET_SYNC_DELAY = 0.35
-    local SLOW_TARGET_SYNC_DELAY = 1.5
-    local FAST_TARGET_SYNC_ATTEMPTS = 3
-    local FAILURE_COOLDOWN = 0.15
-    local ACTIVE_TICK = 0.05
-    local IDLE_TICK = 0.5
-    local PET_LIST_REFRESH_INTERVAL = 0.5
-    local LIVE_ASSIGNMENT_SCAN_INTERVAL = 0.1
-    local cachedNormalizedPetIds = {}
-    local cachedEquippedPetSet = {}
-    local cachedLivePetCoins = {}
-    local cachedOccupiedCoins = {}
-    local nextPetListRefresh = 0
-    local nextLiveAssignmentScan = 0
-
-    local function targetIsAlive(coin)
-        return coin and coin.Parent and getCoinHealth(coin) > 0
-    end
+    local MAX_JOIN_ATTEMPTS = 3
+    local FAILURE_COOLDOWN = 0.3
+    local PET_REFRESH_INTERVAL = 0.5
+    local MAX_TARGET_SENDS = 2
+    local MAX_FARM_SENDS = 2
 
     local function releasePetState(petId)
         petStates[tostring(petId)] = nil
     end
 
     local function resetTransientState()
-        table.clear(rejectedCoins)
-        lockedGroupCoin = nil
-        bigCoinHealthAnchor = 0
-        nextLiveAssignmentScan = 0
+        table.clear(rejectedTargetIds)
+        lockedGroupTargetId = nil
     end
 
     local function resetAllState()
         table.clear(petStates)
-        table.clear(cachedNormalizedPetIds)
+        table.clear(cachedPetIds)
         table.clear(cachedEquippedPetSet)
-        table.clear(cachedLivePetCoins)
-        table.clear(cachedOccupiedCoins)
-        nextPetListRefresh = 0
+        nextPetRefreshAt = 0
         resetTransientState()
     end
 
-    local function updateBigCoinHealthAnchor()
-        if not coinsFolder then return nil end
-
-        local currentAnchor = 0
-        for _, coin in ipairs(coinsFolder:GetChildren()) do
-            if coinCanBeFarmed(coin)
-                and coinIsInLocation(coin)
-                and not isBossChestCoin(coin) then
-                currentAnchor = math.max(currentAnchor, getCoinPriorityHealth(coin))
-            end
-        end
-
-        bigCoinHealthAnchor = currentAnchor
-        if bigCoinHealthAnchor <= 0 then return nil end
-        local thresholdPercent = math.clamp(tonumber(_G.BigCoinThreshold) or 65, 10, 100)
-        return bigCoinHealthAnchor * (thresholdPercent / 100)
+    local function targetContainsPet(target, petId)
+        return isServerCoinRecord(target)
+            and target.PetSet
+            and target.PetSet[tostring(petId)] == true
     end
 
-    local function dispatchPetsToCoin(petIds, coin)
-        if not targetIsAlive(coin) or #petIds == 0 then return end
+    local function createReservedState(petId, target)
+        petId = tostring(petId)
+        local state = {
+            Target = target,
+            TargetId = tostring(getFarmTargetId(target)),
+            Phase = "reserved",
+            JoinAttempts = 0,
+            TargetSends = 0,
+            FarmSends = 0,
+            LocalBound = false,
+            MembershipConfirmed = false
+        }
+        petStates[petId] = state
+        return state
+    end
 
+    local function lockAcceptedPet(petId, state, target, now)
+        state.Phase = "locked"
+        state.AcceptedAt = now
+        state.MembershipConfirmed = state.MembershipConfirmed or targetContainsPet(target, petId)
+        state.LocalBound = bindLocalPetTargetByUID(petId, target)
+
+        state.TargetSends = state.TargetSends + 1
+        state.TargetSent = syncPetTargetByUID(petId, target)
+        state.NextTargetSendAt = now + 0.15
+
+        state.FarmSends = state.FarmSends + 1
+        state.ImmediateFarmSent = fireFarmCoinByUID(petId, target)
+        state.NextFarmSendAt = now + 0.2
+        state.ArrivalFarmSent = false
+    end
+
+    local function dispatchPetsToTarget(petIds, target)
+        if not farmTargetIsAlive(target) or #petIds == 0 then return end
+        local targetId = tostring(getFarmTargetId(target))
         local requestTokens = {}
+
         for _, rawPetId in ipairs(petIds) do
             local petId = tostring(rawPetId)
-            local state = petStates[petId]
-            if not state then
-                state = {
-                    Coin = coin,
-                    Phase = "reserved",
-                    Retries = 0
-                }
-                petStates[petId] = state
-            end
-
-            if state.Coin == coin and state.Phase ~= "joining" then
+            local state = petStates[petId] or createReservedState(petId, target)
+            if state.TargetId == targetId and state.Phase ~= "joining" then
                 requestSerial = requestSerial + 1
                 state.Phase = "joining"
                 state.RequestId = requestSerial
-                state.RequestedAt = os.clock()
+                state.JoinAttempts = (tonumber(state.JoinAttempts) or 0) + 1
                 requestTokens[petId] = requestSerial
             end
         end
@@ -2378,32 +2908,28 @@ task.spawn(function()
         local requestedPetIds = {}
         for petId in pairs(requestTokens) do table.insert(requestedPetIds, petId) end
         if #requestedPetIds == 0 then return end
+        table.sort(requestedPetIds)
 
         task.spawn(function()
-            local acceptedPets = joinPetsToCoinByUID(coin, requestedPetIds)
+            local acceptedPets = joinPetsToCoinByUID(target, requestedPetIds)
             local finishedAt = os.clock()
             local acceptedAny = false
 
             for _, petId in ipairs(requestedPetIds) do
                 local state = petStates[petId]
                 if state
-                    and state.Coin == coin
+                    and state.TargetId == targetId
                     and state.RequestId == requestTokens[petId] then
-                    if acceptedPets[petId] and _G.AutoPetCoins and isScriptRunning() and targetIsAlive(coin) then
+                    local accepted = acceptedPets[petId]
+                        or state.MembershipConfirmed
+                        or targetContainsPet(target, petId)
+
+                    if accepted and _G.AutoPetCoins and isScriptRunning() and farmTargetIsAlive(target) then
                         acceptedAny = true
-                        state.Phase = "assigned"
-                        state.AcceptedAt = finishedAt
-                        state.NextSyncAt = finishedAt + TARGET_SYNC_DELAY
-                        state.NextFarmAt = finishedAt + 0.35
-                        state.FarmAttemptsRemaining = 2
-                        state.ArrivalFarmSent = false
-                        state.MissingSince = nil
-                        state.HadLiveConfirmation = false
-                        state.SyncAttemptsRemaining = FAST_TARGET_SYNC_ATTEMPTS
-                        state.LocalBound = bindLocalPetTargetByUID(petId, coin)
-                        syncPetTargetByUID(petId, coin)
-                    elseif targetIsAlive(coin) and state.Retries < MAX_JOIN_RETRIES and _G.AutoPetCoins then
-                        state.Retries = state.Retries + 1
+                        lockAcceptedPet(petId, state, target, finishedAt)
+                    elseif farmTargetIsAlive(target)
+                        and state.JoinAttempts < MAX_JOIN_ATTEMPTS
+                        and _G.AutoPetCoins then
                         state.Phase = "retry"
                         state.RetryAt = finishedAt + JOIN_RETRY_DELAY
                     else
@@ -2412,16 +2938,15 @@ task.spawn(function()
                 end
             end
 
-            if not acceptedAny and targetIsAlive(coin) then
-                rejectedCoins[coin] = finishedAt + FAILURE_COOLDOWN
-                if lockedGroupCoin == coin then lockedGroupCoin = nil end
+            if not acceptedAny and farmTargetIsAlive(target) then
+                rejectedTargetIds[targetId] = finishedAt + FAILURE_COOLDOWN
+                if lockedGroupTargetId == targetId then lockedGroupTargetId = nil end
             end
+            wakePetAllocator()
         end)
     end
 
-    while task.wait(_G.AutoPetCoins and ACTIVE_TICK or IDLE_TICK) do
-        if not isScriptRunning() then break end
-
+    while isScriptRunning() do
         if not _G.AutoPetCoins then
             if allocatorWasEnabled then
                 resetAllState()
@@ -2429,182 +2954,208 @@ task.spawn(function()
                 previousContext = nil
                 allocatorWasEnabled = false
             end
+            task.wait(0.05)
             continue
         end
 
-        if not allocatorWasEnabled then
-            allocatorWasEnabled = true
-            previousMode = _G.PetFarmMode
-            previousContext = nil
+        RunService.Heartbeat:Wait()
+        if not isScriptRunning() then break end
+        allocatorWasEnabled = true
+
+        ensureServerCoinNetwork()
+        local now = os.clock()
+        if not serverCoinFetchInFlight
+            and (serverCoinFetchRequested or now >= serverCoinNextFetchAt) then
+            task.spawn(refreshServerCoinSnapshot)
         end
 
-        local currentThings = workspace:FindFirstChild("__THINGS")
-        coinsFolder = currentThings and currentThings:FindFirstChild("Coins")
-
-        local now = os.clock()
         local mode = _G.PetFarmMode or "DifferentStrongest"
         local context = getFarmContextKey()
         if mode ~= previousMode or context ~= previousContext then
-            -- Уже занятые питомцы заканчивают свои монеты; меняется только очередь новых целей.
+            -- Активные назначения не трогаем: новая стратегия влияет только на свободных питомцев.
             resetTransientState()
             previousMode = mode
             previousContext = context
         end
 
-        if now >= nextPetListRefresh then
-            nextPetListRefresh = now + PET_LIST_REFRESH_INTERVAL
-            table.clear(cachedNormalizedPetIds)
+        if now >= nextPetRefreshAt then
+            nextPetRefreshAt = now + PET_REFRESH_INTERVAL
+            table.clear(cachedPetIds)
             table.clear(cachedEquippedPetSet)
             for _, rawPetId in ipairs(getEquippedPetIds()) do
                 local petId = tostring(rawPetId)
-                table.insert(cachedNormalizedPetIds, petId)
+                table.insert(cachedPetIds, petId)
                 cachedEquippedPetSet[petId] = true
             end
+            table.sort(cachedPetIds)
         end
-        local normalizedPetIds = cachedNormalizedPetIds
-        local equippedPetSet = cachedEquippedPetSet
 
-        if #normalizedPetIds == 0 then
+        if #cachedPetIds == 0 then
             resetAllState()
             continue
         end
 
-        if now >= nextLiveAssignmentScan then
-            nextLiveAssignmentScan = now + LIVE_ASSIGNMENT_SCAN_INTERVAL
-            cachedLivePetCoins, cachedOccupiedCoins = readLiveCoinPetAssignments(equippedPetSet)
-        end
-        local livePetCoins = cachedLivePetCoins
-        local occupiedCoins = cachedOccupiedCoins
-
-        for coin, expiresAt in pairs(rejectedCoins) do
-            if not coin.Parent or now >= expiresAt then rejectedCoins[coin] = nil end
+        for targetId, expiresAt in pairs(rejectedTargetIds) do
+            if now >= expiresAt or not farmTargetIsAlive(findFarmTargetById(targetId)) then
+                rejectedTargetIds[targetId] = nil
+            end
         end
 
-        -- Удаляем блокировку только после смерти цели или снятия питомца с экипировки.
+        -- Единственные причины снять блокировку: питомец снят или монета уничтожена.
         for petId, state in pairs(petStates) do
-            if not equippedPetSet[petId] or not targetIsAlive(state.Coin) then
+            if not cachedEquippedPetSet[petId] or not farmTargetIsAlive(state.Target) then
                 releasePetState(petId)
             end
         end
 
-        -- Подхватываем назначения, уже подтверждённые сервером до запуска/после телепорта.
-        for petId, liveCoin in pairs(livePetCoins) do
+        local livePetTargets, occupiedTargetIds = readAuthoritativePetTargets(cachedEquippedPetSet)
+        for petId, liveTarget in pairs(livePetTargets) do
+            local liveTargetId = tostring(getFarmTargetId(liveTarget))
             local state = petStates[petId]
             if not state then
-                petStates[petId] = {
-                    Coin = liveCoin,
-                    Phase = "confirmed",
-                    Retries = 0,
-                    NextSyncAt = now + TARGET_SYNC_DELAY,
-                    HadLiveConfirmation = true,
-                    SyncAttemptsRemaining = 0,
-                    LocalBound = bindLocalPetTargetByUID(petId, liveCoin)
-                }
-            elseif state.Coin == liveCoin then
-                state.Phase = "confirmed"
-                state.MissingSince = nil
-                state.HadLiveConfirmation = true
-                state.SyncAttemptsRemaining = 0
-                if not state.LocalBound then
-                    state.LocalBound = bindLocalPetTargetByUID(petId, state.Coin)
+                -- Назначение существовало до запуска скрипта: принимаем его и не дублируем remotes.
+                state = createReservedState(petId, liveTarget)
+                state.Phase = "locked"
+                state.MembershipConfirmed = true
+                state.TargetSends = MAX_TARGET_SENDS
+                state.FarmSends = MAX_FARM_SENDS
+                state.ArrivalFarmSent = true
+                state.LocalBound = bindLocalPetTargetByUID(petId, liveTarget)
+            elseif state.TargetId == liveTargetId then
+                state.MembershipConfirmed = true
+                if state.Phase == "joining" or state.Phase == "retry" then
+                    state.Phase = "locked"
                 end
-                state.NextSyncAt = now + TARGET_SYNC_DELAY
             end
+            -- Конфликтующее событие не заменяет живую state.Target: это устраняет обмен целями.
         end
 
-        -- Retry всегда относится к той же самой монете: сменить цель здесь невозможно.
         for petId, state in pairs(petStates) do
             if state.Phase == "retry" and now >= (state.RetryAt or 0) then
-                dispatchPetsToCoin({ petId }, state.Coin)
-            elseif state.Phase == "assigned" or state.Phase == "confirmed" then
-                local liveIsDesired = livePetCoins[petId] == state.Coin
-                if not liveIsDesired and state.HadLiveConfirmation then
-                    state.HadLiveConfirmation = false
-                    state.SyncAttemptsRemaining = FAST_TARGET_SYNC_ATTEMPTS
-                    state.NextSyncAt = now
-                end
+                dispatchPetsToTarget({ petId }, state.Target)
+            elseif state.Phase == "locked" then
                 if not state.LocalBound then
-                    state.LocalBound = bindLocalPetTargetByUID(petId, state.Coin)
+                    state.LocalBound = bindLocalPetTargetByUID(petId, state.Target)
                 end
-                if not state.ArrivalFarmSent and localPetArrivedAtCoin(petId, state.Coin) then
-                    fireFarmCoinByUID(petId, state.Coin)
+
+                if state.TargetSends < MAX_TARGET_SENDS
+                    and now >= (state.NextTargetSendAt or 0) then
+                    state.TargetSends = state.TargetSends + 1
+                    state.TargetSent = syncPetTargetByUID(petId, state.Target) or state.TargetSent
+                    state.NextTargetSendAt = math.huge
+                end
+
+                local arrived = localPetArrivedAtCoin(petId, state.Target)
+                if arrived and not state.ArrivalFarmSent then
                     state.ArrivalFarmSent = true
-                    state.FarmAttemptsRemaining = 0
-                elseif (state.FarmAttemptsRemaining or 0) > 0 and now >= (state.NextFarmAt or 0) then
-                    fireFarmCoinByUID(petId, state.Coin)
-                    state.FarmAttemptsRemaining = state.FarmAttemptsRemaining - 1
-                    state.NextFarmAt = now + 0.5
-                end
-                if not liveIsDesired and now >= (state.NextSyncAt or 0) then
-                    syncPetTargetByUID(petId, state.Coin)
-                    local fastAttempts = tonumber(state.SyncAttemptsRemaining) or 0
-                    if fastAttempts > 0 then
-                        state.SyncAttemptsRemaining = fastAttempts - 1
-                        state.NextSyncAt = now + TARGET_SYNC_DELAY
-                    else
-                        state.NextSyncAt = now + SLOW_TARGET_SYNC_DELAY
-                    end
+                    fireFarmCoinByUID(petId, state.Target)
+                elseif state.FarmSends < MAX_FARM_SENDS
+                    and now >= (state.NextFarmSendAt or 0) then
+                    state.FarmSends = state.FarmSends + 1
+                    fireFarmCoinByUID(petId, state.Target)
+                    state.NextFarmSendAt = math.huge
                 end
             end
         end
 
         local freePetIds = {}
-        for _, petId in ipairs(normalizedPetIds) do
-            if not petStates[petId] and not livePetCoins[petId] then
+        for _, petId in ipairs(cachedPetIds) do
+            if not petStates[petId] and not livePetTargets[petId] then
                 table.insert(freePetIds, petId)
             end
         end
-
         if #freePetIds == 0 then continue end
 
         local isGroupMode = mode == "AllOneBossChest" or mode == "AllOneBigCoin"
         if isGroupMode then
-            if lockedGroupCoin and not targetIsAlive(lockedGroupCoin) then
-                lockedGroupCoin = nil
+            local lockedTarget = lockedGroupTargetId and findFarmTargetById(lockedGroupTargetId) or nil
+            if not farmTargetIsAlive(lockedTarget) then
+                lockedTarget = nil
+                lockedGroupTargetId = nil
             end
 
-            if not lockedGroupCoin then
-                if mode == "AllOneBossChest" then
-                    lockedGroupCoin = getStrongestBossChest(rejectedCoins)
-                else
-                    local minimumHealth = updateBigCoinHealthAnchor()
-                    if minimumHealth then
-                        lockedGroupCoin = getStrongestRegularTarget({}, rejectedCoins, minimumHealth)
+            if not lockedTarget then
+                for _, state in pairs(petStates) do
+                    local targetMatchesMode = mode == "AllOneBossChest"
+                        and farmTargetIsBossChest(state.Target)
+                        or mode == "AllOneBigCoin"
+                        and not farmTargetIsBossChest(state.Target)
+                    if targetMatchesMode and farmTargetIsAlive(state.Target) then
+                        lockedTarget = state.Target
+                        lockedGroupTargetId = state.TargetId
+                        break
                     end
                 end
             end
 
-            if lockedGroupCoin then
-                dispatchPetsToCoin(freePetIds, lockedGroupCoin)
+            if not lockedTarget then
+                local orderedTargets
+                if mode == "AllOneBossChest" then
+                    orderedTargets = getBossTargetOrder(rejectedTargetIds)
+                else
+                    local minimumMaxHealth = getBigTargetMinimumHealth()
+                    orderedTargets = minimumMaxHealth
+                        and getRegularTargetOrder(true, nil, rejectedTargetIds, minimumMaxHealth)
+                        or {}
+                end
+                lockedTarget = orderedTargets[1]
+                lockedGroupTargetId = lockedTarget and tostring(getFarmTargetId(lockedTarget)) or nil
+            end
+
+            if lockedTarget then
+                for _, petId in ipairs(freePetIds) do createReservedState(petId, lockedTarget) end
+                dispatchPetsToTarget(freePetIds, lockedTarget)
             end
             continue
         end
 
-        local claimedCoins = {}
-        for coin in pairs(occupiedCoins) do claimedCoins[coin] = true end
+        local claimedTargetIds = {}
+        for targetId in pairs(occupiedTargetIds) do claimedTargetIds[targetId] = true end
         for _, state in pairs(petStates) do
-            if targetIsAlive(state.Coin) then claimedCoins[state.Coin] = true end
+            if farmTargetIsAlive(state.Target) then claimedTargetIds[state.TargetId] = true end
         end
 
-        -- UID и цель резервируются до запуска сетевого запроса, поэтому параллельные
-        -- Join Coin не могут выбрать одного питомца или одну монету дважды.
+        local strongestFirst = mode ~= "DifferentWeakest"
+        local uniqueTargets = getRegularTargetOrder(
+            strongestFirst,
+            claimedTargetIds,
+            rejectedTargetIds
+        )
+        local sharedTargets = nil
+        local sharedIndex = 1
+        local dispatchPlans = {}
+
         for _, petId in ipairs(freePetIds) do
-            local coin = nil
-            if mode == "DifferentWeakest" then
-                coin = getWeakestRegularTarget(claimedCoins, rejectedCoins)
-            else
-                coin = getStrongestRegularTarget(claimedCoins, rejectedCoins)
+            local target = table.remove(uniqueTargets, 1)
+            if not target then
+                -- Если целей меньше, чем питомцев, оставшиеся делят лучшие доступные цели,
+                -- чтобы режим «по разным» не превращался в простой части команды.
+                sharedTargets = sharedTargets or getRegularTargetOrder(
+                    strongestFirst,
+                    nil,
+                    rejectedTargetIds
+                )
+                if #sharedTargets > 0 then
+                    target = sharedTargets[((sharedIndex - 1) % #sharedTargets) + 1]
+                    sharedIndex = sharedIndex + 1
+                end
             end
 
-            if coin then
-                petStates[petId] = {
-                    Coin = coin,
-                    Phase = "reserved",
-                    Retries = 0
-                }
-                claimedCoins[coin] = true
-                dispatchPetsToCoin({ petId }, coin)
+            if target then
+                local targetId = tostring(getFarmTargetId(target))
+                createReservedState(petId, target)
+                claimedTargetIds[targetId] = true
+                local plan = dispatchPlans[targetId]
+                if not plan then
+                    plan = { Target = target, Pets = {} }
+                    dispatchPlans[targetId] = plan
+                end
+                table.insert(plan.Pets, petId)
             end
+        end
+
+        for _, plan in pairs(dispatchPlans) do
+            dispatchPetsToTarget(plan.Pets, plan.Target)
         end
     end
 end)
@@ -2612,14 +3163,7 @@ bootTrace("16 pet allocator registered")
 
 
 local function countFarmableTargetsInZone()
-    if not coinsFolder then return 0 end
-    local count = 0
-    for _, coin in ipairs(coinsFolder:GetChildren()) do
-        if coinCanBeFarmed(coin) and coinIsInLocation(coin) then
-            count = count + 1
-        end
-    end
-    return count
+    return #collectFarmTargets()
 end
 
 task.spawn(function()
@@ -2635,11 +3179,13 @@ task.spawn(function()
         local selectedWorld = getSelectedFarmWorld() or "мир не определён"
         local zoneName = getSelectedFarmZone() or "зона не определена"
         local targetCount = countFarmableTargetsInZone()
+        local targetSource = serverCoinSnapshotReady and "Get Coins" or "Workspace fallback"
         setDescriptionCached(
             currentZoneParagraph,
             "Загружен: " .. loadedWorld
                 .. " | фильтр: " .. selectedWorld .. " / " .. zoneName
-                .. " | целей: " .. tostring(targetCount),
+                .. " | целей: " .. tostring(targetCount)
+                .. " | источник: " .. targetSource,
             1
         )
     end
