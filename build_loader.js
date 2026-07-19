@@ -1,1 +1,1 @@
-require("./build_staged_loader.js");
+require("./build_binary_loader.js");
