@@ -1,4 +1,4 @@
-local VERSION = "1.2.6-dev.5"
+local VERSION = "1.2.6-dev.6"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -24,7 +24,11 @@ pcall(function() connection:Disconnect() end)
 end
 env.PSX_OG_FastEggState = nil
 end
-for _, key in ipairs({ "PSX_OG_RewardInvokeCaptureState", "PSX_OG_BoostRemoteCaptureState" }) do
+for _, key in ipairs({
+"PSX_OG_RewardInvokeCaptureState",
+"PSX_OG_BoostRemoteCaptureState",
+"PSX_OG_DiamondInvokeCaptureState",
+}) do
 local state = env[key]
 if type(state) == "table" then
 state.active = false
@@ -1215,6 +1219,10 @@ GCUsed = false,
 GCScanned = 0,
 GCNetworkFunctions = 0,
 GCProblem = nil,
+CaptureUsed = false,
+CaptureBlocked = false,
+CaptureRestored = nil,
+CaptureProblem = nil,
 }
 end
 local function resolverReportText(report)
@@ -1225,13 +1233,22 @@ else
 gcText = "gc scan=unavailable/not needed"
 end
 if report.GCProblem then gcText = gcText .. ", " .. tostring(report.GCProblem) end
+local captureText = "capture=not needed"
+if report.CaptureUsed then
+captureText = "capture=" .. (report.CaptureBlocked and "blocked before server" or "not intercepted")
+if report.CaptureRestored ~= nil then
+captureText = captureText .. ", hook restored=" .. tostring(report.CaptureRestored)
+end
+end
+if report.CaptureProblem then captureText = captureText .. ", " .. tostring(report.CaptureProblem) end
 return string.format(
-"graph functions=%d, tables=%d, upvalues=%d, exact mappings=%d, ambiguous=%d; %s",
+"graph functions=%d, tables=%d, upvalues=%d, exact mappings=%d, ambiguous=%d; %s; %s",
 report.Functions,
 report.Tables,
 report.Upvalues,
 report.ExactMappings,
 report.AmbiguousMappings,
+captureText,
 gcText
 )
 end
@@ -1280,6 +1297,80 @@ if checked % 750 == 0 then task.wait() end
 end
 return nil
 end
+local function captureDiamondPackRemote(network, report)
+report.CaptureUsed = true
+if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
+report.CaptureProblem = "hookmetamethod/getnamecallmethod unavailable"
+return nil
+end
+local state = env.PSX_OG_DiamondInvokeCaptureState
+if type(state) ~= "table" then
+state = {}
+env.PSX_OG_DiamondInvokeCaptureState = state
+end
+state.active = false
+state.remote = nil
+state.expectedArgument = 0
+state.blocked = false
+if state.persistent ~= true then
+local oldNamecall
+local function captureNamecall(self, ...)
+local current = env.PSX_OG_DiamondInvokeCaptureState
+if current and current.active
+and getnamecallmethod() == "InvokeServer"
+and typeof(self) == "Instance"
+and self:IsA("RemoteFunction")
+and select(1, ...) == current.expectedArgument then
+current.remote = self
+current.blocked = true
+current.active = false
+return false, "PSX read-only Diamond Pack capture"
+end
+return oldNamecall(self, ...)
+end
+local wrapped = type(newcclosure) == "function" and newcclosure(captureNamecall) or captureNamecall
+local installed, installProblem = pcall(function()
+oldNamecall = hookmetamethod(game, "__namecall", wrapped)
+end)
+if not installed or type(oldNamecall) ~= "function" then
+report.CaptureProblem = "capture hook install failed: " .. tostring(installProblem or oldNamecall)
+return nil
+end
+state.persistent = true
+state.oldNamecall = oldNamecall
+end
+state.active = true
+local callOk, callResult = pcall(network.Invoke, "Buy DiamondPack", 0)
+state.active = false
+report.CaptureBlocked = state.blocked == true
+local captured = state.remote
+local oldNamecall = state.oldNamecall
+if type(oldNamecall) == "function" then
+local restoreOk, replacedHook = pcall(function()
+return hookmetamethod(game, "__namecall", oldNamecall)
+end)
+local restored = restoreOk and type(replacedHook) == "function"
+report.CaptureRestored = restored
+if restored then
+state.persistent = false
+state.oldNamecall = nil
+end
+end
+state.expectedArgument = nil
+state.remote = nil
+if not callOk then
+report.CaptureProblem = "Network.Invoke capture probe errored: " .. tostring(callResult)
+elseif not captured then
+report.CaptureProblem = "Network.Invoke did not expose an InvokeServer namecall"
+elseif not report.CaptureBlocked then
+report.CaptureProblem = "remote observed but the probe was not blocked"
+end
+if typeof(captured) == "Instance" and captured:IsA("RemoteFunction")
+and captured:IsDescendantOf(ReplicatedStorage) then
+return captured
+end
+return nil
+end
 local function getDiamondPackDirectRemote(forceSearch)
 if diamondPackDirectRemote and diamondPackDirectRemote.Parent
 and diamondPackDirectRemote:IsA("RemoteFunction") then
@@ -1298,6 +1389,10 @@ end
 local report = newResolverReport()
 local remote = findCommandRemote(network.Invoke, "Buy DiamondPack", {}, 0, { Left = 5000 }, report)
 local source = "Network.Invoke graph"
+if not remote then
+remote = captureDiamondPackRemote(network, report)
+source = "captured from Network.Invoke (blocked tier-0 probe)"
+end
 if not remote then
 remote = findCommandRemoteInGC("Buy DiamondPack", report)
 source = "filtered GC Network closure"
@@ -1966,7 +2061,7 @@ status = "Direct resolver error; no request sent: " .. tostring(remote)
 elseif remote then
 local pathOk, path = pcall(function() return remote:GetFullName() end)
 status = string.format(
-"Direct remote resolved without a server request | source: %s | session index: %s | path: %s | %s",
+"Direct remote resolved without a purchase | source: %s | session index: %s | path: %s | %s",
 tostring(source),
 tostring(index or "?"),
 pathOk and tostring(path) or "unknown",
@@ -2403,7 +2498,7 @@ Desc = "Auto tier 4 is disabled. Resolve is read-only; manual tier 3/2/1 tests s
 })
 DiamondPackSection:Button({
 Title = "Resolve Direct Purchase Remote",
-Desc = "Read-only: finds Buy DiamondPack in the live Network registry without calling the server",
+Desc = "Capture-only: blocks an invalid tier-0 probe before the server and cannot purchase a pack",
 Callback = function()
 task.spawn(function()
 if not running() then return end
