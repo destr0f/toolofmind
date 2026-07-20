@@ -1,4 +1,4 @@
-local VERSION = "1.2.6-dev.7"
+local VERSION = "1.2.6-dev.8"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -1055,6 +1055,48 @@ end
 end
 return values
 end
+local function functionUpvalueAt(callback, index)
+if type(callback) ~= "function" then return nil, "callback is not a function" end
+local seenReaders = {}
+local singleReaders = {
+debug and type(debug.getupvalue) == "function" and debug.getupvalue or nil,
+type(getupvalue) == "function" and getupvalue or nil,
+}
+for _, reader in next, singleReaders do
+if type(reader) == "function" and not seenReaders[reader] then
+seenReaders[reader] = true
+local ok, first, second = pcall(reader, callback, index)
+if ok then
+if second ~= nil then
+return second, "single reader #" .. tostring(index)
+end
+if first ~= nil and type(first) ~= "string" then
+return first, "single reader #" .. tostring(index)
+end
+end
+end
+end
+local bulkReaders = {
+type(getupvalues) == "function" and getupvalues or nil,
+debug and type(debug.getupvalues) == "function" and debug.getupvalues or nil,
+}
+for _, reader in next, bulkReaders do
+if type(reader) == "function" and not seenReaders[reader] then
+seenReaders[reader] = true
+local ok, values = pcall(reader, callback)
+if ok and type(values) == "table" then
+local value = rawget(values, index)
+if value == nil and index == 2 then
+value = rawget(values, "u18") or rawget(values, "GetRemoteFunction")
+end
+if value ~= nil then
+return value, "bulk reader #" .. tostring(index)
+end
+end
+end
+end
+return nil, "upvalue #" .. tostring(index) .. " is unavailable"
+end
 local function functionConstants(callback)
 local readers = {
 type(getconstants) == "function" and getconstants or nil,
@@ -1216,21 +1258,25 @@ Tables = 0,
 Upvalues = 0,
 ExactMappings = 0,
 AmbiguousMappings = 0,
+AccessorUsed = false,
+AccessorReader = nil,
+AccessorResultType = nil,
+AccessorProblem = nil,
 GCUsed = false,
 GCScanned = 0,
 GCNetworkFunctions = 0,
 GCProblem = nil,
-CaptureUsed = false,
-CapturePreflight = false,
-CapturePreflightCalls = 0,
-CaptureProbeCalls = 0,
-CaptureProbeCandidates = 0,
-CaptureBlocked = false,
-CaptureRestored = nil,
-CaptureProblem = nil,
 }
 end
 local function resolverReportText(report)
+local accessorText = "accessor=not attempted"
+if report.AccessorUsed then
+accessorText = "accessor=" .. tostring(report.AccessorReader or "#2")
+.. ", result=" .. tostring(report.AccessorResultType or "nil")
+if report.AccessorProblem then
+accessorText = accessorText .. ", " .. tostring(report.AccessorProblem)
+end
+end
 local gcText
 if report.GCUsed then
 gcText = string.format("gc functions=%d, network matches=%d", report.GCScanned, report.GCNetworkFunctions)
@@ -1238,26 +1284,14 @@ else
 gcText = "gc scan=unavailable/not needed"
 end
 if report.GCProblem then gcText = gcText .. ", " .. tostring(report.GCProblem) end
-local captureText = "capture=not needed"
-if report.CaptureUsed then
-captureText = "capture=" .. (report.CaptureBlocked and "blocked before server" or "not intercepted")
-.. ", preflight=" .. tostring(report.CapturePreflight)
-.. ", calls=" .. tostring(report.CapturePreflightCalls)
-.. "/" .. tostring(report.CaptureProbeCalls)
-.. ", candidates=" .. tostring(report.CaptureProbeCandidates)
-if report.CaptureRestored ~= nil then
-captureText = captureText .. ", hook restored=" .. tostring(report.CaptureRestored)
-end
-end
-if report.CaptureProblem then captureText = captureText .. ", " .. tostring(report.CaptureProblem) end
 return string.format(
-"graph functions=%d, tables=%d, upvalues=%d, exact mappings=%d, ambiguous=%d; %s; %s",
+"%s; graph functions=%d, tables=%d, upvalues=%d, exact mappings=%d, ambiguous=%d; %s",
+accessorText,
 report.Functions,
 report.Tables,
 report.Upvalues,
 report.ExactMappings,
 report.AmbiguousMappings,
-captureText,
 gcText
 )
 end
@@ -1306,146 +1340,34 @@ if checked % 750 == 0 then task.wait() end
 end
 return nil
 end
-local function captureDiamondPackRemote(network, report)
-report.CaptureUsed = true
-if type(hookfunction) ~= "function" then
-report.CaptureProblem = "hookfunction unavailable"
+local function resolveCommandRemoteFromNetworkAccessor(network, commandName, report)
+report.AccessorUsed = true
+local accessor, reader = functionUpvalueAt(network.Invoke, 2)
+report.AccessorReader = reader
+if type(accessor) ~= "function" then
+report.AccessorResultType = typeof(accessor)
+report.AccessorProblem = "Network.Invoke upvalue #2 is not callable"
 return nil
 end
-local state = env.PSX_OG_DiamondMethodCaptureState
-if type(state) ~= "table" then
-state = {}
-env.PSX_OG_DiamondMethodCaptureState = state
-end
-state.active = false
-state.remote = nil
-state.thread = nil
-state.phase = nil
-state.blocked = false
-state.calls = 0
-state.remotes = nil
-if state.mode ~= "InvokeServer hookfunction" then
-state.persistent = false
-state.oldInvokeServer = nil
-state.invokeServerMethod = nil
-state.mode = "InvokeServer hookfunction"
-end
-if state.persistent ~= true then
-local sampleRemote
-for _, object in ipairs(ReplicatedStorage:GetDescendants()) do
-if object:IsA("RemoteFunction") then
-sampleRemote = object
-break
-end
-end
-if not sampleRemote then
-report.CaptureProblem = "no RemoteFunction exists in ReplicatedStorage"
+local ok, first, second, third = pcall(accessor, commandName)
+if not ok then
+report.AccessorResultType = "error"
+report.AccessorProblem = tostring(first)
 return nil
 end
-local methodOk, invokeServerMethod = pcall(function() return sampleRemote.InvokeServer end)
-if not methodOk or type(invokeServerMethod) ~= "function" then
-report.CaptureProblem = "InvokeServer method is unavailable"
-return nil
-end
-local oldInvokeServer
-local function captureInvokeServer(self, ...)
-local current = env.PSX_OG_DiamondMethodCaptureState
-if current and current.active
-and current.thread == coroutine.running()
-and typeof(self) == "Instance"
-and self:IsA("RemoteFunction") then
-current.calls = (current.calls or 0) + 1
-current.remotes = current.remotes or {}
-current.remotes[self] = true
-current.remote = self
-current.blocked = true
-return false, "PSX read-only Diamond Pack capture"
-end
-return oldInvokeServer(self, ...)
-end
-local replacement = type(newcclosure) == "function"
-and newcclosure(captureInvokeServer) or captureInvokeServer
-local installed, originalOrProblem = pcall(function()
-return hookfunction(invokeServerMethod, replacement)
-end)
-if not installed or type(originalOrProblem) ~= "function" then
-report.CaptureProblem = "InvokeServer hook install failed: " .. tostring(originalOrProblem)
-return nil
-end
-oldInvokeServer = originalOrProblem
-state.persistent = true
-state.oldInvokeServer = oldInvokeServer
-state.invokeServerMethod = invokeServerMethod
-end
-local function beginPhase(phase)
-state.phase = phase
-state.remote = nil
-state.remotes = {}
-state.calls = 0
-state.blocked = false
-state.active = true
-end
-local function capturedRemote()
-local found, count = nil, 0
-for remote in next, state.remotes or {} do
-found = remote
-count = count + 1
-end
-return count == 1 and found or nil, count
-end
-state.thread = coroutine.running()
-beginPhase("preflight")
-local preflightOk, preflightResult = pcall(network.Invoke, "Get OSTime")
-state.active = false
-local _, preflightCandidates = capturedRemote()
-report.CapturePreflightCalls = state.calls
-report.CapturePreflight = state.blocked == true and preflightCandidates > 0
-local captured
-local callOk, callResult = false, nil
-if report.CapturePreflight then
-beginPhase("diamond")
-callOk, callResult = pcall(network.Invoke, "Buy DiamondPack", 0)
-state.active = false
-report.CaptureBlocked = state.blocked == true
-captured, report.CaptureProbeCandidates = capturedRemote()
-report.CaptureProbeCalls = state.calls
-else
-report.CaptureProblem = preflightOk
-and "InvokeServer hook was not observed; Diamond Pack probe skipped"
-or "Get OSTime preflight errored: " .. tostring(preflightResult)
-end
-local oldInvokeServer = state.oldInvokeServer
-local invokeServerMethod = state.invokeServerMethod
-if type(oldInvokeServer) == "function" and type(invokeServerMethod) == "function" then
-local restoreOk, replacedHook = pcall(function()
-return hookfunction(invokeServerMethod, oldInvokeServer)
-end)
-local restored = restoreOk and type(replacedHook) == "function"
-report.CaptureRestored = restored
-if restored then
-state.persistent = false
-state.oldInvokeServer = nil
-state.invokeServerMethod = nil
+local values = { first, second, third }
+local resultTypes = {}
+for index = 1, 3 do
+local value = values[index]
+resultTypes[index] = typeof(value)
+if typeof(value) == "Instance" and value:IsA("RemoteFunction")
+and value:IsDescendantOf(ReplicatedStorage) then
+report.AccessorResultType = table.concat(resultTypes, "/")
+return value
 end
 end
-state.thread = nil
-state.phase = nil
-state.remote = nil
-state.remotes = nil
-state.calls = 0
-if report.CapturePreflight and not callOk then
-report.CaptureProblem = "Network.Invoke capture probe errored: " .. tostring(callResult)
-elseif report.CapturePreflight and report.CaptureProbeCandidates > 1 then
-report.CaptureProblem = "Diamond Pack capture was ambiguous; all candidate calls were blocked"
-elseif report.CapturePreflight and not captured then
-report.CaptureProblem = "Buy DiamondPack did not call the preflighted InvokeServer method"
-elseif report.CapturePreflight and not report.CaptureBlocked then
-report.CaptureProblem = "remote observed but the probe was not blocked"
-end
-if typeof(captured) == "Instance" and captured:IsA("RemoteFunction")
-and captured:IsDescendantOf(ReplicatedStorage) then
-return captured
-end
+report.AccessorResultType = table.concat(resultTypes, "/")
+report.AccessorProblem = "upvalue #2 returned no ReplicatedStorage RemoteFunction"
 return nil
 end
 local function getDiamondPackDirectRemote(forceSearch)
@@ -1464,11 +1386,11 @@ diamondPackResolverSummary = "Network.Invoke unavailable; no scan performed."
 return nil, "Network.Invoke unavailable", nil, diamondPackResolverSummary
 end
 local report = newResolverReport()
-local remote = findCommandRemote(network.Invoke, "Buy DiamondPack", {}, 0, { Left = 5000 }, report)
-local source = "Network.Invoke graph"
+local remote = resolveCommandRemoteFromNetworkAccessor(network, "Buy DiamondPack", report)
+local source = "Network.Invoke GetRemoteFunction upvalue #2"
 if not remote then
-remote = captureDiamondPackRemote(network, report)
-source = "captured from Network.Invoke (preflighted InvokeServer hook)"
+remote = findCommandRemote(network.Invoke, "Buy DiamondPack", {}, 0, { Left = 5000 }, report)
+source = "Network.Invoke graph"
 end
 if not remote then
 remote = findCommandRemoteInGC("Buy DiamondPack", report)
@@ -2564,11 +2486,11 @@ end,
 })
 diamondPackParagraph = DiamondPackSection:Paragraph({
 Title = "Diamond Pack Server Status",
-Desc = "Auto tier 4 is disabled. Resolve is read-only; manual tier 3/2/1 tests send one real server purchase request.",
+Desc = "Auto tier 4 is disabled. Resolve reads Network.Invoke upvalue #2 without contacting the server.",
 })
 DiamondPackSection:Button({
 Title = "Resolve Direct Purchase Remote",
-Desc = "Capture-only: preflights on Get OSTime, then blocks the Diamond Pack probe before the server",
+Desc = "Read-only: calls the internal GetRemoteFunction accessor; never invokes the returned remote",
 Callback = function()
 task.spawn(function()
 if not running() then return end
