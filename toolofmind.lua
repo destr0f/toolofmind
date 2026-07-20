@@ -1,4 +1,4 @@
-local VERSION = "1.2.6-dev.18"
+local VERSION = "1.2.6-dev.19"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -69,6 +69,7 @@ AutoTechDiamondPack = false,
 AutoVIPRewards = false,
 AutoRankRewards = false,
 AutoGoldenGalaxyFox = false,
+AutoRainbowGalaxyFox = false,
 }
 local DIAMOND_PACK_TIER = 4
 local DIAMOND_PACK_MINIMUM = 1e12
@@ -161,7 +162,7 @@ value = string.gsub(value, "[%p_]+", " ")
 value = string.gsub(value, "%s+", " ")
 return string.match(value, "^%s*(.-)%s*$") or value
 end
-local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/68e405ed01ef25a443a847869fed83b2be732711/graphics_module.lua"
+local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/1d5439ba88dc2a1c42cb56b8936ee48cd686f87d/graphics_module.lua"
 local graphicsController
 local function graphicsAction(action, value)
 if not graphicsController then
@@ -1703,7 +1704,7 @@ end
 end
 return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
 end
-local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph, goldMachineParagraph
+local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph, goldMachineParagraph, rainbowMachineParagraph
 local function setStatus(text)
 if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
@@ -1718,6 +1719,9 @@ if diamondPackParagraph then pcall(function() diamondPackParagraph:SetDesc(text)
 end
 local function setGoldMachineStatus(text)
 if goldMachineParagraph then pcall(function() goldMachineParagraph:SetDesc(text) end) end
+end
+local function setRainbowMachineStatus(text)
+if rainbowMachineParagraph then pcall(function() rainbowMachineParagraph:SetDesc(text) end) end
 end
 local function getRewardSave()
 if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
@@ -1796,26 +1800,43 @@ local secs = seconds % 60
 if hours > 0 then return string.format("%dh %02dm %02ds", hours, minutes, secs) end
 return string.format("%dm %02ds", minutes, secs)
 end
-local GOLD_MACHINE_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/ebdb357b4db3f5dbc0c4ad6709a1f725b284d1b9/gold_machine_module.lua"
-local goldMachineController
-local goldMachineLoading = false
-local function stopGoldMachine()
-if goldMachineController then pcall(goldMachineController, "stop") end
+local machineModules = {
+Gold = {
+URL = "https://raw.githubusercontent.com/destr0f/toolofmind/ebdb357b4db3f5dbc0c4ad6709a1f725b284d1b9/gold_machine_module.lua",
+ConfigKey = "AutoGoldenGalaxyFox",
+Label = "gold machine",
+SetStatus = setGoldMachineStatus,
+},
+Rainbow = {
+URL = "https://raw.githubusercontent.com/destr0f/toolofmind/060f465373135d67ce9d8273cf24e254c37cefb3/rainbow_machine_module.lua",
+ConfigKey = "AutoRainbowGalaxyFox",
+Label = "rainbow machine",
+SetStatus = setRainbowMachineStatus,
+},
+}
+function machineModules:Stop(kind)
+local entry = self[kind]
+if entry and entry.Controller then pcall(entry.Controller, "stop") end
 end
-local function startGoldMachine()
-if goldMachineLoading or not config.AutoGoldenGalaxyFox or not running() then return end
-goldMachineLoading = true
-if not goldMachineController then
-setGoldMachineStatus("Loading the protected auto-gold worker on demand...")
-local downloaded, source = pcall(function() return game:HttpGet(GOLD_MACHINE_MODULE_URL) end)
+function machineModules:StopAll()
+self:Stop("Gold")
+self:Stop("Rainbow")
+end
+function machineModules:Start(kind)
+local entry = self[kind]
+if not entry or entry.Loading or not config[entry.ConfigKey] or not running() then return end
+entry.Loading = true
+if not entry.Controller then
+entry.SetStatus("Loading the protected " .. entry.Label .. " worker on demand...")
+local downloaded, source = pcall(function() return game:HttpGet(entry.URL) end)
 if downloaded then
 local chunk, compileProblem = loadstring(source)
 source = nil
 if chunk then
 local started, controller = pcall(chunk)
 if started and type(controller) == "function" then
-goldMachineController = controller
-trace("gold machine module", "loaded on demand")
+entry.Controller = controller
+trace(entry.Label .. " module", "loaded on demand")
 else
 downloaded = false
 source = "module start failed: " .. tostring(controller)
@@ -1826,19 +1847,19 @@ source = "module compile failed: " .. tostring(compileProblem)
 end
 end
 if not downloaded then
-goldMachineLoading = false
-config.AutoGoldenGalaxyFox = false
-setGoldMachineStatus("Auto-gold module could not be loaded; no pets were sent: " .. tostring(source))
-trace("gold machine module", tostring(source))
+entry.Loading = false
+config[entry.ConfigKey] = false
+entry.SetStatus("Module could not be loaded; no pets were sent: " .. tostring(source))
+trace(entry.Label .. " module", tostring(source))
 return
 end
 end
-goldMachineLoading = false
-if not config.AutoGoldenGalaxyFox or not running() then return end
+entry.Loading = false
+if not config[entry.ConfigKey] or not running() then return end
 local context = {
 Library = Library,
 Running = running,
-Enabled = function() return config.AutoGoldenGalaxyFox end,
+Enabled = function() return config[entry.ConfigKey] end,
 GetSave = getRewardSave,
 GetCurrency = getCurrentCurrency,
 FormatNumber = formatRateNumber,
@@ -1846,15 +1867,15 @@ GetCommandRemote = getCommandRemote,
 InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
 InvokeCommand = invokeCommand,
 RouteText = routeText,
-SetStatus = setGoldMachineStatus,
+SetStatus = entry.SetStatus,
 Trace = trace,
 }
-local called, accepted, problem = pcall(goldMachineController, "start", context)
+local called, accepted, problem = pcall(entry.Controller, "start", context)
 if not called or accepted == false then
-config.AutoGoldenGalaxyFox = false
+config[entry.ConfigKey] = false
 local reason = not called and accepted or problem
-setGoldMachineStatus("Auto-gold module failed to start; no pets were sent: " .. tostring(reason))
-trace("gold machine module", "start failed: " .. tostring(reason))
+entry.SetStatus("Module failed to start; no pets were sent: " .. tostring(reason))
+trace(entry.Label .. " module", "start failed: " .. tostring(reason))
 end
 end
 local function invokeReward(kind)
@@ -2236,9 +2257,9 @@ Callback = function(value)
 config.AutoGoldenGalaxyFox = value == true
 if config.AutoGoldenGalaxyFox then
 setGoldMachineStatus("Enabled. Loading the protected worker without blocking script startup...")
-task.spawn(startGoldMachine)
+task.spawn(function() machineModules:Start("Gold") end)
 else
-stopGoldMachine()
+machineModules:Stop("Gold")
 setGoldMachineStatus("Disabled. No pets will be sent to the Golden Machine.")
 end
 end,
@@ -2246,6 +2267,26 @@ end,
 goldMachineParagraph = GoldMachineSection:Paragraph({
 Title = "Golden Machine Status",
 Desc = "Auto conversion is disabled. Tech Coins III+, equipped, locked and upgraded pets are skipped.",
+})
+local RainbowMachineSection = PetsTab:Section({ Title = "Develop: Auto Rainbow Machine", Box = true, Opened = true })
+RainbowMachineSection:Toggle({
+Title = "Auto Rainbow Galaxy Fox",
+Desc = "Converts only golden Foxes in verified 100% batches. Tech Coins III-V and equipped pets are protected.",
+Value = false,
+Callback = function(value)
+config.AutoRainbowGalaxyFox = value == true
+if config.AutoRainbowGalaxyFox then
+setRainbowMachineStatus("Enabled. Loading the protected worker and resolving live session remotes...")
+task.spawn(function() machineModules:Start("Rainbow") end)
+else
+machineModules:Stop("Rainbow")
+setRainbowMachineStatus("Disabled. No pets will be sent to the Rainbow Machine.")
+end
+end,
+})
+rainbowMachineParagraph = RainbowMachineSection:Paragraph({
+Title = "Rainbow Machine Status",
+Desc = "Auto conversion is disabled. Only golden Mythical Galaxy Foxes are eligible.",
 })
 local LootSection = LootTab:Section({ Title = "Loot Magnet", Box = true, Opened = true })
 LootSection:Paragraph({
@@ -2275,8 +2316,8 @@ Callback = function(value) config.AntiAFK = value == true end,
 })
 local GraphicsSection = MiscTab:Section({ Title = "Graphics & FPS", Box = true, Opened = true })
 GraphicsSection:Button({
-Title = "ENABLE MAXIMUM POTATO MODE",
-Desc = "One-way for this server: hides world and __THINGS visuals, but preserves models, IDs, positions and Network requests",
+Title = "ENABLE BALANCED POTATO MODE",
+Desc = "Keeps the location, coins and pets visible while reducing textures, shadows and expensive world effects",
 Callback = function()
 setPotatoMode(true)
 end,
@@ -2291,8 +2332,8 @@ AllowNone = false,
 Callback = applyFPSLimit,
 })
 GraphicsSection:Paragraph({
-Title = "Network-Safe, Visually Destructive",
-Desc = "Pet farm, egg requests, auto-gold, diamond packs, rewards and loot remain active. POS and _SELECTIONFX are never modified. Rejoin to restore graphics.",
+Title = "Visible Location, Network-Safe",
+Desc = "The map remains rendered in low detail. __THINGS, POS, _SELECTIONFX and every Network worker are preserved. Rejoin to restore removed textures.",
 })
 local DiamondPackSection = MiscTab:Section({ Title = "Develop: Diamond Pack", Box = true, Opened = true })
 DiamondPackSection:Toggle({
@@ -2368,7 +2409,8 @@ config.AutoTechDiamondPack = false
 config.AutoVIPRewards = false
 config.AutoRankRewards = false
 config.AutoGoldenGalaxyFox = false
-stopGoldMachine()
+config.AutoRainbowGalaxyFox = false
+machineModules:StopAll()
 config.PotatoMode = false
 stopGraphics()
 farmResetRequested = false

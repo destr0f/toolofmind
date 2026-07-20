@@ -22,6 +22,6 @@ fs.writeFileSync(toolPath, source, "utf8");
 process.stdout.write(
     `Generated PSX OG slim farm\n`
     + `  source: ${Buffer.byteLength(source, "utf8")} bytes\n`
-    + `  features: pet farm, active balance rates, safe Galaxy Fox auto-gold, loot magnet, anti-AFK, lazy maximum potato mode, FPS cap, timer-gated automation\n`
+    + `  features: pet farm, active balance rates, safe Galaxy Fox gold/rainbow machines, loot magnet, anti-AFK, lazy balanced potato mode, FPS cap, timer-gated automation\n`
     + `  external dependency: WindUI 1.6.64-fix\n`
 );
