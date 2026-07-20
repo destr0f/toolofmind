@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.2.6-dev.20"
+local VERSION = "1.2.7-stable"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2322,46 +2322,51 @@ track(player.Idled:Connect(function()
 end))
 
 WindUI:AddTheme({
-    Name = "PSX Aurora",
-    Accent = Color3.fromRGB(99, 102, 241),
-    Background = Color3.fromRGB(8, 15, 29),
-    Outline = Color3.fromRGB(34, 211, 238),
+    Name = "Nova Stable",
+    Accent = Color3.fromRGB(56, 189, 248),
+    Background = Color3.fromRGB(7, 12, 23),
+    Outline = Color3.fromRGB(71, 85, 105),
     Text = Color3.fromRGB(248, 250, 252),
-    Placeholder = Color3.fromRGB(165, 180, 252),
-    Button = Color3.fromRGB(24, 34, 58),
-    Icon = Color3.fromRGB(103, 232, 249),
+    Placeholder = Color3.fromRGB(148, 163, 184),
+    Button = Color3.fromRGB(18, 29, 48),
+    Icon = Color3.fromRGB(45, 212, 191),
 })
 
 local Window = WindUI:CreateWindow({
-    Title = "PSX OG | Nova Farm",
+    Title = "PSX OG | Nova Stable",
     Icon = "sparkles",
-    Author = "Adaptive routing | v" .. VERSION,
-    Folder = "PSX_Slim_Farm",
-    Size = UDim2.fromOffset(720, 520),
-    MinSize = Vector2.new(590, 400),
-    MaxSize = Vector2.new(1024, 760),
+    Author = "Reliable automation suite | v" .. VERSION,
+    Folder = "PSX_Nova_Stable",
+    Size = UDim2.fromOffset(820, 570),
+    MinSize = Vector2.new(650, 430),
+    MaxSize = Vector2.new(1120, 780),
     ToggleKey = Enum.KeyCode.RightShift,
     Transparent = true,
-    Theme = "PSX Aurora",
+    Theme = "Nova Stable",
     Resizable = true,
-    SideBarWidth = 185,
+    SideBarWidth = 174,
     HideSearchBar = true,
     ScrollBarEnabled = true,
     Acrylic = false,
 })
 
-local PetsTab = Window:Tab({ Title = "Pet Farm", Icon = "paw-print" })
-local LootTab = Window:Tab({ Title = "Loot", Icon = "package-open" })
-local MiscTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
+local UI = {}
+UI.FarmTab = Window:Tab({ Title = "Farm", Icon = "paw-print" })
+UI.MonitorTab = Window:Tab({ Title = "Monitor", Icon = "activity" })
+UI.MachinesTab = Window:Tab({ Title = "Machines", Icon = "settings" })
+UI.LootTab = Window:Tab({ Title = "Loot", Icon = "package-open" })
+UI.RewardsTab = Window:Tab({ Title = "Rewards", Icon = "gift" })
+UI.GraphicsTab = Window:Tab({ Title = "Graphics", Icon = "monitor" })
+UI.SessionTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
 
-local PetsSection = PetsTab:Section({ Title = "Farm Control", Box = true, Opened = true })
-PetsSection:Paragraph({
-    Title = "Adaptive Pet Allocator",
-    Desc = "Zone-aware target locks with live idle-pet recovery. Pets stay on a coin until the game confirms that they are free.",
+UI.FarmHero = UI.FarmTab:Section({ Title = "01 / Adaptive Routing", Box = true, Opened = true })
+UI.FarmHero:Paragraph({
+    Title = "LOCK > BREAK > REASSIGN",
+    Desc = "A deterministic pet allocator with dynamic world/zone discovery and idle-pet recovery.",
 })
-PetsSection:Toggle({
+UI.FarmHero:Toggle({
     Title = "Enable Pet Farm",
-    Desc = "Targets are locked until the coin is completely destroyed",
+    Desc = "A target remains locked until the game confirms that the coin is destroyed",
     Value = false,
     Callback = function(value)
         local enabled = value == true
@@ -2370,8 +2375,9 @@ PetsSection:Toggle({
         requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
     end,
 })
-PetsSection:Dropdown({
-    Title = "Assignment Mode",
+UI.FarmHero:Dropdown({
+    Title = "Assignment Strategy",
+    Desc = "Choose how equipped pets are distributed across valid targets",
     Values = { "Different Strongest", "Different Weakest", "All on Strongest Regular", "Boss Chest Only" },
     Value = "Different Strongest",
     Multi = false,
@@ -2383,36 +2389,32 @@ PetsSection:Dropdown({
     end,
 })
 
-local worldValues = { "Current World" }
-for _, worldName in ipairs(WorldOrder) do table.insert(worldValues, worldName) end
-local zoneDropdown, lastZoneSignature
-local TargetSection = PetsTab:Section({ Title = "Target Location", Box = true, Opened = true })
+UI.WorldValues = { "Current World" }
+for _, worldName in ipairs(WorldOrder) do table.insert(UI.WorldValues, worldName) end
+UI.TargetSection = UI.FarmTab:Section({ Title = "02 / Target Space", Box = true, Opened = true })
 
 local function refreshZoneDropdown(force)
-    if not zoneDropdown then return end
+    if not UI.ZoneDropdown then return end
     local options, resolvedWorld = getZoneOptions(config.World)
     local signature = config.World .. "|" .. tostring(resolvedWorld) .. "|" .. table.concat(options, "\0")
-    if not force and signature == lastZoneSignature then return end
-
-    local selected = config.Zone
-    local valid = false
+    if not force and signature == UI.LastZoneSignature then return end
+    local selected, valid = config.Zone, false
     for _, option in ipairs(options) do
         if option == selected then valid = true; break end
     end
     if not valid then selected = config.World == "Current World" and "Player Zone" or options[1] end
-
-    lastZoneSignature = signature
-    zoneDropdown:Refresh(options)
+    UI.LastZoneSignature = signature
+    UI.ZoneDropdown:Refresh(options)
     if selected then
         config.Zone = selected
-        pcall(function() zoneDropdown:Select(selected) end)
+        pcall(function() UI.ZoneDropdown:Select(selected) end)
     end
 end
 
-TargetSection:Dropdown({
+UI.TargetSection:Dropdown({
     Title = "World",
-    Desc = "Current World follows teleports and updates its zone list",
-    Values = worldValues,
+    Desc = "Current World follows teleports and rebuilds the zone catalog automatically",
+    Values = UI.WorldValues,
     Value = "Current World",
     Multi = false,
     AllowNone = false,
@@ -2424,11 +2426,11 @@ TargetSection:Dropdown({
     end,
 })
 
-local initialZones = getZoneOptions("Current World")
-zoneDropdown = TargetSection:Dropdown({
+UI.InitialZones = getZoneOptions("Current World")
+UI.ZoneDropdown = UI.TargetSection:Dropdown({
     Title = "Zone",
-    Desc = "Player Zone follows your character dynamically",
-    Values = initialZones,
+    Desc = "Player Zone follows your character without restarting the farm",
+    Values = UI.InitialZones,
     Value = "Player Zone",
     Multi = false,
     AllowNone = false,
@@ -2438,22 +2440,26 @@ zoneDropdown = TargetSection:Dropdown({
         if config.PetFarm then requestFarmReset("zone selection changed") end
     end,
 })
-lastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(initialZones, "\0")
+UI.LastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(UI.InitialZones, "\0")
 
-local MonitorSection = PetsTab:Section({ Title = "Live Monitor", Box = true, Opened = true })
-statusParagraph = MonitorSection:Paragraph({
+UI.MonitorHero = UI.MonitorTab:Section({ Title = "Live Telemetry", Box = true, Opened = true })
+UI.MonitorHero:Paragraph({
+    Title = "REAL-TIME CONTROL PLANE",
+    Desc = "Assignments, game-controller state and balance-derived income update independently.",
+})
+statusParagraph = UI.MonitorHero:Paragraph({
     Title = "Assignment Status",
     Desc = "Waiting for the game pet controller and location data...",
 })
-healthParagraph = MonitorSection:Paragraph({
+healthParagraph = UI.MonitorHero:Paragraph({
     Title = "Controller Health",
     Desc = "Runtime discovery is starting...",
 })
 
-local PerformanceSection = PetsTab:Section({ Title = "Farm Performance", Box = true, Opened = true })
-PerformanceSection:Dropdown({
+UI.PerformanceSection = UI.MonitorTab:Section({ Title = "Balance Intelligence", Box = true, Opened = true })
+UI.PerformanceSection:Dropdown({
     Title = "Tracked Currency",
-    Desc = "Active Balances detects real positive changes; Auto follows the selected world",
+    Desc = "Active Balances discovers real gains; Auto follows the selected world",
     Values = CurrencyChoices,
     Value = "Active Balances",
     Multi = false,
@@ -2465,15 +2471,20 @@ PerformanceSection:Dropdown({
         setRate("Reading exact balances; no orb or visual-event estimates are used...")
     end,
 })
-rateParagraph = PerformanceSection:Paragraph({
+rateParagraph = UI.PerformanceSection:Paragraph({
     Title = "Balance Farm Rate",
-    Desc = "Enable Pet Farm. Earned amounts come only from positive changes in Library.Save balances.",
+    Desc = "Enable Pet Farm. Income is derived only from positive Library.Save balance changes.",
 })
 
-local GoldMachineSection = PetsTab:Section({ Title = "Develop: Auto Gold Machine", Box = true, Opened = true })
-GoldMachineSection:Toggle({
+UI.MachinesHero = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
+UI.MachinesHero:Paragraph({
+    Title = "NORMAL > GOLD > RAINBOW",
+    Desc = "Each stage resolves its live session remote, validates every UID and waits for Save.Pets confirmation.",
+})
+UI.GoldSection = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
+UI.GoldSection:Toggle({
     Title = "Auto Golden Galaxy Fox",
-    Desc = "Converts only verified 100% batches. Tech Coins III, IV and V pets are always protected.",
+    Desc = "100% batches only / protects Tech Coins III-V, equipped and locked pets",
     Value = false,
     Callback = function(value)
         config.AutoGoldenGalaxyFox = value == true
@@ -2486,15 +2497,15 @@ GoldMachineSection:Toggle({
         end
     end,
 })
-goldMachineParagraph = GoldMachineSection:Paragraph({
+goldMachineParagraph = UI.GoldSection:Paragraph({
     Title = "Golden Machine Status",
-    Desc = "Auto conversion is disabled. Tech Coins III+, equipped, locked and upgraded pets are skipped.",
+    Desc = "Disabled / waiting for a verified batch",
 })
 
-local RainbowMachineSection = PetsTab:Section({ Title = "Develop: Auto Rainbow Machine", Box = true, Opened = true })
-RainbowMachineSection:Toggle({
+UI.RainbowSection = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
+UI.RainbowSection:Toggle({
     Title = "Auto Rainbow Galaxy Fox",
-    Desc = "Converts only golden Foxes in verified 100% batches. Tech Coins III-V and equipped pets are protected.",
+    Desc = "Golden Foxes only / 100% batches / protects Tech Coins III-V and equipped pets",
     Value = false,
     Callback = function(value)
         config.AutoRainbowGalaxyFox = value == true
@@ -2507,65 +2518,15 @@ RainbowMachineSection:Toggle({
         end
     end,
 })
-rainbowMachineParagraph = RainbowMachineSection:Paragraph({
+rainbowMachineParagraph = UI.RainbowSection:Paragraph({
     Title = "Rainbow Machine Status",
-    Desc = "Auto conversion is disabled. Only golden Mythical Galaxy Foxes are eligible.",
+    Desc = "Disabled / only golden Mythical Galaxy Foxes are eligible",
 })
 
-local LootSection = LootTab:Section({ Title = "Loot Magnet", Box = true, Opened = true })
-LootSection:Paragraph({
-    Title = "Instant Collection",
-    Desc = "Pull nearby drops to your character while pet farming continues independently.",
-})
-LootSection:Toggle({
-    Title = "Collect Orbs",
-    Value = false,
-    Callback = function(value) config.Orbs = value == true end,
-})
-LootSection:Toggle({
-    Title = "Collect Lootbags",
-    Value = false,
-    Callback = function(value) config.Lootbags = value == true end,
-})
-
-local MiscSection = MiscTab:Section({ Title = "Session", Box = true, Opened = true })
-MiscSection:Paragraph({
-    Title = "Session Protection",
-    Desc = "Keep the session active and stop every worker cleanly when you are done.",
-})
-MiscSection:Toggle({
-    Title = "Anti-AFK",
-    Desc = "Prevents the Roblox idle kick",
-    Value = true,
-    Callback = function(value) config.AntiAFK = value == true end,
-})
-
-local GraphicsSection = MiscTab:Section({ Title = "Graphics & FPS", Box = true, Opened = true })
-GraphicsSection:Button({
-    Title = "ENABLE BALANCED POTATO MODE",
-    Desc = "Keeps the location, coins, chests and pets visible while stripping coin textures, shadows and expensive effects",
-    Callback = function()
-        setPotatoMode(true)
-    end,
-})
-GraphicsSection:Dropdown({
-    Title = "FPS Limit",
-    Desc = "Applied only after your selection. Unlimited uses a safe 999 FPS cap.",
-    Values = { "Unchanged", "30", "45", "60", "90", "120", "144", "165", "240", "Unlimited" },
-    Value = "Unchanged",
-    Multi = false,
-    AllowNone = false,
-    Callback = applyFPSLimit,
-})
-GraphicsSection:Paragraph({
-    Title = "Visible Location, Network-Safe",
-    Desc = "Coin/chest meshes remain visible with health bars, but use textureless low-detail rendering. Pets, POS, _SELECTIONFX and Network workers are preserved.",
-})
-
-local DiamondPackSection = MiscTab:Section({ Title = "Develop: Diamond Pack", Box = true, Opened = true })
-DiamondPackSection:Toggle({
+UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Box = true, Opened = true })
+UI.DiamondSection:Toggle({
     Title = "Auto Best Tech Diamond Pack",
-    Desc = "Every 3 minutes: buys tier 4 only when the local Tech Coins balance is at least 1T",
+    Desc = "Tier 4 only / checks every 3 minutes / requires at least 1T Tech Coins",
     Value = false,
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
@@ -2577,15 +2538,37 @@ DiamondPackSection:Toggle({
         end
     end,
 })
-diamondPackParagraph = DiamondPackSection:Paragraph({
-    Title = "Diamond Pack Status",
-    Desc = "Auto tier 4 is disabled. The live remote is resolved dynamically in each session.",
+diamondPackParagraph = UI.DiamondSection:Paragraph({
+    Title = "Diamond Exchange Status",
+    Desc = "Disabled / the live purchase remote is resolved independently each session",
 })
 
-local RewardsSection = MiscTab:Section({ Title = "Develop: Auto Rewards", Box = true, Opened = true })
-RewardsSection:Toggle({
+UI.LootHero = UI.LootTab:Section({ Title = "Local Pickup Layer", Box = true, Opened = true })
+UI.LootHero:Paragraph({
+    Title = "FAST COLLECTION",
+    Desc = "Moves local drops to the character while server-side pet assignments continue uninterrupted.",
+})
+UI.LootHero:Toggle({
+    Title = "Collect Orbs",
+    Desc = "Pulls up to 40 live orbs per pass",
+    Value = false,
+    Callback = function(value) config.Orbs = value == true end,
+})
+UI.LootHero:Toggle({
+    Title = "Collect Lootbags",
+    Desc = "Pulls up to 20 live lootbags per pass",
+    Value = false,
+    Callback = function(value) config.Lootbags = value == true end,
+})
+
+UI.RewardsHero = UI.RewardsTab:Section({ Title = "Timer-Gated Rewards", Box = true, Opened = true })
+UI.RewardsHero:Paragraph({
+    Title = "CLAIM ONLY WHEN READY",
+    Desc = "Uses the server clock and save timers. No speculative claim spam and no world restriction.",
+})
+UI.RewardsHero:Toggle({
     Title = "Auto VIP Rewards",
-    Desc = "Uses VIPCooldown and the server clock; claims only when the four-hour timer reaches zero",
+    Desc = "Claims when the four-hour VIP cooldown reaches zero",
     Value = false,
     Callback = function(value)
         local enabled = value == true
@@ -2596,9 +2579,9 @@ RewardsSection:Toggle({
         state.ArmedReported = false
     end,
 })
-RewardsSection:Toggle({
+UI.RewardsHero:Toggle({
     Title = "Auto Rank Rewards",
-    Desc = "Uses RankTimer and your current rank cooldown; claims only when the timer reaches zero",
+    Desc = "Uses the cooldown for your current rank and its live RankTimer",
     Value = false,
     Callback = function(value)
         local enabled = value == true
@@ -2609,9 +2592,45 @@ RewardsSection:Toggle({
         state.ArmedReported = false
     end,
 })
-RewardsSection:Paragraph({
-    Title = "Safe Reward Routing",
-    Desc = "Works from any world. No early claim probes; VIP and Rank resolve separate live remotes and print claim results to the console.",
+UI.RewardsHero:Paragraph({
+    Title = "Remote Policy",
+    Desc = "VIP and Rank resolve separate live remotes; every accepted or rejected server response is logged.",
+})
+
+UI.GraphicsHero = UI.GraphicsTab:Section({ Title = "Client Performance Profile", Box = true, Opened = true })
+UI.GraphicsHero:Paragraph({
+    Title = "VISIBLE WORLD / LOWER COST",
+    Desc = "Keeps navigation readable while simplifying the map and dense coin/chest visuals.",
+})
+UI.GraphicsHero:Button({
+    Title = "ENABLE BALANCED POTATO MODE",
+    Desc = "One-way this session / strips map and coin textures, shadows and expensive effects",
+    Callback = function() setPotatoMode(true) end,
+})
+UI.GraphicsHero:Dropdown({
+    Title = "FPS Limit",
+    Desc = "Independent from Potato Mode / Unlimited maps to a safe 999 cap",
+    Values = { "Unchanged", "30", "45", "60", "90", "120", "144", "165", "240", "Unlimited" },
+    Value = "Unchanged",
+    Multi = false,
+    AllowNone = false,
+    Callback = applyFPSLimit,
+})
+UI.GraphicsHero:Paragraph({
+    Title = "Preservation Boundary",
+    Desc = "Coin/chest geometry and health bars stay visible. Pets, POS, _SELECTIONFX and Network workers are untouched.",
+})
+
+UI.SessionSection = UI.SessionTab:Section({ Title = "Session Control", Box = true, Opened = true })
+UI.SessionSection:Paragraph({
+    Title = "SAFE START / CLEAN STOP",
+    Desc = "RightShift toggles the window. STOP disconnects workers before final pet cleanup.",
+})
+UI.SessionSection:Toggle({
+    Title = "Anti-AFK",
+    Desc = "Prevents the Roblox idle kick",
+    Value = true,
+    Callback = function(value) config.AntiAFK = value == true end,
 })
 
 local shutdownStarted = false
@@ -2676,7 +2695,7 @@ end
 env.PSX_OG_SLIM_CLEANUP = shutdown
 env.PSX_OG_UI_CLEANUP = shutdown
 
-MiscSection:Button({
+UI.SessionSection:Button({
     Title = "STOP SCRIPT",
     Desc = "Stops workers instantly; pet cleanup finishes in the background",
     Icon = "power",
@@ -2848,5 +2867,5 @@ task.spawn(function()
     end
 end)
 
-pcall(function() PetsTab:Select() end)
+pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
