@@ -1,4 +1,4 @@
-local VERSION = "1.2.6-dev.15"
+local VERSION = "1.2.6-dev.16"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -85,6 +85,9 @@ local goldMachineBatchSize
 local goldMachineBatchCost
 local goldMachinePending = {}
 local goldMachinePendingAt = 0
+local goldMachinePendingAudit
+local goldMachineLastConfirmedAudit = "none"
+local goldMachineLastInventorySignature
 local goldMachineCompletedBatches = 0
 local VIP_REWARD_COOLDOWN = 14400
 local REWARD_RETRY_DELAY = 60
@@ -1749,19 +1752,71 @@ local directory = Library.Directory and Library.Directory.Pets
 if type(directory) ~= "table" or type(pet) ~= "table" then return nil end
 return directory[pet.id] or directory[tostring(pet.id)]
 end
+local POWER_ABBREVIATIONS = {
+["Agility"] = "AG",
+["Chest"] = "CH",
+["Chests"] = "CH",
+["Coins"] = "C",
+["Diamonds"] = "D",
+["Fantasy Coins"] = "FC",
+["Glittering"] = "GL",
+["Presents"] = "PR",
+["Royalty"] = "ROY",
+["Strength"] = "STR",
+["Teamwork"] = "TW",
+["Tech Coins"] = "TC",
+}
+local ROMAN_POWER_LEVELS = { I = 1, II = 2, III = 3, IV = 4, V = 5 }
+local function readPetPower(power)
+if type(power) ~= "table" then return nil, nil end
+local name = power[1] or power.name or power.Name or power.power or power.Power
+local rawLevel = power[2] or power.level or power.Level or power.tier or power.Tier
+local level = tonumber(rawLevel)
+if level == nil and rawLevel ~= nil then
+level = ROMAN_POWER_LEVELS[string.upper(tostring(rawLevel))]
+end
+return name ~= nil and tostring(name) or nil, level
+end
 local function hasProtectedTechCoins(pet)
 local powers = type(pet) == "table" and (pet.powers or pet.Powers) or nil
 if type(powers) ~= "table" then return false end
 for _, power in pairs(powers) do
-if type(power) == "table" then
-local name = power[1] or power.name or power.Name or power.power or power.Power
-local level = tonumber(power[2] or power.level or power.Level or power.tier or power.Tier)
+local name, level = readPetPower(power)
 if string.lower(tostring(name or "")) == "tech coins" and level and level >= 3 then
 return true, level
 end
 end
-end
 return false
+end
+local function powerAbbreviation(name)
+local known = POWER_ABBREVIATIONS[name]
+if known then return known end
+local initials = {}
+for word in string.gmatch(tostring(name or ""), "%a+") do
+table.insert(initials, string.sub(string.upper(word), 1, 1))
+end
+if #initials >= 2 then return table.concat(initials) end
+return string.sub(string.upper(tostring(name or "?")), 1, 3)
+end
+local function shortPetUID(uid)
+uid = tostring(uid or "?")
+if #uid <= 16 then return uid end
+return string.sub(uid, 1, 10) .. ".." .. string.sub(uid, -4)
+end
+local function petAuditLabel(pet)
+local labels = {}
+local powers = type(pet) == "table" and (pet.powers or pet.Powers) or nil
+if type(powers) == "table" then
+for _, power in pairs(powers) do
+local name, level = readPetPower(power)
+if name then
+table.insert(labels, powerAbbreviation(name) .. tostring(level or "?"))
+end
+end
+end
+table.sort(labels)
+return shortPetUID(type(pet) == "table" and pet.uid or nil)
+.. "{" .. (#labels > 0 and table.concat(labels, ",") or "none") .. "}"
 end
 local function refreshGoldMachinePending(save)
 if next(goldMachinePending) == nil then return 0 end
@@ -1776,15 +1831,22 @@ count = count + 1
 end
 end
 if count == 0 then
+if goldMachinePendingAudit then
+goldMachineLastConfirmedAudit = goldMachinePendingAudit
+trace("gold machine confirmed pets", goldMachinePendingAudit)
+end
 table.clear(goldMachinePending)
 goldMachinePendingAt = 0
+goldMachinePendingAudit = nil
 return 0
 end
 goldMachinePending = stillPresent
 if os.clock() - goldMachinePendingAt >= GOLD_MACHINE_PENDING_TIMEOUT then
-trace("gold machine", "save refresh timeout; releasing pending UID guard")
+trace("gold machine", "save refresh timeout; releasing pending UID guard | "
+.. tostring(goldMachinePendingAudit or "unknown batch"))
 table.clear(goldMachinePending)
 goldMachinePendingAt = 0
+goldMachinePendingAudit = nil
 return 0
 end
 return count
@@ -1808,12 +1870,14 @@ and definition.rarity == GOLD_MACHINE_PET_RARITY then
 stats.Found = stats.Found + 1
 local uid = pet.uid ~= nil and tostring(pet.uid) or nil
 local protected = hasProtectedTechCoins(pet)
+local equipped = pet.e == true
+local locked = pet.l == true or pet.locked == true
+if protected then stats.Protected = stats.Protected + 1 end
+if equipped then stats.Equipped = stats.Equipped + 1 end
+if locked then stats.Locked = stats.Locked + 1 end
 if pet.g or pet.r or pet.dm then
 stats.Upgraded = stats.Upgraded + 1
-elseif protected then
-stats.Protected = stats.Protected + 1
-elseif pet.l or pet.locked then
-stats.Locked = stats.Locked + 1
+elseif protected or equipped or locked then
 elseif uid == nil then
 stats.Locked = stats.Locked + 1
 elseif goldMachinePending[uid] then
@@ -1822,24 +1886,94 @@ elseif definition.isPremium or definition.rarity == "Exclusive" then
 stats.Locked = stats.Locked + 1
 else
 stats.Eligible = stats.Eligible + 1
-if pet.e then stats.Equipped = stats.Equipped + 1 end
-table.insert(candidates, uid)
+table.insert(candidates, {
+Uid = uid,
+})
 end
 end
 end
 end
-table.sort(candidates)
+table.sort(candidates, function(left, right)
+return left.Uid < right.Uid
+end)
 return candidates, stats
 end
 local function goldMachineStatsText(stats)
 return string.format(
-"eligible: %d | protected Tech Coins III+: %d | locked: %d | already upgraded: %d | equipped eligible: %d",
+"total Fox: %d | eligible: %d | Tech Coins III+ protected: %d | equipped skipped: %d | locked: %d | upgraded: %d | pending: %d",
+stats.Found,
 stats.Eligible,
 stats.Protected,
+stats.Equipped,
 stats.Locked,
 stats.Upgraded,
-stats.Equipped
+stats.Pending
 )
+end
+local function reportGoldMachineInventory(stats)
+local signature = string.format("%d:%d:%d:%d:%d:%d:%d",
+stats.Found,
+stats.Eligible,
+stats.Protected,
+stats.Equipped,
+stats.Locked,
+stats.Upgraded,
+stats.Pending
+)
+if signature ~= goldMachineLastInventorySignature then
+goldMachineLastInventorySignature = signature
+trace("gold machine inventory", goldMachineStatsText(stats))
+end
+end
+local function validateGoldenSelection(selectedCandidates)
+local save = getRewardSave()
+if not save then return false, nil, nil, "fresh Save.Pets is unavailable" end
+local byUID = {}
+for _, pet in pairs(save.Pets or {}) do
+if type(pet) == "table" and pet.uid ~= nil then
+byUID[tostring(pet.uid)] = pet
+end
+end
+local selectedUIDs = {}
+local auditLabels = {}
+local expectedId
+for index, candidate in ipairs(selectedCandidates) do
+local uid = tostring(candidate.Uid)
+local pet = byUID[uid]
+if not pet then
+return false, nil, nil, shortPetUID(uid) .. " disappeared before dispatch"
+end
+local definition = getPetDirectoryEntry(pet)
+if type(definition) ~= "table" or definition.name ~= GOLD_MACHINE_PET_NAME
+or definition.rarity ~= GOLD_MACHINE_PET_RARITY then
+return false, nil, nil, shortPetUID(uid) .. " is no longer a Mythical Galaxy Fox"
+end
+if pet.g or pet.r or pet.dm then
+return false, nil, nil, shortPetUID(uid) .. " is already upgraded"
+end
+local protected, protectedLevel = hasProtectedTechCoins(pet)
+if protected then
+return false, nil, nil, shortPetUID(uid)
+.. " gained protected Tech Coins " .. tostring(protectedLevel)
+end
+if pet.e == true then
+return false, nil, nil, shortPetUID(uid) .. " is equipped"
+end
+if pet.l == true or pet.locked == true then
+return false, nil, nil, shortPetUID(uid) .. " is locked"
+end
+if definition.isPremium or definition.rarity == "Exclusive" then
+return false, nil, nil, shortPetUID(uid) .. " is not machine-eligible"
+end
+local petId = tostring(pet.id)
+expectedId = expectedId or petId
+if petId ~= expectedId then
+return false, nil, nil, "selected pets no longer share the same directory id"
+end
+selectedUIDs[index] = uid
+auditLabels[index] = petAuditLabel(pet)
+end
+return true, selectedUIDs, auditLabels, nil
 end
 local function resolveGoldenMachineBatch()
 if goldMachineBatchSize then
@@ -1872,14 +2006,6 @@ local function runGoldMachineCheck()
 if goldMachineBusy then return end
 goldMachineBusy = true
 local now = os.clock()
-local batchSize, batchCost, batchProblem = resolveGoldenMachineBatch()
-if not batchSize then
-goldMachineNextCheck = now + GOLD_MACHINE_RETRY_DELAY
-goldMachineBusy = false
-setGoldMachineStatus("Route/info error; no pets were sent: " .. tostring(batchProblem)
-.. "\nNext retry in 10 seconds.")
-return
-end
 local save = getRewardSave()
 if not save then
 goldMachineNextCheck = now + 2
@@ -1889,11 +2015,22 @@ return
 end
 local pendingCount = refreshGoldMachinePending(save)
 local candidates, stats = collectGoldenGalaxyFoxCandidates(save)
+reportGoldMachineInventory(stats)
+local batchSize, batchCost, batchProblem = resolveGoldenMachineBatch()
+if not batchSize then
+goldMachineNextCheck = now + GOLD_MACHINE_RETRY_DELAY
+goldMachineBusy = false
+setGoldMachineStatus("Inventory counted before routing. Route/info error; no pets were sent: "
+.. tostring(batchProblem) .. "\n" .. goldMachineStatsText(stats)
+.. "\nNext retry in 10 seconds.")
+return
+end
 if pendingCount > 0 then
 goldMachineNextCheck = now + 0.5
 goldMachineBusy = false
 setGoldMachineStatus("Server accepted the previous batch; waiting for Save.Pets to refresh ("
-.. tostring(pendingCount) .. " UID remaining).\n" .. goldMachineStatsText(stats))
+.. tostring(pendingCount) .. " UID remaining).\nPending: "
+.. tostring(goldMachinePendingAudit or "unknown") .. "\n" .. goldMachineStatsText(stats))
 return
 end
 if #candidates < batchSize then
@@ -1901,7 +2038,7 @@ goldMachineNextCheck = now + 2
 goldMachineBusy = false
 setGoldMachineStatus("Waiting for a guaranteed " .. tostring(batchSize) .. "/" .. tostring(batchSize)
 .. " batch; currently " .. tostring(#candidates) .. ". No request sent.\n"
-.. goldMachineStatsText(stats))
+.. goldMachineStatsText(stats) .. "\nLast confirmed: " .. goldMachineLastConfirmedAudit)
 return
 end
 local diamonds = getCurrentCurrency("Diamonds")
@@ -1913,31 +2050,50 @@ setGoldMachineStatus("Not enough Diamonds for the guaranteed batch: "
 .. ". No request sent.\n" .. goldMachineStatsText(stats))
 return
 end
-local selected = {}
-for index = 1, batchSize do selected[index] = candidates[index] end
+local selectedCandidates = {}
+for index = 1, batchSize do selectedCandidates[index] = candidates[index] end
+local selectionSafe, selectedUIDs, selectedAudit, validationProblem =
+validateGoldenSelection(selectedCandidates)
+if not selectionSafe then
+goldMachineNextCheck = now + 0.5
+goldMachineBusy = false
+local status = "Safety recheck blocked the batch; no request sent: " .. tostring(validationProblem)
+setGoldMachineStatus(status .. "\n" .. goldMachineStatsText(stats))
+trace("gold machine safety", status)
+return
+end
+if not running() or not config.AutoGoldenGalaxyFox then
+goldMachineBusy = false
+return
+end
+local auditText = table.concat(selectedAudit, " | ")
+trace("gold machine validated pets", auditText)
 local transportOk, accepted, serverMessage, sourceName, sessionIndex, serverChance =
-invokeCommand("Use Golden Machine", selected)
+invokeCommand("Use Golden Machine", selectedUIDs)
 if not transportOk then
 goldMachineNextCheck = now + GOLD_MACHINE_RETRY_DELAY
 setGoldMachineStatus("Route/transport error; no conversion confirmed: " .. tostring(serverMessage)
-.. "\n" .. goldMachineStatsText(stats))
+.. "\nValidated but not confirmed: " .. auditText .. "\n" .. goldMachineStatsText(stats))
 elseif not accepted then
 goldMachineNextCheck = now + GOLD_MACHINE_RETRY_DELAY
 local reason = serverMessage ~= nil and tostring(serverMessage) or "request rejected"
 setGoldMachineStatus("Server reached via " .. routeText(sourceName, sessionIndex) .. ": " .. reason
-.. "\n" .. goldMachineStatsText(stats))
-trace("gold machine", "request rejected: " .. reason)
+.. "\nRejected batch: " .. auditText .. "\n" .. goldMachineStatsText(stats))
+trace("gold machine", "request rejected: " .. reason .. " | " .. auditText)
 else
 table.clear(goldMachinePending)
-for _, uid in ipairs(selected) do goldMachinePending[uid] = true end
+for _, uid in ipairs(selectedUIDs) do goldMachinePending[uid] = true end
 goldMachinePendingAt = os.clock()
+goldMachinePendingAudit = auditText
 goldMachineCompletedBatches = goldMachineCompletedBatches + 1
 goldMachineNextCheck = now + 0.5
 local chance = tonumber(serverChance) or 100
 local status = "Batch accepted via " .. routeText(sourceName, sessionIndex)
 .. " | pets: " .. tostring(batchSize) .. " | chance: " .. tostring(chance)
 .. "% | completed batches: " .. tostring(goldMachineCompletedBatches)
-setGoldMachineStatus(status .. "\nWaiting for Save.Pets before selecting the next batch.")
+setGoldMachineStatus(status .. "\nAccepted pets: " .. auditText
+.. "\nWaiting for Save.Pets before selecting the next batch.")
+trace("gold machine accepted pets", auditText)
 trace("gold machine", status)
 end
 goldMachineBusy = false
@@ -2302,17 +2458,19 @@ Callback = function(value)
 config.AutoGoldenGalaxyFox = value == true
 goldMachineNextCheck = 0
 if config.AutoGoldenGalaxyFox then
+goldMachineLastInventorySignature = nil
 setGoldMachineStatus("Enabled. Resolving Get Golden Machine Info and Use Golden Machine for this session...")
 else
 table.clear(goldMachinePending)
 goldMachinePendingAt = 0
+goldMachinePendingAudit = nil
 setGoldMachineStatus("Disabled. No pets will be sent to the Golden Machine.")
 end
 end,
 })
 goldMachineParagraph = GoldMachineSection:Paragraph({
 Title = "Golden Machine Status",
-Desc = "Auto conversion is disabled. Locked and upgraded pets are skipped; equipped eligible pets are supported.",
+Desc = "Auto conversion is disabled. Tech Coins III+, equipped, locked and upgraded pets are skipped.",
 })
 local LootSection = LootTab:Section({ Title = "Loot Magnet", Box = true, Opened = true })
 LootSection:Paragraph({
@@ -2436,6 +2594,7 @@ config.AutoVIPRewards = false
 config.AutoRankRewards = false
 config.AutoGoldenGalaxyFox = false
 table.clear(goldMachinePending)
+goldMachinePendingAudit = nil
 config.PotatoMode = false
 stopGraphics()
 farmResetRequested = false
