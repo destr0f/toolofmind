@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.2.6-dev.13"
+local VERSION = "1.2.6-dev.14"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -1065,21 +1065,6 @@ local controllerHandlers = {}
 local nextControllerLookup = {}
 local petRuntime = nil
 local runtimeDriverReady = false
-local DIRECT_DISPATCH_LIMIT = 6
-local DIRECT_PENDING_GRACE = 1.5
-local directDispatchQueue = {}
-local directDispatchActive = 0
-local directDispatchEpoch = 0
-local directDispatchFallbackUntil = 0
-local directDispatchAccepted = 0
-local directDispatchRejected = 0
-local directDispatchFailures = 0
-local pumpDirectDispatch
-
-local function cancelDirectDispatches()
-    directDispatchEpoch = directDispatchEpoch + 1
-    table.clear(directDispatchQueue)
-end
 
 local function queuePetRelease(petId, now)
     petStates[petId] = nil
@@ -1091,7 +1076,6 @@ end
 
 releaseAssignmentsForCoin = function(rawId)
     if rawId == nil then
-        cancelDirectDispatches()
         table.clear(petStates)
         table.clear(rejectedUntil)
         table.clear(releaseWait)
@@ -1421,160 +1405,6 @@ local function getRecordModel(record)
     return nil
 end
 
-local function directJobCurrent(job)
-    return running() and config.PetFarm and not farmResetRunning and not farmResetRequested
-        and job.Epoch == directDispatchEpoch and petStates[job.PetId] == job.State
-        and recordAlive(job.Record)
-end
-
-local function disableDirectDispatch(epoch, reason)
-    if epoch ~= directDispatchEpoch then return end
-    directDispatchFallbackUntil = os.clock() + 2
-    directDispatchEpoch = directDispatchEpoch + 1
-    table.clear(directDispatchQueue)
-    for petId, state in pairs(petStates) do
-        if state.DirectEpoch == epoch and state.Phase == "pending" then
-            petStates[petId] = nil
-        end
-    end
-    driverStatus = "parallel dispatch paused: " .. tostring(reason)
-    trace("parallel dispatch fallback", tostring(reason))
-end
-
-local function runtimeStateForPet(petId)
-    if type(petRuntime) ~= "table" then return nil end
-    local direct = petRuntime[petId]
-    if type(direct) == "table" and direct.owner == player then return direct end
-    for key, runtimeState in pairs(petRuntime) do
-        if type(runtimeState) == "table" and runtimeState.owner == player
-            and tostring(runtimeState.uid or key) == tostring(petId) then
-            return runtimeState
-        end
-    end
-    return nil
-end
-
-local function mirrorDirectRuntime(job)
-    local runtimeState = runtimeStateForPet(job.PetId)
-    local target = job.Model and job.Model:FindFirstChild("POS")
-    if not runtimeState or not target then return false end
-
-    if runtimeState.selectionFunc then pcall(runtimeState.selectionFunc) end
-    runtimeState.selectionFunc = nil
-    runtimeState.farming = true
-    runtimeState.target = target
-    runtimeState.follower = nil
-    runtimeState.arrived = false
-    runtimeState.targetuid = (tonumber(runtimeState.targetuid) or 0) + 1
-    runtimeState.randomRotation = math.random() * 360
-
-    local worldFX = Library and Library.WorldFX
-    if worldFX and type(worldFX.CoinSelection) == "function" and runtimeState.physical then
-        local ok, selection = pcall(worldFX.CoinSelection, runtimeState.physical, job.Model)
-        if ok then runtimeState.selectionFunc = selection end
-    end
-    return true
-end
-
-local function directResponseAccepted(response, petId)
-    if response == true then return true end
-    if type(response) ~= "table" then return false end
-    local direct = response[petId]
-    if direct ~= nil then return direct ~= false end
-    for rawId, accepted in pairs(response) do
-        if tostring(rawId) == tostring(petId) then return accepted ~= nil and accepted ~= false end
-    end
-    return false
-end
-
-local function processDirectDispatch(job)
-    if not directJobCurrent(job) then return end
-    local network = networkReady()
-    if not network then
-        directDispatchFailures = directDispatchFailures + 1
-        disableDirectDispatch(job.Epoch, "Network unavailable")
-        return
-    end
-
-    local invokeOk, response = pcall(network.Invoke, "Join Coin", job.CoinId, { job.PetId })
-    if not invokeOk then
-        directDispatchFailures = directDispatchFailures + 1
-        disableDirectDispatch(job.Epoch, response)
-        return
-    end
-
-    local accepted = directResponseAccepted(response, job.PetId)
-    if accepted and not directJobCurrent(job) then
-        pcall(network.Invoke, "Leave Coin", job.CoinId, { job.PetId })
-        return
-    end
-    if not directJobCurrent(job) then return end
-
-    if not accepted then
-        directDispatchRejected = directDispatchRejected + 1
-        if petStates[job.PetId] == job.State then petStates[job.PetId] = nil end
-        rejectedUntil[job.CoinId] = os.clock() + 0.12
-        driverStatus = "parallel Join Coin rejected; reallocating"
-        if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
-        return
-    end
-
-    job.State.Phase = "locked"
-    job.State.ConfirmedAt = os.clock()
-    local mirrorOk, mirrored = pcall(mirrorDirectRuntime, job)
-    job.State.Runtime = mirrorOk and mirrored == true
-    if not directJobCurrent(job) then
-        pcall(network.Invoke, "Leave Coin", job.CoinId, { job.PetId })
-        return
-    end
-    if not job.State.Runtime then
-        pcall(network.Fire, "Change Pet Target", job.PetId, "Coin", job.CoinId)
-    end
-    local farmOk, farmProblem = pcall(network.Fire, "Farm Coin", job.CoinId, job.PetId)
-    if not farmOk then
-        directDispatchFailures = directDispatchFailures + 1
-        if petStates[job.PetId] == job.State then petStates[job.PetId] = nil end
-        pcall(network.Invoke, "Leave Coin", job.CoinId, { job.PetId })
-        disableDirectDispatch(job.Epoch, farmProblem)
-        return
-    end
-    directDispatchAccepted = directDispatchAccepted + 1
-    driverStatus = "parallel explicit-pet dispatch"
-end
-
-pumpDirectDispatch = function()
-    while directDispatchActive < DIRECT_DISPATCH_LIMIT and #directDispatchQueue > 0 do
-        local job = table.remove(directDispatchQueue, 1)
-        if directJobCurrent(job) then
-            directDispatchActive = directDispatchActive + 1
-            task.spawn(function()
-                local ok, problem = pcall(processDirectDispatch, job)
-                if not ok then
-                    directDispatchFailures = directDispatchFailures + 1
-                    if petStates[job.PetId] == job.State then petStates[job.PetId] = nil end
-                    disableDirectDispatch(job.Epoch, problem)
-                end
-                directDispatchActive = math.max(0, directDispatchActive - 1)
-                pumpDirectDispatch()
-                if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
-            end)
-        end
-    end
-end
-
-local function queueDirectDispatch(record, model, petId, state)
-    state.DirectEpoch = directDispatchEpoch
-    table.insert(directDispatchQueue, {
-        Record = record,
-        Model = model,
-        CoinId = tostring(record.Id),
-        PetId = tostring(petId),
-        State = state,
-        Epoch = directDispatchEpoch,
-    })
-    pumpDirectDispatch()
-end
-
 local function syncRuntimeAssignments(equipped)
     if not runtimeDriverReady or type(petRuntime) ~= "table" then return false, nil end
 
@@ -1628,16 +1458,7 @@ local function syncRuntimeAssignments(equipped)
             queuePetRelease(petId, now)
         elseif observed[petId] == nil then
             local runtimeState = runtimeSeen[petId]
-            local pendingAge = now - (tonumber(state.StartedAt) or now)
-            if state.Phase == "pending" and pendingAge < DIRECT_PENDING_GRACE then
-                state.RuntimeIdleChecks = nil
-            elseif state.Phase == "pending" then
-                petStates[petId] = nil
-                releaseWait[petId] = nil
-                idleRecoveryCount = idleRecoveryCount + 1
-                lastRecovery = "expired pending dispatch"
-                driverStatus = "expired dispatch recovered"
-            elseif runtimeState and runtimeState.farming == false then
+            if runtimeState and runtimeState.farming == false then
                 state.RuntimeIdleChecks = (state.RuntimeIdleChecks or 0) + 1
                 if state.RuntimeIdleChecks >= 2 then
                     petStates[petId] = nil
@@ -1741,7 +1562,6 @@ local function collectAssignmentsForReset()
 end
 
 local function clearAssignments(sendBack)
-    cancelDirectDispatches()
     local groups, allPets = collectAssignmentsForReset()
     local network = sendBack and networkReady() or nil
     if network then
@@ -1830,7 +1650,7 @@ requestFarmReset = function(reason)
     end)
 end
 
-local function dispatchPlan(record, petIds, groupMode, directMode)
+local function dispatchPlan(record, petIds, groupMode)
     if not recordAlive(record) or #petIds == 0 then return end
     local model = getRecordModel(record)
     if not model or not model:FindFirstChild("POS") then
@@ -1850,13 +1670,6 @@ local function dispatchPlan(record, petIds, groupMode, directMode)
         }
         petStates[petId] = state
         stateTokens[petId] = state
-    end
-
-    if directMode then
-        for _, petId in ipairs(petIds) do
-            queueDirectDispatch(record, model, petId, stateTokens[petId])
-        end
-        return
     end
 
     local firedAny = false
@@ -1903,11 +1716,6 @@ local function syncServerAssignments(equipped)
         releaseWait[petId] = nil
         local state = petStates[petId]
         local coinId = state and tostring(state.CoinId) or nil
-        if state and state.Phase == "pending"
-            and now - (tonumber(state.StartedAt) or now) < DIRECT_PENDING_GRACE
-            and (coinId == nil or not choices[coinId]) then
-            continue
-        end
         if not coinId or not choices[coinId] then
             local bestRevision = -1
             coinId = nil
@@ -1936,13 +1744,6 @@ local function syncServerAssignments(equipped)
             releaseWait[petId] = nil
         elseif not recordAlive(record) then
             queuePetRelease(petId, now)
-        elseif state.Phase == "pending"
-            and now - (tonumber(state.StartedAt) or now) >= DIRECT_PENDING_GRACE then
-            petStates[petId] = nil
-            releaseWait[petId] = nil
-            idleRecoveryCount = idleRecoveryCount + 1
-            lastRecovery = "expired server dispatch"
-            driverStatus = "expired dispatch recovered"
         end
     end
 
@@ -2163,10 +1964,7 @@ local function allocatorPass()
         local equipped = {}
         for _, petId in ipairs(petIds) do equipped[petId] = true end
 
-        local parallelDispatch = (config.Mode == "Different Strongest"
-                or config.Mode == "Different Weakest")
-            and networkReady() ~= nil and os.clock() >= directDispatchFallbackUntil
-        if not parallelDispatch and not runtimeDriverReady then resolveControllerHandler("Select Coin") end
+        if not runtimeDriverReady then resolveControllerHandler("Select Coin") end
         local usingRuntime, runtimeSeen = syncRuntimeAssignments(equipped)
         if not usingRuntime then syncServerAssignments(equipped) end
 
@@ -2183,7 +1981,7 @@ local function allocatorPass()
 
         local freePets = {}
         for _, petId in ipairs(petIds) do
-            local runtimeReady = parallelDispatch or not usingRuntime or runtimeSeen[petId] ~= nil
+            local runtimeReady = not usingRuntime or runtimeSeen[petId] ~= nil
             if runtimeReady and not petStates[petId] and not releaseWait[petId] then
                 table.insert(freePets, petId)
             end
@@ -2241,9 +2039,7 @@ local function allocatorPass()
         end
         local groupMode = config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only"
         local useGroupHandler = groupMode and assignmentCount() == 0 and #freePets == #petIds
-        for _, plan in pairs(plans) do
-            dispatchPlan(plan.Record, plan.Pets, useGroupHandler, parallelDispatch)
-        end
+        for _, plan in pairs(plans) do dispatchPlan(plan.Record, plan.Pets, useGroupHandler) end
         end)
         if not ok then driverStatus = "allocator error: " .. tostring(problem) end
     until not allocatorRequested or not running()
@@ -2380,7 +2176,7 @@ local MiscTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
 local PetsSection = PetsTab:Section({ Title = "Farm Control", Box = true, Opened = true })
 PetsSection:Paragraph({
     Title = "Adaptive Pet Allocator",
-    Desc = "Different-target modes use six explicit-pet workers. Locks remain fixed until each coin is destroyed.",
+    Desc = "Zone-aware target locks with live idle-pet recovery. Pets stay on a coin until the game confirms that they are free.",
 })
 PetsSection:Toggle({
     Title = "Enable Pet Farm",
@@ -2804,10 +2600,6 @@ task.spawn(function()
         local runtimeLine = runtimeActive ~= nil
             and string.format("Runtime: %d active | %d ready | %d unseen", runtimeActive, runtimeIdle, runtimeMissing)
             or "Runtime: discovering game pet state"
-        local differentMode = config.Mode == "Different Strongest" or config.Mode == "Different Weakest"
-        local dispatchMode = not differentMode and "game handler"
-            or os.clock() < directDispatchFallbackUntil and "serial fallback"
-            or ("parallel x" .. tostring(DIRECT_DISPATCH_LIMIT))
         setStatus(string.format(
             "%s  >  %s\nTargets: %d | reserved: %d/%d | local idle: %d\n%s",
             tostring(world or "unknown"),
@@ -2819,16 +2611,10 @@ task.spawn(function()
             runtimeLine
         ))
         setHealth(string.format(
-            "Network: %s | pet controller: %s | allocator: %s\nDispatch: %s | active: %d | queued: %d | ok/reject/error: %d/%d/%d\nRecoveries: %d | last: %s\nDriver: %s",
+            "Network: %s | pet controller: %s | allocator: %s\nRecoveries: %d | last: %s\nDriver: %s",
             networkState,
             controllerState,
             farmResetRunning and "reconfiguring" or "stable",
-            dispatchMode,
-            directDispatchActive,
-            #directDispatchQueue,
-            directDispatchAccepted,
-            directDispatchRejected,
-            directDispatchFailures,
             idleRecoveryCount,
             lastRecovery,
             driverStatus
