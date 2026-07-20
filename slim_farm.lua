@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.2.6-dev.19"
+local VERSION = "1.2.6-dev.20"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -183,7 +183,7 @@ local function normalize(value)
     return string.match(value, "^%s*(.-)%s*$") or value
 end
 
-local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/1d5439ba88dc2a1c42cb56b8936ee48cd686f87d/graphics_module.lua"
+local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/8d9b1658533645fbdc214b3a42ef4932d2a6f71e/graphics_module.lua"
 local graphicsController
 
 local function graphicsAction(action, value)
@@ -2543,7 +2543,7 @@ MiscSection:Toggle({
 local GraphicsSection = MiscTab:Section({ Title = "Graphics & FPS", Box = true, Opened = true })
 GraphicsSection:Button({
     Title = "ENABLE BALANCED POTATO MODE",
-    Desc = "Keeps the location, coins and pets visible while reducing textures, shadows and expensive world effects",
+    Desc = "Keeps the location, coins, chests and pets visible while stripping coin textures, shadows and expensive effects",
     Callback = function()
         setPotatoMode(true)
     end,
@@ -2559,7 +2559,7 @@ GraphicsSection:Dropdown({
 })
 GraphicsSection:Paragraph({
     Title = "Visible Location, Network-Safe",
-    Desc = "The map remains rendered in low detail. __THINGS, POS, _SELECTIONFX and every Network worker are preserved. Rejoin to restore removed textures.",
+    Desc = "Coin/chest meshes remain visible with health bars, but use textureless low-detail rendering. Pets, POS, _SELECTIONFX and Network workers are preserved.",
 })
 
 local DiamondPackSection = MiscTab:Section({ Title = "Develop: Diamond Pack", Box = true, Opened = true })
