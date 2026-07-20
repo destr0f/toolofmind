@@ -83,7 +83,7 @@ local function refreshPending(state, context, save)
     local stillGolden, count = {}, 0
     for _, pet in pairs((save and save.Pets) or {}) do
         local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
-        if uid and state.Pending[uid] and pet.g == true and not pet.r and not pet.dm then
+        if uid and state.Pending[uid] and pet.g and not pet.r and not pet.dm then
             stillGolden[uid] = true
             count = count + 1
         end
@@ -128,7 +128,7 @@ local function collectCandidates(state, context, save)
                 stats.All = stats.All + 1
                 if pet.r or pet.dm then
                     stats.Upgraded = stats.Upgraded + 1
-                elseif pet.g ~= true then
+                elseif not pet.g then
                     stats.Normal = stats.Normal + 1
                 else
                     stats.Golden = stats.Golden + 1
@@ -183,7 +183,7 @@ local function validateSelection(context, selectedCandidates)
             or definition.rarity ~= PET_RARITY then
             return false, nil, nil, shortUID(uid) .. " is no longer a Mythical Galaxy Fox"
         end
-        if pet.g ~= true or pet.r or pet.dm then
+        if not pet.g or pet.r or pet.dm then
             return false, nil, nil, shortUID(uid) .. " is no longer an eligible golden pet"
         end
         local protected, level = protectedTechCoins(pet)
