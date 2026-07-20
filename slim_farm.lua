@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and develop-only automation tests.
 
-local VERSION = "1.2.6-dev.6"
+local VERSION = "1.2.6-dev.7"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -34,6 +34,7 @@ for _, key in ipairs({
     "PSX_OG_RewardInvokeCaptureState",
     "PSX_OG_BoostRemoteCaptureState",
     "PSX_OG_DiamondInvokeCaptureState",
+    "PSX_OG_DiamondMethodCaptureState",
 }) do
     local state = env[key]
     if type(state) == "table" then
@@ -1331,6 +1332,10 @@ local function newResolverReport()
         GCNetworkFunctions = 0,
         GCProblem = nil,
         CaptureUsed = false,
+        CapturePreflight = false,
+        CapturePreflightCalls = 0,
+        CaptureProbeCalls = 0,
+        CaptureProbeCandidates = 0,
         CaptureBlocked = false,
         CaptureRestored = nil,
         CaptureProblem = nil,
@@ -1348,6 +1353,10 @@ local function resolverReportText(report)
     local captureText = "capture=not needed"
     if report.CaptureUsed then
         captureText = "capture=" .. (report.CaptureBlocked and "blocked before server" or "not intercepted")
+            .. ", preflight=" .. tostring(report.CapturePreflight)
+            .. ", calls=" .. tostring(report.CapturePreflightCalls)
+            .. "/" .. tostring(report.CaptureProbeCalls)
+            .. ", candidates=" .. tostring(report.CaptureProbeCandidates)
         if report.CaptureRestored ~= nil then
             captureText = captureText .. ", hook restored=" .. tostring(report.CaptureRestored)
         end
@@ -1418,76 +1427,153 @@ end
 
 local function captureDiamondPackRemote(network, report)
     report.CaptureUsed = true
-    if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
-        report.CaptureProblem = "hookmetamethod/getnamecallmethod unavailable"
+    if type(hookfunction) ~= "function" then
+        report.CaptureProblem = "hookfunction unavailable"
         return nil
     end
 
-    local state = env.PSX_OG_DiamondInvokeCaptureState
+    -- Keep this state separate from the retired __namecall capture. If an executor
+    -- failed to restore that older hook, it remains permanently inactive and cannot
+    -- observe either preflight below.
+    local state = env.PSX_OG_DiamondMethodCaptureState
     if type(state) ~= "table" then
         state = {}
-        env.PSX_OG_DiamondInvokeCaptureState = state
+        env.PSX_OG_DiamondMethodCaptureState = state
     end
     state.active = false
     state.remote = nil
-    state.expectedArgument = 0
+    state.thread = nil
+    state.phase = nil
     state.blocked = false
+    state.calls = 0
+    state.remotes = nil
 
-    if state.persistent ~= true then
-        local oldNamecall
-        local function captureNamecall(self, ...)
-            local current = env.PSX_OG_DiamondInvokeCaptureState
-            if current and current.active
-                and getnamecallmethod() == "InvokeServer"
-                and typeof(self) == "Instance"
-                and self:IsA("RemoteFunction")
-                and select(1, ...) == current.expectedArgument then
-                current.remote = self
-                current.blocked = true
-                current.active = false
-                return false, "PSX read-only Diamond Pack capture"
-            end
-            return oldNamecall(self, ...)
-        end
-
-        local wrapped = type(newcclosure) == "function" and newcclosure(captureNamecall) or captureNamecall
-        local installed, installProblem = pcall(function()
-            oldNamecall = hookmetamethod(game, "__namecall", wrapped)
-        end)
-        if not installed or type(oldNamecall) ~= "function" then
-            report.CaptureProblem = "capture hook install failed: " .. tostring(installProblem or oldNamecall)
-            return nil
-        end
-        state.persistent = true
-        state.oldNamecall = oldNamecall
+    if state.mode ~= "InvokeServer hookfunction" then
+        state.persistent = false
+        state.oldInvokeServer = nil
+        state.invokeServerMethod = nil
+        state.mode = "InvokeServer hookfunction"
     end
 
-    state.active = true
-    local callOk, callResult = pcall(network.Invoke, "Buy DiamondPack", 0)
-    state.active = false
-    report.CaptureBlocked = state.blocked == true
+    if state.persistent ~= true then
+        local sampleRemote
+        for _, object in ipairs(ReplicatedStorage:GetDescendants()) do
+            if object:IsA("RemoteFunction") then
+                sampleRemote = object
+                break
+            end
+        end
+        if not sampleRemote then
+            report.CaptureProblem = "no RemoteFunction exists in ReplicatedStorage"
+            return nil
+        end
 
-    local captured = state.remote
-    local oldNamecall = state.oldNamecall
-    if type(oldNamecall) == "function" then
+        local methodOk, invokeServerMethod = pcall(function() return sampleRemote.InvokeServer end)
+        if not methodOk or type(invokeServerMethod) ~= "function" then
+            report.CaptureProblem = "InvokeServer method is unavailable"
+            return nil
+        end
+
+        local oldInvokeServer
+        local function captureInvokeServer(self, ...)
+            local current = env.PSX_OG_DiamondMethodCaptureState
+            if current and current.active
+                and current.thread == coroutine.running()
+                and typeof(self) == "Instance"
+                and self:IsA("RemoteFunction") then
+                current.calls = (current.calls or 0) + 1
+                current.remotes = current.remotes or {}
+                current.remotes[self] = true
+                current.remote = self
+                current.blocked = true
+                return false, "PSX read-only Diamond Pack capture"
+            end
+            return oldInvokeServer(self, ...)
+        end
+
+        local replacement = type(newcclosure) == "function"
+            and newcclosure(captureInvokeServer) or captureInvokeServer
+        local installed, originalOrProblem = pcall(function()
+            return hookfunction(invokeServerMethod, replacement)
+        end)
+        if not installed or type(originalOrProblem) ~= "function" then
+            report.CaptureProblem = "InvokeServer hook install failed: " .. tostring(originalOrProblem)
+            return nil
+        end
+        oldInvokeServer = originalOrProblem
+        state.persistent = true
+        state.oldInvokeServer = oldInvokeServer
+        state.invokeServerMethod = invokeServerMethod
+    end
+
+    local function beginPhase(phase)
+        state.phase = phase
+        state.remote = nil
+        state.remotes = {}
+        state.calls = 0
+        state.blocked = false
+        state.active = true
+    end
+
+    local function capturedRemote()
+        local found, count = nil, 0
+        for remote in next, state.remotes or {} do
+            found = remote
+            count = count + 1
+        end
+        return count == 1 and found or nil, count
+    end
+
+    state.thread = coroutine.running()
+    beginPhase("preflight")
+    local preflightOk, preflightResult = pcall(network.Invoke, "Get OSTime")
+    state.active = false
+    local _, preflightCandidates = capturedRemote()
+    report.CapturePreflightCalls = state.calls
+    report.CapturePreflight = state.blocked == true and preflightCandidates > 0
+
+    local captured
+    local callOk, callResult = false, nil
+    if report.CapturePreflight then
+        beginPhase("diamond")
+        callOk, callResult = pcall(network.Invoke, "Buy DiamondPack", 0)
+        state.active = false
+        report.CaptureBlocked = state.blocked == true
+        captured, report.CaptureProbeCandidates = capturedRemote()
+        report.CaptureProbeCalls = state.calls
+    else
+        report.CaptureProblem = preflightOk
+            and "InvokeServer hook was not observed; Diamond Pack probe skipped"
+            or "Get OSTime preflight errored: " .. tostring(preflightResult)
+    end
+
+    local oldInvokeServer = state.oldInvokeServer
+    local invokeServerMethod = state.invokeServerMethod
+    if type(oldInvokeServer) == "function" and type(invokeServerMethod) == "function" then
         local restoreOk, replacedHook = pcall(function()
-            return hookmetamethod(game, "__namecall", oldNamecall)
+            return hookfunction(invokeServerMethod, oldInvokeServer)
         end)
         local restored = restoreOk and type(replacedHook) == "function"
         report.CaptureRestored = restored
         if restored then
             state.persistent = false
-            state.oldNamecall = nil
+            state.oldInvokeServer = nil
+            state.invokeServerMethod = nil
         end
     end
 
-    state.expectedArgument = nil
+    state.thread = nil
+    state.phase = nil
     state.remote = nil
-    if not callOk then
+    state.remotes = nil
+    state.calls = 0
+    if report.CapturePreflight and not callOk then
         report.CaptureProblem = "Network.Invoke capture probe errored: " .. tostring(callResult)
-    elseif not captured then
-        report.CaptureProblem = "Network.Invoke did not expose an InvokeServer namecall"
-    elseif not report.CaptureBlocked then
+    elseif report.CapturePreflight and report.CaptureProbeCandidates > 1 then
+        report.CaptureProblem = "Diamond Pack capture was ambiguous; all candidate calls were blocked"
+    elseif report.CapturePreflight and not captured then
+        report.CaptureProblem = "Buy DiamondPack did not call the preflighted InvokeServer method"
+    elseif report.CapturePreflight and not report.CaptureBlocked then
         report.CaptureProblem = "remote observed but the probe was not blocked"
     end
 
@@ -1521,7 +1607,7 @@ local function getDiamondPackDirectRemote(forceSearch)
     local source = "Network.Invoke graph"
     if not remote then
         remote = captureDiamondPackRemote(network, report)
-        source = "captured from Network.Invoke (blocked tier-0 probe)"
+        source = "captured from Network.Invoke (preflighted InvokeServer hook)"
     end
     if not remote then
         remote = findCommandRemoteInGC("Buy DiamondPack", report)
@@ -2188,7 +2274,6 @@ local function runManualDiamondPackTest(tier)
     end
     diamondPackBusy = true
 
-    local network = networkReady()
     local directRemote, directSource, directIndex, resolverSummary = getDiamondPackDirectRemote()
     local balance = getCurrentCurrency("Tech Coins")
     local balanceText = balance ~= nil
@@ -2198,15 +2283,19 @@ local function runManualDiamondPackTest(tier)
         and (formatRateNumber(packCost) .. " (" .. formatExactNumber(packCost) .. ")") or "unknown"
     local route = directRemote
         and (tostring(directSource) .. " [session index " .. tostring(directIndex or "?") .. "]")
-        or "Library.Network.Invoke"
+        or nil
     local status
 
-    if not directRemote and not network then
-        status = string.format("Tier %d manual test | Local error: Library.Network is not ready; no request sent.", tier)
+    if not directRemote then
+        status = string.format(
+            "Tier %d manual test | Direct RemoteFunction unresolved; no purchase request sent | %s; %s",
+            tier,
+            tostring(directSource),
+            tostring(resolverSummary)
+        )
     else
         local callOk, accepted, serverMessage = pcall(function()
-            if directRemote then return directRemote:InvokeServer(tier) end
-            return network.Invoke("Buy DiamondPack", tier)
+            return directRemote:InvokeServer(tier)
         end)
         if not callOk then
             status = string.format("Tier %d manual test | Transport error via %s: %s", tier, route, tostring(accepted))
@@ -2231,10 +2320,6 @@ local function runManualDiamondPackTest(tier)
             )
         end
     end
-    if not directRemote then
-        status = status .. " | direct resolver: " .. tostring(directSource) .. "; " .. tostring(resolverSummary)
-    end
-
     if config.AutoTechDiamondPack then
         diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
     end
@@ -2289,18 +2374,15 @@ local function runDiamondPackCheck()
         local safeProbe = not shouldBuy and packCost ~= nil and balance < packCost
 
         if shouldBuy or safeProbe then
-            local network = networkReady()
             local directRemote, directSource, directIndex, resolverSummary = getDiamondPackDirectRemote()
-            if not directRemote and not network then
-                status = "Local check: neither a direct RemoteFunction nor Library.Network is available; no request sent."
+            if not directRemote then
+                status = "Local safety hold: direct Diamond Pack RemoteFunction is unresolved; no request sent."
                     .. " | resolver: " .. tostring(directSource) .. "; " .. tostring(resolverSummary)
             else
-                local route = directRemote
-                    and (tostring(directSource) .. " [session index " .. tostring(directIndex or "?") .. "]")
-                    or "Library.Network.Invoke"
+                local route = tostring(directSource)
+                    .. " [session index " .. tostring(directIndex or "?") .. "]"
                 local callOk, accepted, serverMessage = pcall(function()
-                    if directRemote then return directRemote:InvokeServer(DIAMOND_PACK_TIER) end
-                    return network.Invoke("Buy DiamondPack", DIAMOND_PACK_TIER)
+                    return directRemote:InvokeServer(DIAMOND_PACK_TIER)
                 end)
                 if not callOk then
                     status = "Transport error via " .. route .. ": " .. tostring(accepted)
@@ -2313,10 +2395,6 @@ local function runDiamondPackCheck()
                     status = "Server reached via " .. route .. ": " .. reason
                         .. " | balance: " .. balanceText
                         .. " | required floor: 1T"
-                    if not directRemote then
-                        status = status .. " | direct resolver: " .. tostring(directSource)
-                            .. "; " .. tostring(resolverSummary)
-                    end
                 end
             end
         elseif packCost == nil then
@@ -2733,7 +2811,7 @@ diamondPackParagraph = DiamondPackSection:Paragraph({
 })
 DiamondPackSection:Button({
     Title = "Resolve Direct Purchase Remote",
-    Desc = "Capture-only: blocks an invalid tier-0 probe before the server and cannot purchase a pack",
+    Desc = "Capture-only: preflights on Get OSTime, then blocks the Diamond Pack probe before the server",
     Callback = function()
         task.spawn(function()
             if not running() then return end
