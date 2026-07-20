@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
--- Pet farming, loot magnet, anti-AFK and develop-only automation tests.
+-- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.2.6-dev.8"
+local VERSION = "1.2.6-dev.9"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -90,14 +90,12 @@ local rewardStates = {
         Label = "VIP",
         Command = "Redeem VIP Rewards",
         ConfigKey = "AutoVIPRewards",
-        ProbePending = false,
         NextAttempt = 0,
     },
     Rank = {
         Label = "Rank",
         Command = "Redeem Rank Rewards",
         ConfigKey = "AutoRankRewards",
-        ProbePending = false,
         NextAttempt = 0,
     },
 }
@@ -207,12 +205,6 @@ local function formatRateNumber(amount)
     return tostring(math.floor(amount + 0.5))
 end
 
-local function formatExactNumber(amount)
-    amount = tonumber(amount)
-    if amount == nil then return "unknown" end
-    return string.format("%.0f", amount)
-end
-
 local function normalizeCurrencyName(name)
     local normalized = string.lower(tostring(name or ""))
     normalized = string.gsub(normalized, "[%s_%-]", "")
@@ -274,54 +266,6 @@ local function getCurrentCurrency(currencyName)
             local amount = readCurrencyNumber(object)
             if amount ~= nil then return amount end
         end
-    end
-    return nil
-end
-
-local function parseShortAmount(value)
-    if type(value) == "number" then return value end
-    if type(value) ~= "string" then return nil end
-
-    local compact = string.lower(value)
-    compact = string.gsub(compact, "[,%s]", "")
-    local numberText, suffix = string.match(compact, "^([%d%.]+)([kmbt]?)")
-    local amount = tonumber(numberText)
-    if not amount then return nil end
-
-    local multipliers = { k = 1e3, m = 1e6, b = 1e9, t = 1e12 }
-    return amount * (multipliers[suffix] or 1)
-end
-
-local function getDiamondPackCost(tier)
-    local framework = ReplicatedStorage:FindFirstChild("Framework")
-    local modules = framework and framework:FindFirstChild("Modules")
-    local directory = modules and modules:FindFirstChild("1 - Directory")
-    local configModule = directory and directory:FindFirstChild("ExclusiveShopConfig")
-    if not configModule then return nil end
-
-    local ok, shopConfig = pcall(require, configModule)
-    if not ok or type(shopConfig) ~= "table" or type(shopConfig.DiamondPacks) ~= "table" then
-        return nil
-    end
-
-    local pack = shopConfig.DiamondPacks[tonumber(tier) or DIAMOND_PACK_TIER]
-    if type(pack) ~= "table" then return nil end
-
-    for _, key in ipairs({ "currencyCost", "CurrencyCost", "techCost", "TechCost", "cost", "Cost", "price", "Price" }) do
-        local parsed = parseShortAmount(pack[key])
-        if parsed then return parsed, key end
-    end
-    for key, value in pairs(pack) do
-        local keyName = string.lower(tostring(key))
-        local isDisplay = string.find(keyName, "display", 1, true) ~= nil
-        if not isDisplay and (string.find(keyName, "cost", 1, true) or string.find(keyName, "price", 1, true)) then
-            local parsed = parseShortAmount(value)
-            if parsed then return parsed, tostring(key) end
-        end
-    end
-    for _, key in ipairs({ "displayCost", "DisplayCost" }) do
-        local parsed = parseShortAmount(pack[key])
-        if parsed then return parsed, key end
     end
     return nil
 end
@@ -1200,346 +1144,69 @@ local function functionUpvalueAt(callback, index)
     return nil, "upvalue #" .. tostring(index) .. " is unavailable"
 end
 
-local function functionConstants(callback)
-    local readers = {
-        type(getconstants) == "function" and getconstants or nil,
-        debug and type(debug.getconstants) == "function" and debug.getconstants or nil,
-    }
-    local seenReaders = {}
-    for _, reader in next, readers do
-        if type(reader) == "function" and not seenReaders[reader] then
-            seenReaders[reader] = true
-            local ok, values = pcall(reader, callback)
-            if ok and type(values) == "table" then return values end
-        end
-    end
-    return {}
+local commandRemoteCache = {}
+local commandRemoteSource = "Network.Invoke GetRemoteFunction upvalue #2"
+
+local function remoteSessionIndex(remote)
+    if typeof(remote) ~= "Instance" then return nil end
+    return table.find(ReplicatedStorage:GetChildren(), remote)
 end
 
-local function functionSource(callback)
-    if debug and type(debug.info) == "function" then
-        local ok, source = pcall(debug.info, callback, "s")
-        if ok and type(source) == "string" then return source end
+local function getCommandRemote(commandName)
+    local cached = commandRemoteCache[commandName]
+    if typeof(cached) == "Instance" and cached:IsA("RemoteFunction")
+        and cached:IsDescendantOf(ReplicatedStorage) then
+        return cached, commandRemoteSource, remoteSessionIndex(cached), nil
+    end
+    commandRemoteCache[commandName] = nil
+
+    local network = networkReady()
+    if not network or type(network.Invoke) ~= "function" then
+        return nil, commandRemoteSource, nil, "Library.Network.Invoke is unavailable"
     end
 
-    local readers = {
-        type(getinfo) == "function" and getinfo or nil,
-        debug and type(debug.getinfo) == "function" and debug.getinfo or nil,
-    }
-    local seenReaders = {}
-    for _, reader in next, readers do
-        if type(reader) == "function" and not seenReaders[reader] then
-            seenReaders[reader] = true
-            local ok, info = pcall(reader, callback)
-            if ok and type(info) == "table" then
-                local source = info.source or info.short_src
-                if type(source) == "string" then return source end
-            end
-        end
-    end
-    return ""
-end
-
-local diamondPackDirectRemote
-local diamondPackDirectSource
-local diamondPackResolverSummary = "Direct remote has not been resolved yet."
-local diamondPackResolverRetryAt = 0
-
-local function addRemoteCandidate(candidates, value, expectedClass)
-    if typeof(value) ~= "Instance" or not value:IsA(expectedClass) then return end
-    if not value:IsDescendantOf(ReplicatedStorage) then return end
-    candidates[value] = true
-end
-
-local function collectRemoteCandidates(value, expectedClass, seen, depth, budget, candidates, allowIndex)
-    if depth > 4 or budget.Left <= 0 then return end
-    budget.Left = budget.Left - 1
-    if typeof(value) == "Instance" then
-        addRemoteCandidate(candidates, value, expectedClass)
-        return
-    end
-    if allowIndex and type(value) == "number" and value % 1 == 0 then
-        addRemoteCandidate(candidates, ReplicatedStorage:GetChildren()[value], expectedClass)
-        return
-    end
-    if type(value) == "string" then
-        local object = ReplicatedStorage:FindFirstChild(value, true)
-        addRemoteCandidate(candidates, object, expectedClass)
-        if allowIndex then
-            local index = tonumber(value)
-            if index and index % 1 == 0 then
-                addRemoteCandidate(candidates, ReplicatedStorage:GetChildren()[index], expectedClass)
-            end
-        end
-        return
-    end
-    if type(value) ~= "table" and type(value) ~= "function" then return end
-    if seen[value] then return end
-    seen[value] = true
-
-    if type(value) == "function" then
-        for _, upvalue in ipairs(functionUpvalues(value)) do
-            collectRemoteCandidates(upvalue, expectedClass, seen, depth + 1, budget, candidates, false)
-            if budget.Left <= 0 then break end
-        end
-        return
-    end
-
-    for _, key in ipairs({ "Remote", "remote", "Instance", "instance", "Object", "object" }) do
-        local nested = rawget(value, key)
-        if nested ~= nil then
-            collectRemoteCandidates(nested, expectedClass, seen, depth + 1, budget, candidates, allowIndex)
-        end
-    end
-    for _, nested in next, value do
-        if typeof(nested) == "Instance" or type(nested) == "table" or type(nested) == "function"
-            or (allowIndex and (type(nested) == "number" or type(nested) == "string")) then
-            collectRemoteCandidates(nested, expectedClass, seen, depth + 1, budget, candidates, allowIndex)
-            if budget.Left <= 0 then break end
-        end
-    end
-end
-
-local function oneRemoteCandidate(value, expectedClass, budget, allowIndex)
-    local candidates = {}
-    collectRemoteCandidates(value, expectedClass, {}, 0, budget, candidates, allowIndex)
-    local result, count = nil, 0
-    for candidate in next, candidates do
-        result = candidate
-        count = count + 1
-        if count > 1 then return nil, "ambiguous mapping" end
-    end
-    return result, count == 1 and nil or "no remote in mapping"
-end
-
-local function findCommandRemote(value, commandName, seen, depth, budget, report)
-    if depth > 5 or budget.Left <= 0 then return nil end
-    budget.Left = budget.Left - 1
-    if type(value) ~= "table" and type(value) ~= "function" then return nil end
-    if seen[value] then return nil end
-    seen[value] = true
-
-    if type(value) == "table" then
-        report.Tables = report.Tables + 1
-        local mapped = rawget(value, commandName)
-        if mapped ~= nil then
-            report.ExactMappings = report.ExactMappings + 1
-            local remote, mappingProblem = oneRemoteCandidate(mapped, "RemoteFunction", budget, true)
-            if remote then return remote end
-            if mappingProblem == "ambiguous mapping" then
-                report.AmbiguousMappings = report.AmbiguousMappings + 1
-            end
-        end
-        for key, nested in next, value do
-            if nested == commandName then
-                report.ExactMappings = report.ExactMappings + 1
-                local remote, mappingProblem = oneRemoteCandidate(key, "RemoteFunction", budget, true)
-                if remote then return remote end
-                if mappingProblem == "ambiguous mapping" then
-                    report.AmbiguousMappings = report.AmbiguousMappings + 1
-                end
-            end
-            if type(nested) == "table" or type(nested) == "function" then
-                local remote = findCommandRemote(nested, commandName, seen, depth + 1, budget, report)
-                if remote then return remote end
-            end
-            if budget.Left <= 0 then break end
-        end
-
-        local metatableReader = type(getrawmetatable) == "function" and getrawmetatable or getmetatable
-        if type(metatableReader) == "function" then
-            local ok, metatable = pcall(metatableReader, value)
-            if ok and type(metatable) == "table" then
-                local remote = findCommandRemote(metatable, commandName, seen, depth + 1, budget, report)
-                if remote then return remote end
-            end
-        end
-        return nil
-    end
-
-    report.Functions = report.Functions + 1
-    local upvalues = functionUpvalues(value)
-    report.Upvalues = report.Upvalues + #upvalues
-    for _, upvalue in ipairs(upvalues) do
-        local remote = findCommandRemote(upvalue, commandName, seen, depth + 1, budget, report)
-        if remote then return remote end
-    end
-    return nil
-end
-
-local function newResolverReport()
-    return {
-        Functions = 0,
-        Tables = 0,
-        Upvalues = 0,
-        ExactMappings = 0,
-        AmbiguousMappings = 0,
-        AccessorUsed = false,
-        AccessorReader = nil,
-        AccessorResultType = nil,
-        AccessorProblem = nil,
-        GCUsed = false,
-        GCScanned = 0,
-        GCNetworkFunctions = 0,
-        GCProblem = nil,
-    }
-end
-
-local function resolverReportText(report)
-    local accessorText = "accessor=not attempted"
-    if report.AccessorUsed then
-        accessorText = "accessor=" .. tostring(report.AccessorReader or "#2")
-            .. ", result=" .. tostring(report.AccessorResultType or "nil")
-        if report.AccessorProblem then
-            accessorText = accessorText .. ", " .. tostring(report.AccessorProblem)
-        end
-    end
-    local gcText
-    if report.GCUsed then
-        gcText = string.format("gc functions=%d, network matches=%d", report.GCScanned, report.GCNetworkFunctions)
-    else
-        gcText = "gc scan=unavailable/not needed"
-    end
-    if report.GCProblem then gcText = gcText .. ", " .. tostring(report.GCProblem) end
-    return string.format(
-        "%s; graph functions=%d, tables=%d, upvalues=%d, exact mappings=%d, ambiguous=%d; %s",
-        accessorText,
-        report.Functions,
-        report.Tables,
-        report.Upvalues,
-        report.ExactMappings,
-        report.AmbiguousMappings,
-        gcText
-    )
-end
-
-local function isNetworkFunction(callback, commandName)
-    local source = string.lower(functionSource(callback))
-    if string.find(source, "framework.modules.client.2 - network", 1, true)
-        or string.find(source, "2 - network", 1, true) then
-        return true
-    end
-    if source ~= "" and source ~= "=[c]" and source ~= "[c]" then return false end
-
-    local hasInvokeServer, hasInvoke, hasCommand = false, false, false
-    for _, constant in next, functionConstants(callback) do
-        if constant == "InvokeServer" then hasInvokeServer = true end
-        if constant == "Invoke" then hasInvoke = true end
-        if constant == commandName then hasCommand = true end
-    end
-    return (hasInvokeServer and hasInvoke) or hasCommand
-end
-
-local function findCommandRemoteInGC(commandName, report)
-    if type(getgc) ~= "function" then
-        report.GCProblem = "getgc unavailable"
-        return nil
-    end
-
-    -- Deliberately do not call getgc(true): table enumeration is less stable on several executors.
-    local ok, objects = pcall(getgc)
-    if not ok or type(objects) ~= "table" then
-        report.GCProblem = ok and "getgc returned no list" or tostring(objects)
-        return nil
-    end
-
-    report.GCUsed = true
-    local checked = 0
-    for _, object in next, objects do
-        checked = checked + 1
-        if type(object) == "function" then
-            report.GCScanned = report.GCScanned + 1
-            if isNetworkFunction(object, commandName) then
-                report.GCNetworkFunctions = report.GCNetworkFunctions + 1
-                local remote = findCommandRemote(object, commandName, {}, 0, { Left = 2500 }, report)
-                if remote then return remote end
-                if report.GCNetworkFunctions >= 96 then
-                    report.GCProblem = "network candidate limit reached"
-                    break
-                end
-            end
-        end
-        if checked % 750 == 0 then task.wait() end
-    end
-    return nil
-end
-
-local function resolveCommandRemoteFromNetworkAccessor(network, commandName, report)
-    report.AccessorUsed = true
-
-    -- In this PSX Network module, Invoke upvalue #2 is GetRemoteFunction.
-    -- Calling that accessor only reads the live command registry; it does not invoke
-    -- the returned RemoteFunction and therefore cannot send a purchase request.
     local accessor, reader = functionUpvalueAt(network.Invoke, 2)
-    report.AccessorReader = reader
     if type(accessor) ~= "function" then
-        report.AccessorResultType = typeof(accessor)
-        report.AccessorProblem = "Network.Invoke upvalue #2 is not callable"
-        return nil
+        return nil, commandRemoteSource, nil,
+            "GetRemoteFunction accessor is unavailable (" .. tostring(reader) .. ")"
     end
 
     local ok, first, second, third = pcall(accessor, commandName)
     if not ok then
-        report.AccessorResultType = "error"
-        report.AccessorProblem = tostring(first)
-        return nil
+        return nil, commandRemoteSource, nil,
+            "GetRemoteFunction failed: " .. tostring(first)
     end
 
     local values = { first, second, third }
-    local resultTypes = {}
     for index = 1, 3 do
-        local value = values[index]
-        resultTypes[index] = typeof(value)
-        if typeof(value) == "Instance" and value:IsA("RemoteFunction")
-            and value:IsDescendantOf(ReplicatedStorage) then
-            report.AccessorResultType = table.concat(resultTypes, "/")
-            return value
+        local remote = values[index]
+        if typeof(remote) == "Instance" and remote:IsA("RemoteFunction")
+            and remote:IsDescendantOf(ReplicatedStorage) then
+            commandRemoteCache[commandName] = remote
+            local sourceName = commandRemoteSource .. " (" .. tostring(reader) .. ")"
+            return remote, sourceName, remoteSessionIndex(remote), nil
         end
     end
 
-    report.AccessorResultType = table.concat(resultTypes, "/")
-    report.AccessorProblem = "upvalue #2 returned no ReplicatedStorage RemoteFunction"
-    return nil
+    return nil, commandRemoteSource, nil,
+        tostring(commandName) .. " did not resolve to a live RemoteFunction"
 end
 
-local function getDiamondPackDirectRemote(forceSearch)
-    if diamondPackDirectRemote and diamondPackDirectRemote.Parent
-        and diamondPackDirectRemote:IsA("RemoteFunction") then
-        local index = table.find(ReplicatedStorage:GetChildren(), diamondPackDirectRemote)
-        return diamondPackDirectRemote, diamondPackDirectSource, index, diamondPackResolverSummary
-    end
-
-    if not forceSearch and os.clock() < diamondPackResolverRetryAt then
-        return nil, "resolver cooldown", nil, diamondPackResolverSummary
-    end
-    diamondPackResolverRetryAt = os.clock() + 30
-
-    local network = networkReady()
-    if not network or type(network.Invoke) ~= "function" then
-        diamondPackResolverSummary = "Network.Invoke unavailable; no scan performed."
-        return nil, "Network.Invoke unavailable", nil, diamondPackResolverSummary
-    end
-
-    local report = newResolverReport()
-    local remote = resolveCommandRemoteFromNetworkAccessor(network, "Buy DiamondPack", report)
-    local source = "Network.Invoke GetRemoteFunction upvalue #2"
+local function invokeCommand(commandName, ...)
+    local arguments = table.pack(...)
+    local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
     if not remote then
-        remote = findCommandRemote(network.Invoke, "Buy DiamondPack", {}, 0, { Left = 5000 }, report)
-        source = "Network.Invoke graph"
-    end
-    if not remote then
-        remote = findCommandRemoteInGC("Buy DiamondPack", report)
-        source = "filtered GC Network closure"
-    end
-    diamondPackResolverSummary = resolverReportText(report)
-    if not remote then
-        return nil, "Buy DiamondPack was not found", nil, diamondPackResolverSummary
+        return false, false, resolveProblem, sourceName, sessionIndex
     end
 
-    diamondPackDirectRemote = remote
-    diamondPackDirectSource = source
-    local index = table.find(ReplicatedStorage:GetChildren(), remote)
-    return remote, diamondPackDirectSource, index, diamondPackResolverSummary
+    local result = table.pack(pcall(function()
+        return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
+    end))
+    if not result[1] then
+        commandRemoteCache[commandName] = nil
+        return false, false, tostring(result[2]), sourceName, sessionIndex
+    end
+    return true, result[2] == true, result[3], sourceName, sessionIndex
 end
 
 local function runtimeTableScore(candidate)
@@ -2068,9 +1735,7 @@ local function runtimePetCounts(petIds)
     return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
 end
 
-local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph, rewardParagraph
-local rewardLines = { VIP = "Disabled.", Rank = "Disabled." }
-local lastRewardUIError
+local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph
 local function setStatus(text)
     if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
@@ -2083,29 +1748,6 @@ end
 local function setDiamondPackStatus(text)
     if diamondPackParagraph then pcall(function() diamondPackParagraph:SetDesc(text) end) end
 end
-local function setRewardLine(kind, text)
-    rewardLines[kind] = text
-    local combined = "VIP: " .. tostring(rewardLines.VIP) .. "\nRank: " .. tostring(rewardLines.Rank)
-    if rewardParagraph then
-        local ok, problem = pcall(function() rewardParagraph:SetDesc(combined) end)
-        if not ok and tostring(problem) ~= lastRewardUIError then
-            lastRewardUIError = tostring(problem)
-            warn("[PSX SLIM] reward status UI: " .. lastRewardUIError)
-        end
-    end
-end
-
-local function formatRewardTime(seconds)
-    seconds = math.max(0, math.floor((tonumber(seconds) or 0) + 0.5))
-    local days = math.floor(seconds / 86400)
-    local hours = math.floor(seconds % 86400 / 3600)
-    local minutes = math.floor(seconds % 3600 / 60)
-    local secs = seconds % 60
-    if days > 0 then return string.format("%dd %02dh %02dm", days, hours, minutes) end
-    if hours > 0 then return string.format("%dh %02dm %02ds", hours, minutes, secs) end
-    return string.format("%dm %02ds", minutes, secs)
-end
-
 local function getRewardSave()
     if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
     local save
@@ -2113,167 +1755,109 @@ local function getRewardSave()
     return type(save) == "table" and save or nil
 end
 
+local rewardClockRetryAt = 0
+local rewardClockProblem
+
 local function getRewardServerTime()
     if rewardServerTime ~= nil and rewardClockStarted ~= nil then
-        return rewardServerTime + (os.clock() - rewardClockStarted)
+        return rewardServerTime + (os.clock() - rewardClockStarted), nil
+    end
+    if os.clock() < rewardClockRetryAt then
+        return nil, rewardClockProblem or "server clock retry pending"
     end
 
-    local network = networkReady()
-    if not network then return nil end
-    local ok, value = pcall(function() return network.Invoke("Get OSTime") end)
-    value = ok and tonumber(value) or nil
-    if value == nil then return nil end
+    local remote, _, _, resolveProblem = getCommandRemote("Get OSTime")
+    if not remote then
+        rewardClockRetryAt = os.clock() + 10
+        rewardClockProblem = resolveProblem
+        return nil, resolveProblem
+    end
+
+    local ok, rawValue = pcall(function() return remote:InvokeServer() end)
+    local value = ok and tonumber(rawValue) or nil
+    if value == nil then
+        commandRemoteCache["Get OSTime"] = nil
+        rewardClockRetryAt = os.clock() + 10
+        rewardClockProblem = ok and "Get OSTime returned a non-number"
+            or ("Get OSTime transport error: " .. tostring(rawValue))
+        return nil, rewardClockProblem
+    end
+
     rewardServerTime = value
     rewardClockStarted = os.clock()
-    return value
+    rewardClockProblem = nil
+    return value, nil
 end
 
 local function getRewardTiming(kind)
     local save = getRewardSave()
     if not save then return nil, nil, "player save is unavailable" end
-    local serverTime = getRewardServerTime()
-    if serverTime == nil then return nil, nil, "server clock is unavailable" end
+
+    local serverTime, clockProblem = getRewardServerTime()
+    if serverTime == nil then
+        return nil, nil, clockProblem or "server clock is unavailable"
+    end
 
     if kind == "VIP" then
         local lastClaim = tonumber(save.VIPCooldown)
-        if lastClaim == nil then return nil, VIP_REWARD_COOLDOWN, "VIPCooldown is unavailable" end
-        return math.max(0, VIP_REWARD_COOLDOWN - (serverTime - lastClaim)), VIP_REWARD_COOLDOWN
+        if lastClaim == nil then
+            return nil, VIP_REWARD_COOLDOWN, "VIPCooldown is unavailable; no claim sent"
+        end
+        return math.max(0, VIP_REWARD_COOLDOWN - (serverTime - lastClaim)),
+            VIP_REWARD_COOLDOWN, nil
     end
 
     local rankTimer = tonumber(save.RankTimer)
     local ranks = Library.Directory and Library.Directory.Ranks
     local rankData = type(ranks) == "table" and ranks[save.Rank] or nil
-    if type(rankData) ~= "table" then return nil, nil, "rank data is unavailable" end
+    if type(rankData) ~= "table" then
+        return nil, nil, "current rank data is unavailable; no claim sent"
+    end
     if type(rankData.rewards) == "table" and #rankData.rewards == 0 then
         return nil, nil, "current rank has no rewards"
     end
+
     local cooldown = tonumber(rankData.rewardCooldown)
-    if rankTimer == nil or cooldown == nil then return nil, cooldown, "rank timer is unavailable" end
-    return math.max(0, cooldown - (serverTime - rankTimer)), cooldown
+    if rankTimer == nil or cooldown == nil then
+        return nil, cooldown, "rank timer is unavailable; no claim sent"
+    end
+    return math.max(0, cooldown - (serverTime - rankTimer)), cooldown, nil
+end
+
+local function routeText(sourceName, sessionIndex)
+    return tostring(sourceName or commandRemoteSource)
+        .. " [session index " .. tostring(sessionIndex or "?") .. "]"
+end
+
+local function formatDuration(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    local hours = math.floor(seconds / 3600)
+    local minutes = math.floor(seconds % 3600 / 60)
+    local secs = seconds % 60
+    if hours > 0 then return string.format("%dh %02dm %02ds", hours, minutes, secs) end
+    return string.format("%dm %02ds", minutes, secs)
 end
 
 local function invokeReward(kind)
     local state = rewardStates[kind]
-    local network = networkReady()
+    local transportOk, accepted, serverMessage, sourceName, sessionIndex =
+        invokeCommand(state.Command)
     local reply
     local succeeded = false
 
-    if not network then
-        reply = "Local error: Library.Network is not ready; no request sent."
+    if not transportOk then
+        reply = "Route/transport error; no claim confirmed: " .. tostring(serverMessage)
+    elseif accepted then
+        succeeded = true
+        reply = "Claimed via " .. routeText(sourceName, sessionIndex)
     else
-        local callOk, accepted, serverMessage = pcall(function()
-            return network.Invoke(state.Command)
-        end)
-        if not callOk then
-            reply = "Transport error: " .. tostring(accepted)
-        elseif accepted then
-            succeeded = true
-            reply = "Server accepted: reward redeemed."
-        else
-            local reason = serverMessage ~= nil and tostring(serverMessage)
-                or "request rejected (cooldown/not eligible)"
-            reply = "Server reached: " .. reason
-        end
+        local reason = serverMessage ~= nil and tostring(serverMessage)
+            or "request rejected (cooldown/not eligible)"
+        reply = "Server reached via " .. routeText(sourceName, sessionIndex) .. ": " .. reason
     end
 
-    state.LastReply = reply
-    state.LastSucceeded = succeeded
     trace(string.lower(state.Label) .. " reward", reply)
-    setRewardLine(kind, reply)
     return succeeded
-end
-
-local function runManualDiamondPackTest(tier)
-    tier = tonumber(tier)
-    if not tier or tier < 1 or tier > 4 then return end
-    if diamondPackBusy then
-        setDiamondPackStatus("Another Diamond Pack request is already running.")
-        return
-    end
-    diamondPackBusy = true
-
-    local directRemote, directSource, directIndex, resolverSummary = getDiamondPackDirectRemote()
-    local balance = getCurrentCurrency("Tech Coins")
-    local balanceText = balance ~= nil
-        and (formatRateNumber(balance) .. " (" .. formatExactNumber(balance) .. ")") or "unknown"
-    local packCost, costSource = getDiamondPackCost(tier)
-    local costText = packCost ~= nil
-        and (formatRateNumber(packCost) .. " (" .. formatExactNumber(packCost) .. ")") or "unknown"
-    local route = directRemote
-        and (tostring(directSource) .. " [session index " .. tostring(directIndex or "?") .. "]")
-        or nil
-    local status
-
-    if not directRemote then
-        status = string.format(
-            "Tier %d manual test | Direct RemoteFunction unresolved; no purchase request sent | %s; %s",
-            tier,
-            tostring(directSource),
-            tostring(resolverSummary)
-        )
-    else
-        local callOk, accepted, serverMessage = pcall(function()
-            return directRemote:InvokeServer(tier)
-        end)
-        if not callOk then
-            status = string.format("Tier %d manual test | Transport error via %s: %s", tier, route, tostring(accepted))
-        elseif accepted then
-            status = string.format(
-                "Tier %d manual test | Server accepted via %s: real purchase succeeded | balance before: %s",
-                tier,
-                route,
-                balanceText
-            )
-        else
-            local reason = serverMessage ~= nil and tostring(serverMessage)
-                or "request rejected (insufficient funds/tier unavailable)"
-            status = string.format(
-                "Tier %d manual test | Server reached via %s: %s | balance: %s | detected price: %s [%s]",
-                tier,
-                route,
-                reason,
-                balanceText,
-                costText,
-                tostring(costSource or "unknown field")
-            )
-        end
-    end
-    if config.AutoTechDiamondPack then
-        diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
-    end
-    diamondPackBusy = false
-    trace("diamond pack", status)
-    setDiamondPackStatus(status .. "\nManual test complete; automatic tier 4 settings were not changed.")
-end
-
-local function inspectDiamondPackDirectRemote()
-    if diamondPackBusy then
-        setDiamondPackStatus("Another Diamond Pack operation is already running.")
-        return
-    end
-    diamondPackBusy = true
-
-    local callOk, remote, source, index, resolverSummary = pcall(getDiamondPackDirectRemote, true)
-    local status
-    if not callOk then
-        status = "Direct resolver error; no request sent: " .. tostring(remote)
-    elseif remote then
-        local pathOk, path = pcall(function() return remote:GetFullName() end)
-        status = string.format(
-            "Direct remote resolved without a purchase | source: %s | session index: %s | path: %s | %s",
-            tostring(source),
-            tostring(index or "?"),
-            pathOk and tostring(path) or "unknown",
-            tostring(resolverSummary)
-        )
-    else
-        status = "Direct remote not found; no request sent | "
-            .. tostring(source) .. " | " .. tostring(resolverSummary)
-    end
-
-    diamondPackBusy = false
-    trace("diamond resolver", status)
-    setDiamondPackStatus(status)
 end
 
 local function runDiamondPackCheck()
@@ -2286,48 +1870,29 @@ local function runDiamondPackCheck()
 
     if balance == nil then
         status = "Local check: Tech Coins balance was not found; no request sent."
+    elseif balance < DIAMOND_PACK_MINIMUM then
+        status = "Local threshold hold: " .. balanceText
+            .. " is below 1T Tech Coins; no server request sent."
     else
-        local packCost = getDiamondPackCost()
-        local shouldBuy = balance >= DIAMOND_PACK_MINIMUM
-        local safeProbe = not shouldBuy and packCost ~= nil and balance < packCost
-
-        if shouldBuy or safeProbe then
-            local directRemote, directSource, directIndex, resolverSummary = getDiamondPackDirectRemote()
-            if not directRemote then
-                status = "Local safety hold: direct Diamond Pack RemoteFunction is unresolved; no request sent."
-                    .. " | resolver: " .. tostring(directSource) .. "; " .. tostring(resolverSummary)
-            else
-                local route = tostring(directSource)
-                    .. " [session index " .. tostring(directIndex or "?") .. "]"
-                local callOk, accepted, serverMessage = pcall(function()
-                    return directRemote:InvokeServer(DIAMOND_PACK_TIER)
-                end)
-                if not callOk then
-                    status = "Transport error via " .. route .. ": " .. tostring(accepted)
-                elseif accepted then
-                    status = (shouldBuy and "Server purchase succeeded" or "WARNING: probe unexpectedly purchased the pack")
-                        .. " via " .. route .. " | balance before: " .. balanceText
-                else
-                    local reason = serverMessage ~= nil and tostring(serverMessage)
-                        or "request rejected (insufficient funds expected)"
-                    status = "Server reached via " .. route .. ": " .. reason
-                        .. " | balance: " .. balanceText
-                        .. " | required floor: 1T"
-                end
-            end
-        elseif packCost == nil then
-            status = "Local safety hold: pack price could not be read, so an underfunded probe was not sent."
+        local transportOk, accepted, serverMessage, sourceName, sessionIndex =
+            invokeCommand("Buy DiamondPack", DIAMOND_PACK_TIER)
+        if not transportOk then
+            status = "Route/transport error; purchase not confirmed: " .. tostring(serverMessage)
+        elseif accepted then
+            status = "Tier 4 purchase succeeded via " .. routeText(sourceName, sessionIndex)
+                .. " | balance before: " .. balanceText
         else
-            status = "Local threshold hold: " .. balanceText
-                .. " is enough for the " .. formatRateNumber(packCost)
-                .. " pack but below the configured 1T minimum; no request sent."
+            local reason = serverMessage ~= nil and tostring(serverMessage)
+                or "request rejected"
+            status = "Server reached via " .. routeText(sourceName, sessionIndex) .. ": "
+                .. reason .. " | balance: " .. balanceText .. " | configured floor: 1T"
         end
     end
 
     diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
     diamondPackBusy = false
     trace("diamond pack", status)
-    setDiamondPackStatus(status .. "\nNext check in 3 minutes.")
+    setDiamondPackStatus(status .. "\nNext local check in 3 minutes.")
 end
 
 local function allocatorPass()
@@ -2711,92 +2276,53 @@ MiscSection:Toggle({
 local DiamondPackSection = MiscTab:Section({ Title = "Develop: Diamond Pack", Box = true, Opened = true })
 DiamondPackSection:Toggle({
     Title = "Auto Best Tech Diamond Pack",
-    Desc = "Every 3 minutes: buys tier 4 only at 1T+ Tech Coins; safely probes the server while truly underfunded",
+    Desc = "Every 3 minutes: buys tier 4 only when the local Tech Coins balance is at least 1T",
     Value = false,
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
         diamondPackNextCheck = 0
         if config.AutoTechDiamondPack then
-            setDiamondPackStatus("Enabled. The first server check will run now.")
+            setDiamondPackStatus("Enabled. A local balance check will run now; below 1T no request is sent.")
         else
             setDiamondPackStatus("Disabled. No purchase requests will be sent.")
         end
     end,
 })
 diamondPackParagraph = DiamondPackSection:Paragraph({
-    Title = "Diamond Pack Server Status",
-    Desc = "Auto tier 4 is disabled. Resolve reads Network.Invoke upvalue #2 without contacting the server.",
+    Title = "Diamond Pack Status",
+    Desc = "Auto tier 4 is disabled. The live remote is resolved dynamically in each session.",
 })
-DiamondPackSection:Button({
-    Title = "Resolve Direct Purchase Remote",
-    Desc = "Read-only: calls the internal GetRemoteFunction accessor; never invokes the returned remote",
-    Callback = function()
-        task.spawn(function()
-            if not running() then return end
-            local ok, problem = pcall(inspectDiamondPackDirectRemote)
-            if not ok then
-                diamondPackBusy = false
-                local status = "Direct resolver worker error; no request sent: " .. tostring(problem)
-                trace("diamond resolver", status)
-                setDiamondPackStatus(status)
-            end
-        end)
-    end,
-})
-for _, tier in ipairs({ 3, 2, 1 }) do
-    local selectedTier = tier
-    DiamondPackSection:Button({
-        Title = "Test Diamond Pack Tier " .. tostring(selectedTier),
-        Desc = "Sends one Buy DiamondPack request. If the balance is sufficient, this performs a real purchase.",
-        Callback = function()
-            task.spawn(function()
-                if not running() then return end
-                local ok, problem = pcall(runManualDiamondPackTest, selectedTier)
-                if not ok then
-                    diamondPackBusy = false
-                    local status = "Tier " .. tostring(selectedTier) .. " manual test | Worker error: " .. tostring(problem)
-                    trace("diamond pack", status)
-                    setDiamondPackStatus(status)
-                end
-            end)
-        end,
-    })
-end
 
 local RewardsSection = MiscTab:Section({ Title = "Develop: Auto Rewards", Box = true, Opened = true })
 RewardsSection:Toggle({
     Title = "Auto VIP Rewards",
-    Desc = "Runs one server probe immediately, then redeems automatically when the four-hour timer is ready",
+    Desc = "Uses VIPCooldown and the server clock; claims only when the four-hour timer reaches zero",
     Value = false,
     Callback = function(value)
         local enabled = value == true
         config.AutoVIPRewards = enabled
         local state = rewardStates.VIP
-        state.ProbePending = enabled
         state.NextAttempt = 0
-        state.LastReply = nil
-        state.LastSucceeded = nil
-        setRewardLine("VIP", enabled and "Enabled; initial server probe pending..." or "Disabled.")
+        state.LastTimingError = nil
+        state.ArmedReported = false
     end,
 })
 RewardsSection:Toggle({
     Title = "Auto Rank Rewards",
-    Desc = "Runs one server probe immediately, then follows the current rank reward cooldown",
+    Desc = "Uses RankTimer and your current rank cooldown; claims only when the timer reaches zero",
     Value = false,
     Callback = function(value)
         local enabled = value == true
         config.AutoRankRewards = enabled
         local state = rewardStates.Rank
-        state.ProbePending = enabled
         state.NextAttempt = 0
-        state.LastReply = nil
-        state.LastSucceeded = nil
-        setRewardLine("Rank", enabled and "Enabled; initial server probe pending..." or "Disabled.")
+        state.LastTimingError = nil
+        state.ArmedReported = false
     end,
 })
-rewardParagraph = RewardsSection:Paragraph({
-    Title = "Reward Server Status",
-    Desc = "VIP: Disabled.\nRank: Disabled.",
+RewardsSection:Paragraph({
+    Title = "Safe Reward Routing",
+    Desc = "Works from any world. No early claim probes; VIP and Rank resolve separate live remotes and print claim results to the console.",
 })
 
 local shutdownStarted = false
@@ -2890,32 +2416,31 @@ task.spawn(function()
         for _, kind in ipairs(order) do
             local state = rewardStates[kind]
             if config[state.ConfigKey] then
-                if state.ProbePending then
-                    state.ProbePending = false
-                    local succeeded = invokeReward(kind)
-                    local _, cooldown = getRewardTiming(kind)
-                    state.NextAttempt = now + (succeeded and (cooldown or REWARD_RETRY_DELAY) or REWARD_RETRY_DELAY)
-                else
-                    local remaining, cooldown, timingError = getRewardTiming(kind)
-                    if remaining == nil then
-                        if timingError ~= "current rank has no rewards" and now >= state.NextAttempt then
-                            local succeeded = invokeReward(kind)
-                            state.NextAttempt = now + (succeeded and (cooldown or REWARD_RETRY_DELAY) or REWARD_RETRY_DELAY)
-                        else
-                            local prefix = state.LastReply and (state.LastReply .. " | ") or ""
-                            setRewardLine(kind, prefix .. "Timer: " .. tostring(timingError))
-                        end
-                    elseif remaining > 0 then
-                        local prefix = state.LastReply and (state.LastReply .. " | ") or ""
-                        setRewardLine(kind, prefix .. "ready in " .. formatRewardTime(remaining))
-                    elseif now >= state.NextAttempt then
-                        local succeeded = invokeReward(kind)
-                        state.NextAttempt = now + (succeeded and (cooldown or REWARD_RETRY_DELAY) or REWARD_RETRY_DELAY)
-                    else
-                        local prefix = state.LastReply and (state.LastReply .. " | ") or ""
-                        local waitLabel = state.LastSucceeded and "next check in " or "retry in "
-                        setRewardLine(kind, prefix .. waitLabel .. formatRewardTime(state.NextAttempt - now))
+                local remaining, cooldown, timingError = getRewardTiming(kind)
+                if remaining == nil then
+                    if timingError ~= state.LastTimingError then
+                        state.LastTimingError = timingError
+                        trace(string.lower(state.Label) .. " reward timer", timingError)
                     end
+                elseif remaining > 0 then
+                    state.LastTimingError = nil
+                    state.NextAttempt = 0
+                    if not state.ArmedReported then
+                        local remote, sourceName, sessionIndex, routeProblem =
+                            getCommandRemote(state.Command)
+                        local route = remote and routeText(sourceName, sessionIndex)
+                            or ("route pending: " .. tostring(routeProblem))
+                        trace(string.lower(state.Label) .. " reward armed",
+                            "ready in " .. formatDuration(remaining) .. " | " .. route)
+                        state.ArmedReported = true
+                    end
+                elseif now >= state.NextAttempt then
+                    state.LastTimingError = nil
+                    local succeeded = invokeReward(kind)
+                    state.ArmedReported = false
+                    state.NextAttempt = now
+                        + (succeeded and math.max(cooldown or 0, REWARD_RETRY_DELAY)
+                            or REWARD_RETRY_DELAY)
                 end
             end
         end
