@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
--- Pet farming, loot magnet and anti-AFK only.
+-- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.2.5"
+local VERSION = "1.2.6-stable"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -30,7 +30,12 @@ if type(env.PSX_OG_FastEggState) == "table" then
     end
     env.PSX_OG_FastEggState = nil
 end
-for _, key in ipairs({ "PSX_OG_RewardInvokeCaptureState", "PSX_OG_BoostRemoteCaptureState" }) do
+for _, key in ipairs({
+    "PSX_OG_RewardInvokeCaptureState",
+    "PSX_OG_BoostRemoteCaptureState",
+    "PSX_OG_DiamondInvokeCaptureState",
+    "PSX_OG_DiamondMethodCaptureState",
+}) do
     local state = env[key]
     if type(state) == "table" then
         state.active = false
@@ -66,6 +71,33 @@ local config = {
     Orbs = false,
     Lootbags = false,
     AntiAFK = true,
+    AutoTechDiamondPack = false,
+    AutoVIPRewards = false,
+    AutoRankRewards = false,
+}
+
+local DIAMOND_PACK_TIER = 4
+local DIAMOND_PACK_MINIMUM = 1e12
+local DIAMOND_PACK_INTERVAL = 180
+local diamondPackNextCheck = 0
+local diamondPackBusy = false
+local VIP_REWARD_COOLDOWN = 14400
+local REWARD_RETRY_DELAY = 60
+local rewardServerTime
+local rewardClockStarted
+local rewardStates = {
+    VIP = {
+        Label = "VIP",
+        Command = "Redeem VIP Rewards",
+        ConfigKey = "AutoVIPRewards",
+        NextAttempt = 0,
+    },
+    Rank = {
+        Label = "Rank",
+        Command = "Redeem Rank Rewards",
+        ConfigKey = "AutoRankRewards",
+        NextAttempt = 0,
+    },
 }
 
 env.PSX_OG_SLIM_TOKEN = token
@@ -1020,26 +1052,161 @@ local function functionUpvalues(callback)
     local values = {}
     if type(callback) ~= "function" then return values end
 
-    local bulkGetter = debug and type(debug.getupvalues) == "function" and debug.getupvalues
-        or type(getupvalues) == "function" and getupvalues
-    if type(bulkGetter) == "function" then
-        local ok, result = pcall(bulkGetter, callback)
-        if ok and type(result) == "table" then
-            for _, value in pairs(result) do table.insert(values, value) end
-            return values
+    local seenValues = {}
+    local seenReaders = {}
+    local bulkReaders = {
+        type(getupvalues) == "function" and getupvalues or nil,
+        debug and type(debug.getupvalues) == "function" and debug.getupvalues or nil,
+    }
+    for _, reader in next, bulkReaders do
+        if type(reader) == "function" and not seenReaders[reader] then
+            seenReaders[reader] = true
+            local ok, result = pcall(reader, callback)
+            if ok and type(result) == "table" then
+                for _, value in next, result do
+                    if value ~= nil and not seenValues[value] then
+                        seenValues[value] = true
+                        table.insert(values, value)
+                    end
+                end
+            end
         end
     end
+    if #values > 0 then return values end
 
-    local singleGetter = debug and type(debug.getupvalue) == "function" and debug.getupvalue
-        or type(getupvalue) == "function" and getupvalue
-    if type(singleGetter) == "function" then
-        for index = 1, 32 do
-            local ok, first, second = pcall(singleGetter, callback, index)
-            if not ok or (first == nil and second == nil) then break end
-            table.insert(values, second ~= nil and second or first)
+    local singleReaders = {
+        type(getupvalue) == "function" and getupvalue or nil,
+        debug and type(debug.getupvalue) == "function" and debug.getupvalue or nil,
+    }
+    table.clear(seenReaders)
+    for _, reader in next, singleReaders do
+        if type(reader) == "function" and not seenReaders[reader] then
+            seenReaders[reader] = true
+            for index = 1, 64 do
+                local ok, first, second = pcall(reader, callback, index)
+                if not ok or (first == nil and second == nil) then break end
+                local value
+                if second ~= nil then value = second else value = first end
+                if value ~= nil and not seenValues[value] then
+                    seenValues[value] = true
+                    table.insert(values, value)
+                end
+            end
         end
     end
     return values
+end
+
+local function functionUpvalueAt(callback, index)
+    if type(callback) ~= "function" then return nil, "callback is not a function" end
+
+    local seenReaders = {}
+    local singleReaders = {
+        debug and type(debug.getupvalue) == "function" and debug.getupvalue or nil,
+        type(getupvalue) == "function" and getupvalue or nil,
+    }
+    for _, reader in next, singleReaders do
+        if type(reader) == "function" and not seenReaders[reader] then
+            seenReaders[reader] = true
+            local ok, first, second = pcall(reader, callback, index)
+            if ok then
+                if second ~= nil then
+                    return second, "single reader #" .. tostring(index)
+                end
+                -- Executor debug APIs commonly return only the value. Standard Lua
+                -- returns an upvalue name first, so do not mistake that name for data.
+                if first ~= nil and type(first) ~= "string" then
+                    return first, "single reader #" .. tostring(index)
+                end
+            end
+        end
+    end
+
+    local bulkReaders = {
+        type(getupvalues) == "function" and getupvalues or nil,
+        debug and type(debug.getupvalues) == "function" and debug.getupvalues or nil,
+    }
+    for _, reader in next, bulkReaders do
+        if type(reader) == "function" and not seenReaders[reader] then
+            seenReaders[reader] = true
+            local ok, values = pcall(reader, callback)
+            if ok and type(values) == "table" then
+                local value = rawget(values, index)
+                if value == nil and index == 2 then
+                    value = rawget(values, "u18") or rawget(values, "GetRemoteFunction")
+                end
+                if value ~= nil then
+                    return value, "bulk reader #" .. tostring(index)
+                end
+            end
+        end
+    end
+    return nil, "upvalue #" .. tostring(index) .. " is unavailable"
+end
+
+local commandRemoteCache = {}
+local commandRemoteSource = "Network.Invoke GetRemoteFunction upvalue #2"
+
+local function remoteSessionIndex(remote)
+    if typeof(remote) ~= "Instance" then return nil end
+    return table.find(ReplicatedStorage:GetChildren(), remote)
+end
+
+local function getCommandRemote(commandName)
+    local cached = commandRemoteCache[commandName]
+    if typeof(cached) == "Instance" and cached:IsA("RemoteFunction")
+        and cached:IsDescendantOf(ReplicatedStorage) then
+        return cached, commandRemoteSource, remoteSessionIndex(cached), nil
+    end
+    commandRemoteCache[commandName] = nil
+
+    local network = networkReady()
+    if not network or type(network.Invoke) ~= "function" then
+        return nil, commandRemoteSource, nil, "Library.Network.Invoke is unavailable"
+    end
+
+    local accessor, reader = functionUpvalueAt(network.Invoke, 2)
+    if type(accessor) ~= "function" then
+        return nil, commandRemoteSource, nil,
+            "GetRemoteFunction accessor is unavailable (" .. tostring(reader) .. ")"
+    end
+
+    local ok, first, second, third = pcall(accessor, commandName)
+    if not ok then
+        return nil, commandRemoteSource, nil,
+            "GetRemoteFunction failed: " .. tostring(first)
+    end
+
+    local values = { first, second, third }
+    for index = 1, 3 do
+        local remote = values[index]
+        if typeof(remote) == "Instance" and remote:IsA("RemoteFunction")
+            and remote:IsDescendantOf(ReplicatedStorage) then
+            commandRemoteCache[commandName] = remote
+            local sourceName = commandRemoteSource .. " (" .. tostring(reader) .. ")"
+            return remote, sourceName, remoteSessionIndex(remote), nil
+        end
+    end
+
+    return nil, commandRemoteSource, nil,
+        tostring(commandName) .. " did not resolve to a live RemoteFunction"
+end
+
+local function invokeCommand(commandName, ...)
+    local arguments = table.pack(...)
+    local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
+    if not remote then
+        return false, false, resolveProblem, sourceName, sessionIndex
+    end
+
+    local result = table.pack(pcall(function()
+        return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
+    end))
+    if not result[1] then
+        commandRemoteCache[commandName] = nil
+        return false, false, tostring(result[2]), sourceName, sessionIndex
+    end
+    return true, result[2] == true, result[3], sourceName, sessionIndex
 end
 
 local function runtimeTableScore(candidate)
@@ -1568,7 +1735,7 @@ local function runtimePetCounts(petIds)
     return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
 end
 
-local statusParagraph, healthParagraph, rateParagraph
+local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph
 local function setStatus(text)
     if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
@@ -1577,6 +1744,155 @@ local function setHealth(text)
 end
 local function setRate(text)
     if rateParagraph then pcall(function() rateParagraph:SetDesc(text) end) end
+end
+local function setDiamondPackStatus(text)
+    if diamondPackParagraph then pcall(function() diamondPackParagraph:SetDesc(text) end) end
+end
+local function getRewardSave()
+    if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
+    local save
+    pcall(function() save = Library.Save.Get() end)
+    return type(save) == "table" and save or nil
+end
+
+local rewardClockRetryAt = 0
+local rewardClockProblem
+
+local function getRewardServerTime()
+    if rewardServerTime ~= nil and rewardClockStarted ~= nil then
+        return rewardServerTime + (os.clock() - rewardClockStarted), nil
+    end
+    if os.clock() < rewardClockRetryAt then
+        return nil, rewardClockProblem or "server clock retry pending"
+    end
+
+    local remote, _, _, resolveProblem = getCommandRemote("Get OSTime")
+    if not remote then
+        rewardClockRetryAt = os.clock() + 10
+        rewardClockProblem = resolveProblem
+        return nil, resolveProblem
+    end
+
+    local ok, rawValue = pcall(function() return remote:InvokeServer() end)
+    local value = ok and tonumber(rawValue) or nil
+    if value == nil then
+        commandRemoteCache["Get OSTime"] = nil
+        rewardClockRetryAt = os.clock() + 10
+        rewardClockProblem = ok and "Get OSTime returned a non-number"
+            or ("Get OSTime transport error: " .. tostring(rawValue))
+        return nil, rewardClockProblem
+    end
+
+    rewardServerTime = value
+    rewardClockStarted = os.clock()
+    rewardClockProblem = nil
+    return value, nil
+end
+
+local function getRewardTiming(kind)
+    local save = getRewardSave()
+    if not save then return nil, nil, "player save is unavailable" end
+
+    local serverTime, clockProblem = getRewardServerTime()
+    if serverTime == nil then
+        return nil, nil, clockProblem or "server clock is unavailable"
+    end
+
+    if kind == "VIP" then
+        local lastClaim = tonumber(save.VIPCooldown)
+        if lastClaim == nil then
+            return nil, VIP_REWARD_COOLDOWN, "VIPCooldown is unavailable; no claim sent"
+        end
+        return math.max(0, VIP_REWARD_COOLDOWN - (serverTime - lastClaim)),
+            VIP_REWARD_COOLDOWN, nil
+    end
+
+    local rankTimer = tonumber(save.RankTimer)
+    local ranks = Library.Directory and Library.Directory.Ranks
+    local rankData = type(ranks) == "table" and ranks[save.Rank] or nil
+    if type(rankData) ~= "table" then
+        return nil, nil, "current rank data is unavailable; no claim sent"
+    end
+    if type(rankData.rewards) == "table" and #rankData.rewards == 0 then
+        return nil, nil, "current rank has no rewards"
+    end
+
+    local cooldown = tonumber(rankData.rewardCooldown)
+    if rankTimer == nil or cooldown == nil then
+        return nil, cooldown, "rank timer is unavailable; no claim sent"
+    end
+    return math.max(0, cooldown - (serverTime - rankTimer)), cooldown, nil
+end
+
+local function routeText(sourceName, sessionIndex)
+    return tostring(sourceName or commandRemoteSource)
+        .. " [session index " .. tostring(sessionIndex or "?") .. "]"
+end
+
+local function formatDuration(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    local hours = math.floor(seconds / 3600)
+    local minutes = math.floor(seconds % 3600 / 60)
+    local secs = seconds % 60
+    if hours > 0 then return string.format("%dh %02dm %02ds", hours, minutes, secs) end
+    return string.format("%dm %02ds", minutes, secs)
+end
+
+local function invokeReward(kind)
+    local state = rewardStates[kind]
+    local transportOk, accepted, serverMessage, sourceName, sessionIndex =
+        invokeCommand(state.Command)
+    local reply
+    local succeeded = false
+
+    if not transportOk then
+        reply = "Route/transport error; no claim confirmed: " .. tostring(serverMessage)
+    elseif accepted then
+        succeeded = true
+        reply = "Claimed via " .. routeText(sourceName, sessionIndex)
+    else
+        local reason = serverMessage ~= nil and tostring(serverMessage)
+            or "request rejected (cooldown/not eligible)"
+        reply = "Server reached via " .. routeText(sourceName, sessionIndex) .. ": " .. reason
+    end
+
+    trace(string.lower(state.Label) .. " reward", reply)
+    return succeeded
+end
+
+local function runDiamondPackCheck()
+    if diamondPackBusy then return end
+    diamondPackBusy = true
+
+    local balance = getCurrentCurrency("Tech Coins")
+    local balanceText = balance ~= nil and formatRateNumber(balance) or "unknown"
+    local status
+
+    if balance == nil then
+        status = "Local check: Tech Coins balance was not found; no request sent."
+    elseif balance < DIAMOND_PACK_MINIMUM then
+        status = "Local threshold hold: " .. balanceText
+            .. " is below 1T Tech Coins; no server request sent."
+    else
+        local transportOk, accepted, serverMessage, sourceName, sessionIndex =
+            invokeCommand("Buy DiamondPack", DIAMOND_PACK_TIER)
+        if not transportOk then
+            status = "Route/transport error; purchase not confirmed: " .. tostring(serverMessage)
+        elseif accepted then
+            status = "Tier 4 purchase succeeded via " .. routeText(sourceName, sessionIndex)
+                .. " | balance before: " .. balanceText
+        else
+            local reason = serverMessage ~= nil and tostring(serverMessage)
+                or "request rejected"
+            status = "Server reached via " .. routeText(sourceName, sessionIndex) .. ": "
+                .. reason .. " | balance: " .. balanceText .. " | configured floor: 1T"
+        end
+    end
+
+    diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
+    diamondPackBusy = false
+    trace("diamond pack", status)
+    setDiamondPackStatus(status .. "\nNext local check in 3 minutes.")
 end
 
 local function allocatorPass()
@@ -1957,6 +2273,58 @@ MiscSection:Toggle({
     Callback = function(value) config.AntiAFK = value == true end,
 })
 
+local DiamondPackSection = MiscTab:Section({ Title = "Auto Diamond Pack", Box = true, Opened = true })
+DiamondPackSection:Toggle({
+    Title = "Auto Best Tech Diamond Pack",
+    Desc = "Every 3 minutes: buys tier 4 only when the local Tech Coins balance is at least 1T",
+    Value = false,
+    Callback = function(value)
+        config.AutoTechDiamondPack = value == true
+        diamondPackNextCheck = 0
+        if config.AutoTechDiamondPack then
+            setDiamondPackStatus("Enabled. A local balance check will run now; below 1T no request is sent.")
+        else
+            setDiamondPackStatus("Disabled. No purchase requests will be sent.")
+        end
+    end,
+})
+diamondPackParagraph = DiamondPackSection:Paragraph({
+    Title = "Diamond Pack Status",
+    Desc = "Auto tier 4 is disabled. The live remote is resolved dynamically in each session.",
+})
+
+local RewardsSection = MiscTab:Section({ Title = "Auto Rewards", Box = true, Opened = true })
+RewardsSection:Toggle({
+    Title = "Auto VIP Rewards",
+    Desc = "Uses VIPCooldown and the server clock; claims only when the four-hour timer reaches zero",
+    Value = false,
+    Callback = function(value)
+        local enabled = value == true
+        config.AutoVIPRewards = enabled
+        local state = rewardStates.VIP
+        state.NextAttempt = 0
+        state.LastTimingError = nil
+        state.ArmedReported = false
+    end,
+})
+RewardsSection:Toggle({
+    Title = "Auto Rank Rewards",
+    Desc = "Uses RankTimer and your current rank cooldown; claims only when the timer reaches zero",
+    Value = false,
+    Callback = function(value)
+        local enabled = value == true
+        config.AutoRankRewards = enabled
+        local state = rewardStates.Rank
+        state.NextAttempt = 0
+        state.LastTimingError = nil
+        state.ArmedReported = false
+    end,
+})
+RewardsSection:Paragraph({
+    Title = "Safe Reward Routing",
+    Desc = "Works from any world. No early claim probes; VIP and Rank resolve separate live remotes and print claim results to the console.",
+})
+
 local shutdownStarted = false
 
 local function hideInterface()
@@ -1981,6 +2349,9 @@ local function shutdown(reason)
     shutdownStarted = true
     trace("stop requested", tostring(reason or "reload"))
     config.PetFarm = false
+    config.AutoTechDiamondPack = false
+    config.AutoVIPRewards = false
+    config.AutoRankRewards = false
     farmResetRequested = false
     if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
     disconnectAll()
@@ -2019,6 +2390,62 @@ MiscSection:Button({
         shutdown("button")
     end,
 })
+
+task.spawn(function()
+    while task.wait(1) do
+        if not running() then break end
+        if config.AutoTechDiamondPack and not diamondPackBusy and os.clock() >= diamondPackNextCheck then
+            local ok, problem = pcall(runDiamondPackCheck)
+            if not ok then
+                diamondPackBusy = false
+                diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
+                local status = "Worker error: " .. tostring(problem)
+                trace("diamond pack", status)
+                setDiamondPackStatus(status .. "\nNext retry in 3 minutes.")
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    local order = { "VIP", "Rank" }
+    while task.wait(1) do
+        if not running() then break end
+        local now = os.clock()
+
+        for _, kind in ipairs(order) do
+            local state = rewardStates[kind]
+            if config[state.ConfigKey] then
+                local remaining, cooldown, timingError = getRewardTiming(kind)
+                if remaining == nil then
+                    if timingError ~= state.LastTimingError then
+                        state.LastTimingError = timingError
+                        trace(string.lower(state.Label) .. " reward timer", timingError)
+                    end
+                elseif remaining > 0 then
+                    state.LastTimingError = nil
+                    state.NextAttempt = 0
+                    if not state.ArmedReported then
+                        local remote, sourceName, sessionIndex, routeProblem =
+                            getCommandRemote(state.Command)
+                        local route = remote and routeText(sourceName, sessionIndex)
+                            or ("route pending: " .. tostring(routeProblem))
+                        trace(string.lower(state.Label) .. " reward armed",
+                            "ready in " .. formatDuration(remaining) .. " | " .. route)
+                        state.ArmedReported = true
+                    end
+                elseif now >= state.NextAttempt then
+                    state.LastTimingError = nil
+                    local succeeded = invokeReward(kind)
+                    state.ArmedReported = false
+                    state.NextAttempt = now
+                        + (succeeded and math.max(cooldown or 0, REWARD_RETRY_DELAY)
+                            or REWARD_RETRY_DELAY)
+                end
+            end
+        end
+    end
+end)
 
 task.spawn(function()
     local activeCurrency, lastRateText = nil, nil

@@ -22,6 +22,6 @@ fs.writeFileSync(toolPath, source, "utf8");
 process.stdout.write(
     `Generated PSX OG slim farm\n`
     + `  source: ${Buffer.byteLength(source, "utf8")} bytes\n`
-    + `  features: pet farm, loot magnet, anti-AFK\n`
+    + `  features: pet farm, loot magnet, anti-AFK, timer-gated automation\n`
     + `  external dependency: WindUI 1.6.64-fix\n`
 );
