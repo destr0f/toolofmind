@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and develop-only automation tests.
 
-local VERSION = "1.2.6-dev.3"
+local VERSION = "1.2.6-dev.4"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -202,6 +202,12 @@ local function formatRateNumber(amount)
     return tostring(math.floor(amount + 0.5))
 end
 
+local function formatExactNumber(amount)
+    amount = tonumber(amount)
+    if amount == nil then return "unknown" end
+    return string.format("%.0f", amount)
+end
+
 local function normalizeCurrencyName(name)
     local normalized = string.lower(tostring(name or ""))
     normalized = string.gsub(normalized, "[%s_%-]", "")
@@ -296,16 +302,21 @@ local function getDiamondPackCost(tier)
     local pack = shopConfig.DiamondPacks[tonumber(tier) or DIAMOND_PACK_TIER]
     if type(pack) ~= "table" then return nil end
 
-    for _, key in ipairs({ "displayCost", "DisplayCost", "currencyCost", "CurrencyCost", "cost", "Cost", "price", "Price" }) do
+    for _, key in ipairs({ "currencyCost", "CurrencyCost", "techCost", "TechCost", "cost", "Cost", "price", "Price" }) do
         local parsed = parseShortAmount(pack[key])
-        if parsed then return parsed end
+        if parsed then return parsed, key end
     end
     for key, value in pairs(pack) do
         local keyName = string.lower(tostring(key))
-        if string.find(keyName, "cost", 1, true) or string.find(keyName, "price", 1, true) then
+        local isDisplay = string.find(keyName, "display", 1, true) ~= nil
+        if not isDisplay and (string.find(keyName, "cost", 1, true) or string.find(keyName, "price", 1, true)) then
             local parsed = parseShortAmount(value)
-            if parsed then return parsed end
+            if parsed then return parsed, tostring(key) end
         end
+    end
+    for _, key in ipairs({ "displayCost", "DisplayCost" }) do
+        local parsed = parseShortAmount(pack[key])
+        if parsed then return parsed, key end
     end
     return nil
 end
@@ -1114,6 +1125,94 @@ local function functionUpvalues(callback)
     return values
 end
 
+local diamondPackDirectRemote
+local diamondPackDirectSource
+
+local function resolveRemoteValue(value, expectedClass, seen, depth, budget)
+    if depth > 3 or budget.Left <= 0 then return nil end
+    budget.Left = budget.Left - 1
+    if typeof(value) == "Instance" then
+        return value:IsA(expectedClass) and value or nil
+    end
+    if type(value) == "string" then
+        local object = ReplicatedStorage:FindFirstChild(value, true)
+        return object and object:IsA(expectedClass) and object or nil
+    end
+    if type(value) ~= "table" and type(value) ~= "function" then return nil end
+    if seen[value] then return nil end
+    seen[value] = true
+
+    if type(value) == "function" then
+        for _, upvalue in ipairs(functionUpvalues(value)) do
+            local remote = resolveRemoteValue(upvalue, expectedClass, seen, depth + 1, budget)
+            if remote then return remote end
+        end
+        return nil
+    end
+
+    for _, key in ipairs({ "Remote", "remote", "Instance", "instance", "Object", "object" }) do
+        local nested = rawget(value, key)
+        if nested ~= nil then
+            local remote = resolveRemoteValue(nested, expectedClass, seen, depth + 1, budget)
+            if remote then return remote end
+        end
+    end
+    for _, nested in pairs(value) do
+        if typeof(nested) == "Instance" or type(nested) == "table" or type(nested) == "function" then
+            local remote = resolveRemoteValue(nested, expectedClass, seen, depth + 1, budget)
+            if remote then return remote end
+        end
+    end
+    return nil
+end
+
+local function findCommandRemote(value, commandName, seen, depth, budget)
+    if depth > 5 or budget.Left <= 0 then return nil end
+    budget.Left = budget.Left - 1
+    if type(value) ~= "table" and type(value) ~= "function" then return nil end
+    if seen[value] then return nil end
+    seen[value] = true
+
+    if type(value) == "table" then
+        local mapped = rawget(value, commandName)
+        if mapped ~= nil then
+            local remote = resolveRemoteValue(mapped, "RemoteFunction", {}, 0, budget)
+            if remote then return remote end
+        end
+        for _, nested in pairs(value) do
+            if type(nested) == "table" or type(nested) == "function" then
+                local remote = findCommandRemote(nested, commandName, seen, depth + 1, budget)
+                if remote then return remote end
+            end
+        end
+        return nil
+    end
+
+    for _, upvalue in ipairs(functionUpvalues(value)) do
+        local remote = findCommandRemote(upvalue, commandName, seen, depth + 1, budget)
+        if remote then return remote end
+    end
+    return nil
+end
+
+local function getDiamondPackDirectRemote()
+    if diamondPackDirectRemote and diamondPackDirectRemote.Parent
+        and diamondPackDirectRemote:IsA("RemoteFunction") then
+        local index = table.find(ReplicatedStorage:GetChildren(), diamondPackDirectRemote)
+        return diamondPackDirectRemote, diamondPackDirectSource, index
+    end
+
+    local network = networkReady()
+    if not network or type(network.Invoke) ~= "function" then return nil, "Network.Invoke unavailable" end
+    local remote = findCommandRemote(network.Invoke, "Buy DiamondPack", {}, 0, { Left = 1500 })
+    if not remote then return nil, "Buy DiamondPack was not found in Network registry" end
+
+    diamondPackDirectRemote = remote
+    diamondPackDirectSource = "Network.Invoke registry"
+    local index = table.find(ReplicatedStorage:GetChildren(), remote)
+    return remote, diamondPackDirectSource, index
+end
+
 local function runtimeTableScore(candidate)
     if type(candidate) ~= "table" then return 0 end
     local score, checked = 0, 0
@@ -1642,7 +1741,7 @@ end
 
 local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph, rewardParagraph
 local rewardLines = { VIP = "Disabled.", Rank = "Disabled." }
-local lastRewardText
+local lastRewardUIError
 local function setStatus(text)
     if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
@@ -1658,9 +1757,13 @@ end
 local function setRewardLine(kind, text)
     rewardLines[kind] = text
     local combined = "VIP: " .. tostring(rewardLines.VIP) .. "\nRank: " .. tostring(rewardLines.Rank)
-    if combined == lastRewardText then return end
-    lastRewardText = combined
-    if rewardParagraph then pcall(function() rewardParagraph:SetDesc(combined) end) end
+    if rewardParagraph then
+        local ok, problem = pcall(function() rewardParagraph:SetDesc(combined) end)
+        if not ok and tostring(problem) ~= lastRewardUIError then
+            lastRewardUIError = tostring(problem)
+            warn("[PSX SLIM] reward status UI: " .. lastRewardUIError)
+        end
+    end
 end
 
 local function formatRewardTime(seconds)
@@ -1761,35 +1864,45 @@ local function runManualDiamondPackTest(tier)
     diamondPackBusy = true
 
     local network = networkReady()
+    local directRemote, directSource, directIndex = getDiamondPackDirectRemote()
     local balance = getCurrentCurrency("Tech Coins")
-    local balanceText = balance ~= nil and formatRateNumber(balance) or "unknown"
-    local packCost = getDiamondPackCost(tier)
-    local costText = packCost ~= nil and formatRateNumber(packCost) or "unknown"
+    local balanceText = balance ~= nil
+        and (formatRateNumber(balance) .. " (" .. formatExactNumber(balance) .. ")") or "unknown"
+    local packCost, costSource = getDiamondPackCost(tier)
+    local costText = packCost ~= nil
+        and (formatRateNumber(packCost) .. " (" .. formatExactNumber(packCost) .. ")") or "unknown"
+    local route = directRemote
+        and (tostring(directSource) .. " [session index " .. tostring(directIndex or "?") .. "]")
+        or "Library.Network.Invoke"
     local status
 
-    if not network then
+    if not directRemote and not network then
         status = string.format("Tier %d manual test | Local error: Library.Network is not ready; no request sent.", tier)
     else
         local callOk, accepted, serverMessage = pcall(function()
+            if directRemote then return directRemote:InvokeServer(tier) end
             return network.Invoke("Buy DiamondPack", tier)
         end)
         if not callOk then
-            status = string.format("Tier %d manual test | Transport error: %s", tier, tostring(accepted))
+            status = string.format("Tier %d manual test | Transport error via %s: %s", tier, route, tostring(accepted))
         elseif accepted then
             status = string.format(
-                "Tier %d manual test | Server accepted: real purchase succeeded | balance before: %s",
+                "Tier %d manual test | Server accepted via %s: real purchase succeeded | balance before: %s",
                 tier,
+                route,
                 balanceText
             )
         else
             local reason = serverMessage ~= nil and tostring(serverMessage)
                 or "request rejected (insufficient funds/tier unavailable)"
             status = string.format(
-                "Tier %d manual test | Server reached: %s | balance: %s | detected price: %s",
+                "Tier %d manual test | Server reached via %s: %s | balance: %s | detected price: %s [%s]",
                 tier,
+                route,
                 reason,
                 balanceText,
-                costText
+                costText,
+                tostring(costSource or "unknown field")
             )
         end
     end
