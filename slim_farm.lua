@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.2.6-dev.12"
+local VERSION = "1.2.6-dev.13"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -181,7 +181,7 @@ local function normalize(value)
     return string.match(value, "^%s*(.-)%s*$") or value
 end
 
-local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/ceaa7980fb96cee46d9668f9d67ad4e3e905e34e/graphics_module.lua"
+local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/84929c7e2e289059b5041db37e2c136790c49e46/graphics_module.lua"
 local graphicsController
 
 local function graphicsAction(action, value)
@@ -2522,12 +2522,11 @@ MiscSection:Toggle({
 })
 
 local GraphicsSection = MiscTab:Section({ Title = "Graphics & FPS", Box = true, Opened = true })
-GraphicsSection:Toggle({
-    Title = "Mild Potato Mode",
-    Desc = "Simplifies the static map, shadows and background effects without touching pets, coins, loot, egg animations or game UI",
-    Value = false,
-    Callback = function(value)
-        setPotatoMode(value == true)
+GraphicsSection:Button({
+    Title = "ENABLE MEGA POTATO MODE",
+    Desc = "One-way for this server: removes textures and effects while preserving __THINGS, POS, _SELECTIONFX and Network requests",
+    Callback = function()
+        setPotatoMode(true)
     end,
 })
 GraphicsSection:Dropdown({
@@ -2540,8 +2539,8 @@ GraphicsSection:Dropdown({
     Callback = applyFPSLimit,
 })
 GraphicsSection:Paragraph({
-    Title = "Gameplay-Safe Optimization",
-    Desc = "PlayerGui, CurrentCamera, __THINGS and __DEBRIS are protected. Egg hatch visuals and every farm/reward worker keep running normally.",
+    Title = "Request-Safe, Visually Destructive",
+    Desc = "Pet farm, egg requests, diamond packs, rewards and loot workers remain active. Rejoin the server to restore deleted textures and disabled world effects.",
 })
 
 local DiamondPackSection = MiscTab:Section({ Title = "Develop: Diamond Pack", Box = true, Opened = true })
