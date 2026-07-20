@@ -26,9 +26,12 @@ local function isProtectedTree(object)
     return false
 end
 
-local function isThingsObject(object)
+local function thingsPolicy(object)
     local things = workspace:FindFirstChild("__THINGS")
-    return things and (object == things or object:IsDescendantOf(things)) or false
+    if not things or (object ~= things and not object:IsDescendantOf(things)) then return false, false end
+    local coins = things:FindFirstChild("Coins")
+    local coinVisual = coins and (object == coins or object:IsDescendantOf(coins)) or false
+    return true, coinVisual
 end
 
 local function optimizeRendering()
@@ -56,7 +59,9 @@ local function optimizeRendering()
 end
 
 local function optimizeObject(object, active)
-    if not object or isProtectedTree(object) or isThingsObject(object) then
+    local insideThings, coinVisual = false, false
+    if object then insideThings, coinVisual = thingsPolicy(object) end
+    if not object or isProtectedTree(object) or (insideThings and not coinVisual) then
         if active then active.Protected = active.Protected + 1 end
         return
     end
@@ -69,10 +74,18 @@ local function optimizeObject(object, active)
             active.Disabled = active.Disabled + 1
             return
         end
+        if object:IsA("BillboardGui") or object:IsA("SurfaceGui") then
+            if coinVisual then
+                active.Protected = active.Protected + 1
+            else
+                object.Enabled = false
+                active.Disabled = active.Disabled + 1
+            end
+            return
+        end
         if object:IsA("Beam") or object:IsA("Trail") or object:IsA("Fire")
             or object:IsA("Smoke") or object:IsA("Sparkles") or object:IsA("PostEffect")
-            or object:IsA("Highlight") or object:IsA("BillboardGui")
-            or object:IsA("SurfaceGui") or object:IsA("PointLight")
+            or object:IsA("Highlight") or object:IsA("PointLight")
             or object:IsA("SpotLight") or object:IsA("SurfaceLight")
             or object:IsA("Clouds")
         then
