@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.2.6-dev.17"
+local VERSION = "1.2.6-dev.18"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -67,7 +67,7 @@ local config = {
     Mode = "Different Strongest",
     World = "Current World",
     Zone = "Player Zone",
-    TrackedCurrency = "Auto",
+    TrackedCurrency = "Active Balances",
     Orbs = false,
     Lootbags = false,
     AntiAFK = true,
@@ -182,7 +182,7 @@ local function normalize(value)
     return string.match(value, "^%s*(.-)%s*$") or value
 end
 
-local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/84929c7e2e289059b5041db37e2c136790c49e46/graphics_module.lua"
+local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/68e405ed01ef25a443a847869fed83b2be732711/graphics_module.lua"
 local graphicsController
 
 local function graphicsAction(action, value)
@@ -322,7 +322,7 @@ local WorldOrder = {
 }
 
 local CurrencyChoices = {
-    "Auto", "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
+    "Active Balances", "Auto", "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
     "Rainbow Coins", "Cartoon Coins", "Gingerbread",
 }
 
@@ -660,11 +660,100 @@ local function getSelectedWorld()
 end
 
 local function getTrackedCurrencyName()
+    if config.TrackedCurrency == "Active Balances" then return nil end
     if config.TrackedCurrency ~= "Auto" then return config.TrackedCurrency end
     return CurrencyByWorld[getSelectedWorld()] or "Coins"
 end
 
-local currencySamples = {}
+local currencyMonitor = {
+    Samples = {},
+    Names = {
+        "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
+        "Rainbow Coins", "Cartoon Coins", "Gingerbread",
+    },
+}
+
+function currencyMonitor:Reset()
+    table.clear(self.Samples)
+    self.StartedAt = os.clock()
+end
+
+function currencyMonitor:TrackedNames()
+    if config.TrackedCurrency == "Active Balances" then return self.Names end
+    local selected = getTrackedCurrencyName()
+    return selected and { selected } or {}
+end
+
+function currencyMonitor:GetBalances(currencyNames)
+    local balances = {}
+    local save
+    if Library.Save and type(Library.Save.Get) == "function" then
+        pcall(function() save = Library.Save.Get() end)
+    end
+    for _, currencyName in ipairs(currencyNames) do
+        local amount
+        if type(save) == "table" then
+            amount = readCurrencyFromTable(save, currencyName)
+                or readCurrencyFromTable(save.Currency, currencyName)
+                or readCurrencyFromTable(save.Currencies, currencyName)
+        end
+        if amount == nil then amount = getCurrentCurrency(currencyName) end
+        if amount ~= nil then balances[currencyName] = amount end
+    end
+    return balances
+end
+
+function currencyMonitor:Update(currencyName, currentAmount, now)
+    local sample = self.Samples[currencyName]
+    if type(sample) ~= "table" then
+        sample = {
+            StartedAt = now,
+            FirstBalance = currentAmount,
+            LastBalance = currentAmount,
+            TotalEarned = 0,
+            TotalSpent = 0,
+            History = { { Time = now, Earned = 0 } },
+        }
+        self.Samples[currencyName] = sample
+        return sample
+    end
+
+    local delta = currentAmount - sample.LastBalance
+    if delta > 0 then
+        sample.TotalEarned = sample.TotalEarned + delta
+        sample.LastGainAt = now
+        sample.LastGain = delta
+    elseif delta < 0 then
+        sample.TotalSpent = sample.TotalSpent - delta
+        sample.LastSpendAt = now
+    end
+    sample.LastBalance = currentAmount
+
+    local history = sample.History
+    history[#history + 1] = { Time = now, Earned = sample.TotalEarned }
+    while #history > 2 and history[2].Time <= now - 60 do table.remove(history, 1) end
+    local base = history[1]
+    sample.WindowSeconds = math.max(0, now - base.Time)
+    sample.WindowEarned = math.max(0, sample.TotalEarned - base.Earned)
+    sample.SessionSeconds = math.max(0, now - sample.StartedAt)
+    sample.PerMinute = sample.SessionSeconds > 0
+        and sample.TotalEarned * 60 / sample.SessionSeconds or 0
+    return sample
+end
+
+function currencyMonitor:RateLine(currencyName, sample, now)
+    local inactiveFor = sample.LastGainAt and math.max(0, now - sample.LastGainAt) or nil
+    local idleText = inactiveFor and (" | last gain " .. tostring(math.floor(inactiveFor + 0.5)) .. "s ago") or ""
+    return string.format(
+        "%s: %s/min session avg | last 60s +%s | total +%s | balance %s%s",
+        currencyName,
+        formatRateNumber(sample.PerMinute or 0),
+        formatRateNumber(sample.WindowEarned or 0),
+        formatRateNumber(sample.TotalEarned or 0),
+        formatRateNumber(sample.LastBalance or 0),
+        idleText
+    )
+end
 
 local function getSelectedZone()
     if config.Zone == "Player Zone" then return getPlayerZone() end
@@ -2342,21 +2431,21 @@ healthParagraph = MonitorSection:Paragraph({
 local PerformanceSection = PetsTab:Section({ Title = "Farm Performance", Box = true, Opened = true })
 PerformanceSection:Dropdown({
     Title = "Tracked Currency",
-    Desc = "Auto follows the selected world; spending starts a fresh measurement session",
+    Desc = "Active Balances detects real positive changes; Auto follows the selected world",
     Values = CurrencyChoices,
-    Value = "Auto",
+    Value = "Active Balances",
     Multi = false,
     AllowNone = false,
     Callback = function(value)
         if config.TrackedCurrency == value then return end
         config.TrackedCurrency = value
-        table.clear(currencySamples)
-        setRate("Collecting a fresh currency sample...")
+        currencyMonitor:Reset()
+        setRate("Reading exact balances; no orb or visual-event estimates are used...")
     end,
 })
 rateParagraph = PerformanceSection:Paragraph({
-    Title = "Currency per Minute",
-    Desc = "Enable Pet Farm to measure the full farming session, including rare chest payouts.",
+    Title = "Balance Farm Rate",
+    Desc = "Enable Pet Farm. Earned amounts come only from positive changes in Library.Save balances.",
 })
 
 local GoldMachineSection = PetsTab:Section({ Title = "Develop: Auto Gold Machine", Box = true, Opened = true })
@@ -2410,8 +2499,8 @@ MiscSection:Toggle({
 
 local GraphicsSection = MiscTab:Section({ Title = "Graphics & FPS", Box = true, Opened = true })
 GraphicsSection:Button({
-    Title = "ENABLE MEGA POTATO MODE",
-    Desc = "One-way for this server: removes textures and effects while preserving __THINGS, POS, _SELECTIONFX and Network requests",
+    Title = "ENABLE MAXIMUM POTATO MODE",
+    Desc = "One-way for this server: hides world and __THINGS visuals, but preserves models, IDs, positions and Network requests",
     Callback = function()
         setPotatoMode(true)
     end,
@@ -2426,8 +2515,8 @@ GraphicsSection:Dropdown({
     Callback = applyFPSLimit,
 })
 GraphicsSection:Paragraph({
-    Title = "Request-Safe, Visually Destructive",
-    Desc = "Pet farm, egg requests, diamond packs, rewards and loot workers remain active. Rejoin the server to restore deleted textures and disabled world effects.",
+    Title = "Network-Safe, Visually Destructive",
+    Desc = "Pet farm, egg requests, auto-gold, diamond packs, rewards and loot remain active. POS and _SELECTIONFX are never modified. Rejoin to restore graphics.",
 })
 
 local DiamondPackSection = MiscTab:Section({ Title = "Develop: Diamond Pack", Box = true, Opened = true })
@@ -2609,65 +2698,65 @@ task.spawn(function()
 end)
 
 task.spawn(function()
-    local activeCurrency, lastRateText = nil, nil
+    local lastSelection, lastRateText = nil, nil
     while task.wait(1) do
         if not running() then break end
 
-        local currencyName = getTrackedCurrencyName()
-        if currencyName ~= activeCurrency then
-            activeCurrency = currencyName
-            table.clear(currencySamples)
+        local selection = config.TrackedCurrency
+        if selection == "Auto" then selection = selection .. "|" .. tostring(getTrackedCurrencyName()) end
+        if selection ~= lastSelection then
+            lastSelection = selection
+            currencyMonitor:Reset()
         end
 
         local rateText
         if not config.PetFarm then
-            table.clear(currencySamples)
-            rateText = currencyName .. "/min: farm disabled"
+            currencyMonitor:Reset()
+            rateText = "Balance farm rate: pet farm disabled"
         else
-            local currentAmount = getCurrentCurrency(currencyName)
-            if currentAmount == nil then
-                table.clear(currencySamples)
-                rateText = currencyName .. "/min: currency not found in player data"
-            else
-                local now = os.clock()
-                local previousValue = currencySamples.LastValue
-                if currencySamples.StartTime == nil
-                    or previousValue == nil
-                    or currentAmount < previousValue
-                then
-                    table.clear(currencySamples)
-                    currencySamples.StartTime = now
-                    currencySamples.StartValue = currentAmount
-                elseif currentAmount > previousValue then
-                    currencySamples.LastGainAt = now
-                    currencySamples.LastGain = currentAmount - previousValue
-                end
-                currencySamples.LastValue = currentAmount
+            local now = os.clock()
+            local currencyNames = currencyMonitor:TrackedNames()
+            local balances = currencyMonitor:GetBalances(currencyNames)
+            local available = 0
+            local active = {}
 
-                local elapsed = now - currencySamples.StartTime
-                local gained = math.max(0, currentAmount - currencySamples.StartValue)
-                if gained <= 0 then
-                    rateText = string.format(
-                        "%s/min: waiting for first payout...\nSession: %ds | balance: %s",
-                        currencyName,
-                        math.floor(elapsed + 0.5),
-                        formatRateNumber(currentAmount)
-                    )
-                else
-                    local perMinute = (gained / elapsed) * 60
-                    local sinceLastGain = currencySamples.LastGainAt
-                        and math.max(0, now - currencySamples.LastGainAt)
-                        or elapsed
-                    rateText = string.format(
-                        "%s/min: %s\nSession: +%s over %ds | last payout: %ds ago | balance: %s",
-                        currencyName,
-                        formatRateNumber(perMinute),
-                        formatRateNumber(gained),
-                        math.floor(elapsed + 0.5),
-                        math.floor(sinceLastGain + 0.5),
-                        formatRateNumber(currentAmount)
-                    )
+            for _, currencyName in ipairs(currencyNames) do
+                local currentAmount = balances[currencyName]
+                if currentAmount ~= nil then
+                    available = available + 1
+                    local sample = currencyMonitor:Update(currencyName, currentAmount, now)
+                    if config.TrackedCurrency ~= "Active Balances" or sample.TotalEarned > 0 then
+                        active[#active + 1] = { Name = currencyName, Sample = sample }
+                    end
                 end
+            end
+
+            table.sort(active, function(left, right)
+                local leftGain = left.Sample.PerMinute or 0
+                local rightGain = right.Sample.PerMinute or 0
+                if leftGain == rightGain then return left.Name < right.Name end
+                return leftGain > rightGain
+            end)
+
+            if available == 0 then
+                currencyMonitor:Reset()
+                rateText = "Balance farm rate: currencies were not found in Library.Save"
+            elseif #active == 0 then
+                local elapsed = math.max(0, now - (currencyMonitor.StartedAt or now))
+                rateText = string.format(
+                    "Watching %d exact balances | waiting for a positive change...\nSession: %ds | no orb/event estimates",
+                    available,
+                    math.floor(elapsed + 0.5)
+                )
+            else
+                local lines = {}
+                local limit = math.min(#active, 4)
+                for index = 1, limit do
+                    local entry = active[index]
+                    lines[#lines + 1] = currencyMonitor:RateLine(entry.Name, entry.Sample, now)
+                end
+                if #active > limit then lines[#lines + 1] = "+" .. tostring(#active - limit) .. " more active balance(s)" end
+                rateText = table.concat(lines, "\n")
             end
         end
 
