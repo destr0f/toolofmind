@@ -1,9 +1,12 @@
--- Optional Mega Potato controls for PSX OG Slim Farm.
--- Loaded only after the user presses the button or changes the FPS limit.
+-- Optional maximum potato controls for PSX OG Slim Farm.
+-- The data model and network objects stay intact; only client visuals are reduced.
 
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
+local player = Players.LocalPlayer
 local state
 
 local function disconnect(target)
@@ -13,12 +16,21 @@ local function disconnect(target)
         pcall(function() connection:Disconnect() end)
     end
     target.Connections = {}
+    target.Queue = {}
 end
 
-local function protected(object)
-    if object.Name == "_SELECTIONFX" or object.Name == "POS" then return true end
-    local things = workspace:FindFirstChild("__THINGS")
-    return things and (object == things or object:IsDescendantOf(things)) or false
+local function isProtectedTree(object)
+    local current = object
+    while current and current ~= workspace and current ~= Lighting do
+        if current.Name == "_SELECTIONFX" or current.Name == "POS" then return true end
+        current = current.Parent
+    end
+    return false
+end
+
+local function isLocalCharacterObject(object)
+    local character = player and player.Character
+    return character and (object == character or object:IsDescendantOf(character)) or false
 end
 
 local function optimizeRendering()
@@ -26,12 +38,13 @@ local function optimizeRendering()
     pcall(function() settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01 end)
     pcall(function()
         Lighting.GlobalShadows = false
+        Lighting.FogStart = 0
         Lighting.FogEnd = 9e9
         Lighting.Brightness = 0
         Lighting.EnvironmentDiffuseScale = 0
         Lighting.EnvironmentSpecularScale = 0
-        Lighting.Ambient = Color3.new(1, 1, 1)
-        Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+        Lighting.Ambient = Color3.new(0, 0, 0)
+        Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
     end)
     if Terrain then
         pcall(function()
@@ -44,52 +57,123 @@ local function optimizeRendering()
     end
 end
 
-local function optimizeObject(object)
-    pcall(function()
-        if protected(object) then return end
+local function optimizeObject(object, active)
+    if not object or isProtectedTree(object) then
+        if active then active.Protected = active.Protected + 1 end
+        return
+    end
 
-        if object:IsA("ParticleEmitter") or object:IsA("Beam") or object:IsA("Trail")
-            or object:IsA("Fire") or object:IsA("Smoke") or object:IsA("Sparkles")
-            or object:IsA("PostEffect") or object:IsA("Highlight")
-            or object:IsA("BillboardGui") or object:IsA("SurfaceGui")
-            or object:IsA("PointLight") or object:IsA("SpotLight")
-            or object:IsA("SurfaceLight") or object:IsA("Clouds")
+    local ok = pcall(function()
+        if object:IsA("ParticleEmitter") then
+            object.Enabled = false
+            object.Rate = 0
+            pcall(function() object:Clear() end)
+            active.Disabled = active.Disabled + 1
+            return
+        end
+        if object:IsA("Beam") or object:IsA("Trail") or object:IsA("Fire")
+            or object:IsA("Smoke") or object:IsA("Sparkles") or object:IsA("PostEffect")
+            or object:IsA("Highlight") or object:IsA("BillboardGui")
+            or object:IsA("SurfaceGui") or object:IsA("PointLight")
+            or object:IsA("SpotLight") or object:IsA("SurfaceLight")
+            or object:IsA("Clouds")
         then
             object.Enabled = false
+            if object:IsA("Light") then pcall(function() object.Shadows = false end) end
+            if object:IsA("Trail") then pcall(function() object:Clear() end) end
+            active.Disabled = active.Disabled + 1
             return
         end
-
+        if object:IsA("Sound") then
+            object.Volume = 0
+            pcall(function() object:Stop() end)
+            active.Disabled = active.Disabled + 1
+            return
+        end
         if object:IsA("Decal") or object:IsA("Texture") or object:IsA("SurfaceAppearance") then
             object:Destroy()
+            active.Destroyed = active.Destroyed + 1
             return
         end
-
         if object:IsA("Sky") then
             object.SkyboxBk, object.SkyboxDn, object.SkyboxFt = "", "", ""
             object.SkyboxLf, object.SkyboxRt, object.SkyboxUp = "", "", ""
             object.SunTextureId, object.MoonTextureId = "", ""
             object.StarCount = 0
             object.CelestialBodiesShown = false
+            active.Disabled = active.Disabled + 1
             return
         end
-
         if object:IsA("Atmosphere") then
             object.Density, object.Haze, object.Glare = 0, 0, 0
+            active.Disabled = active.Disabled + 1
             return
         end
-
         if object:IsA("SpecialMesh") then
             object.TextureId = ""
+            active.Stripped = active.Stripped + 1
             return
         end
-
+        if object:IsA("ForceField") then
+            object.Visible = false
+            active.Disabled = active.Disabled + 1
+            return
+        end
+        if object:IsA("Explosion") then
+            object.Visible = false
+            active.Disabled = active.Disabled + 1
+            return
+        end
         if object:IsA("BasePart") then
             object.Material = Enum.Material.Plastic
+            object.MaterialVariant = ""
             object.Reflectance = 0
             object.CastShadow = false
+            if not isLocalCharacterObject(object) then object.LocalTransparencyModifier = 1 end
             if object:IsA("MeshPart") then pcall(function() object.TextureID = "" end) end
+            active.Stripped = active.Stripped + 1
         end
     end)
+    if not ok then active.Errors = active.Errors + 1 end
+end
+
+local function enqueue(active, object)
+    if not active.Running or not object or active.Seen[object] or active.Queued[object] then return end
+    active.Queued[object] = true
+    active.Queue[#active.Queue + 1] = object
+end
+
+local function processQueue(active)
+    enqueue(active, workspace)
+    enqueue(active, Lighting)
+    while active.Running and env.PSX_POTATO_STATE == active do
+        local processed = 0
+        while processed < 240 and #active.Queue > 0 do
+            local object = table.remove(active.Queue)
+            active.Queued[object] = nil
+            if object and not active.Seen[object] then
+                active.Seen[object] = true
+                if object ~= workspace and object ~= Lighting then optimizeObject(object, active) end
+                local childrenOk, children = pcall(function() return object:GetChildren() end)
+                if childrenOk then
+                    for _, child in ipairs(children) do enqueue(active, child) end
+                end
+                processed = processed + 1
+            end
+        end
+        if #active.Queue == 0 then
+            if not active.InitialReported then
+                active.InitialReported = true
+                print(string.format(
+                    "[PSX SLIM] maximum potato | initial pass complete | disabled=%d | stripped=%d | destroyed=%d | protected=%d | errors=%d",
+                    active.Disabled, active.Stripped, active.Destroyed, active.Protected, active.Errors
+                ))
+            end
+            task.wait(0.25)
+        else
+            RunService.Heartbeat:Wait()
+        end
+    end
 end
 
 local function startPotato()
@@ -97,36 +181,41 @@ local function startPotato()
     local previous = env.PSX_POTATO_STATE
     if previous then disconnect(previous) end
 
-    local active = { Running = true, Connections = {} }
+    local active = {
+        Running = true,
+        Connections = {},
+        Queue = {},
+        Seen = setmetatable({}, { __mode = "k" }),
+        Queued = setmetatable({}, { __mode = "k" }),
+        Disabled = 0,
+        Stripped = 0,
+        Destroyed = 0,
+        Protected = 0,
+        Errors = 0,
+    }
     state = active
     env.PSX_POTATO_STATE = active
     optimizeRendering()
 
-    table.insert(active.Connections, workspace.DescendantAdded:Connect(optimizeObject))
-    table.insert(active.Connections, Lighting.DescendantAdded:Connect(optimizeObject))
-
-    task.spawn(function()
-        local descendants = workspace:GetDescendants()
-        for index, object in ipairs(descendants) do
-            if not active.Running or env.PSX_POTATO_STATE ~= active then return end
-            optimizeObject(object)
-            if index % 400 == 0 then task.wait() end
-        end
-        for _, object in ipairs(Lighting:GetDescendants()) do optimizeObject(object) end
-        print("[PSX SLIM] mega potato | initial pass complete")
+    active.Connections[#active.Connections + 1] = workspace.DescendantAdded:Connect(function(object)
+        enqueue(active, object)
+    end)
+    active.Connections[#active.Connections + 1] = Lighting.DescendantAdded:Connect(function(object)
+        enqueue(active, object)
     end)
 
+    task.spawn(processQueue, active)
     task.spawn(function()
         while active.Running and env.PSX_POTATO_STATE == active do
             optimizeRendering()
-            task.wait(2)
+            task.wait(5)
         end
     end)
 
     env.StopPSXPotatoMode = function()
         if env.PSX_POTATO_STATE == active then disconnect(active) end
     end
-    print("[PSX SLIM] mega potato | enabled | FPS remains separately controlled")
+    print("[PSX SLIM] maximum potato | enabled | data model and Network requests preserved")
     return true
 end
 
