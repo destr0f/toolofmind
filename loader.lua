@@ -1,4 +1,4 @@
-local VERSION = "1.2.6-dev.10"
+local VERSION = "1.2.6-dev.11"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -49,6 +49,7 @@ end
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
 local VirtualUser = game:GetService("VirtualUser")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
@@ -63,6 +64,8 @@ TrackedCurrency = "Auto",
 Orbs = false,
 Lootbags = false,
 AntiAFK = true,
+PotatoMode = false,
+FPSLimit = "Unchanged",
 AutoTechDiamondPack = false,
 AutoVIPRewards = false,
 AutoRankRewards = false,
@@ -157,6 +160,248 @@ value = string.lower(tostring(value or ""))
 value = string.gsub(value, "[%p_]+", " ")
 value = string.gsub(value, "%s+", " ")
 return string.match(value, "^%s*(.-)%s*$") or value
+end
+local POTATO_CHUNK_SIZE = 160
+local POTATO_TEXTURE_TRANSPARENCY = 0.65
+local potatoSnapshots = setmetatable({}, { __mode = "k" })
+local potatoGeneration = 0
+local potatoBusy = false
+local potatoMapConnection
+local potatoBoundMap
+local function executorFunction(name)
+local value
+pcall(function() value = env[name] end)
+if type(value) == "function" then return value end
+pcall(function() value = _G[name] end)
+return type(value) == "function" and value or nil
+end
+local fpsCapFunction = executorFunction("setfpscap") or executorFunction("set_fps_cap")
+local fpsCapFunctionName = executorFunction("setfpscap") and "setfpscap"
+or executorFunction("set_fps_cap") and "set_fps_cap" or nil
+local fpsGetFunction = executorFunction("getfpscap") or executorFunction("get_fps_cap")
+local initialFPSCap
+local fpsCapChanged = false
+if fpsGetFunction then
+local ok, value = pcall(fpsGetFunction)
+if ok and tonumber(value) then initialFPSCap = tonumber(value) end
+end
+local function applyFPSLimit(choice)
+choice = tostring(choice or "Unchanged")
+config.FPSLimit = choice
+if choice == "Unchanged" then
+if fpsCapChanged and fpsCapFunction and initialFPSCap then
+local restored, problem = pcall(fpsCapFunction, initialFPSCap)
+if restored then
+fpsCapChanged = false
+trace("fps cap", "restored original value " .. tostring(initialFPSCap))
+else
+warn("[PSX SLIM] fps restore: " .. tostring(problem))
+end
+else
+trace("fps cap", "unchanged")
+end
+return
+end
+if not fpsCapFunction then
+warn("[PSX SLIM] FPS cap is unavailable: executor has no setfpscap API")
+return
+end
+local cap = choice == "Unlimited" and 999 or tonumber(choice)
+if not cap then
+warn("[PSX SLIM] FPS cap ignored: invalid value " .. choice)
+return
+end
+local applied, problem = pcall(fpsCapFunction, math.max(1, math.floor(cap)))
+if applied then
+fpsCapChanged = true
+trace("fps cap", choice == "Unlimited" and "unlimited (999)" or tostring(cap))
+else
+warn("[PSX SLIM] FPS cap failed: " .. tostring(problem))
+end
+end
+local function restoreFPSLimit()
+if not fpsCapChanged or not fpsCapFunction or not initialFPSCap then return end
+local restored, problem = pcall(fpsCapFunction, initialFPSCap)
+if restored then
+fpsCapChanged = false
+trace("fps cap", "restored on shutdown: " .. tostring(initialFPSCap))
+else
+warn("[PSX SLIM] fps shutdown restore: " .. tostring(problem))
+end
+end
+local function potatoSet(instance, property, value)
+if not instance then return false end
+local snapshot = potatoSnapshots[instance]
+if snapshot and snapshot[property] ~= nil then
+return pcall(function() instance[property] = value end)
+end
+local readable, current = pcall(function() return instance[property] end)
+if not readable or current == value then return false end
+local changed = pcall(function() instance[property] = value end)
+if not changed then return false end
+if not snapshot then
+snapshot = {}
+potatoSnapshots[instance] = snapshot
+end
+snapshot[property] = current
+return true
+end
+local function potatoRaiseTransparency(instance)
+local readable, current = pcall(function() return instance.Transparency end)
+if readable and type(current) == "number" and current < POTATO_TEXTURE_TRANSPARENCY then
+return potatoSet(instance, "Transparency", POTATO_TEXTURE_TRANSPARENCY)
+end
+return false
+end
+local function applyPotatoLightingObject(instance)
+if instance:IsA("BloomEffect") or instance:IsA("BlurEffect")
+or instance:IsA("DepthOfFieldEffect") or instance:IsA("SunRaysEffect")
+then
+return potatoSet(instance, "Enabled", false) and 1 or 0
+end
+if instance:IsA("Atmosphere") then
+local changed = 0
+if potatoSet(instance, "Density", 0) then changed = changed + 1 end
+if potatoSet(instance, "Haze", 0) then changed = changed + 1 end
+if potatoSet(instance, "Glare", 0) then changed = changed + 1 end
+return changed
+end
+return 0
+end
+local function applyPotatoMapObject(instance)
+local changed = 0
+if instance:IsA("BasePart") then
+if potatoSet(instance, "CastShadow", false) then changed = changed + 1 end
+if potatoSet(instance, "Reflectance", 0) then changed = changed + 1 end
+if potatoSet(instance, "Material", Enum.Material.SmoothPlastic) then changed = changed + 1 end
+elseif instance:IsA("Decal") or instance:IsA("Texture") then
+if potatoRaiseTransparency(instance) then changed = changed + 1 end
+elseif instance:IsA("ParticleEmitter") or instance:IsA("Trail") or instance:IsA("Beam")
+or instance:IsA("Smoke") or instance:IsA("Fire") or instance:IsA("Sparkles")
+or instance:IsA("PointLight") or instance:IsA("SpotLight") or instance:IsA("SurfaceLight")
+then
+if potatoSet(instance, "Enabled", false) then changed = changed + 1 end
+end
+return changed
+end
+local function applyPotatoGlobals()
+local changed = 0
+if potatoSet(Lighting, "GlobalShadows", false) then changed = changed + 1 end
+if potatoSet(Lighting, "EnvironmentDiffuseScale", 0) then changed = changed + 1 end
+if potatoSet(Lighting, "EnvironmentSpecularScale", 0) then changed = changed + 1 end
+for _, instance in ipairs(Lighting:GetDescendants()) do
+changed = changed + applyPotatoLightingObject(instance)
+end
+local terrain = workspace:FindFirstChildOfClass("Terrain")
+if terrain then
+if potatoSet(terrain, "Decoration", false) then changed = changed + 1 end
+if potatoSet(terrain, "WaterWaveSize", 0) then changed = changed + 1 end
+if potatoSet(terrain, "WaterWaveSpeed", 0) then changed = changed + 1 end
+if potatoSet(terrain, "WaterReflectance", 0) then changed = changed + 1 end
+for _, instance in ipairs(terrain:GetDescendants()) do
+if instance:IsA("Clouds") and potatoSet(instance, "Enabled", false) then
+changed = changed + 1
+end
+end
+end
+local renderSettings
+pcall(function() renderSettings = settings().Rendering end)
+if renderSettings and potatoSet(renderSettings, "QualityLevel", Enum.QualityLevel.Level01) then
+changed = changed + 1
+end
+return changed
+end
+local function startPotatoApply(reason)
+potatoGeneration = potatoGeneration + 1
+local generation = potatoGeneration
+potatoBusy = true
+task.spawn(function()
+local changed = applyPotatoGlobals()
+local map = workspace:FindFirstChild("__MAP")
+local descendants = map and map:GetDescendants() or {}
+for index, instance in ipairs(descendants) do
+if generation ~= potatoGeneration or not config.PotatoMode then return end
+changed = changed + applyPotatoMapObject(instance)
+if index % POTATO_CHUNK_SIZE == 0 then RunService.Heartbeat:Wait() end
+end
+if generation == potatoGeneration and config.PotatoMode then
+potatoBusy = false
+trace("potato mode", string.format("ready | changes=%d | source=%s", changed, tostring(reason)))
+end
+end)
+end
+local function startPotatoRestore(reason)
+potatoGeneration = potatoGeneration + 1
+local generation = potatoGeneration
+potatoBusy = true
+task.spawn(function()
+local entries = {}
+for instance, snapshot in pairs(potatoSnapshots) do
+table.insert(entries, { Instance = instance, Snapshot = snapshot })
+end
+local restored = 0
+for index, entry in ipairs(entries) do
+if generation ~= potatoGeneration or config.PotatoMode then return end
+for property, original in pairs(entry.Snapshot) do
+if pcall(function() entry.Instance[property] = original end) then restored = restored + 1 end
+end
+potatoSnapshots[entry.Instance] = nil
+if index % POTATO_CHUNK_SIZE == 0 then RunService.Heartbeat:Wait() end
+end
+if generation == potatoGeneration and not config.PotatoMode then
+potatoBusy = false
+trace("potato mode", string.format("restored | properties=%d | source=%s", restored, tostring(reason)))
+end
+end)
+end
+local function setPotatoMode(enabled, reason)
+enabled = enabled == true
+if config.PotatoMode == enabled then
+if not enabled and next(potatoSnapshots) ~= nil then startPotatoRestore(reason or "cleanup") end
+return
+end
+config.PotatoMode = enabled
+if enabled then
+startPotatoApply(reason or "enabled")
+else
+startPotatoRestore(reason or "disabled")
+end
+end
+local function bindPotatoMap(map)
+if potatoBoundMap == map then return end
+if potatoMapConnection then pcall(function() potatoMapConnection:Disconnect() end) end
+potatoMapConnection = nil
+potatoBoundMap = map
+if not map then return end
+potatoMapConnection = track(map.DescendantAdded:Connect(function(instance)
+if config.PotatoMode and running() then
+task.defer(function()
+if config.PotatoMode and running() and instance:IsDescendantOf(map) then
+applyPotatoMapObject(instance)
+end
+end)
+end
+end))
+end
+bindPotatoMap(workspace:FindFirstChild("__MAP"))
+track(workspace.ChildAdded:Connect(function(child)
+if child.Name ~= "__MAP" then return end
+bindPotatoMap(child)
+if config.PotatoMode and running() then startPotatoApply("world map changed") end
+end))
+track(workspace.ChildRemoved:Connect(function(child)
+if child == potatoBoundMap then bindPotatoMap(nil) end
+end))
+track(Lighting.DescendantAdded:Connect(function(instance)
+if config.PotatoMode and running() then applyPotatoLightingObject(instance) end
+end))
+local initialTerrain = workspace:FindFirstChildOfClass("Terrain")
+if initialTerrain then
+track(initialTerrain.DescendantAdded:Connect(function(instance)
+if config.PotatoMode and running() and instance:IsA("Clouds") then
+potatoSet(instance, "Enabled", false)
+end
+end))
 end
 local function namesMatch(left, right)
 local a, b = normalize(left), normalize(right)
@@ -2256,6 +2501,30 @@ Desc = "Prevents the Roblox idle kick",
 Value = true,
 Callback = function(value) config.AntiAFK = value == true end,
 })
+local GraphicsSection = MiscTab:Section({ Title = "Graphics & FPS", Box = true, Opened = true })
+GraphicsSection:Toggle({
+Title = "Mild Potato Mode",
+Desc = "Simplifies the static map, shadows and background effects without touching pets, coins, loot, egg animations or game UI",
+Value = false,
+Callback = function(value)
+setPotatoMode(value == true, value == true and "UI enabled" or "UI disabled")
+end,
+})
+GraphicsSection:Dropdown({
+Title = "FPS Limit",
+Desc = fpsCapFunction
+and ("Executor API detected: " .. tostring(fpsCapFunctionName) .. ". Unlimited uses a safe 999 FPS cap.")
+or "Your executor does not expose setfpscap; selecting a value will only print a warning.",
+Values = { "Unchanged", "30", "45", "60", "90", "120", "144", "165", "240", "Unlimited" },
+Value = "Unchanged",
+Multi = false,
+AllowNone = false,
+Callback = applyFPSLimit,
+})
+GraphicsSection:Paragraph({
+Title = "Gameplay-Safe Optimization",
+Desc = "PlayerGui, CurrentCamera, __THINGS and __DEBRIS are protected. Egg hatch visuals and every farm/reward worker keep running normally.",
+})
 local DiamondPackSection = MiscTab:Section({ Title = "Develop: Diamond Pack", Box = true, Opened = true })
 DiamondPackSection:Toggle({
 Title = "Auto Best Tech Diamond Pack",
@@ -2315,7 +2584,7 @@ end
 end
 local function finishShutdown()
 local shutdownDeadline = os.clock() + 1
-while (farmResetRunning or allocatorBusy) and os.clock() < shutdownDeadline do
+while (farmResetRunning or allocatorBusy or potatoBusy) and os.clock() < shutdownDeadline do
 RunService.Heartbeat:Wait()
 end
 local cleaned, problem = pcall(clearAssignments, true)
@@ -2329,6 +2598,8 @@ config.PetFarm = false
 config.AutoTechDiamondPack = false
 config.AutoVIPRewards = false
 config.AutoRankRewards = false
+setPotatoMode(false, "script shutdown")
+restoreFPSLimit()
 farmResetRequested = false
 if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
 disconnectAll()
