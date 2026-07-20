@@ -1,4 +1,4 @@
-local VERSION = "1.2.6-stable"
+local VERSION = "1.2.7-stable"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -59,13 +59,17 @@ PetFarm = false,
 Mode = "Different Strongest",
 World = "Current World",
 Zone = "Player Zone",
-TrackedCurrency = "Auto",
+TrackedCurrency = "Active Balances",
 Orbs = false,
 Lootbags = false,
 AntiAFK = true,
+PotatoMode = false,
+FPSLimit = "Unchanged",
 AutoTechDiamondPack = false,
 AutoVIPRewards = false,
 AutoRankRewards = false,
+AutoGoldenGalaxyFox = false,
+AutoRainbowGalaxyFox = false,
 }
 local DIAMOND_PACK_TIER = 4
 local DIAMOND_PACK_MINIMUM = 1e12
@@ -158,6 +162,42 @@ value = string.gsub(value, "[%p_]+", " ")
 value = string.gsub(value, "%s+", " ")
 return string.match(value, "^%s*(.-)%s*$") or value
 end
+local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/8d9b1658533645fbdc214b3a42ef4932d2a6f71e/graphics_module.lua"
+local graphicsController
+local function graphicsAction(action, value)
+if not graphicsController then
+local downloaded, source = pcall(function() return game:HttpGet(GRAPHICS_MODULE_URL) end)
+if not downloaded then warn("[PSX SLIM] graphics download: " .. tostring(source)); return false end
+local chunk, compileProblem = loadstring(source)
+source = nil
+if not chunk then warn("[PSX SLIM] graphics compile: " .. tostring(compileProblem)); return false end
+local started, controller = pcall(chunk)
+if not started or type(controller) ~= "function" then
+warn("[PSX SLIM] graphics start: " .. tostring(controller)); return false
+end
+graphicsController = controller
+trace("graphics module", "loaded on demand")
+end
+local called, accepted, problem = pcall(graphicsController, action, value)
+if not called then warn("[PSX SLIM] graphics action: " .. tostring(accepted)); return false end
+if accepted == false then warn("[PSX SLIM] graphics action: " .. tostring(problem)); return false end
+return true
+end
+local function setPotatoMode(enabled)
+enabled = enabled == true
+if config.PotatoMode == enabled then return end
+config.PotatoMode = enabled
+if not graphicsAction("potato", enabled) then config.PotatoMode = false end
+end
+local function applyFPSLimit(choice)
+choice = tostring(choice or "Unchanged")
+config.FPSLimit = choice
+if choice ~= "Unchanged" then graphicsAction("fps", choice) end
+end
+local function stopGraphics()
+if graphicsController then pcall(graphicsController, "stop") end
+graphicsController = nil
+end
 local function namesMatch(left, right)
 local a, b = normalize(left), normalize(right)
 if a == b then return true end
@@ -248,7 +288,7 @@ local WorldOrder = {
 "Kawaii World", "Dog World", "Diamond Mine", "Christmas Event", "Trading Plaza",
 }
 local CurrencyChoices = {
-"Auto", "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
+"Active Balances", "Auto", "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
 "Rainbow Coins", "Cartoon Coins", "Gingerbread",
 }
 local CurrencyByWorld = {
@@ -559,10 +599,92 @@ local function getSelectedWorld()
 return config.World == "Current World" and getCurrentWorld() or config.World
 end
 local function getTrackedCurrencyName()
+if config.TrackedCurrency == "Active Balances" then return nil end
 if config.TrackedCurrency ~= "Auto" then return config.TrackedCurrency end
 return CurrencyByWorld[getSelectedWorld()] or "Coins"
 end
-local currencySamples = {}
+local currencyMonitor = {
+Samples = {},
+Names = {
+"Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
+"Rainbow Coins", "Cartoon Coins", "Gingerbread",
+},
+}
+function currencyMonitor:Reset()
+table.clear(self.Samples)
+self.StartedAt = os.clock()
+end
+function currencyMonitor:TrackedNames()
+if config.TrackedCurrency == "Active Balances" then return self.Names end
+local selected = getTrackedCurrencyName()
+return selected and { selected } or {}
+end
+function currencyMonitor:GetBalances(currencyNames)
+local balances = {}
+local save
+if Library.Save and type(Library.Save.Get) == "function" then
+pcall(function() save = Library.Save.Get() end)
+end
+for _, currencyName in ipairs(currencyNames) do
+local amount
+if type(save) == "table" then
+amount = readCurrencyFromTable(save, currencyName)
+or readCurrencyFromTable(save.Currency, currencyName)
+or readCurrencyFromTable(save.Currencies, currencyName)
+end
+if amount == nil then amount = getCurrentCurrency(currencyName) end
+if amount ~= nil then balances[currencyName] = amount end
+end
+return balances
+end
+function currencyMonitor:Update(currencyName, currentAmount, now)
+local sample = self.Samples[currencyName]
+if type(sample) ~= "table" then
+sample = {
+StartedAt = now,
+FirstBalance = currentAmount,
+LastBalance = currentAmount,
+TotalEarned = 0,
+TotalSpent = 0,
+History = { { Time = now, Earned = 0 } },
+}
+self.Samples[currencyName] = sample
+return sample
+end
+local delta = currentAmount - sample.LastBalance
+if delta > 0 then
+sample.TotalEarned = sample.TotalEarned + delta
+sample.LastGainAt = now
+sample.LastGain = delta
+elseif delta < 0 then
+sample.TotalSpent = sample.TotalSpent - delta
+sample.LastSpendAt = now
+end
+sample.LastBalance = currentAmount
+local history = sample.History
+history[#history + 1] = { Time = now, Earned = sample.TotalEarned }
+while #history > 2 and history[2].Time <= now - 60 do table.remove(history, 1) end
+local base = history[1]
+sample.WindowSeconds = math.max(0, now - base.Time)
+sample.WindowEarned = math.max(0, sample.TotalEarned - base.Earned)
+sample.SessionSeconds = math.max(0, now - sample.StartedAt)
+sample.PerMinute = sample.SessionSeconds > 0
+and sample.TotalEarned * 60 / sample.SessionSeconds or 0
+return sample
+end
+function currencyMonitor:RateLine(currencyName, sample, now)
+local inactiveFor = sample.LastGainAt and math.max(0, now - sample.LastGainAt) or nil
+local idleText = inactiveFor and (" | last gain " .. tostring(math.floor(inactiveFor + 0.5)) .. "s ago") or ""
+return string.format(
+"%s: %s/min session avg | last 60s +%s | total +%s | balance %s%s",
+currencyName,
+formatRateNumber(sample.PerMinute or 0),
+formatRateNumber(sample.WindowEarned or 0),
+formatRateNumber(sample.TotalEarned or 0),
+formatRateNumber(sample.LastBalance or 0),
+idleText
+)
+end
 local function getSelectedZone()
 if config.Zone == "Player Zone" then return getPlayerZone() end
 return ZoneAliases[config.Zone] or config.Zone
@@ -1102,7 +1224,7 @@ if not result[1] then
 commandRemoteCache[commandName] = nil
 return false, false, tostring(result[2]), sourceName, sessionIndex
 end
-return true, result[2] == true, result[3], sourceName, sessionIndex
+return true, result[2] == true, result[3], sourceName, sessionIndex, result[4]
 end
 local function runtimeTableScore(candidate)
 if type(candidate) ~= "table" then return 0 end
@@ -1582,7 +1704,7 @@ end
 end
 return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
 end
-local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph
+local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph, goldMachineParagraph, rainbowMachineParagraph
 local function setStatus(text)
 if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
 end
@@ -1594,6 +1716,12 @@ if rateParagraph then pcall(function() rateParagraph:SetDesc(text) end) end
 end
 local function setDiamondPackStatus(text)
 if diamondPackParagraph then pcall(function() diamondPackParagraph:SetDesc(text) end) end
+end
+local function setGoldMachineStatus(text)
+if goldMachineParagraph then pcall(function() goldMachineParagraph:SetDesc(text) end) end
+end
+local function setRainbowMachineStatus(text)
+if rainbowMachineParagraph then pcall(function() rainbowMachineParagraph:SetDesc(text) end) end
 end
 local function getRewardSave()
 if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
@@ -1671,6 +1799,84 @@ local minutes = math.floor(seconds % 3600 / 60)
 local secs = seconds % 60
 if hours > 0 then return string.format("%dh %02dm %02ds", hours, minutes, secs) end
 return string.format("%dm %02ds", minutes, secs)
+end
+local machineModules = {
+Gold = {
+URL = "https://raw.githubusercontent.com/destr0f/toolofmind/ebdb357b4db3f5dbc0c4ad6709a1f725b284d1b9/gold_machine_module.lua",
+ConfigKey = "AutoGoldenGalaxyFox",
+Label = "gold machine",
+SetStatus = setGoldMachineStatus,
+},
+Rainbow = {
+URL = "https://raw.githubusercontent.com/destr0f/toolofmind/060f465373135d67ce9d8273cf24e254c37cefb3/rainbow_machine_module.lua",
+ConfigKey = "AutoRainbowGalaxyFox",
+Label = "rainbow machine",
+SetStatus = setRainbowMachineStatus,
+},
+}
+function machineModules:Stop(kind)
+local entry = self[kind]
+if entry and entry.Controller then pcall(entry.Controller, "stop") end
+end
+function machineModules:StopAll()
+self:Stop("Gold")
+self:Stop("Rainbow")
+end
+function machineModules:Start(kind)
+local entry = self[kind]
+if not entry or entry.Loading or not config[entry.ConfigKey] or not running() then return end
+entry.Loading = true
+if not entry.Controller then
+entry.SetStatus("Loading the protected " .. entry.Label .. " worker on demand...")
+local downloaded, source = pcall(function() return game:HttpGet(entry.URL) end)
+if downloaded then
+local chunk, compileProblem = loadstring(source)
+source = nil
+if chunk then
+local started, controller = pcall(chunk)
+if started and type(controller) == "function" then
+entry.Controller = controller
+trace(entry.Label .. " module", "loaded on demand")
+else
+downloaded = false
+source = "module start failed: " .. tostring(controller)
+end
+else
+downloaded = false
+source = "module compile failed: " .. tostring(compileProblem)
+end
+end
+if not downloaded then
+entry.Loading = false
+config[entry.ConfigKey] = false
+entry.SetStatus("Module could not be loaded; no pets were sent: " .. tostring(source))
+trace(entry.Label .. " module", tostring(source))
+return
+end
+end
+entry.Loading = false
+if not config[entry.ConfigKey] or not running() then return end
+local context = {
+Library = Library,
+Running = running,
+Enabled = function() return config[entry.ConfigKey] end,
+GetSave = getRewardSave,
+GetCurrency = getCurrentCurrency,
+FormatNumber = formatRateNumber,
+GetCommandRemote = getCommandRemote,
+InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
+InvokeCommand = invokeCommand,
+RouteText = routeText,
+SetStatus = entry.SetStatus,
+Trace = trace,
+}
+local called, accepted, problem = pcall(entry.Controller, "start", context)
+if not called or accepted == false then
+config[entry.ConfigKey] = false
+local reason = not called and accepted or problem
+entry.SetStatus("Module failed to start; no pets were sent: " .. tostring(reason))
+trace(entry.Label .. " module", "start failed: " .. tostring(reason))
+end
 end
 local function invokeReward(kind)
 local state = rewardStates[kind]
@@ -1906,43 +2112,48 @@ pcall(function() VirtualUser:Button2Up(Vector2.new(0, 0), activeCamera.CFrame) e
 end
 end))
 WindUI:AddTheme({
-Name = "PSX Aurora",
-Accent = Color3.fromRGB(99, 102, 241),
-Background = Color3.fromRGB(8, 15, 29),
-Outline = Color3.fromRGB(34, 211, 238),
+Name = "Nova Stable",
+Accent = Color3.fromRGB(56, 189, 248),
+Background = Color3.fromRGB(7, 12, 23),
+Outline = Color3.fromRGB(71, 85, 105),
 Text = Color3.fromRGB(248, 250, 252),
-Placeholder = Color3.fromRGB(165, 180, 252),
-Button = Color3.fromRGB(24, 34, 58),
-Icon = Color3.fromRGB(103, 232, 249),
+Placeholder = Color3.fromRGB(148, 163, 184),
+Button = Color3.fromRGB(18, 29, 48),
+Icon = Color3.fromRGB(45, 212, 191),
 })
 local Window = WindUI:CreateWindow({
-Title = "PSX OG | Nova Farm",
+Title = "PSX OG | Nova Stable",
 Icon = "sparkles",
-Author = "Adaptive routing | v" .. VERSION,
-Folder = "PSX_Slim_Farm",
-Size = UDim2.fromOffset(720, 520),
-MinSize = Vector2.new(590, 400),
-MaxSize = Vector2.new(1024, 760),
+Author = "Reliable automation suite | v" .. VERSION,
+Folder = "PSX_Nova_Stable",
+Size = UDim2.fromOffset(820, 570),
+MinSize = Vector2.new(650, 430),
+MaxSize = Vector2.new(1120, 780),
 ToggleKey = Enum.KeyCode.RightShift,
 Transparent = true,
-Theme = "PSX Aurora",
+Theme = "Nova Stable",
 Resizable = true,
-SideBarWidth = 185,
+SideBarWidth = 174,
 HideSearchBar = true,
 ScrollBarEnabled = true,
 Acrylic = false,
 })
-local PetsTab = Window:Tab({ Title = "Pet Farm", Icon = "paw-print" })
-local LootTab = Window:Tab({ Title = "Loot", Icon = "package-open" })
-local MiscTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
-local PetsSection = PetsTab:Section({ Title = "Farm Control", Box = true, Opened = true })
-PetsSection:Paragraph({
-Title = "Adaptive Pet Allocator",
-Desc = "Zone-aware target locks with live idle-pet recovery. Pets stay on a coin until the game confirms that they are free.",
+local UI = {}
+UI.FarmTab = Window:Tab({ Title = "Farm", Icon = "paw-print" })
+UI.MonitorTab = Window:Tab({ Title = "Monitor", Icon = "activity" })
+UI.MachinesTab = Window:Tab({ Title = "Machines", Icon = "settings" })
+UI.LootTab = Window:Tab({ Title = "Loot", Icon = "package-open" })
+UI.RewardsTab = Window:Tab({ Title = "Rewards", Icon = "gift" })
+UI.GraphicsTab = Window:Tab({ Title = "Graphics", Icon = "monitor" })
+UI.SessionTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
+UI.FarmHero = UI.FarmTab:Section({ Title = "01 / Adaptive Routing", Box = true, Opened = true })
+UI.FarmHero:Paragraph({
+Title = "LOCK > BREAK > REASSIGN",
+Desc = "A deterministic pet allocator with dynamic world/zone discovery and idle-pet recovery.",
 })
-PetsSection:Toggle({
+UI.FarmHero:Toggle({
 Title = "Enable Pet Farm",
-Desc = "Targets are locked until the coin is completely destroyed",
+Desc = "A target remains locked until the game confirms that the coin is destroyed",
 Value = false,
 Callback = function(value)
 local enabled = value == true
@@ -1951,8 +2162,9 @@ config.PetFarm = enabled
 requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
 end,
 })
-PetsSection:Dropdown({
-Title = "Assignment Mode",
+UI.FarmHero:Dropdown({
+Title = "Assignment Strategy",
+Desc = "Choose how equipped pets are distributed across valid targets",
 Values = { "Different Strongest", "Different Weakest", "All on Strongest Regular", "Boss Chest Only" },
 Value = "Different Strongest",
 Multi = false,
@@ -1963,32 +2175,30 @@ config.Mode = value
 if config.PetFarm then requestFarmReset("assignment mode changed") end
 end,
 })
-local worldValues = { "Current World" }
-for _, worldName in ipairs(WorldOrder) do table.insert(worldValues, worldName) end
-local zoneDropdown, lastZoneSignature
-local TargetSection = PetsTab:Section({ Title = "Target Location", Box = true, Opened = true })
+UI.WorldValues = { "Current World" }
+for _, worldName in ipairs(WorldOrder) do table.insert(UI.WorldValues, worldName) end
+UI.TargetSection = UI.FarmTab:Section({ Title = "02 / Target Space", Box = true, Opened = true })
 local function refreshZoneDropdown(force)
-if not zoneDropdown then return end
+if not UI.ZoneDropdown then return end
 local options, resolvedWorld = getZoneOptions(config.World)
 local signature = config.World .. "|" .. tostring(resolvedWorld) .. "|" .. table.concat(options, "\0")
-if not force and signature == lastZoneSignature then return end
-local selected = config.Zone
-local valid = false
+if not force and signature == UI.LastZoneSignature then return end
+local selected, valid = config.Zone, false
 for _, option in ipairs(options) do
 if option == selected then valid = true; break end
 end
 if not valid then selected = config.World == "Current World" and "Player Zone" or options[1] end
-lastZoneSignature = signature
-zoneDropdown:Refresh(options)
+UI.LastZoneSignature = signature
+UI.ZoneDropdown:Refresh(options)
 if selected then
 config.Zone = selected
-pcall(function() zoneDropdown:Select(selected) end)
+pcall(function() UI.ZoneDropdown:Select(selected) end)
 end
 end
-TargetSection:Dropdown({
+UI.TargetSection:Dropdown({
 Title = "World",
-Desc = "Current World follows teleports and updates its zone list",
-Values = worldValues,
+Desc = "Current World follows teleports and rebuilds the zone catalog automatically",
+Values = UI.WorldValues,
 Value = "Current World",
 Multi = false,
 AllowNone = false,
@@ -1999,11 +2209,11 @@ refreshZoneDropdown(true)
 if changed and config.PetFarm then requestFarmReset("world selection changed") end
 end,
 })
-local initialZones = getZoneOptions("Current World")
-zoneDropdown = TargetSection:Dropdown({
+UI.InitialZones = getZoneOptions("Current World")
+UI.ZoneDropdown = UI.TargetSection:Dropdown({
 Title = "Zone",
-Desc = "Player Zone follows your character dynamically",
-Values = initialZones,
+Desc = "Player Zone follows your character without restarting the farm",
+Values = UI.InitialZones,
 Value = "Player Zone",
 Multi = false,
 AllowNone = false,
@@ -2013,65 +2223,88 @@ config.Zone = value
 if config.PetFarm then requestFarmReset("zone selection changed") end
 end,
 })
-lastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(initialZones, "\0")
-local MonitorSection = PetsTab:Section({ Title = "Live Monitor", Box = true, Opened = true })
-statusParagraph = MonitorSection:Paragraph({
+UI.LastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(UI.InitialZones, "\0")
+UI.MonitorHero = UI.MonitorTab:Section({ Title = "Live Telemetry", Box = true, Opened = true })
+UI.MonitorHero:Paragraph({
+Title = "REAL-TIME CONTROL PLANE",
+Desc = "Assignments, game-controller state and balance-derived income update independently.",
+})
+statusParagraph = UI.MonitorHero:Paragraph({
 Title = "Assignment Status",
 Desc = "Waiting for the game pet controller and location data...",
 })
-healthParagraph = MonitorSection:Paragraph({
+healthParagraph = UI.MonitorHero:Paragraph({
 Title = "Controller Health",
 Desc = "Runtime discovery is starting...",
 })
-local PerformanceSection = PetsTab:Section({ Title = "Farm Performance", Box = true, Opened = true })
-PerformanceSection:Dropdown({
+UI.PerformanceSection = UI.MonitorTab:Section({ Title = "Balance Intelligence", Box = true, Opened = true })
+UI.PerformanceSection:Dropdown({
 Title = "Tracked Currency",
-Desc = "Auto follows the selected world; spending starts a fresh measurement session",
+Desc = "Active Balances discovers real gains; Auto follows the selected world",
 Values = CurrencyChoices,
-Value = "Auto",
+Value = "Active Balances",
 Multi = false,
 AllowNone = false,
 Callback = function(value)
 if config.TrackedCurrency == value then return end
 config.TrackedCurrency = value
-table.clear(currencySamples)
-setRate("Collecting a fresh currency sample...")
+currencyMonitor:Reset()
+setRate("Reading exact balances; no orb or visual-event estimates are used...")
 end,
 })
-rateParagraph = PerformanceSection:Paragraph({
-Title = "Currency per Minute",
-Desc = "Enable Pet Farm to measure the full farming session, including rare chest payouts.",
+rateParagraph = UI.PerformanceSection:Paragraph({
+Title = "Balance Farm Rate",
+Desc = "Enable Pet Farm. Income is derived only from positive Library.Save balance changes.",
 })
-local LootSection = LootTab:Section({ Title = "Loot Magnet", Box = true, Opened = true })
-LootSection:Paragraph({
-Title = "Instant Collection",
-Desc = "Pull nearby drops to your character while pet farming continues independently.",
+UI.MachinesHero = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
+UI.MachinesHero:Paragraph({
+Title = "NORMAL > GOLD > RAINBOW",
+Desc = "Each stage resolves its live session remote, validates every UID and waits for Save.Pets confirmation.",
 })
-LootSection:Toggle({
-Title = "Collect Orbs",
+UI.GoldSection = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
+UI.GoldSection:Toggle({
+Title = "Auto Golden Galaxy Fox",
+Desc = "100% batches only / protects Tech Coins III-V, equipped and locked pets",
 Value = false,
-Callback = function(value) config.Orbs = value == true end,
+Callback = function(value)
+config.AutoGoldenGalaxyFox = value == true
+if config.AutoGoldenGalaxyFox then
+setGoldMachineStatus("Enabled. Loading the protected worker without blocking script startup...")
+task.spawn(function() machineModules:Start("Gold") end)
+else
+machineModules:Stop("Gold")
+setGoldMachineStatus("Disabled. No pets will be sent to the Golden Machine.")
+end
+end,
 })
-LootSection:Toggle({
-Title = "Collect Lootbags",
+goldMachineParagraph = UI.GoldSection:Paragraph({
+Title = "Golden Machine Status",
+Desc = "Disabled / waiting for a verified batch",
+})
+UI.RainbowSection = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
+UI.RainbowSection:Toggle({
+Title = "Auto Rainbow Galaxy Fox",
+Desc = "Golden Foxes only / 100% batches / protects Tech Coins III-V and equipped pets",
 Value = false,
-Callback = function(value) config.Lootbags = value == true end,
+Callback = function(value)
+config.AutoRainbowGalaxyFox = value == true
+if config.AutoRainbowGalaxyFox then
+setRainbowMachineStatus("Enabled. Loading the protected worker and resolving live session remotes...")
+task.spawn(function() machineModules:Start("Rainbow") end)
+else
+machineModules:Stop("Rainbow")
+setRainbowMachineStatus("Disabled. No pets will be sent to the Rainbow Machine.")
+end
+end,
 })
-local MiscSection = MiscTab:Section({ Title = "Session", Box = true, Opened = true })
-MiscSection:Paragraph({
-Title = "Session Protection",
-Desc = "Keep the session active and stop every worker cleanly when you are done.",
+rainbowMachineParagraph = UI.RainbowSection:Paragraph({
+Title = "Rainbow Machine Status",
+Desc = "Disabled / only golden Mythical Galaxy Foxes are eligible",
 })
-MiscSection:Toggle({
-Title = "Anti-AFK",
-Desc = "Prevents the Roblox idle kick",
-Value = true,
-Callback = function(value) config.AntiAFK = value == true end,
-})
-local DiamondPackSection = MiscTab:Section({ Title = "Auto Diamond Pack", Box = true, Opened = true })
-DiamondPackSection:Toggle({
+UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Box = true, Opened = true })
+UI.DiamondSection:Toggle({
 Title = "Auto Best Tech Diamond Pack",
-Desc = "Every 3 minutes: buys tier 4 only when the local Tech Coins balance is at least 1T",
+Desc = "Tier 4 only / checks every 3 minutes / requires at least 1T Tech Coins",
 Value = false,
 Callback = function(value)
 config.AutoTechDiamondPack = value == true
@@ -2083,14 +2316,35 @@ setDiamondPackStatus("Disabled. No purchase requests will be sent.")
 end
 end,
 })
-diamondPackParagraph = DiamondPackSection:Paragraph({
-Title = "Diamond Pack Status",
-Desc = "Auto tier 4 is disabled. The live remote is resolved dynamically in each session.",
+diamondPackParagraph = UI.DiamondSection:Paragraph({
+Title = "Diamond Exchange Status",
+Desc = "Disabled / the live purchase remote is resolved independently each session",
 })
-local RewardsSection = MiscTab:Section({ Title = "Auto Rewards", Box = true, Opened = true })
-RewardsSection:Toggle({
+UI.LootHero = UI.LootTab:Section({ Title = "Local Pickup Layer", Box = true, Opened = true })
+UI.LootHero:Paragraph({
+Title = "FAST COLLECTION",
+Desc = "Moves local drops to the character while server-side pet assignments continue uninterrupted.",
+})
+UI.LootHero:Toggle({
+Title = "Collect Orbs",
+Desc = "Pulls up to 40 live orbs per pass",
+Value = false,
+Callback = function(value) config.Orbs = value == true end,
+})
+UI.LootHero:Toggle({
+Title = "Collect Lootbags",
+Desc = "Pulls up to 20 live lootbags per pass",
+Value = false,
+Callback = function(value) config.Lootbags = value == true end,
+})
+UI.RewardsHero = UI.RewardsTab:Section({ Title = "Timer-Gated Rewards", Box = true, Opened = true })
+UI.RewardsHero:Paragraph({
+Title = "CLAIM ONLY WHEN READY",
+Desc = "Uses the server clock and save timers. No speculative claim spam and no world restriction.",
+})
+UI.RewardsHero:Toggle({
 Title = "Auto VIP Rewards",
-Desc = "Uses VIPCooldown and the server clock; claims only when the four-hour timer reaches zero",
+Desc = "Claims when the four-hour VIP cooldown reaches zero",
 Value = false,
 Callback = function(value)
 local enabled = value == true
@@ -2101,9 +2355,9 @@ state.LastTimingError = nil
 state.ArmedReported = false
 end,
 })
-RewardsSection:Toggle({
+UI.RewardsHero:Toggle({
 Title = "Auto Rank Rewards",
-Desc = "Uses RankTimer and your current rank cooldown; claims only when the timer reaches zero",
+Desc = "Uses the cooldown for your current rank and its live RankTimer",
 Value = false,
 Callback = function(value)
 local enabled = value == true
@@ -2114,9 +2368,43 @@ state.LastTimingError = nil
 state.ArmedReported = false
 end,
 })
-RewardsSection:Paragraph({
-Title = "Safe Reward Routing",
-Desc = "Works from any world. No early claim probes; VIP and Rank resolve separate live remotes and print claim results to the console.",
+UI.RewardsHero:Paragraph({
+Title = "Remote Policy",
+Desc = "VIP and Rank resolve separate live remotes; every accepted or rejected server response is logged.",
+})
+UI.GraphicsHero = UI.GraphicsTab:Section({ Title = "Client Performance Profile", Box = true, Opened = true })
+UI.GraphicsHero:Paragraph({
+Title = "VISIBLE WORLD / LOWER COST",
+Desc = "Keeps navigation readable while simplifying the map and dense coin/chest visuals.",
+})
+UI.GraphicsHero:Button({
+Title = "ENABLE BALANCED POTATO MODE",
+Desc = "One-way this session / strips map and coin textures, shadows and expensive effects",
+Callback = function() setPotatoMode(true) end,
+})
+UI.GraphicsHero:Dropdown({
+Title = "FPS Limit",
+Desc = "Independent from Potato Mode / Unlimited maps to a safe 999 cap",
+Values = { "Unchanged", "30", "45", "60", "90", "120", "144", "165", "240", "Unlimited" },
+Value = "Unchanged",
+Multi = false,
+AllowNone = false,
+Callback = applyFPSLimit,
+})
+UI.GraphicsHero:Paragraph({
+Title = "Preservation Boundary",
+Desc = "Coin/chest geometry and health bars stay visible. Pets, POS, _SELECTIONFX and Network workers are untouched.",
+})
+UI.SessionSection = UI.SessionTab:Section({ Title = "Session Control", Box = true, Opened = true })
+UI.SessionSection:Paragraph({
+Title = "SAFE START / CLEAN STOP",
+Desc = "RightShift toggles the window. STOP disconnects workers before final pet cleanup.",
+})
+UI.SessionSection:Toggle({
+Title = "Anti-AFK",
+Desc = "Prevents the Roblox idle kick",
+Value = true,
+Callback = function(value) config.AntiAFK = value == true end,
 })
 local shutdownStarted = false
 local function hideInterface()
@@ -2141,6 +2429,11 @@ config.PetFarm = false
 config.AutoTechDiamondPack = false
 config.AutoVIPRewards = false
 config.AutoRankRewards = false
+config.AutoGoldenGalaxyFox = false
+config.AutoRainbowGalaxyFox = false
+machineModules:StopAll()
+config.PotatoMode = false
+stopGraphics()
 farmResetRequested = false
 if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
 disconnectAll()
@@ -2166,7 +2459,7 @@ end
 end
 env.PSX_OG_SLIM_CLEANUP = shutdown
 env.PSX_OG_UI_CLEANUP = shutdown
-MiscSection:Button({
+UI.SessionSection:Button({
 Title = "STOP SCRIPT",
 Desc = "Stops workers instantly; pet cleanup finishes in the background",
 Icon = "power",
@@ -2228,62 +2521,60 @@ end
 end
 end)
 task.spawn(function()
-local activeCurrency, lastRateText = nil, nil
+local lastSelection, lastRateText = nil, nil
 while task.wait(1) do
 if not running() then break end
-local currencyName = getTrackedCurrencyName()
-if currencyName ~= activeCurrency then
-activeCurrency = currencyName
-table.clear(currencySamples)
+local selection = config.TrackedCurrency
+if selection == "Auto" then selection = selection .. "|" .. tostring(getTrackedCurrencyName()) end
+if selection ~= lastSelection then
+lastSelection = selection
+currencyMonitor:Reset()
 end
 local rateText
 if not config.PetFarm then
-table.clear(currencySamples)
-rateText = currencyName .. "/min: farm disabled"
-else
-local currentAmount = getCurrentCurrency(currencyName)
-if currentAmount == nil then
-table.clear(currencySamples)
-rateText = currencyName .. "/min: currency not found in player data"
+currencyMonitor:Reset()
+rateText = "Balance farm rate: pet farm disabled"
 else
 local now = os.clock()
-local previousValue = currencySamples.LastValue
-if currencySamples.StartTime == nil
-or previousValue == nil
-or currentAmount < previousValue
-then
-table.clear(currencySamples)
-currencySamples.StartTime = now
-currencySamples.StartValue = currentAmount
-elseif currentAmount > previousValue then
-currencySamples.LastGainAt = now
-currencySamples.LastGain = currentAmount - previousValue
+local currencyNames = currencyMonitor:TrackedNames()
+local balances = currencyMonitor:GetBalances(currencyNames)
+local available = 0
+local active = {}
+for _, currencyName in ipairs(currencyNames) do
+local currentAmount = balances[currencyName]
+if currentAmount ~= nil then
+available = available + 1
+local sample = currencyMonitor:Update(currencyName, currentAmount, now)
+if config.TrackedCurrency ~= "Active Balances" or sample.TotalEarned > 0 then
+active[#active + 1] = { Name = currencyName, Sample = sample }
 end
-currencySamples.LastValue = currentAmount
-local elapsed = now - currencySamples.StartTime
-local gained = math.max(0, currentAmount - currencySamples.StartValue)
-if gained <= 0 then
+end
+end
+table.sort(active, function(left, right)
+local leftGain = left.Sample.PerMinute or 0
+local rightGain = right.Sample.PerMinute or 0
+if leftGain == rightGain then return left.Name < right.Name end
+return leftGain > rightGain
+end)
+if available == 0 then
+currencyMonitor:Reset()
+rateText = "Balance farm rate: currencies were not found in Library.Save"
+elseif #active == 0 then
+local elapsed = math.max(0, now - (currencyMonitor.StartedAt or now))
 rateText = string.format(
-"%s/min: waiting for first payout...\nSession: %ds | balance: %s",
-currencyName,
-math.floor(elapsed + 0.5),
-formatRateNumber(currentAmount)
+"Watching %d exact balances | waiting for a positive change...\nSession: %ds | no orb/event estimates",
+available,
+math.floor(elapsed + 0.5)
 )
 else
-local perMinute = (gained / elapsed) * 60
-local sinceLastGain = currencySamples.LastGainAt
-and math.max(0, now - currencySamples.LastGainAt)
-or elapsed
-rateText = string.format(
-"%s/min: %s\nSession: +%s over %ds | last payout: %ds ago | balance: %s",
-currencyName,
-formatRateNumber(perMinute),
-formatRateNumber(gained),
-math.floor(elapsed + 0.5),
-math.floor(sinceLastGain + 0.5),
-formatRateNumber(currentAmount)
-)
+local lines = {}
+local limit = math.min(#active, 4)
+for index = 1, limit do
+local entry = active[index]
+lines[#lines + 1] = currencyMonitor:RateLine(entry.Name, entry.Sample, now)
 end
+if #active > limit then lines[#lines + 1] = "+" .. tostring(#active - limit) .. " more active balance(s)" end
+rateText = table.concat(lines, "\n")
 end
 end
 if rateText ~= lastRateText then
@@ -2328,5 +2619,5 @@ driverStatus
 ))
 end
 end)
-pcall(function() PetsTab:Select() end)
+pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
