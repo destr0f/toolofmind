@@ -1,12 +1,10 @@
--- Optional maximum potato controls for PSX OG Slim Farm.
--- The data model and network objects stay intact; only client visuals are reduced.
+-- Optional balanced potato controls for PSX OG Slim Farm.
+-- Keeps the location and __THINGS visible while reducing expensive world visuals.
 
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
-local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
-local player = Players.LocalPlayer
 local state
 
 local function disconnect(target)
@@ -28,9 +26,9 @@ local function isProtectedTree(object)
     return false
 end
 
-local function isLocalCharacterObject(object)
-    local character = player and player.Character
-    return character and (object == character or object:IsDescendantOf(character)) or false
+local function isThingsObject(object)
+    local things = workspace:FindFirstChild("__THINGS")
+    return things and (object == things or object:IsDescendantOf(things)) or false
 end
 
 local function optimizeRendering()
@@ -43,8 +41,8 @@ local function optimizeRendering()
         Lighting.Brightness = 0
         Lighting.EnvironmentDiffuseScale = 0
         Lighting.EnvironmentSpecularScale = 0
-        Lighting.Ambient = Color3.new(0, 0, 0)
-        Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
+        Lighting.Ambient = Color3.new(1, 1, 1)
+        Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
     end)
     if Terrain then
         pcall(function()
@@ -58,7 +56,7 @@ local function optimizeRendering()
 end
 
 local function optimizeObject(object, active)
-    if not object or isProtectedTree(object) then
+    if not object or isProtectedTree(object) or isThingsObject(object) then
         if active then active.Protected = active.Protected + 1 end
         return
     end
@@ -81,12 +79,6 @@ local function optimizeObject(object, active)
             object.Enabled = false
             if object:IsA("Light") then pcall(function() object.Shadows = false end) end
             if object:IsA("Trail") then pcall(function() object:Clear() end) end
-            active.Disabled = active.Disabled + 1
-            return
-        end
-        if object:IsA("Sound") then
-            object.Volume = 0
-            pcall(function() object:Stop() end)
             active.Disabled = active.Disabled + 1
             return
         end
@@ -129,7 +121,6 @@ local function optimizeObject(object, active)
             object.MaterialVariant = ""
             object.Reflectance = 0
             object.CastShadow = false
-            if not isLocalCharacterObject(object) then object.LocalTransparencyModifier = 1 end
             if object:IsA("MeshPart") then pcall(function() object.TextureID = "" end) end
             active.Stripped = active.Stripped + 1
         end
@@ -165,7 +156,7 @@ local function processQueue(active)
             if not active.InitialReported then
                 active.InitialReported = true
                 print(string.format(
-                    "[PSX SLIM] maximum potato | initial pass complete | disabled=%d | stripped=%d | destroyed=%d | protected=%d | errors=%d",
+                    "[PSX SLIM] balanced potato | initial pass complete | disabled=%d | stripped=%d | destroyed=%d | protected=%d | errors=%d",
                     active.Disabled, active.Stripped, active.Destroyed, active.Protected, active.Errors
                 ))
             end
@@ -215,7 +206,7 @@ local function startPotato()
     env.StopPSXPotatoMode = function()
         if env.PSX_POTATO_STATE == active then disconnect(active) end
     end
-    print("[PSX SLIM] maximum potato | enabled | data model and Network requests preserved")
+    print("[PSX SLIM] balanced potato | enabled | location, __THINGS and Network requests preserved")
     return true
 end
 
