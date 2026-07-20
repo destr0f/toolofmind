@@ -1,113 +1,138 @@
--- Optional graphics controls for PSX OG Slim Farm.
--- Loaded only after the user changes Potato Mode or the FPS limit.
+-- Optional Mega Potato controls for PSX OG Slim Farm.
+-- Loaded only after the user presses the button or changes the FPS limit.
 
-local RunService = game:GetService("RunService")
-local saved = setmetatable({}, { __mode = "k" })
-local enabled = false
-local generation = 0
-local mapConnection
-local worldConnection
+local env = type(getgenv) == "function" and getgenv() or _G
+local Lighting = game:GetService("Lighting")
+local Terrain = workspace:FindFirstChildOfClass("Terrain")
+local state
 
-local function write(instance, property, value)
-    local readable, old = pcall(function() return instance[property] end)
-    if not readable or old == value then return end
-    local properties = saved[instance]
-    if not properties then properties = {}; saved[instance] = properties end
-    if properties[property] == nil then properties[property] = old end
-    pcall(function() instance[property] = value end)
+local function disconnect(target)
+    if type(target) ~= "table" then return end
+    target.Running = false
+    for _, connection in ipairs(target.Connections or {}) do
+        pcall(function() connection:Disconnect() end)
+    end
+    target.Connections = {}
 end
 
-local function simplify(instance)
-    if instance:IsA("BasePart") then
-        write(instance, "CastShadow", false)
-        write(instance, "Material", Enum.Material.SmoothPlastic)
-    elseif instance:IsA("ParticleEmitter") or instance:IsA("Trail") or instance:IsA("Beam")
-        or instance:IsA("Smoke") or instance:IsA("Fire") or instance:IsA("Sparkles")
-        or instance:IsA("PointLight") or instance:IsA("SpotLight") or instance:IsA("SurfaceLight")
-    then
-        write(instance, "Enabled", false)
+local function protected(object)
+    if object.Name == "_SELECTIONFX" or object.Name == "POS" then return true end
+    local things = workspace:FindFirstChild("__THINGS")
+    return things and (object == things or object:IsDescendantOf(things)) or false
+end
+
+local function optimizeRendering()
+    pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+    pcall(function() settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01 end)
+    pcall(function()
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        Lighting.Brightness = 0
+        Lighting.EnvironmentDiffuseScale = 0
+        Lighting.EnvironmentSpecularScale = 0
+        Lighting.Ambient = Color3.new(1, 1, 1)
+        Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+    end)
+    if Terrain then
+        pcall(function()
+            Terrain.WaterWaveSize = 0
+            Terrain.WaterWaveSpeed = 0
+            Terrain.WaterReflectance = 0
+            Terrain.WaterTransparency = 1
+            Terrain.Decoration = false
+        end)
     end
 end
 
-local function applyMap(map)
-    local current = generation
+local function optimizeObject(object)
+    pcall(function()
+        if protected(object) then return end
+
+        if object:IsA("ParticleEmitter") or object:IsA("Beam") or object:IsA("Trail")
+            or object:IsA("Fire") or object:IsA("Smoke") or object:IsA("Sparkles")
+            or object:IsA("PostEffect") or object:IsA("Highlight")
+            or object:IsA("BillboardGui") or object:IsA("SurfaceGui")
+            or object:IsA("PointLight") or object:IsA("SpotLight")
+            or object:IsA("SurfaceLight") or object:IsA("Clouds")
+        then
+            object.Enabled = false
+            return
+        end
+
+        if object:IsA("Decal") or object:IsA("Texture") or object:IsA("SurfaceAppearance") then
+            object:Destroy()
+            return
+        end
+
+        if object:IsA("Sky") then
+            object.SkyboxBk, object.SkyboxDn, object.SkyboxFt = "", "", ""
+            object.SkyboxLf, object.SkyboxRt, object.SkyboxUp = "", "", ""
+            object.SunTextureId, object.MoonTextureId = "", ""
+            object.StarCount = 0
+            object.CelestialBodiesShown = false
+            return
+        end
+
+        if object:IsA("Atmosphere") then
+            object.Density, object.Haze, object.Glare = 0, 0, 0
+            return
+        end
+
+        if object:IsA("SpecialMesh") then
+            object.TextureId = ""
+            return
+        end
+
+        if object:IsA("BasePart") then
+            object.Material = Enum.Material.Plastic
+            object.Reflectance = 0
+            object.CastShadow = false
+            if object:IsA("MeshPart") then pcall(function() object.TextureID = "" end) end
+        end
+    end)
+end
+
+local function startPotato()
+    if state and state.Running then return true end
+    local previous = env.PSX_POTATO_STATE
+    if previous then disconnect(previous) end
+
+    local active = { Running = true, Connections = {} }
+    state = active
+    env.PSX_POTATO_STATE = active
+    optimizeRendering()
+
+    table.insert(active.Connections, workspace.DescendantAdded:Connect(optimizeObject))
+    table.insert(active.Connections, Lighting.DescendantAdded:Connect(optimizeObject))
+
     task.spawn(function()
-        local lighting = game:GetService("Lighting")
-        write(lighting, "GlobalShadows", false)
-        write(lighting, "EnvironmentDiffuseScale", 0)
-        write(lighting, "EnvironmentSpecularScale", 0)
-        for _, effect in ipairs(lighting:GetChildren()) do
-            if effect:IsA("BloomEffect") or effect:IsA("BlurEffect")
-                or effect:IsA("DepthOfFieldEffect") or effect:IsA("SunRaysEffect")
-            then
-                write(effect, "Enabled", false)
-            end
+        local descendants = workspace:GetDescendants()
+        for index, object in ipairs(descendants) do
+            if not active.Running or env.PSX_POTATO_STATE ~= active then return end
+            optimizeObject(object)
+            if index % 400 == 0 then task.wait() end
         end
-
-        local terrain = workspace:FindFirstChildOfClass("Terrain")
-        if terrain then write(terrain, "Decoration", false) end
-
-        local descendants = map and map:GetDescendants() or {}
-        for index, instance in ipairs(descendants) do
-            if current ~= generation or not enabled then return end
-            simplify(instance)
-            if index % 240 == 0 then RunService.Heartbeat:Wait() end
-        end
-        print("[PSX SLIM] potato mode | ready | static map only")
+        for _, object in ipairs(Lighting:GetDescendants()) do optimizeObject(object) end
+        print("[PSX SLIM] mega potato | initial pass complete")
     end)
-end
 
-local function bindMap(map)
-    if mapConnection then pcall(function() mapConnection:Disconnect() end) end
-    mapConnection = nil
-    if not map then return end
-    mapConnection = map.DescendantAdded:Connect(function(instance)
-        if enabled then simplify(instance) end
-    end)
-    if enabled then
-        generation = generation + 1
-        applyMap(map)
-    end
-end
-
-local function restore()
-    local current = generation
     task.spawn(function()
-        local count = 0
-        for instance, properties in pairs(saved) do
-            if current ~= generation or enabled then return end
-            for property, old in pairs(properties) do
-                pcall(function() instance[property] = old end)
-            end
-            saved[instance] = nil
-            count = count + 1
-            if count % 240 == 0 then RunService.Heartbeat:Wait() end
+        while active.Running and env.PSX_POTATO_STATE == active do
+            optimizeRendering()
+            task.wait(2)
         end
-        print("[PSX SLIM] potato mode | restored")
     end)
-end
 
-local function setPotato(value)
-    value = value == true
-    if enabled == value then return end
-    enabled = value
-    generation = generation + 1
-    if enabled then
-        if not worldConnection then
-            worldConnection = workspace.ChildAdded:Connect(function(child)
-                if child.Name == "__MAP" then bindMap(child) end
-            end)
-        end
-        bindMap(workspace:FindFirstChild("__MAP"))
-    else
-        restore()
+    env.StopPSXPotatoMode = function()
+        if env.PSX_POTATO_STATE == active then disconnect(active) end
     end
+    print("[PSX SLIM] mega potato | enabled | FPS remains separately controlled")
+    return true
 end
 
 local function setFPS(choice)
     choice = tostring(choice or "Unchanged")
     if choice == "Unchanged" then return true end
-    local env = type(getgenv) == "function" and getgenv() or _G
     local setter = env.setfpscap or env.set_fps_cap
     if type(setter) ~= "function" then return false, "setfpscap is unavailable" end
     local cap = choice == "Unlimited" and 999 or tonumber(choice)
@@ -117,16 +142,12 @@ local function setFPS(choice)
     return ok, problem
 end
 
-local function stop()
-    if enabled then setPotato(false) end
-    if mapConnection then pcall(function() mapConnection:Disconnect() end) end
-    if worldConnection then pcall(function() worldConnection:Disconnect() end) end
-    mapConnection, worldConnection = nil, nil
-end
-
 return function(action, value)
-    if action == "potato" then setPotato(value); return true end
+    if action == "potato" then
+        if value == false then disconnect(state); return true end
+        return startPotato()
+    end
     if action == "fps" then return setFPS(value) end
-    if action == "stop" then stop(); return true end
+    if action == "stop" then disconnect(state); return true end
     return false, "unknown graphics action"
 end
