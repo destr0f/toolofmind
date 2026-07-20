@@ -1,4 +1,4 @@
-local VERSION = "1.2.6-dev.4"
+local VERSION = "1.2.6-dev.5"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -1007,103 +1007,309 @@ end
 local function functionUpvalues(callback)
 local values = {}
 if type(callback) ~= "function" then return values end
-local bulkGetter = debug and type(debug.getupvalues) == "function" and debug.getupvalues
-or type(getupvalues) == "function" and getupvalues
-if type(bulkGetter) == "function" then
-local ok, result = pcall(bulkGetter, callback)
+local seenValues = {}
+local seenReaders = {}
+local bulkReaders = {
+type(getupvalues) == "function" and getupvalues or nil,
+debug and type(debug.getupvalues) == "function" and debug.getupvalues or nil,
+}
+for _, reader in next, bulkReaders do
+if type(reader) == "function" and not seenReaders[reader] then
+seenReaders[reader] = true
+local ok, result = pcall(reader, callback)
 if ok and type(result) == "table" then
-for _, value in pairs(result) do table.insert(values, value) end
-return values
+for _, value in next, result do
+if value ~= nil and not seenValues[value] then
+seenValues[value] = true
+table.insert(values, value)
 end
 end
-local singleGetter = debug and type(debug.getupvalue) == "function" and debug.getupvalue
-or type(getupvalue) == "function" and getupvalue
-if type(singleGetter) == "function" then
-for index = 1, 32 do
-local ok, first, second = pcall(singleGetter, callback, index)
+end
+end
+end
+if #values > 0 then return values end
+local singleReaders = {
+type(getupvalue) == "function" and getupvalue or nil,
+debug and type(debug.getupvalue) == "function" and debug.getupvalue or nil,
+}
+table.clear(seenReaders)
+for _, reader in next, singleReaders do
+if type(reader) == "function" and not seenReaders[reader] then
+seenReaders[reader] = true
+for index = 1, 64 do
+local ok, first, second = pcall(reader, callback, index)
 if not ok or (first == nil and second == nil) then break end
-table.insert(values, second ~= nil and second or first)
+local value
+if second ~= nil then value = second else value = first end
+if value ~= nil and not seenValues[value] then
+seenValues[value] = true
+table.insert(values, value)
+end
+end
 end
 end
 return values
+end
+local function functionConstants(callback)
+local readers = {
+type(getconstants) == "function" and getconstants or nil,
+debug and type(debug.getconstants) == "function" and debug.getconstants or nil,
+}
+local seenReaders = {}
+for _, reader in next, readers do
+if type(reader) == "function" and not seenReaders[reader] then
+seenReaders[reader] = true
+local ok, values = pcall(reader, callback)
+if ok and type(values) == "table" then return values end
+end
+end
+return {}
+end
+local function functionSource(callback)
+if debug and type(debug.info) == "function" then
+local ok, source = pcall(debug.info, callback, "s")
+if ok and type(source) == "string" then return source end
+end
+local readers = {
+type(getinfo) == "function" and getinfo or nil,
+debug and type(debug.getinfo) == "function" and debug.getinfo or nil,
+}
+local seenReaders = {}
+for _, reader in next, readers do
+if type(reader) == "function" and not seenReaders[reader] then
+seenReaders[reader] = true
+local ok, info = pcall(reader, callback)
+if ok and type(info) == "table" then
+local source = info.source or info.short_src
+if type(source) == "string" then return source end
+end
+end
+end
+return ""
 end
 local diamondPackDirectRemote
 local diamondPackDirectSource
-local function resolveRemoteValue(value, expectedClass, seen, depth, budget)
-if depth > 3 or budget.Left <= 0 then return nil end
+local diamondPackResolverSummary = "Direct remote has not been resolved yet."
+local diamondPackResolverRetryAt = 0
+local function addRemoteCandidate(candidates, value, expectedClass)
+if typeof(value) ~= "Instance" or not value:IsA(expectedClass) then return end
+if not value:IsDescendantOf(ReplicatedStorage) then return end
+candidates[value] = true
+end
+local function collectRemoteCandidates(value, expectedClass, seen, depth, budget, candidates, allowIndex)
+if depth > 4 or budget.Left <= 0 then return end
 budget.Left = budget.Left - 1
 if typeof(value) == "Instance" then
-return value:IsA(expectedClass) and value or nil
+addRemoteCandidate(candidates, value, expectedClass)
+return
+end
+if allowIndex and type(value) == "number" and value % 1 == 0 then
+addRemoteCandidate(candidates, ReplicatedStorage:GetChildren()[value], expectedClass)
+return
 end
 if type(value) == "string" then
 local object = ReplicatedStorage:FindFirstChild(value, true)
-return object and object:IsA(expectedClass) and object or nil
+addRemoteCandidate(candidates, object, expectedClass)
+if allowIndex then
+local index = tonumber(value)
+if index and index % 1 == 0 then
+addRemoteCandidate(candidates, ReplicatedStorage:GetChildren()[index], expectedClass)
 end
-if type(value) ~= "table" and type(value) ~= "function" then return nil end
-if seen[value] then return nil end
+end
+return
+end
+if type(value) ~= "table" and type(value) ~= "function" then return end
+if seen[value] then return end
 seen[value] = true
 if type(value) == "function" then
 for _, upvalue in ipairs(functionUpvalues(value)) do
-local remote = resolveRemoteValue(upvalue, expectedClass, seen, depth + 1, budget)
-if remote then return remote end
+collectRemoteCandidates(upvalue, expectedClass, seen, depth + 1, budget, candidates, false)
+if budget.Left <= 0 then break end
 end
-return nil
+return
 end
 for _, key in ipairs({ "Remote", "remote", "Instance", "instance", "Object", "object" }) do
 local nested = rawget(value, key)
 if nested ~= nil then
-local remote = resolveRemoteValue(nested, expectedClass, seen, depth + 1, budget)
-if remote then return remote end
+collectRemoteCandidates(nested, expectedClass, seen, depth + 1, budget, candidates, allowIndex)
 end
 end
-for _, nested in pairs(value) do
-if typeof(nested) == "Instance" or type(nested) == "table" or type(nested) == "function" then
-local remote = resolveRemoteValue(nested, expectedClass, seen, depth + 1, budget)
-if remote then return remote end
+for _, nested in next, value do
+if typeof(nested) == "Instance" or type(nested) == "table" or type(nested) == "function"
+or (allowIndex and (type(nested) == "number" or type(nested) == "string")) then
+collectRemoteCandidates(nested, expectedClass, seen, depth + 1, budget, candidates, allowIndex)
+if budget.Left <= 0 then break end
 end
 end
-return nil
 end
-local function findCommandRemote(value, commandName, seen, depth, budget)
+local function oneRemoteCandidate(value, expectedClass, budget, allowIndex)
+local candidates = {}
+collectRemoteCandidates(value, expectedClass, {}, 0, budget, candidates, allowIndex)
+local result, count = nil, 0
+for candidate in next, candidates do
+result = candidate
+count = count + 1
+if count > 1 then return nil, "ambiguous mapping" end
+end
+return result, count == 1 and nil or "no remote in mapping"
+end
+local function findCommandRemote(value, commandName, seen, depth, budget, report)
 if depth > 5 or budget.Left <= 0 then return nil end
 budget.Left = budget.Left - 1
 if type(value) ~= "table" and type(value) ~= "function" then return nil end
 if seen[value] then return nil end
 seen[value] = true
 if type(value) == "table" then
+report.Tables = report.Tables + 1
 local mapped = rawget(value, commandName)
 if mapped ~= nil then
-local remote = resolveRemoteValue(mapped, "RemoteFunction", {}, 0, budget)
+report.ExactMappings = report.ExactMappings + 1
+local remote, mappingProblem = oneRemoteCandidate(mapped, "RemoteFunction", budget, true)
 if remote then return remote end
+if mappingProblem == "ambiguous mapping" then
+report.AmbiguousMappings = report.AmbiguousMappings + 1
 end
-for _, nested in pairs(value) do
+end
+for key, nested in next, value do
+if nested == commandName then
+report.ExactMappings = report.ExactMappings + 1
+local remote, mappingProblem = oneRemoteCandidate(key, "RemoteFunction", budget, true)
+if remote then return remote end
+if mappingProblem == "ambiguous mapping" then
+report.AmbiguousMappings = report.AmbiguousMappings + 1
+end
+end
 if type(nested) == "table" or type(nested) == "function" then
-local remote = findCommandRemote(nested, commandName, seen, depth + 1, budget)
+local remote = findCommandRemote(nested, commandName, seen, depth + 1, budget, report)
+if remote then return remote end
+end
+if budget.Left <= 0 then break end
+end
+local metatableReader = type(getrawmetatable) == "function" and getrawmetatable or getmetatable
+if type(metatableReader) == "function" then
+local ok, metatable = pcall(metatableReader, value)
+if ok and type(metatable) == "table" then
+local remote = findCommandRemote(metatable, commandName, seen, depth + 1, budget, report)
 if remote then return remote end
 end
 end
 return nil
 end
-for _, upvalue in ipairs(functionUpvalues(value)) do
-local remote = findCommandRemote(upvalue, commandName, seen, depth + 1, budget)
+report.Functions = report.Functions + 1
+local upvalues = functionUpvalues(value)
+report.Upvalues = report.Upvalues + #upvalues
+for _, upvalue in ipairs(upvalues) do
+local remote = findCommandRemote(upvalue, commandName, seen, depth + 1, budget, report)
 if remote then return remote end
 end
 return nil
 end
-local function getDiamondPackDirectRemote()
+local function newResolverReport()
+return {
+Functions = 0,
+Tables = 0,
+Upvalues = 0,
+ExactMappings = 0,
+AmbiguousMappings = 0,
+GCUsed = false,
+GCScanned = 0,
+GCNetworkFunctions = 0,
+GCProblem = nil,
+}
+end
+local function resolverReportText(report)
+local gcText
+if report.GCUsed then
+gcText = string.format("gc functions=%d, network matches=%d", report.GCScanned, report.GCNetworkFunctions)
+else
+gcText = "gc scan=unavailable/not needed"
+end
+if report.GCProblem then gcText = gcText .. ", " .. tostring(report.GCProblem) end
+return string.format(
+"graph functions=%d, tables=%d, upvalues=%d, exact mappings=%d, ambiguous=%d; %s",
+report.Functions,
+report.Tables,
+report.Upvalues,
+report.ExactMappings,
+report.AmbiguousMappings,
+gcText
+)
+end
+local function isNetworkFunction(callback, commandName)
+local source = string.lower(functionSource(callback))
+if string.find(source, "framework.modules.client.2 - network", 1, true)
+or string.find(source, "2 - network", 1, true) then
+return true
+end
+if source ~= "" and source ~= "=[c]" and source ~= "[c]" then return false end
+local hasInvokeServer, hasInvoke, hasCommand = false, false, false
+for _, constant in next, functionConstants(callback) do
+if constant == "InvokeServer" then hasInvokeServer = true end
+if constant == "Invoke" then hasInvoke = true end
+if constant == commandName then hasCommand = true end
+end
+return (hasInvokeServer and hasInvoke) or hasCommand
+end
+local function findCommandRemoteInGC(commandName, report)
+if type(getgc) ~= "function" then
+report.GCProblem = "getgc unavailable"
+return nil
+end
+local ok, objects = pcall(getgc)
+if not ok or type(objects) ~= "table" then
+report.GCProblem = ok and "getgc returned no list" or tostring(objects)
+return nil
+end
+report.GCUsed = true
+local checked = 0
+for _, object in next, objects do
+checked = checked + 1
+if type(object) == "function" then
+report.GCScanned = report.GCScanned + 1
+if isNetworkFunction(object, commandName) then
+report.GCNetworkFunctions = report.GCNetworkFunctions + 1
+local remote = findCommandRemote(object, commandName, {}, 0, { Left = 2500 }, report)
+if remote then return remote end
+if report.GCNetworkFunctions >= 96 then
+report.GCProblem = "network candidate limit reached"
+break
+end
+end
+end
+if checked % 750 == 0 then task.wait() end
+end
+return nil
+end
+local function getDiamondPackDirectRemote(forceSearch)
 if diamondPackDirectRemote and diamondPackDirectRemote.Parent
 and diamondPackDirectRemote:IsA("RemoteFunction") then
 local index = table.find(ReplicatedStorage:GetChildren(), diamondPackDirectRemote)
-return diamondPackDirectRemote, diamondPackDirectSource, index
+return diamondPackDirectRemote, diamondPackDirectSource, index, diamondPackResolverSummary
 end
+if not forceSearch and os.clock() < diamondPackResolverRetryAt then
+return nil, "resolver cooldown", nil, diamondPackResolverSummary
+end
+diamondPackResolverRetryAt = os.clock() + 30
 local network = networkReady()
-if not network or type(network.Invoke) ~= "function" then return nil, "Network.Invoke unavailable" end
-local remote = findCommandRemote(network.Invoke, "Buy DiamondPack", {}, 0, { Left = 1500 })
-if not remote then return nil, "Buy DiamondPack was not found in Network registry" end
+if not network or type(network.Invoke) ~= "function" then
+diamondPackResolverSummary = "Network.Invoke unavailable; no scan performed."
+return nil, "Network.Invoke unavailable", nil, diamondPackResolverSummary
+end
+local report = newResolverReport()
+local remote = findCommandRemote(network.Invoke, "Buy DiamondPack", {}, 0, { Left = 5000 }, report)
+local source = "Network.Invoke graph"
+if not remote then
+remote = findCommandRemoteInGC("Buy DiamondPack", report)
+source = "filtered GC Network closure"
+end
+diamondPackResolverSummary = resolverReportText(report)
+if not remote then
+return nil, "Buy DiamondPack was not found", nil, diamondPackResolverSummary
+end
 diamondPackDirectRemote = remote
-diamondPackDirectSource = "Network.Invoke registry"
+diamondPackDirectSource = source
 local index = table.find(ReplicatedStorage:GetChildren(), remote)
-return remote, diamondPackDirectSource, index
+return remote, diamondPackDirectSource, index, diamondPackResolverSummary
 end
 local function runtimeTableScore(candidate)
 if type(candidate) ~= "table" then return 0 end
@@ -1696,7 +1902,7 @@ return
 end
 diamondPackBusy = true
 local network = networkReady()
-local directRemote, directSource, directIndex = getDiamondPackDirectRemote()
+local directRemote, directSource, directIndex, resolverSummary = getDiamondPackDirectRemote()
 local balance = getCurrentCurrency("Tech Coins")
 local balanceText = balance ~= nil
 and (formatRateNumber(balance) .. " (" .. formatExactNumber(balance) .. ")") or "unknown"
@@ -1737,12 +1943,42 @@ tostring(costSource or "unknown field")
 )
 end
 end
+if not directRemote then
+status = status .. " | direct resolver: " .. tostring(directSource) .. "; " .. tostring(resolverSummary)
+end
 if config.AutoTechDiamondPack then
 diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
 end
 diamondPackBusy = false
 trace("diamond pack", status)
 setDiamondPackStatus(status .. "\nManual test complete; automatic tier 4 settings were not changed.")
+end
+local function inspectDiamondPackDirectRemote()
+if diamondPackBusy then
+setDiamondPackStatus("Another Diamond Pack operation is already running.")
+return
+end
+diamondPackBusy = true
+local callOk, remote, source, index, resolverSummary = pcall(getDiamondPackDirectRemote, true)
+local status
+if not callOk then
+status = "Direct resolver error; no request sent: " .. tostring(remote)
+elseif remote then
+local pathOk, path = pcall(function() return remote:GetFullName() end)
+status = string.format(
+"Direct remote resolved without a server request | source: %s | session index: %s | path: %s | %s",
+tostring(source),
+tostring(index or "?"),
+pathOk and tostring(path) or "unknown",
+tostring(resolverSummary)
+)
+else
+status = "Direct remote not found; no request sent | "
+.. tostring(source) .. " | " .. tostring(resolverSummary)
+end
+diamondPackBusy = false
+trace("diamond resolver", status)
+setDiamondPackStatus(status)
 end
 local function runDiamondPackCheck()
 if diamondPackBusy then return end
@@ -1753,28 +1989,39 @@ local status
 if balance == nil then
 status = "Local check: Tech Coins balance was not found; no request sent."
 else
-local network = networkReady()
-if not network then
-status = "Local check: Library.Network is not ready; no request sent."
-else
 local packCost = getDiamondPackCost()
 local shouldBuy = balance >= DIAMOND_PACK_MINIMUM
 local safeProbe = not shouldBuy and packCost ~= nil and balance < packCost
 if shouldBuy or safeProbe then
+local network = networkReady()
+local directRemote, directSource, directIndex, resolverSummary = getDiamondPackDirectRemote()
+if not directRemote and not network then
+status = "Local check: neither a direct RemoteFunction nor Library.Network is available; no request sent."
+.. " | resolver: " .. tostring(directSource) .. "; " .. tostring(resolverSummary)
+else
+local route = directRemote
+and (tostring(directSource) .. " [session index " .. tostring(directIndex or "?") .. "]")
+or "Library.Network.Invoke"
 local callOk, accepted, serverMessage = pcall(function()
+if directRemote then return directRemote:InvokeServer(DIAMOND_PACK_TIER) end
 return network.Invoke("Buy DiamondPack", DIAMOND_PACK_TIER)
 end)
 if not callOk then
-status = "Transport error: " .. tostring(accepted)
+status = "Transport error via " .. route .. ": " .. tostring(accepted)
 elseif accepted then
 status = (shouldBuy and "Server purchase succeeded" or "WARNING: probe unexpectedly purchased the pack")
-.. " | balance before: " .. balanceText
+.. " via " .. route .. " | balance before: " .. balanceText
 else
 local reason = serverMessage ~= nil and tostring(serverMessage)
 or "request rejected (insufficient funds expected)"
-status = "Server reached: " .. reason
+status = "Server reached via " .. route .. ": " .. reason
 .. " | balance: " .. balanceText
 .. " | required floor: 1T"
+if not directRemote then
+status = status .. " | direct resolver: " .. tostring(directSource)
+.. "; " .. tostring(resolverSummary)
+end
+end
 end
 elseif packCost == nil then
 status = "Local safety hold: pack price could not be read, so an underfunded probe was not sent."
@@ -1782,7 +2029,6 @@ else
 status = "Local threshold hold: " .. balanceText
 .. " is enough for the " .. formatRateNumber(packCost)
 .. " pack but below the configured 1T minimum; no request sent."
-end
 end
 end
 diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
@@ -2153,7 +2399,23 @@ end,
 })
 diamondPackParagraph = DiamondPackSection:Paragraph({
 Title = "Diamond Pack Server Status",
-Desc = "Auto tier 4 is disabled. Manual tier 3/2/1 tests below send one real server purchase request.",
+Desc = "Auto tier 4 is disabled. Resolve is read-only; manual tier 3/2/1 tests send one real server purchase request.",
+})
+DiamondPackSection:Button({
+Title = "Resolve Direct Purchase Remote",
+Desc = "Read-only: finds Buy DiamondPack in the live Network registry without calling the server",
+Callback = function()
+task.spawn(function()
+if not running() then return end
+local ok, problem = pcall(inspectDiamondPackDirectRemote)
+if not ok then
+diamondPackBusy = false
+local status = "Direct resolver worker error; no request sent: " .. tostring(problem)
+trace("diamond resolver", status)
+setDiamondPackStatus(status)
+end
+end)
+end,
 })
 for _, tier in ipairs({ 3, 2, 1 }) do
 local selectedTier = tier
