@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.2.9-stable"
+local VERSION = "1.2.10-dev.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -78,6 +78,8 @@ local config = {
     AutoRankRewards = false,
     AutoGoldenGalaxyFox = false,
     AutoRainbowGalaxyFox = false,
+    AutoDarkMatterGalaxyFox = false,
+    AutoClaimDarkMatter = false,
 }
 
 local DIAMOND_PACK_TIER = 4
@@ -1870,24 +1872,31 @@ local function runtimePetCounts(petIds)
     return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
 end
 
-local statusParagraph, healthParagraph, rateParagraph, diamondPackParagraph, goldMachineParagraph, rainbowMachineParagraph
+local statusViews = {}
+local function setViewStatus(key, text)
+    local view = statusViews[key]
+    if view then pcall(function() view:SetDesc(text) end) end
+end
 local function setStatus(text)
-    if statusParagraph then pcall(function() statusParagraph:SetDesc(text) end) end
+    setViewStatus("Farm", text)
 end
 local function setHealth(text)
-    if healthParagraph then pcall(function() healthParagraph:SetDesc(text) end) end
+    setViewStatus("Health", text)
 end
 local function setRate(text)
-    if rateParagraph then pcall(function() rateParagraph:SetDesc(text) end) end
+    setViewStatus("Rate", text)
 end
 local function setDiamondPackStatus(text)
-    if diamondPackParagraph then pcall(function() diamondPackParagraph:SetDesc(text) end) end
+    setViewStatus("Diamond", text)
 end
 local function setGoldMachineStatus(text)
-    if goldMachineParagraph then pcall(function() goldMachineParagraph:SetDesc(text) end) end
+    setViewStatus("Gold", text)
 end
 local function setRainbowMachineStatus(text)
-    if rainbowMachineParagraph then pcall(function() rainbowMachineParagraph:SetDesc(text) end) end
+    setViewStatus("Rainbow", text)
+end
+local function setDarkMatterStatus(text)
+    setViewStatus("DarkMatter", text)
 end
 local function getRewardSave()
     if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
@@ -1981,18 +1990,35 @@ end
 
 local machineModules = {
     Gold = {
-        URL = "https://raw.githubusercontent.com/destr0f/toolofmind/ebdb357b4db3f5dbc0c4ad6709a1f725b284d1b9/gold_machine_module.lua",
-        ConfigKey = "AutoGoldenGalaxyFox",
+        URL = "https://raw.githubusercontent.com/destr0f/toolofmind/28ba49b9290bc29f900ebf09ee62c9c229f0a731/gold_machine_module.lua",
+        ConfigKeys = { "AutoGoldenGalaxyFox" },
         Label = "gold machine",
         SetStatus = setGoldMachineStatus,
     },
     Rainbow = {
-        URL = "https://raw.githubusercontent.com/destr0f/toolofmind/060f465373135d67ce9d8273cf24e254c37cefb3/rainbow_machine_module.lua",
-        ConfigKey = "AutoRainbowGalaxyFox",
+        URL = "https://raw.githubusercontent.com/destr0f/toolofmind/28ba49b9290bc29f900ebf09ee62c9c229f0a731/rainbow_machine_module.lua",
+        ConfigKeys = { "AutoRainbowGalaxyFox" },
         Label = "rainbow machine",
         SetStatus = setRainbowMachineStatus,
     },
+    DarkMatter = {
+        URL = "https://raw.githubusercontent.com/destr0f/toolofmind/28ba49b9290bc29f900ebf09ee62c9c229f0a731/dark_matter_module.lua",
+        ConfigKeys = { "AutoDarkMatterGalaxyFox", "AutoClaimDarkMatter" },
+        Label = "dark matter machine",
+        SetStatus = setDarkMatterStatus,
+    },
 }
+
+function machineModules:Enabled(entry)
+    for _, key in ipairs(entry and entry.ConfigKeys or {}) do
+        if config[key] then return true end
+    end
+    return false
+end
+
+function machineModules:Disable(entry)
+    for _, key in ipairs(entry and entry.ConfigKeys or {}) do config[key] = false end
+end
 
 function machineModules:Stop(kind)
     local entry = self[kind]
@@ -2002,11 +2028,12 @@ end
 function machineModules:StopAll()
     self:Stop("Gold")
     self:Stop("Rainbow")
+    self:Stop("DarkMatter")
 end
 
 function machineModules:Start(kind)
     local entry = self[kind]
-    if not entry or entry.Loading or not config[entry.ConfigKey] or not running() then return end
+    if not entry or entry.Loading or not self:Enabled(entry) or not running() then return end
     entry.Loading = true
 
     if not entry.Controller then
@@ -2031,7 +2058,7 @@ function machineModules:Start(kind)
         end
         if not downloaded then
             entry.Loading = false
-            config[entry.ConfigKey] = false
+            self:Disable(entry)
             entry.SetStatus("Module could not be loaded; no pets were sent: " .. tostring(source))
             trace(entry.Label .. " module", tostring(source))
             return
@@ -2039,11 +2066,13 @@ function machineModules:Start(kind)
     end
 
     entry.Loading = false
-    if not config[entry.ConfigKey] or not running() then return end
+    if not self:Enabled(entry) or not running() then return end
     local context = {
         Library = Library,
         Running = running,
-        Enabled = function() return config[entry.ConfigKey] end,
+        Enabled = function() return machineModules:Enabled(entry) end,
+        CreateEnabled = function() return config.AutoDarkMatterGalaxyFox end,
+        ClaimEnabled = function() return config.AutoClaimDarkMatter end,
         GetSave = getRewardSave,
         GetCurrency = getCurrentCurrency,
         FormatNumber = formatRateNumber,
@@ -2056,7 +2085,7 @@ function machineModules:Start(kind)
     }
     local called, accepted, problem = pcall(entry.Controller, "start", context)
     if not called or accepted == false then
-        config[entry.ConfigKey] = false
+        self:Disable(entry)
         local reason = not called and accepted or problem
         entry.SetStatus("Module failed to start; no pets were sent: " .. tostring(reason))
         trace(entry.Label .. " module", "start failed: " .. tostring(reason))
@@ -2334,7 +2363,7 @@ WindUI:AddTheme({
 
 local UI = {}
 local Window = WindUI:CreateWindow({
-    Title = "PSX OG | Nova Stable",
+    Title = "PSX OG | Nova Develop",
     Icon = "sparkles",
     Author = "Reliable automation suite | v" .. VERSION,
     Folder = "PSX_Nova_Stable",
@@ -2468,11 +2497,11 @@ UI.MonitorHero:Paragraph({
     Title = "REAL-TIME CONTROL PLANE",
     Desc = "Assignments, game-controller state and balance-derived income update independently.",
 })
-statusParagraph = UI.MonitorHero:Paragraph({
+statusViews.Farm = UI.MonitorHero:Paragraph({
     Title = "Assignment Status",
     Desc = "Waiting for the game pet controller and location data...",
 })
-healthParagraph = UI.MonitorHero:Paragraph({
+statusViews.Health = UI.MonitorHero:Paragraph({
     Title = "Controller Health",
     Desc = "Runtime discovery is starting...",
 })
@@ -2493,21 +2522,21 @@ UI.PerformanceSection:Dropdown({
         setRate("Reading exact balances; no orb or visual-event estimates are used...")
     end,
 })
-rateParagraph = UI.PerformanceSection:Paragraph({
+statusViews.Rate = UI.PerformanceSection:Paragraph({
     Title = "Balance Farm Rate",
     Desc = "Enable Pet Farm. Income is derived only from positive Library.Save balance changes.",
 })
 
 UI.MachinesHero = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
 UI.MachinesHero:Paragraph({
-    Title = "NORMAL > GOLD > RAINBOW",
-    Desc = "Each stage resolves its live session remote, validates every UID and waits for Save.Pets confirmation.",
+    Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
+    Desc = "Each stage resolves live session remotes, validates every UID and waits for Save confirmation before continuing.",
 })
 UI.GoldSection = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
 UI.GoldSection:Toggle({
     Flag = "auto_golden_galaxy_fox",
     Title = "Auto Golden Galaxy Fox",
-    Desc = "100% batches only / protects Tech Coins III-V, equipped and locked pets",
+    Desc = "100% batches only / protects Tech Coins IV-V, equipped and locked pets",
     Value = false,
     Callback = function(value)
         config.AutoGoldenGalaxyFox = value == true
@@ -2520,7 +2549,7 @@ UI.GoldSection:Toggle({
         end
     end,
 })
-goldMachineParagraph = UI.GoldSection:Paragraph({
+statusViews.Gold = UI.GoldSection:Paragraph({
     Title = "Golden Machine Status",
     Desc = "Disabled / waiting for a verified batch",
 })
@@ -2529,7 +2558,7 @@ UI.RainbowSection = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2"
 UI.RainbowSection:Toggle({
     Flag = "auto_rainbow_galaxy_fox",
     Title = "Auto Rainbow Galaxy Fox",
-    Desc = "Golden Foxes only / 100% batches / protects Tech Coins III-V and equipped pets",
+    Desc = "Golden Foxes only / 100% batches / protects Tech Coins IV-V, equipped and locked pets",
     Value = false,
     Callback = function(value)
         config.AutoRainbowGalaxyFox = value == true
@@ -2542,9 +2571,47 @@ UI.RainbowSection:Toggle({
         end
     end,
 })
-rainbowMachineParagraph = UI.RainbowSection:Paragraph({
+statusViews.Rainbow = UI.RainbowSection:Paragraph({
     Title = "Rainbow Machine Status",
     Desc = "Disabled / only golden Mythical Galaxy Foxes are eligible",
+})
+
+UI.DarkMatterSection = UI.MachinesTab:Section({ Title = "Dark Matter Machine / Stage 3", Box = true, Opened = true })
+UI.DarkMatterSection:Toggle({
+    Flag = "auto_dark_matter_galaxy_fox",
+    Title = "Auto Dark Matter Galaxy Fox",
+    Desc = "Rainbow Foxes only / protects Tech Coins IV-V, equipped and locked pets",
+    Value = false,
+    Callback = function(value)
+        config.AutoDarkMatterGalaxyFox = value == true
+        if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then
+            setDarkMatterStatus("Enabled. Loading the protected Dark Matter create/claim worker...")
+            task.spawn(function() machineModules:Start("DarkMatter") end)
+        else
+            machineModules:Stop("DarkMatter")
+            setDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
+        end
+    end,
+})
+UI.DarkMatterSection:Toggle({
+    Flag = "auto_claim_dark_matter",
+    Title = "Auto Claim Dark Matter Pets",
+    Desc = "Redeems completed DarkMatterQueue slots using server time, from any world",
+    Value = false,
+    Callback = function(value)
+        config.AutoClaimDarkMatter = value == true
+        if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then
+            setDarkMatterStatus("Enabled. Reading DarkMatterQueue and server time...")
+            task.spawn(function() machineModules:Start("DarkMatter") end)
+        else
+            machineModules:Stop("DarkMatter")
+            setDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
+        end
+    end,
+})
+statusViews.DarkMatter = UI.DarkMatterSection:Paragraph({
+    Title = "Dark Matter Status",
+    Desc = "Disabled / create and claim routes are resolved independently each session",
 })
 
 UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Box = true, Opened = true })
@@ -2563,7 +2630,7 @@ UI.DiamondSection:Toggle({
         end
     end,
 })
-diamondPackParagraph = UI.DiamondSection:Paragraph({
+statusViews.Diamond = UI.DiamondSection:Paragraph({
     Title = "Diamond Exchange Status",
     Desc = "Disabled / the live purchase remote is resolved independently each session",
 })
@@ -2803,6 +2870,8 @@ local function shutdown(reason)
     config.AutoRankRewards = false
     config.AutoGoldenGalaxyFox = false
     config.AutoRainbowGalaxyFox = false
+    config.AutoDarkMatterGalaxyFox = false
+    config.AutoClaimDarkMatter = false
     machineModules:StopAll()
     config.PotatoMode = false
     stopGraphics()
