@@ -1,4 +1,4 @@
-local VERSION = "1.2.7-stable"
+local VERSION = "1.2.8-stable"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -2121,6 +2121,7 @@ Placeholder = Color3.fromRGB(148, 163, 184),
 Button = Color3.fromRGB(18, 29, 48),
 Icon = Color3.fromRGB(45, 212, 191),
 })
+local UI = {}
 local Window = WindUI:CreateWindow({
 Title = "PSX OG | Nova Stable",
 Icon = "sparkles",
@@ -2138,7 +2139,22 @@ HideSearchBar = true,
 ScrollBarEnabled = true,
 Acrylic = false,
 })
-local UI = {}
+if Window.ConfigManager then
+local created, profile = pcall(function()
+return Window.ConfigManager:Config("default", false)
+end)
+if created then
+UI.Profile = profile
+local inspected, exists = pcall(function()
+return type(isfile) == "function" and isfile(profile.Path)
+end)
+UI.ProfileExists = inspected and exists == true
+else
+UI.ProfileProblem = tostring(profile)
+end
+else
+UI.ProfileProblem = "executor filesystem API is unavailable"
+end
 UI.FarmTab = Window:Tab({ Title = "Farm", Icon = "paw-print" })
 UI.MonitorTab = Window:Tab({ Title = "Monitor", Icon = "activity" })
 UI.MachinesTab = Window:Tab({ Title = "Machines", Icon = "settings" })
@@ -2152,6 +2168,7 @@ Title = "LOCK > BREAK > REASSIGN",
 Desc = "A deterministic pet allocator with dynamic world/zone discovery and idle-pet recovery.",
 })
 UI.FarmHero:Toggle({
+Flag = "pet_farm",
 Title = "Enable Pet Farm",
 Desc = "A target remains locked until the game confirms that the coin is destroyed",
 Value = false,
@@ -2163,6 +2180,7 @@ requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
 end,
 })
 UI.FarmHero:Dropdown({
+Flag = "assignment_strategy",
 Title = "Assignment Strategy",
 Desc = "Choose how equipped pets are distributed across valid targets",
 Values = { "Different Strongest", "Different Weakest", "All on Strongest Regular", "Boss Chest Only" },
@@ -2195,7 +2213,8 @@ config.Zone = selected
 pcall(function() UI.ZoneDropdown:Select(selected) end)
 end
 end
-UI.TargetSection:Dropdown({
+UI.WorldDropdown = UI.TargetSection:Dropdown({
+Flag = "target_world",
 Title = "World",
 Desc = "Current World follows teleports and rebuilds the zone catalog automatically",
 Values = UI.WorldValues,
@@ -2211,6 +2230,7 @@ end,
 })
 UI.InitialZones = getZoneOptions("Current World")
 UI.ZoneDropdown = UI.TargetSection:Dropdown({
+Flag = "target_zone",
 Title = "Zone",
 Desc = "Player Zone follows your character without restarting the farm",
 Values = UI.InitialZones,
@@ -2239,6 +2259,7 @@ Desc = "Runtime discovery is starting...",
 })
 UI.PerformanceSection = UI.MonitorTab:Section({ Title = "Balance Intelligence", Box = true, Opened = true })
 UI.PerformanceSection:Dropdown({
+Flag = "tracked_currency",
 Title = "Tracked Currency",
 Desc = "Active Balances discovers real gains; Auto follows the selected world",
 Values = CurrencyChoices,
@@ -2263,6 +2284,7 @@ Desc = "Each stage resolves its live session remote, validates every UID and wai
 })
 UI.GoldSection = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
 UI.GoldSection:Toggle({
+Flag = "auto_golden_galaxy_fox",
 Title = "Auto Golden Galaxy Fox",
 Desc = "100% batches only / protects Tech Coins III-V, equipped and locked pets",
 Value = false,
@@ -2283,6 +2305,7 @@ Desc = "Disabled / waiting for a verified batch",
 })
 UI.RainbowSection = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
 UI.RainbowSection:Toggle({
+Flag = "auto_rainbow_galaxy_fox",
 Title = "Auto Rainbow Galaxy Fox",
 Desc = "Golden Foxes only / 100% batches / protects Tech Coins III-V and equipped pets",
 Value = false,
@@ -2303,6 +2326,7 @@ Desc = "Disabled / only golden Mythical Galaxy Foxes are eligible",
 })
 UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Box = true, Opened = true })
 UI.DiamondSection:Toggle({
+Flag = "auto_tech_diamond_pack",
 Title = "Auto Best Tech Diamond Pack",
 Desc = "Tier 4 only / checks every 3 minutes / requires at least 1T Tech Coins",
 Value = false,
@@ -2326,12 +2350,14 @@ Title = "FAST COLLECTION",
 Desc = "Moves local drops to the character while server-side pet assignments continue uninterrupted.",
 })
 UI.LootHero:Toggle({
+Flag = "collect_orbs",
 Title = "Collect Orbs",
 Desc = "Pulls up to 40 live orbs per pass",
 Value = false,
 Callback = function(value) config.Orbs = value == true end,
 })
 UI.LootHero:Toggle({
+Flag = "collect_lootbags",
 Title = "Collect Lootbags",
 Desc = "Pulls up to 20 live lootbags per pass",
 Value = false,
@@ -2343,6 +2369,7 @@ Title = "CLAIM ONLY WHEN READY",
 Desc = "Uses the server clock and save timers. No speculative claim spam and no world restriction.",
 })
 UI.RewardsHero:Toggle({
+Flag = "auto_vip_rewards",
 Title = "Auto VIP Rewards",
 Desc = "Claims when the four-hour VIP cooldown reaches zero",
 Value = false,
@@ -2356,6 +2383,7 @@ state.ArmedReported = false
 end,
 })
 UI.RewardsHero:Toggle({
+Flag = "auto_rank_rewards",
 Title = "Auto Rank Rewards",
 Desc = "Uses the cooldown for your current rank and its live RankTimer",
 Value = false,
@@ -2377,12 +2405,15 @@ UI.GraphicsHero:Paragraph({
 Title = "VISIBLE WORLD / LOWER COST",
 Desc = "Keeps navigation readable while simplifying the map and dense coin/chest visuals.",
 })
-UI.GraphicsHero:Button({
-Title = "ENABLE BALANCED POTATO MODE",
-Desc = "One-way this session / strips map and coin textures, shadows and expensive effects",
-Callback = function() setPotatoMode(true) end,
+UI.GraphicsHero:Toggle({
+Flag = "balanced_potato_mode",
+Title = "Balanced Potato Mode",
+Desc = "Stops future processing when disabled; rejoin to restore visuals already simplified",
+Value = false,
+Callback = function(value) setPotatoMode(value == true) end,
 })
 UI.GraphicsHero:Dropdown({
+Flag = "fps_limit",
 Title = "FPS Limit",
 Desc = "Independent from Potato Mode / Unlimited maps to a safe 999 cap",
 Values = { "Unchanged", "30", "45", "60", "90", "120", "144", "165", "240", "Unlimited" },
@@ -2401,11 +2432,112 @@ Title = "SAFE START / CLEAN STOP",
 Desc = "RightShift toggles the window. STOP disconnects workers before final pet cleanup.",
 })
 UI.SessionSection:Toggle({
+Flag = "anti_afk",
 Title = "Anti-AFK",
 Desc = "Prevents the Roblox idle kick",
 Value = true,
 Callback = function(value) config.AntiAFK = value == true end,
 })
+UI.ProfileSection = UI.SessionTab:Section({ Title = "Default Configuration", Box = true, Opened = true })
+UI.ProfileSection:Paragraph({
+Title = "SAVE ONCE / AUTO-LOAD EVERY RUN",
+Desc = "The default profile restores controls through WindUI and then reapplies World before Zone.",
+})
+UI.ProfileStatus = UI.ProfileSection:Paragraph({
+Title = "Configuration Status",
+Desc = UI.Profile and (UI.ProfileExists
+and "Saved profile found. Automatic loading is armed."
+or "No saved profile yet. Press SAVE PROFILE to create one.")
+or ("Profiles unavailable: " .. tostring(UI.ProfileProblem or "unknown filesystem error")),
+})
+function UI.SetProfileStatus(text)
+if UI.ProfileStatus then
+pcall(function() UI.ProfileStatus:SetDesc(tostring(text)) end)
+end
+end
+function UI.ReconcileProfile(label)
+if not UI.Profile or not running() then return end
+local savedWorld = UI.Profile:Get("selected_world")
+local savedZone = UI.Profile:Get("selected_zone")
+local worldValid = false
+for _, value in ipairs(UI.WorldValues) do
+if value == savedWorld then worldValid = true; break end
+end
+if not worldValid then savedWorld = config.World end
+pcall(function() UI.WorldDropdown:Select(savedWorld) end)
+task.delay(0.12, function()
+if not running() then return end
+refreshZoneDropdown(true)
+local options = getZoneOptions(config.World)
+local zoneValid = false
+for _, value in ipairs(options) do
+if value == savedZone then zoneValid = true; break end
+end
+if not zoneValid then savedZone = config.Zone end
+pcall(function() UI.ZoneDropdown:Select(savedZone) end)
+UI.SetProfileStatus(string.format(
+"%s\nWorld: %s | Zone: %s | auto-load: enabled",
+tostring(label or "Profile synchronized"),
+tostring(config.World),
+tostring(config.Zone)
+))
+end)
+end
+function UI.SaveProfile()
+if not UI.Profile then
+UI.SetProfileStatus("Save unavailable: " .. tostring(UI.ProfileProblem or "filesystem API missing"))
+return
+end
+UI.Profile:Set("selected_world", config.World)
+UI.Profile:Set("selected_zone", config.Zone)
+UI.Profile:Set("script_version", VERSION)
+UI.Profile:Set("nova_autoload", true)
+UI.Profile:SetAutoLoad(false)
+local saved, result = pcall(function() return UI.Profile:Save() end)
+if not saved then
+UI.SetProfileStatus("Save failed: " .. tostring(result))
+return
+end
+UI.ProfileExists = true
+UI.SetProfileStatus(string.format(
+"Profile saved successfully.\nWorld: %s | Zone: %s | auto-load: enabled",
+tostring(config.World),
+tostring(config.Zone)
+))
+trace("config saved", tostring(UI.Profile.Path))
+end
+function UI.LoadProfile(label)
+if not UI.Profile then
+UI.SetProfileStatus("Load unavailable: " .. tostring(UI.ProfileProblem or "filesystem API missing"))
+return
+end
+local called, result, problem = pcall(function() return UI.Profile:Load() end)
+if not called then
+UI.SetProfileStatus("Load failed: " .. tostring(result))
+return
+end
+if result == false then
+UI.SetProfileStatus("Load failed: " .. tostring(problem))
+return
+end
+UI.SetProfileStatus("Profile loaded. Synchronizing controls and target location...")
+task.delay(0.3, function() UI.ReconcileProfile(label or "Manual load complete") end)
+end
+UI.ProfileSection:Button({
+Title = "SAVE PROFILE",
+Desc = "Stores every flagged control and enables automatic loading",
+Icon = "save",
+Callback = UI.SaveProfile,
+})
+UI.ProfileSection:Button({
+Title = "LOAD PROFILE",
+Desc = "Restores the saved profile immediately without restarting the script",
+Icon = "folder-open",
+Callback = function() UI.LoadProfile() end,
+})
+if UI.Profile and UI.ProfileExists then
+task.delay(0.8, function() UI.LoadProfile("Automatic load complete") end)
+end
 local shutdownStarted = false
 local function hideInterface()
 for _, key in ipairs({ "ScreenGui", "NotificationGui", "DropdownGui", "TooltipGui" }) do
