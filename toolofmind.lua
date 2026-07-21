@@ -1,4 +1,4 @@
-local VERSION = "1.2.8-stable"
+local VERSION = "1.2.9-stable"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -162,7 +162,7 @@ value = string.gsub(value, "[%p_]+", " ")
 value = string.gsub(value, "%s+", " ")
 return string.match(value, "^%s*(.-)%s*$") or value
 end
-local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/8d9b1658533645fbdc214b3a42ef4932d2a6f71e/graphics_module.lua"
+local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/640ac3ed2edf68868b439b639bb31b3d617d5f43/graphics_module.lua"
 local graphicsController
 local function graphicsAction(action, value)
 if not graphicsController then
@@ -2424,7 +2424,7 @@ Callback = applyFPSLimit,
 })
 UI.GraphicsHero:Paragraph({
 Title = "Preservation Boundary",
-Desc = "Coin/chest geometry and health bars stay visible. Pets, POS, _SELECTIONFX and Network workers are untouched.",
+Desc = "Animations and geometry stay active. Dynamic eggs, pets, coins and chests are texture-locked while POS, _SELECTIONFX and Network workers remain untouched.",
 })
 UI.SessionSection = UI.SessionTab:Section({ Title = "Session Control", Box = true, Opened = true })
 UI.SessionSection:Paragraph({
