@@ -34,6 +34,51 @@ local function thingsPolicy(object)
     return true, coinVisual
 end
 
+local function isDynamicVisual(object)
+    local current = object
+    local depth = 0
+    while current and current ~= workspace and depth < 12 do
+        local name = string.lower(tostring(current.Name or ""))
+        if string.find(name, "egg", 1, true)
+            or string.find(name, "pet", 1, true)
+            or string.find(name, "coin", 1, true)
+            or string.find(name, "chest", 1, true)
+            or string.find(name, "orb", 1, true)
+            or string.find(name, "lootbag", 1, true)
+        then
+            return true
+        end
+        current = current.Parent
+        depth = depth + 1
+    end
+    return false
+end
+
+local function guardBlankTexture(object, property, active)
+    if not active or not active.Running or active.Guarded[object]
+        or not isDynamicVisual(object)
+    then
+        return
+    end
+    active.Guarded[object] = true
+    local connected, connection = pcall(function()
+        return object:GetPropertyChangedSignal(property):Connect(function()
+            if not active.Running or env.PSX_POTATO_STATE ~= active then return end
+            local read, value = pcall(function() return object[property] end)
+            if read and value ~= "" then
+                local cleared = pcall(function() object[property] = "" end)
+                if cleared then active.Reasserted = active.Reasserted + 1 end
+            end
+        end)
+    end)
+    if connected and connection then
+        active.Connections[#active.Connections + 1] = connection
+        active.GuardCount = active.GuardCount + 1
+    else
+        active.Guarded[object] = nil
+    end
+end
+
 local function optimizeRendering()
     pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
     pcall(function() settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01 end)
@@ -61,7 +106,7 @@ end
 local function optimizeObject(object, active)
     local insideThings, coinVisual = false, false
     if object then insideThings, coinVisual = thingsPolicy(object) end
-    if not object or isProtectedTree(object) or (insideThings and not coinVisual) then
+    if not object or isProtectedTree(object) then
         if active then active.Protected = active.Protected + 1 end
         return
     end
@@ -116,6 +161,7 @@ local function optimizeObject(object, active)
         end
         if object:IsA("SpecialMesh") then
             object.TextureId = ""
+            guardBlankTexture(object, "TextureId", active)
             active.Stripped = active.Stripped + 1
             return
         end
@@ -134,7 +180,10 @@ local function optimizeObject(object, active)
             object.MaterialVariant = ""
             object.Reflectance = 0
             object.CastShadow = false
-            if object:IsA("MeshPart") then pcall(function() object.TextureID = "" end) end
+            if object:IsA("MeshPart") then
+                pcall(function() object.TextureID = "" end)
+                guardBlankTexture(object, "TextureID", active)
+            end
             active.Stripped = active.Stripped + 1
         end
     end)
@@ -147,6 +196,19 @@ local function enqueue(active, object)
     active.Queue[#active.Queue + 1] = object
 end
 
+local function processObject(active, object)
+    if not active.Running or not object then return end
+    active.Queued[object] = nil
+    if not active.Seen[object] then
+        active.Seen[object] = true
+        if object ~= workspace and object ~= Lighting then optimizeObject(object, active) end
+    end
+    local childrenOk, children = pcall(function() return object:GetChildren() end)
+    if childrenOk then
+        for _, child in ipairs(children) do enqueue(active, child) end
+    end
+end
+
 local function processQueue(active)
     enqueue(active, workspace)
     enqueue(active, Lighting)
@@ -154,23 +216,16 @@ local function processQueue(active)
         local processed = 0
         while processed < 240 and #active.Queue > 0 do
             local object = table.remove(active.Queue)
-            active.Queued[object] = nil
-            if object and not active.Seen[object] then
-                active.Seen[object] = true
-                if object ~= workspace and object ~= Lighting then optimizeObject(object, active) end
-                local childrenOk, children = pcall(function() return object:GetChildren() end)
-                if childrenOk then
-                    for _, child in ipairs(children) do enqueue(active, child) end
-                end
-                processed = processed + 1
-            end
+            processObject(active, object)
+            processed = processed + 1
         end
         if #active.Queue == 0 then
             if not active.InitialReported then
                 active.InitialReported = true
                 print(string.format(
-                    "[PSX SLIM] balanced potato | initial pass complete | disabled=%d | stripped=%d | destroyed=%d | protected=%d | errors=%d",
-                    active.Disabled, active.Stripped, active.Destroyed, active.Protected, active.Errors
+                    "[PSX SLIM] balanced potato | initial pass complete | disabled=%d | stripped=%d | destroyed=%d | protected=%d | texture-locks=%d | errors=%d",
+                    active.Disabled, active.Stripped, active.Destroyed, active.Protected,
+                    active.GuardCount, active.Errors
                 ))
             end
             task.wait(0.25)
@@ -191,10 +246,13 @@ local function startPotato()
         Queue = {},
         Seen = setmetatable({}, { __mode = "k" }),
         Queued = setmetatable({}, { __mode = "k" }),
+        Guarded = setmetatable({}, { __mode = "k" }),
         Disabled = 0,
         Stripped = 0,
         Destroyed = 0,
         Protected = 0,
+        GuardCount = 0,
+        Reasserted = 0,
         Errors = 0,
     }
     state = active
@@ -202,10 +260,10 @@ local function startPotato()
     optimizeRendering()
 
     active.Connections[#active.Connections + 1] = workspace.DescendantAdded:Connect(function(object)
-        enqueue(active, object)
+        processObject(active, object)
     end)
     active.Connections[#active.Connections + 1] = Lighting.DescendantAdded:Connect(function(object)
-        enqueue(active, object)
+        processObject(active, object)
     end)
 
     task.spawn(processQueue, active)
