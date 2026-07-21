@@ -10,9 +10,305 @@ local MIN_REQUEST_DELAY = 0.55
 local MAX_REQUEST_DELAY = 8
 local EVENT_TIMEOUT = 6
 local SUSPICIOUS_PAUSE = 60
+local EGG_INTERACT_DISTANCE = 15
+local EGG_SCAN_INTERVAL = 0.75
+local physicalCache = { Root = nil, ById = {}, ScannedAt = 0 }
 
 local function lower(value)
     return string.lower(tostring(value or ""))
+end
+
+local function directoryFor(context)
+    local directory = context.Library and context.Library.Directory and context.Library.Directory.Eggs
+    return type(directory) == "table" and directory or nil
+end
+
+local function saveFor(context)
+    local saveApi = context.Library and context.Library.Save
+    if not saveApi or type(saveApi.Get) ~= "function" then return nil end
+    local ok, save = pcall(saveApi.Get)
+    return ok and type(save) == "table" and save or nil
+end
+
+local function hasGamepass(save, gamepassName)
+    local gamepasses = type(save) == "table" and save.Gamepasses or nil
+    if type(gamepasses) ~= "table" then return false end
+    for key, value in pairs(gamepasses) do
+        if value == gamepassName or (key == gamepassName and value == true) then return true end
+        if type(value) == "table" and (value.Name == gamepassName or value.name == gamepassName) then
+            return true
+        end
+    end
+    return false
+end
+
+local function instanceEggId(object)
+    if not object then return nil end
+    local idObject = object:FindFirstChild("ID_Attr") or object:FindFirstChild("ID")
+    if idObject then
+        local ok, value = pcall(function() return idObject.Value end)
+        if ok and value ~= nil then return tostring(value) end
+    end
+    local ok, value = pcall(function()
+        return object:GetAttribute("ID") or object:GetAttribute("ID_Attr")
+    end)
+    return ok and value ~= nil and tostring(value) or nil
+end
+
+local function instancePosition(object)
+    if not object or not object.Parent then return nil end
+    local center = object:FindFirstChild("Center")
+    if center then
+        if center:IsA("BasePart") then return center.Position end
+        if center:IsA("Attachment") then return center.WorldPosition end
+        if center:IsA("Model") then
+            local ok, pivot = pcall(center.GetPivot, center)
+            if ok then return pivot.Position end
+        end
+        local part = center:FindFirstChildWhichIsA("BasePart", true)
+        if part then return part.Position end
+    end
+    if object:IsA("BasePart") then return object.Position end
+    if object:IsA("Model") then
+        local ok, pivot = pcall(object.GetPivot, object)
+        if ok then return pivot.Position end
+    end
+    local part = object:FindFirstChildWhichIsA("BasePart", true)
+    return part and part.Position or nil
+end
+
+local function currentEggRoot()
+    local map = workspace:FindFirstChild("__MAP")
+    if not map then return nil end
+    return map:FindFirstChild("Eggs") or map:FindFirstChild("Eggs", true)
+end
+
+local function scanPhysical(context, force)
+    local now = os.clock()
+    local root = currentEggRoot()
+    if not root then
+        if physicalCache.Root ~= nil then
+            physicalCache.Root, physicalCache.ById = nil, {}
+        end
+        physicalCache.ScannedAt = now
+        return physicalCache.ById
+    end
+    if not force and root == physicalCache.Root
+        and now - physicalCache.ScannedAt < EGG_SCAN_INTERVAL then
+        return physicalCache.ById
+    end
+
+    local directory = directoryFor(context)
+    local byId = {}
+    for _, object in ipairs(root:GetDescendants()) do
+        if (object:IsA("Model") or object:IsA("Folder")) and object:FindFirstChild("Center") then
+            local eggId = instanceEggId(object)
+            if eggId and (not directory or directory[eggId]) then
+                byId[eggId] = byId[eggId] or {}
+                byId[eggId][#byId[eggId] + 1] = object
+            end
+        end
+    end
+    physicalCache.Root, physicalCache.ById, physicalCache.ScannedAt = root, byId, now
+    return byId
+end
+
+local function rootPosition(context)
+    local player = context.Player or game:GetService("Players").LocalPlayer
+    local character = player and player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    return root and root.Position or nil
+end
+
+local function physicalEgg(context, eggId, force)
+    local candidates = scanPhysical(context, force)[tostring(eggId)]
+    if type(candidates) ~= "table" then return nil, nil end
+    local playerPosition = rootPosition(context)
+    local best, bestDistance, bestPosition
+    for _, object in ipairs(candidates) do
+        local position = instancePosition(object)
+        if position then
+            local distance = playerPosition and (position - playerPosition).Magnitude or math.huge
+            if not bestDistance or distance < bestDistance then
+                best, bestDistance, bestPosition = object, distance, position
+            end
+        end
+    end
+    return best and { Object = best, Position = bestPosition }, bestDistance
+end
+
+local function isHatchable(entry)
+    return type(entry) == "table" and entry.disabled ~= true and entry.hatchable ~= false
+end
+
+local function unlocked(context, eggId, save, visiting)
+    local directory = directoryFor(context)
+    local entry = directory and directory[eggId]
+    if not isHatchable(entry) then return false, "egg is disabled or not hatchable" end
+    visiting = visiting or {}
+    if visiting[eggId] then return false, "egg unlock chain contains a cycle" end
+    visiting[eggId] = true
+
+    if entry.areaRequired then
+        local worldCommands = context.Library.WorldCmds
+        if not worldCommands or type(worldCommands.HasArea) ~= "function" then
+            visiting[eggId] = nil
+            return false, "area unlock data is not ready"
+        end
+        local checked, ownsArea = pcall(worldCommands.HasArea, entry.area)
+        if not checked or not ownsArea then
+            visiting[eggId] = nil
+            return false, "required area is locked: " .. tostring(entry.area or "unknown")
+        end
+    end
+
+    local requiredEgg = tostring(entry.eggRequired or "")
+    if requiredEgg ~= "" and requiredEgg ~= tostring(eggId) then
+        local ownsRequirement, problem = unlocked(context, requiredEgg, save, visiting)
+        if not ownsRequirement then
+            visiting[eggId] = nil
+            return false, "required egg is locked: " .. requiredEgg .. " (" .. tostring(problem) .. ")"
+        end
+    end
+    local amount = tonumber(entry.eggRequiredOpenAmount) or 0
+    if amount > 0 and requiredEgg ~= "" then
+        local opened = type(save.EggsOpened) == "table" and tonumber(save.EggsOpened[requiredEgg]) or 0
+        if (opened or 0) < amount then
+            visiting[eggId] = nil
+            return false, string.format("open %s %d more time(s)", requiredEgg, amount - (opened or 0))
+        end
+    end
+    if tostring(eggId) == "Dominus Egg" and save.OwnsDominusGate ~= true then
+        visiting[eggId] = nil
+        return false, "Dominus Gate is locked"
+    end
+    visiting[eggId] = nil
+    return true
+end
+
+local function inventoryCount(save)
+    local pets = type(save) == "table" and save.Pets or nil
+    if type(pets) ~= "table" then return nil end
+    local count = #pets
+    if count == 0 then for _ in pairs(pets) do count = count + 1 end end
+    return count
+end
+
+local function inspectEgg(context)
+    local eggId = tostring(context.Egg or "")
+    local count = tonumber(context.Count) == 3 and 3 or 1
+    local directory = directoryFor(context)
+    local entry = directory and directory[eggId]
+    if not isHatchable(entry) then return false, "Selected egg is not hatchable: " .. eggId end
+    local save = saveFor(context)
+    if not save then return false, "Player save is not ready" end
+    local ownsEgg, unlockProblem = unlocked(context, eggId, save)
+    if not ownsEgg then return false, "Selected egg is locked: " .. tostring(unlockProblem) end
+    if count == 3 and not hasGamepass(save, "Triple Egg Open") then
+        return false, "x3 requires the Triple Egg Open gamepass"
+    end
+
+    local physical, distance = physicalEgg(context, eggId, false)
+    if not physical then return false, "Selected egg is not present in the current world: " .. eggId end
+    if distance == nil or distance == math.huge then return false, "Character position is not ready" end
+    if distance > EGG_INTERACT_DISTANCE then
+        return false, string.format("Too far from %s: %.1f studs (maximum 15)", eggId, distance)
+    end
+
+    local used, maxSlots = inventoryCount(save), tonumber(save.MaxSlots)
+    if used == nil or maxSlots == nil then return false, "Pet inventory limits are not ready" end
+    local freeSlots = math.max(0, maxSlots - used)
+    if freeSlots < count then
+        return false, string.format("Not enough pet slots: need %d, free %d", count, freeSlots)
+    end
+
+    local cost, currency = tonumber(entry.cost), tostring(entry.currency or "")
+    if cost == nil or currency == "" then return false, "Egg price data is unavailable" end
+    local balance = context.GetCurrency(currency)
+    local totalCost = cost * count
+    if balance == nil then return false, "Balance is unavailable for " .. currency end
+    if balance < totalCost then
+        local format = context.FormatNumber or tostring
+        return false, string.format("Not enough %s: need %s, balance %s",
+            currency, format(totalCost), format(balance))
+    end
+    return true, {
+        Egg = eggId, Config = entry, Physical = physical.Object, Distance = distance,
+        Cost = totalCost, Currency = currency, Balance = balance, FreeSlots = freeSlots,
+    }
+end
+
+local function buildCatalog(context)
+    local directory = directoryFor(context)
+    if not directory then
+        return { "Egg catalog is loading..." }, nil, nil,
+            "Library.Directory.Eggs is loading...", {}
+    end
+    scanPhysical(context, false)
+    local entries, nearest, nearestDistance = {}, nil, math.huge
+    local loadedCount, nearbyCount = 0, 0
+    for rawId, entry in pairs(directory) do
+        if isHatchable(entry) then
+            local eggId = tostring(rawId)
+            local physical, distance = physicalEgg(context, eggId, false)
+            local loaded = physical ~= nil
+            local nearby = loaded and distance and distance <= EGG_INTERACT_DISTANCE
+            if loaded then loadedCount = loadedCount + 1 end
+            if nearby then
+                nearbyCount = nearbyCount + 1
+                if distance < nearestDistance then nearest, nearestDistance = eggId, distance end
+            end
+            entries[#entries + 1] = {
+                Id = eggId, Name = tostring(entry.displayName or entry.name or eggId),
+                Nearby = nearby, Distance = distance,
+            }
+        end
+    end
+    table.sort(entries, function(left, right)
+        local leftName, rightName = lower(left.Name), lower(right.Name)
+        if leftName == rightName then return left.Id < right.Id end
+        return leftName < rightName
+    end)
+
+    local selected = tostring(context.Selected or "")
+    local selectedEntry
+    for _, entry in ipairs(entries) do if entry.Id == selected then selectedEntry = entry; break end end
+    if not selectedEntry then selected = nearest or (entries[1] and entries[1].Id or "") end
+    if context.Scope == "Nearby Eggs" and not context.PreserveSelected then
+        local selectedNearby = false
+        for _, entry in ipairs(entries) do
+            if entry.Id == selected and entry.Nearby then selectedNearby = true; break end
+        end
+        if not selectedNearby then selected = nearest or "" end
+    end
+
+    local options, labelToId, idToLabel, included = {}, {}, {}, {}
+    local function include(entry)
+        if included[entry.Id] then return end
+        included[entry.Id] = true
+        local label = entry.Name
+        if entry.Id ~= entry.Name then label = label .. "  [" .. entry.Id .. "]" end
+        options[#options + 1], labelToId[label], idToLabel[entry.Id] = label, entry.Id, label
+    end
+    for _, entry in ipairs(entries) do
+        if context.Scope ~= "Nearby Eggs" or entry.Nearby then include(entry) end
+    end
+    if context.PreserveSelected and selected ~= "" then
+        for _, entry in ipairs(entries) do if entry.Id == selected then include(entry); break end end
+    end
+    if #options == 0 then options[1] = "No hatchable eggs within 15 studs" end
+
+    local selectedDistance
+    if selected ~= "" then local _, distance = physicalEgg(context, selected, false); selectedDistance = distance end
+    local selectedText = selected == "" and "No egg selected"
+        or selectedDistance and string.format("%s is %.1f studs away (%s)", selected,
+            selectedDistance, selectedDistance <= 15 and "in range" or "out of range")
+        or (selected .. " is not loaded in this world")
+    local summary = string.format(
+        "Hatchable: %d | loaded in world: %d | within 15 studs: %d\n%s",
+        #entries, loadedCount, nearbyCount, selectedText
+    )
+    return options, idToLabel[selected], selected, summary, labelToId
 end
 
 local function setStatus(state, context, text)
@@ -300,6 +596,22 @@ end
 
 return function(action, context)
     if action == "stop" then return stop() end
+    if action == "invalidate-catalog" then
+        physicalCache.Root, physicalCache.ById, physicalCache.ScannedAt = nil, {}, 0
+        return true
+    end
+    if action == "catalog" then
+        if type(context) ~= "table" or not context.Library then
+            return nil, nil, nil, "Egg catalog context is missing Library", {}
+        end
+        return buildCatalog(context)
+    end
+    if action == "inspect" then
+        if type(context) ~= "table" or not context.Library or type(context.GetCurrency) ~= "function" then
+            return false, "Egg inspection context is incomplete"
+        end
+        return inspectEgg(context)
+    end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end
