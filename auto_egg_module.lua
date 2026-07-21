@@ -3,7 +3,7 @@
 
 local activeState
 
-local ARM_DELAY = 0.35
+local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
 local INITIAL_REQUEST_DELAY = 0.75
 local MIN_REQUEST_DELAY = 0.55
@@ -409,8 +409,10 @@ local function finishRejection(state, context, pending)
     state.CleanSuccesses = 0
     state.RequestDelay = math.min(MAX_REQUEST_DELAY, math.max(1, state.RequestDelay * 1.65))
     local message = tostring(pending.Message or "server rejected the purchase")
-    local pause = suspiciousReply(message) and SUSPICIOUS_PAUSE or state.RequestDelay
-    state.SuspendedUntil = suspiciousReply(message) and (os.clock() + pause) or 0
+    local suspicious = suspiciousReply(message)
+    local pause = suspicious and SUSPICIOUS_PAUSE
+        or (state.ConsecutiveFailures >= 3 and 15 or state.RequestDelay)
+    state.SuspendedUntil = (suspicious or state.ConsecutiveFailures >= 3) and (os.clock() + pause) or 0
     state.NextAction = os.clock() + pause
     setStatus(state, context, string.format(
         "Server rejected %s: %s\nNo retry overlap | next local attempt in %.1fs | rejects: %d",
@@ -438,10 +440,12 @@ local function finishTimeout(state, context, pending)
     end
 
     state.Pending = nil
-    state.NextAction = os.clock() + state.RequestDelay
+    local pause = state.ConsecutiveFailures >= 2 and 30 or state.RequestDelay
+    state.SuspendedUntil = state.ConsecutiveFailures >= 2 and (os.clock() + pause) or 0
+    state.NextAction = os.clock() + pause
     setStatus(state, context, string.format(
-        "Timed out waiting for matching Open Egg: %s\nNo duplicate was sent | adaptive delay: %.1fs",
-        requestLabel(pending), state.RequestDelay
+        "Timed out waiting for matching Open Egg: %s\nNo duplicate was sent | next attempt in %.1fs",
+        requestLabel(pending), pause
     ))
 end
 
