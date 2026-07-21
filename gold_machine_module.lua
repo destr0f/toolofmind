@@ -41,7 +41,7 @@ local function hasProtectedTechCoins(pet)
     if type(powers) ~= "table" then return false end
     for _, power in pairs(powers) do
         local name, level = readPower(power)
-        if string.lower(tostring(name or "")) == "tech coins" and level and level >= 3 then
+        if string.lower(tostring(name or "")) == "tech coins" and level and level >= 4 then
             return true, level
         end
     end
@@ -87,7 +87,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "total Fox: %d | eligible: %d | Tech Coins III+ protected: %d | equipped skipped: %d | locked: %d | upgraded: %d | pending: %d",
+        "total Fox: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | upgraded: %d | pending: %d",
         stats.Found, stats.Eligible, stats.Protected, stats.Equipped,
         stats.Locked, stats.Upgraded, stats.Pending
     )
