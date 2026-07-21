@@ -1,4 +1,4 @@
-local VERSION = "1.2.10-dev.1"
+local VERSION = "1.3.0-dev.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -18,9 +18,14 @@ env.PSX_OG_LOADER_STATE.Running = false
 env.PSX_OG_LOADER_STATE.Superseded = true
 end
 if type(env.PSX_OG_FastEggState) == "table" then
-local connection = env.PSX_OG_FastEggState.Connection
+local state = env.PSX_OG_FastEggState
+if type(state.Stop) == "function" then
+pcall(state.Stop)
+else
+local connection = state.Connection
 if connection and type(connection.Disconnect) == "function" then
 pcall(function() connection:Disconnect() end)
+end
 end
 env.PSX_OG_FastEggState = nil
 end
@@ -72,6 +77,11 @@ AutoGoldenGalaxyFox = false,
 AutoRainbowGalaxyFox = false,
 AutoDarkMatterGalaxyFox = false,
 AutoClaimDarkMatter = false,
+AutoEgg = false,
+EggScope = "Nearby Eggs",
+EggName = nil,
+EggCount = 1,
+EggAnimation = "Headless (No Animation)",
 }
 local DIAMOND_PACK_TIER = 4
 local DIAMOND_PACK_MINIMUM = 1e12
@@ -284,6 +294,8 @@ end
 end
 return nil
 end
+local eggLabelToId = {}
+local eggIdToLabel = {}
 local WorldOrder = {
 "Spawn World", "Fantasy World", "Tech World", "Axolotl Ocean",
 "Pixel World", "Cat World", "The Void", "Doodle World",
@@ -1732,6 +1744,12 @@ end
 local function setDarkMatterStatus(text)
 setViewStatus("DarkMatter", text)
 end
+local function setEggStatus(text)
+setViewStatus("Egg", text)
+end
+local function setEggCatalogStatus(text)
+setViewStatus("EggCatalog", text)
+end
 local function getRewardSave()
 if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
 local save
@@ -1808,6 +1826,104 @@ local minutes = math.floor(seconds % 3600 / 60)
 local secs = seconds % 60
 if hours > 0 then return string.format("%dh %02dm %02ds", hours, minutes, secs) end
 return string.format("%dm %02ds", minutes, secs)
+end
+local AUTO_EGG_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/5ebc7a79adc7e59bcc18086ef10a8ba57c4e6351/auto_egg_module.lua"
+local autoEggController
+local autoEggLoading = false
+local autoEggLoadProblem
+local autoEggToggleControl
+local function stopAutoEggModule(statusText)
+if autoEggController then pcall(autoEggController, "stop") end
+if statusText then setEggStatus(statusText) end
+end
+local function disableAutoEgg(reason)
+config.AutoEgg = false
+setEggStatus(tostring(reason or "Auto hatch stopped by its safety controller"))
+task.defer(function()
+if running() and autoEggToggleControl and type(autoEggToggleControl.Set) == "function" then
+pcall(function() autoEggToggleControl:Set(false) end)
+end
+end)
+end
+local function ensureAutoEggModule()
+if autoEggController then return true end
+if autoEggLoading then
+local deadline = os.clock() + 12
+while autoEggLoading and running() and os.clock() < deadline do task.wait(0.05) end
+if autoEggController then return true end
+return false, autoEggLoadProblem or "auto egg module load timed out"
+end
+autoEggLoading = true
+autoEggLoadProblem = nil
+setEggStatus("Loading the protocol-safe auto egg worker on demand...")
+local downloaded, source = pcall(function() return game:HttpGet(AUTO_EGG_MODULE_URL) end)
+if downloaded then
+local chunk, compileProblem = loadstring(source)
+source = nil
+if chunk then
+local started, controller = pcall(chunk)
+if started and type(controller) == "function" then
+autoEggController = controller
+trace("auto egg module", "loaded on demand")
+else
+downloaded = false
+source = "module start failed: " .. tostring(controller)
+end
+else
+downloaded = false
+source = "module compile failed: " .. tostring(compileProblem)
+end
+end
+autoEggLoading = false
+if not downloaded then
+autoEggLoadProblem = tostring(source)
+return false, autoEggLoadProblem
+end
+return true
+end
+local function inspectEggThroughModule(eggId, count, animation)
+if not autoEggController then return false, "Auto egg module is not loaded" end
+return autoEggController("inspect", {
+Library = Library,
+Player = player,
+Egg = eggId,
+Count = count,
+Animation = animation,
+GetCurrency = getCurrentCurrency,
+FormatNumber = formatRateNumber,
+})
+end
+local function startAutoEggModule()
+if not config.AutoEgg or not running() then return end
+local loaded, loadProblem = ensureAutoEggModule()
+if not loaded then
+disableAutoEgg("Auto egg module could not be loaded; no purchase was sent: " .. tostring(loadProblem))
+return
+end
+if not config.AutoEgg or not running() then return end
+local context = {
+Library = Library,
+Running = running,
+Enabled = function() return config.AutoEgg end,
+GetOptions = function()
+return {
+Egg = config.EggName,
+Count = config.EggCount,
+Animation = config.EggAnimation,
+}
+end,
+InspectEgg = inspectEggThroughModule,
+InvokeCommand = invokeCommand,
+RouteText = routeText,
+SetStatus = setEggStatus,
+Trace = trace,
+Disable = disableAutoEgg,
+}
+local called, accepted, problem = pcall(autoEggController, "start", context)
+if not called or accepted == false then
+local reason = not called and accepted or problem
+disableAutoEgg("Auto egg worker failed to start; no purchase was sent: " .. tostring(reason))
+end
 end
 local machineModules = {
 Gold = {
@@ -2184,11 +2300,45 @@ UI.ProfileProblem = "executor filesystem API is unavailable"
 end
 UI.FarmTab = Window:Tab({ Title = "Farm", Icon = "paw-print" })
 UI.MonitorTab = Window:Tab({ Title = "Monitor", Icon = "activity" })
+UI.EggTab = Window:Tab({ Title = "Eggs", Icon = "egg" })
 UI.MachinesTab = Window:Tab({ Title = "Machines", Icon = "settings" })
 UI.LootTab = Window:Tab({ Title = "Loot", Icon = "package-open" })
 UI.RewardsTab = Window:Tab({ Title = "Rewards", Icon = "gift" })
 UI.GraphicsTab = Window:Tab({ Title = "Graphics", Icon = "monitor" })
 UI.SessionTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
+local function refreshEggDropdown(force)
+local now = os.clock()
+if not force and UI.LastEggRefreshAt and now - UI.LastEggRefreshAt < 0.6 then return end
+UI.LastEggRefreshAt = now
+if not autoEggController then
+setEggCatalogStatus("Egg catalog worker is loading; no server request is involved.")
+return
+end
+local called, options, selectedLabel, selectedId, summary, labelMap = pcall(autoEggController, "catalog", {
+Library = Library,
+Player = player,
+Scope = config.EggScope,
+Selected = config.EggName,
+PreserveSelected = config.AutoEgg,
+GetCurrency = getCurrentCurrency,
+FormatNumber = formatRateNumber,
+})
+if not called or type(options) ~= "table" then
+setEggCatalogStatus("Local egg catalog error: " .. tostring(called and summary or options))
+return
+end
+config.EggName = selectedId ~= "" and selectedId or nil
+eggLabelToId = type(labelMap) == "table" and labelMap or {}
+eggIdToLabel = {}
+for label, eggId in pairs(eggLabelToId) do eggIdToLabel[eggId] = label end
+local signature = tostring(config.EggScope) .. "|" .. tostring(selectedLabel)
+.. "|" .. table.concat(options, "\0")
+setEggCatalogStatus(summary)
+if not UI.EggDropdown or (not force and signature == UI.LastEggSignature) then return end
+UI.LastEggSignature = signature
+pcall(function() UI.EggDropdown:Refresh(options) end)
+if selectedLabel then pcall(function() UI.EggDropdown:Select(selectedLabel) end) end
+end
 UI.FarmHero = UI.FarmTab:Section({ Title = "01 / Adaptive Routing", Box = true, Opened = true })
 UI.FarmHero:Paragraph({
 Title = "LOCK > BREAK > REASSIGN",
@@ -2271,6 +2421,109 @@ if config.PetFarm then requestFarmReset("zone selection changed") end
 end,
 })
 UI.LastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(UI.InitialZones, "\0")
+UI.EggCatalogSection = UI.EggTab:Section({ Title = "01 / Live Egg Catalog", Box = true, Opened = true })
+UI.EggCatalogSection:Paragraph({
+Title = "LOCAL DISCOVERY / ZERO PROBES",
+Desc = "The catalog comes from Library.Directory.Eggs and the current __MAP. Refreshing or enabling it never purchases an egg.",
+})
+UI.EggScopeDropdown = UI.EggCatalogSection:Dropdown({
+Flag = "egg_catalog_scope",
+Title = "Catalog Scope",
+Desc = "Nearby lists eggs within the game's 15-stud interaction radius; All keeps every hatchable ID selectable",
+Values = { "Nearby Eggs", "All Hatchable Eggs" },
+Value = "Nearby Eggs",
+Multi = false,
+AllowNone = false,
+Callback = function(value)
+config.EggScope = value == "All Hatchable Eggs" and "All Hatchable Eggs" or "Nearby Eggs"
+refreshEggDropdown(true)
+end,
+})
+local initialEggOptions = { "Egg catalog loads after startup..." }
+local initialEggLabel = initialEggOptions[1]
+local initialEggSummary = "Preparing the local Library.Directory.Eggs catalog..."
+UI.EggDropdown = UI.EggCatalogSection:Dropdown({
+Flag = "selected_egg",
+Title = "Egg",
+Desc = "The selected ID is preserved while auto hatch is running; walking away blocks requests instead of switching eggs",
+Values = initialEggOptions,
+Value = initialEggLabel or initialEggOptions[1],
+Multi = false,
+AllowNone = false,
+Callback = function(value)
+local eggId = eggLabelToId[value]
+if eggId then config.EggName = eggId end
+end,
+})
+UI.EggCatalogSection:Button({
+Title = "REFRESH LOCAL CATALOG",
+Desc = "Re-indexes the current world's egg models without contacting the server",
+Icon = "refresh-cw",
+Callback = function()
+task.spawn(function()
+local loaded, problem = ensureAutoEggModule()
+if not loaded then
+setEggCatalogStatus("Catalog module could not be loaded: " .. tostring(problem))
+return
+end
+pcall(autoEggController, "invalidate-catalog")
+refreshEggDropdown(true)
+end)
+end,
+})
+statusViews.EggCatalog = UI.EggCatalogSection:Paragraph({
+Title = "Catalog Status",
+Desc = initialEggSummary,
+})
+UI.EggAutomationSection = UI.EggTab:Section({ Title = "02 / Protocol-Safe Hatch Loop", Box = true, Opened = true })
+UI.EggAutomationSection:Paragraph({
+Title = "PREFLIGHT > BUY > OPEN EVENT > ACK > COOLDOWN",
+Desc = "Only one Buy Egg Yay call may exist at once. The worker waits for its matching Open Egg event and adapts timing after every result.",
+})
+UI.EggAutomationSection:Dropdown({
+Flag = "egg_open_count",
+Title = "Eggs Per Purchase",
+Desc = "x3 is blocked locally unless Triple Egg Open is present and three inventory slots are free",
+Values = { "Single (x1)", "Triple (x3)" },
+Value = "Single (x1)",
+Multi = false,
+AllowNone = false,
+Callback = function(value) config.EggCount = value == "Triple (x3)" and 3 or 1 end,
+})
+UI.EggAutomationSection:Dropdown({
+Flag = "egg_animation_mode",
+Title = "Animation Mode",
+Desc = "Headless blocks the original visual callback and immediately sends its required acknowledgement",
+Values = { "Headless (No Animation)", "Native Animation" },
+Value = "Headless (No Animation)",
+Multi = false,
+AllowNone = false,
+Callback = function(value)
+config.EggAnimation = value == "Native Animation" and "Native Animation" or "Headless (No Animation)"
+end,
+})
+autoEggToggleControl = UI.EggAutomationSection:Toggle({
+Flag = "auto_egg",
+Title = "Enable Auto Hatch",
+Desc = "Requires the selected physical egg to remain within 15 studs; no request is sent while any preflight check fails",
+Value = false,
+Callback = function(value)
+local enabled = value == true
+if config.AutoEgg == enabled then return end
+config.AutoEgg = enabled
+refreshEggDropdown(true)
+if enabled then
+task.spawn(startAutoEggModule)
+else
+stopAutoEggModule("Auto hatch disabled. No egg request is active.")
+end
+end,
+})
+statusViews.Egg = UI.EggAutomationSection:Paragraph({
+Title = "Hatch Controller",
+Desc = "Disabled | remotes will be resolved by stable Library.Network names when the first valid purchase is ready.",
+})
+refreshEggDropdown(true)
 UI.MonitorHero = UI.MonitorTab:Section({ Title = "Live Telemetry", Box = true, Opened = true })
 UI.MonitorHero:Paragraph({
 Title = "REAL-TIME CONTROL PLANE",
@@ -2523,6 +2776,20 @@ function UI.ReconcileProfile(label)
 if not UI.Profile or not running() then return end
 local savedWorld = UI.Profile:Get("selected_world")
 local savedZone = UI.Profile:Get("selected_zone")
+local savedEgg = UI.Profile:Get("selected_egg_id")
+local savedEggScope = UI.Profile:Get("selected_egg_scope")
+if savedEggScope == "Nearby Eggs" or savedEggScope == "All Hatchable Eggs" then
+config.EggScope = savedEggScope
+pcall(function() UI.EggScopeDropdown:Select(savedEggScope) end)
+end
+local directory = Library.Directory and Library.Directory.Eggs
+local savedEggEntry = type(directory) == "table" and directory[tostring(savedEgg or "")] or nil
+if type(savedEggEntry) == "table" and savedEggEntry.disabled ~= true and savedEggEntry.hatchable ~= false then
+config.EggName = tostring(savedEgg)
+end
+refreshEggDropdown(true)
+local savedEggLabel = config.EggName and eggIdToLabel[config.EggName]
+if savedEggLabel then pcall(function() UI.EggDropdown:Select(savedEggLabel) end) end
 local worldValid = false
 for _, value in ipairs(UI.WorldValues) do
 if value == savedWorld then worldValid = true; break end
@@ -2540,10 +2807,11 @@ end
 if not zoneValid then savedZone = config.Zone end
 pcall(function() UI.ZoneDropdown:Select(savedZone) end)
 UI.SetProfileStatus(string.format(
-"%s\nWorld: %s | Zone: %s | auto-load: enabled",
+"%s\nWorld: %s | Zone: %s | Egg: %s | auto-load: enabled",
 tostring(label or "Profile synchronized"),
 tostring(config.World),
-tostring(config.Zone)
+tostring(config.Zone),
+tostring(config.EggName or "none")
 ))
 end)
 end
@@ -2554,6 +2822,8 @@ return
 end
 UI.Profile:Set("selected_world", config.World)
 UI.Profile:Set("selected_zone", config.Zone)
+UI.Profile:Set("selected_egg_id", config.EggName or "")
+UI.Profile:Set("selected_egg_scope", config.EggScope)
 UI.Profile:Set("script_version", VERSION)
 UI.Profile:Set("nova_autoload", true)
 UI.Profile:SetAutoLoad(false)
@@ -2564,9 +2834,10 @@ return
 end
 UI.ProfileExists = true
 UI.SetProfileStatus(string.format(
-"Profile saved successfully.\nWorld: %s | Zone: %s | auto-load: enabled",
+"Profile saved successfully.\nWorld: %s | Zone: %s | Egg: %s | auto-load: enabled",
 tostring(config.World),
-tostring(config.Zone)
+tostring(config.Zone),
+tostring(config.EggName or "none")
 ))
 trace("config saved", tostring(UI.Profile.Path))
 end
@@ -2629,6 +2900,8 @@ config.AutoGoldenGalaxyFox = false
 config.AutoRainbowGalaxyFox = false
 config.AutoDarkMatterGalaxyFox = false
 config.AutoClaimDarkMatter = false
+config.AutoEgg = false
+stopAutoEggModule()
 machineModules:StopAll()
 config.PotatoMode = false
 stopGraphics()
@@ -2785,6 +3058,7 @@ task.spawn(function()
 while task.wait(0.4) do
 if not running() then break end
 refreshZoneDropdown(false)
+refreshEggDropdown(false)
 local targets, world, zone = orderedTargets(config.Mode)
 local equippedIds = getEquippedPetIds()
 local equippedCount = #equippedIds
@@ -2815,6 +3089,21 @@ idleRecoveryCount,
 lastRecovery,
 driverStatus
 ))
+end
+end)
+task.delay(1.5, function()
+if not running() then return end
+local loaded, problem = ensureAutoEggModule()
+if not loaded then
+setEggCatalogStatus("Catalog module could not be loaded: " .. tostring(problem))
+if config.AutoEgg then disableAutoEgg("Auto egg module load failed: " .. tostring(problem)) end
+return
+end
+refreshEggDropdown(true)
+if config.AutoEgg then
+task.spawn(startAutoEggModule)
+else
+setEggStatus("Disabled | dynamic Network routes are resolved only when a valid purchase is ready.")
 end
 end)
 pcall(function() UI.FarmTab:Select() end)
