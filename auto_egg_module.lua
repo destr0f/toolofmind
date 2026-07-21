@@ -420,6 +420,17 @@ local function finishRejection(state, context, pending)
     ))
 end
 
+local function stopForSafety(state, context, pending, reason)
+    if pending and state.Pending ~= pending then return end
+    releaseHeadlessGate(state, context)
+    state.Pending = nil
+    state.Running = false
+    reason = tostring(reason or "auto egg safety stop")
+    setStatus(state, context, reason)
+    context.Trace("auto egg safety stop", reason)
+    context.Disable(reason)
+end
+
 local function finishTimeout(state, context, pending)
     if state.Pending ~= pending then return end
     releaseHeadlessGate(state, context)
@@ -429,13 +440,9 @@ local function finishTimeout(state, context, pending)
     state.RequestDelay = math.min(MAX_REQUEST_DELAY, math.max(2, state.RequestDelay * 2))
 
     if not pending.ResponseDone then
-        state.Pending = nil
-        state.Running = false
         local reason = "Buy Egg Yay did not return in " .. tostring(EVENT_TIMEOUT)
             .. "s; auto hatch stopped so a second request cannot overlap it"
-        setStatus(state, context, reason)
-        context.Trace("auto egg safety stop", reason)
-        context.Disable(reason)
+        stopForSafety(state, context, pending, reason)
         return
     end
 
@@ -453,6 +460,13 @@ local function handlePending(state, context, now)
     local pending = state.Pending
     if not pending then return false end
 
+    if pending.AckFailure then
+        stopForSafety(state, context, pending,
+            "Opening Egg acknowledgement failed; auto hatch stopped without sending a duplicate: "
+            .. tostring(pending.AckFailure))
+        return true
+    end
+
     if pending.ResponseDone and pending.EventReceived then
         if pending.Accepted or pending.Acknowledged then
             if pending.Headless then
@@ -461,6 +475,9 @@ local function handlePending(state, context, now)
                 end
             elseif not openingFlag(context) then
                 finishSuccess(state, context, pending, pending.Route)
+            else
+                setStatus(state, context, "Native animation is finishing for " .. requestLabel(pending)
+                    .. "; the next purchase remains locked...")
             end
         else
             finishRejection(state, context, pending)
@@ -484,9 +501,6 @@ local function handlePending(state, context, now)
     elseif pending.ResponseDone and pending.Accepted and not pending.EventReceived then
         setStatus(state, context, "Buy Egg Yay accepted for " .. requestLabel(pending)
             .. "; waiting for its matching Open Egg event...")
-    elseif pending.EventReceived and not pending.Headless and openingFlag(context) then
-        setStatus(state, context, "Native animation is finishing for " .. requestLabel(pending)
-            .. "; the next purchase remains locked...")
     end
     return true
 end
@@ -627,6 +641,13 @@ return function(action, context)
     end
 
     local network = context.Library and context.Library.Network
+    local networkDeadline = os.clock() + 10
+    while (not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function")
+        and context.Running() and context.Enabled() and os.clock() < networkDeadline do
+        task.wait(0.1)
+        network = context.Library and context.Library.Network
+    end
+    if not context.Running() or not context.Enabled() then return true end
     if not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function" then
         return false, "Library.Network Fired/Fire is unavailable"
     end
@@ -669,7 +690,7 @@ return function(action, context)
                         state.AcknowledgedEvents[signature] = now
                         if matching then pending.Acknowledged = true end
                     elseif matching then
-                        pending.Message = "Opening Egg acknowledgement failed: " .. tostring(ackProblem)
+                        pending.AckFailure = tostring(ackProblem)
                     end
                 elseif matching then
                     pending.Acknowledged = true
