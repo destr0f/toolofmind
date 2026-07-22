@@ -12,6 +12,10 @@ local EVENT_TIMEOUT = 6
 local SUSPICIOUS_PAUSE = 60
 local EGG_INTERACT_DISTANCE = 15
 local EGG_SCAN_INTERVAL = 0.75
+local AUTO_DELETE_SYNC_TIMEOUT = 2.5
+local AUTO_DELETE_POLL = 0.05
+local POST_PROCESS_TIMEOUT = 8
+local NATIVE_SKIP_DELAY = 0.12
 local physicalCache = { Root = nil, ById = {}, ScannedAt = 0 }
 
 local function lower(value)
@@ -379,6 +383,308 @@ local function requestLabel(pending)
     return tostring(pending.Egg) .. " " .. (pending.Triple and "x3" or "x1")
 end
 
+local function petDefinition(context, pet)
+    if type(pet) ~= "table" then return nil end
+    local directory = context.Library and context.Library.Directory
+        and context.Library.Directory.Pets
+    if type(directory) ~= "table" then return nil end
+    local id = pet.id or pet.ID
+    if id == nil then return nil end
+    return directory[id] or directory[tostring(id)]
+end
+
+local function gameEggSkipPolicy(context, pets)
+    local save = saveFor(context)
+    if not save then return false, "Game Egg Skip: save is unavailable" end
+    if not hasGamepass(save, "Skip Egg Open") then
+        return false, "Game Egg Skip: Skip Egg Open gamepass is missing"
+    end
+
+    local settings = type(save.Settings) == "table" and save.Settings or {}
+    local rawSetting = settings.EggSkip
+    local setting = tonumber(rawSetting)
+    if not setting and type(rawSetting) == "string" then
+        setting = ({
+            ["basic pets"] = 1,
+            ["rare pets"] = 2,
+            ["epic pets"] = 3,
+            ["all pets"] = 4,
+        })[lower(rawSetting)]
+    end
+    setting = setting or 1
+
+    local rarityNumbers = context.Library and context.Library.Shared
+        and context.Library.Shared.PetRarityNumbers
+    if type(rarityNumbers) ~= "table" then
+        return false, "Game Egg Skip: rarity numbers are unavailable"
+    end
+
+    local highestName, highestNumber
+    local count = 0
+    if type(pets) == "table" then
+        for _, pet in pairs(pets) do
+            if type(pet) == "table" and (pet.id ~= nil or pet.ID ~= nil) then
+                count = count + 1
+                local definition = petDefinition(context, pet)
+                local rarity = definition and tostring(definition.rarity or "") or ""
+                local number = tonumber(rarityNumbers[rarity])
+                if rarity == "" or not number then
+                    return false, "Game Egg Skip: a hatch rarity could not be verified"
+                end
+                if not highestNumber or number > highestNumber then
+                    highestName, highestNumber = rarity, number
+                end
+            end
+        end
+    end
+    if count == 0 or not highestNumber then
+        return false, "Game Egg Skip: hatch payload is empty"
+    end
+
+    local settingNames = {
+        [1] = "Basic Pets",
+        [2] = "Rare Pets",
+        [3] = "Epic Pets",
+        [4] = "All Pets",
+    }
+    local allowed = setting == 4 or setting >= highestNumber
+    return allowed, string.format(
+        "Game Egg Skip: %s | highest hatch: %s | %s",
+        settingNames[setting] or tostring(rawSetting or setting),
+        tostring(highestName),
+        allowed and "auto-skip allowed" or "native animation retained"
+    )
+end
+
+local function emitLocalSkipInput()
+    local inputOk, inputManager = pcall(function()
+        return game:GetService("VirtualInputManager")
+    end)
+    if inputOk and inputManager then
+        local sent = pcall(function()
+            inputManager:SendKeyEvent(true, Enum.KeyCode.ButtonX, false, game)
+            task.wait()
+            inputManager:SendKeyEvent(false, Enum.KeyCode.ButtonX, false, game)
+        end)
+        if sent then return true, "local ButtonX input" end
+
+        sent = pcall(function()
+            inputManager:SendMouseButtonEvent(-128, -128, 0, true, game, 0)
+            task.wait()
+            inputManager:SendMouseButtonEvent(-128, -128, 0, false, game, 0)
+        end)
+        if sent then return true, "local off-screen click" end
+    end
+
+    local userOk, virtualUser = pcall(function()
+        return game:GetService("VirtualUser")
+    end)
+    if userOk and virtualUser then
+        local sent = pcall(function()
+            virtualUser:CaptureController()
+            local camera = workspace.CurrentCamera
+            local cameraFrame = camera and camera.CFrame or CFrame.new()
+            local position = Vector2.new(-128, -128)
+            virtualUser:Button1Down(position, cameraFrame)
+            task.wait()
+            virtualUser:Button1Up(position, cameraFrame)
+        end)
+        if sent then return true, "local VirtualUser click" end
+    end
+    return false, "no supported local input injector"
+end
+
+local function queueNativeSkip(state, context, pending, pets)
+    if pending.SkipScheduled or pending.Headless then return end
+    local allowed, policy = gameEggSkipPolicy(context, pets)
+    pending.SkipPolicy = policy
+    pending.SkipScheduled = allowed
+    if not allowed then return end
+
+    task.delay(NATIVE_SKIP_DELAY, function()
+        if not state.Running or state.Pending ~= pending then return end
+        if not openingFlag(context) then
+            pending.SkipResult = policy .. " | animation already completed"
+            return
+        end
+        local sent, method = emitLocalSkipInput()
+        if sent then
+            state.NativeSkips = state.NativeSkips + 1
+            pending.SkipResult = policy .. " | sent via " .. tostring(method)
+        else
+            pending.SkipResult = policy .. " | local skip failed: " .. tostring(method)
+            context.Trace("auto egg native skip", pending.SkipResult)
+        end
+    end)
+end
+
+local function autoDeletePlan(context, pets)
+    local variables = context.Library and context.Library.Variables
+    if not variables or variables.AutoDeleteEnabled ~= true then
+        return {}, "Game Auto Delete: disabled"
+    end
+
+    local save = saveFor(context)
+    local autoDelete = save and save.AutoDelete
+    if type(autoDelete) ~= "table" then
+        return {}, "Game Auto Delete: no rarity settings enabled"
+    end
+
+    local selected = {}
+    for rarity, enabled in pairs(autoDelete) do
+        if enabled then selected[tostring(rarity)] = true end
+    end
+    if next(selected) == nil then
+        return {}, "Game Auto Delete: no rarity settings enabled"
+    end
+    if type(pets) ~= "table" then
+        return nil, "Game Auto Delete: hatch payload is not a table"
+    end
+
+    local candidates, seen, rarityCounts = {}, {}, {}
+    local payloadCount = 0
+    for _, pet in pairs(pets) do
+        if type(pet) == "table" and (pet.id ~= nil or pet.ID ~= nil) then
+            payloadCount = payloadCount + 1
+            local uid = pet.uid or pet.UID
+            local id = pet.id or pet.ID
+            local definition = petDefinition(context, pet)
+            local rarity = definition and tostring(definition.rarity or "") or ""
+            if uid == nil or id == nil or rarity == "" then
+                return nil, "Game Auto Delete: a hatched pet could not be verified"
+            end
+            uid = tostring(uid)
+            if selected[rarity] and not seen[uid] then
+                seen[uid] = true
+                rarityCounts[rarity] = (rarityCounts[rarity] or 0) + 1
+                candidates[#candidates + 1] = {
+                    Uid = uid,
+                    Id = tostring(id),
+                    Rarity = rarity,
+                }
+            end
+        end
+    end
+    if payloadCount == 0 then
+        return nil, "Game Auto Delete: hatch payload contains no pets"
+    end
+    if #candidates == 0 then
+        return {}, "Game Auto Delete: hatch rarities are not selected"
+    end
+
+    local labels = {}
+    for rarity, count in pairs(rarityCounts) do
+        labels[#labels + 1] = tostring(rarity) .. " x" .. tostring(count)
+    end
+    table.sort(labels)
+    return candidates, table.concat(labels, ", ")
+end
+
+local function verifyOwnedPet(context, candidate)
+    local petCommands = context.Library and context.Library.PetCmds
+    local getPet = petCommands and petCommands.Get
+    if type(getPet) ~= "function" then
+        return false, "Library.PetCmds.Get is unavailable", true
+    end
+    local result = table.pack(pcall(getPet, candidate.Uid))
+    if not result[1] then
+        return false, "PetCmds.Get failed: " .. tostring(result[2]), true
+    end
+    local pet, owner = result[2], result[3]
+    if not pet or owner == nil then return false, "waiting for local pet replication", false end
+
+    local localPlayer = context.Library.LocalPlayer or context.Player
+    if owner ~= localPlayer and owner ~= context.Player then
+        return false, "hatched UID is not owned by LocalPlayer", true
+    end
+    local actualId = type(pet) == "table" and (pet.id or pet.ID) or nil
+    if actualId ~= nil and tostring(actualId) ~= candidate.Id then
+        return false, "hatched UID resolved to a different pet id", true
+    end
+    return true
+end
+
+local function waitForAutoDeleteOwnership(state, context, pending, candidates)
+    local deadline = os.clock() + AUTO_DELETE_SYNC_TIMEOUT
+    local lastProblem = "waiting for local pet replication"
+    repeat
+        if not state.Running or state.Pending ~= pending then
+            return false, "auto hatch stopped before Auto Delete"
+        end
+        local allReady = true
+        for _, candidate in ipairs(candidates) do
+            local ready, problem, permanent = verifyOwnedPet(context, candidate)
+            if not ready then
+                if permanent then return false, problem end
+                allReady, lastProblem = false, problem or lastProblem
+                break
+            end
+        end
+        if allReady then return true end
+        task.wait(AUTO_DELETE_POLL)
+    until os.clock() >= deadline
+    return false, tostring(lastProblem) .. " timed out after "
+        .. tostring(AUTO_DELETE_SYNC_TIMEOUT) .. "s"
+end
+
+local function runHeadlessAutoDelete(state, context, pending, pets)
+    local candidates, plan = autoDeletePlan(context, pets)
+    if not candidates then return false, plan end
+    if #candidates == 0 then return true, plan end
+
+    local ready, syncProblem = waitForAutoDeleteOwnership(state, context, pending, candidates)
+    if not ready then return false, "Game Auto Delete: " .. tostring(syncProblem) end
+
+    local uids = {}
+    for _, candidate in ipairs(candidates) do uids[#uids + 1] = candidate.Uid end
+    local result = table.pack(context.InvokeCommand("Delete Several Pets", uids))
+    if not result[1] then
+        return false, "Delete Several Pets transport failed: " .. tostring(result[3])
+    end
+    if not result[2] then
+        return false, "Delete Several Pets was rejected: " .. tostring(result[3] or "unknown reason")
+    end
+
+    state.AutoDeleted = state.AutoDeleted + #uids
+    state.AutoDeleteBatches = state.AutoDeleteBatches + 1
+    return true, string.format(
+        "Game Auto Delete: removed %d (%s) via %s",
+        #uids, tostring(plan), context.RouteText(result[4], result[5])
+    )
+end
+
+local function startHeadlessPostProcess(state, context, pending, pets)
+    if pending.PostProcessStarted or not pending.Headless then return end
+    pending.PostProcessStarted = true
+    pending.PostProcessStartedAt = os.clock()
+    task.spawn(function()
+        local result = table.pack(pcall(runHeadlessAutoDelete, state, context, pending, pets))
+        if not state.Running or state.Pending ~= pending then return end
+        if not result[1] then
+            pending.PostProcessFailure = "Game Auto Delete bridge crashed locally: " .. tostring(result[2])
+        elseif not result[2] then
+            pending.PostProcessFailure = tostring(result[3])
+        else
+            pending.PostProcessNote = tostring(result[3])
+        end
+        pending.PostProcessDone = true
+    end)
+end
+
+local function completionNote(pending)
+    local notes = {}
+    if pending.Route and pending.Route ~= "" then notes[#notes + 1] = pending.Route end
+    if pending.Headless then
+        notes[#notes + 1] = "Egg Skip: immediate headless acknowledgement"
+        if pending.PostProcessNote then notes[#notes + 1] = pending.PostProcessNote end
+    else
+        notes[#notes + 1] = pending.SkipResult or pending.SkipPolicy
+            or "Game Egg Skip: not requested"
+        notes[#notes + 1] = "Game Auto Delete: handled by the native egg callback"
+    end
+    return table.concat(notes, " | ")
+end
+
 local function finishSuccess(state, context, pending, note)
     if state.Pending ~= pending then return end
     releaseHeadlessGate(state, context)
@@ -467,17 +773,39 @@ local function handlePending(state, context, now)
         return true
     end
 
+    if pending.PostProcessFailure then
+        stopForSafety(state, context, pending,
+            "Auto hatch stopped because the game Auto Delete settings could not be applied safely: "
+            .. tostring(pending.PostProcessFailure))
+        return true
+    end
+
+    if pending.PostProcessStarted and not pending.PostProcessDone
+        and now - pending.PostProcessStartedAt >= POST_PROCESS_TIMEOUT then
+        stopForSafety(state, context, pending,
+            "Auto hatch stopped: Game Auto Delete post-processing exceeded "
+            .. tostring(POST_PROCESS_TIMEOUT) .. "s; no second egg request was sent")
+        return true
+    end
+
     if pending.ResponseDone and pending.EventReceived then
         if pending.Accepted or pending.Acknowledged then
             if pending.Headless then
-                if pending.Acknowledged then
-                    finishSuccess(state, context, pending, pending.Route)
+                if pending.Acknowledged and not pending.PostProcessStarted and pending.Pets then
+                    startHeadlessPostProcess(state, context, pending, pending.Pets)
+                end
+                if pending.Acknowledged and pending.PostProcessDone then
+                    finishSuccess(state, context, pending, completionNote(pending))
+                elseif pending.Acknowledged then
+                    setStatus(state, context, "Headless hatch acknowledged for " .. requestLabel(pending)
+                        .. "; applying the game's Auto Delete settings before the next purchase...")
                 end
             elseif not openingFlag(context) then
-                finishSuccess(state, context, pending, pending.Route)
+                finishSuccess(state, context, pending, completionNote(pending))
             else
                 setStatus(state, context, "Native animation is finishing for " .. requestLabel(pending)
-                    .. "; the next purchase remains locked...")
+                    .. "; the next purchase remains locked...\n"
+                    .. tostring(pending.SkipResult or pending.SkipPolicy or "Reading the game Egg Skip setting..."))
             end
         else
             finishRejection(state, context, pending)
@@ -535,6 +863,11 @@ local function beginRequest(state, context, options, inspection)
         Accepted = false,
         EventReceived = false,
         Acknowledged = false,
+        Pets = nil,
+        PostProcessStarted = false,
+        PostProcessDone = not headless,
+        PostProcessFailure = nil,
+        SkipScheduled = false,
         Inspection = inspection,
     }
     state.Pending = pending
@@ -669,6 +1002,9 @@ return function(action, context)
         Successes = 0,
         Rejections = 0,
         Timeouts = 0,
+        NativeSkips = 0,
+        AutoDeleted = 0,
+        AutoDeleteBatches = 0,
         CleanSuccesses = 0,
         ConsecutiveFailures = 0,
     }
@@ -700,6 +1036,14 @@ return function(action, context)
             if matching then
                 pending.EventReceived = true
                 pending.EventAt = os.clock()
+                pending.Pets = pets
+                if pending.Headless then
+                    if pending.Acknowledged and not pending.AckFailure then
+                        startHeadlessPostProcess(state, context, pending, pets)
+                    end
+                else
+                    queueNativeSkip(state, context, pending, pets)
+                end
             elseif state.GateOwned then
                 context.Trace("auto egg", "acknowledged an unexpected Open Egg while the headless gate was owned: "
                     .. tostring(eggName))
@@ -715,9 +1059,10 @@ return function(action, context)
     local env = type(getgenv) == "function" and getgenv() or _G
     state.Stop = function() return stopState(state, context) end
     env.PSX_OG_FastEggState = state
-    context.Trace("auto egg module", "started with dynamic Buy Egg Yay/Open Egg/Opening Egg routes")
+    context.Trace("auto egg module",
+        "started with dynamic Buy Egg Yay/Open Egg/Opening Egg/Delete Several Pets routes")
     setStatus(state, context,
-        "Auto hatch armed. Catalog and distance checks are local; no probe purchase was sent.\n"
+        "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
         .. "Waiting for a valid egg within 15 studs...")
 
     task.spawn(function()
