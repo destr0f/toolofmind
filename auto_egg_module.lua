@@ -2,24 +2,31 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
+local MODULE_VERSION = "1.1.0"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
 local INITIAL_REQUEST_DELAY = 0.75
 local MIN_REQUEST_DELAY = 0.55
 local MAX_REQUEST_DELAY = 8
-local EVENT_TIMEOUT = 6
+local HEADLESS_EVENT_TIMEOUT = 8
+local NATIVE_EVENT_TIMEOUT = 20
 local SUSPICIOUS_PAUSE = 60
 local EGG_INTERACT_DISTANCE = 15
 local EGG_SCAN_INTERVAL = 0.75
 local AUTO_DELETE_SYNC_TIMEOUT = 2.5
 local AUTO_DELETE_POLL = 0.05
 local POST_PROCESS_TIMEOUT = 8
-local NATIVE_SKIP_DELAY = 0.12
+local NATIVE_SKIP_ARM_TIMEOUT = 8
+local NATIVE_SKIP_CONNECTION_WINDOW = 0.35
 local physicalCache = { Root = nil, ById = {}, ScannedAt = 0 }
 
 local function lower(value)
     return string.lower(tostring(value or ""))
+end
+
+local function normalizedEggName(value)
+    return (lower(value):gsub("%s+", " "):match("^%s*(.-)%s*$"))
 end
 
 local function directoryFor(context)
@@ -393,7 +400,7 @@ local function petDefinition(context, pet)
     return directory[id] or directory[tostring(id)]
 end
 
-local function gameEggSkipPolicy(context, pets)
+local function gameAllPetsSkipPolicy(context)
     local save = saveFor(context)
     if not save then return false, "Game Egg Skip: save is unavailable" end
     if not hasGamepass(save, "Skip Egg Open") then
@@ -412,48 +419,17 @@ local function gameEggSkipPolicy(context, pets)
         })[lower(rawSetting)]
     end
     setting = setting or 1
-
-    local rarityNumbers = context.Library and context.Library.Shared
-        and context.Library.Shared.PetRarityNumbers
-    if type(rarityNumbers) ~= "table" then
-        return false, "Game Egg Skip: rarity numbers are unavailable"
-    end
-
-    local highestName, highestNumber
-    local count = 0
-    if type(pets) == "table" then
-        for _, pet in pairs(pets) do
-            if type(pet) == "table" and (pet.id ~= nil or pet.ID ~= nil) then
-                count = count + 1
-                local definition = petDefinition(context, pet)
-                local rarity = definition and tostring(definition.rarity or "") or ""
-                local number = tonumber(rarityNumbers[rarity])
-                if rarity == "" or not number then
-                    return false, "Game Egg Skip: a hatch rarity could not be verified"
-                end
-                if not highestNumber or number > highestNumber then
-                    highestName, highestNumber = rarity, number
-                end
-            end
-        end
-    end
-    if count == 0 or not highestNumber then
-        return false, "Game Egg Skip: hatch payload is empty"
-    end
-
     local settingNames = {
         [1] = "Basic Pets",
         [2] = "Rare Pets",
         [3] = "Epic Pets",
         [4] = "All Pets",
     }
-    local allowed = setting == 4 or setting >= highestNumber
-    return allowed, string.format(
-        "Game Egg Skip: %s | highest hatch: %s | %s",
-        settingNames[setting] or tostring(rawSetting or setting),
-        tostring(highestName),
-        allowed and "auto-skip allowed" or "native animation retained"
-    )
+    if setting == 4 then
+        return true, "Game Egg Skip: All Pets | fast skip armed before purchase"
+    end
+    return false, "Game Egg Skip: " .. tostring(settingNames[setting] or rawSetting or setting)
+        .. " | result-dependent native skip cannot be armed before the result"
 end
 
 local function inputConnectionSnapshot(context)
@@ -550,23 +526,50 @@ local function emitLocalSkipInput(context, pending)
     return false, "no supported local input injector"
 end
 
-local function queueNativeSkip(state, context, pending, pets)
+local function armNativeSkip(state, context, pending)
     if pending.SkipScheduled or pending.Headless then return end
-    local allowed, policy = gameEggSkipPolicy(context, pets)
+    local allowed, policy = gameAllPetsSkipPolicy(context)
     pending.SkipPolicy = policy
     pending.SkipScheduled = allowed
     if not allowed then return end
 
-    task.delay(NATIVE_SKIP_DELAY, function()
+    task.spawn(function()
+        local openingDeadline = pending.StartedAt + NATIVE_SKIP_ARM_TIMEOUT
+        while state.Running and state.Pending == pending and os.clock() < openingDeadline do
+            if openingFlag(context) then
+                pending.NativeOpeningSeen = true
+                pending.NativeOpeningAt = pending.NativeOpeningAt or os.clock()
+                break
+            end
+            task.wait(0.01)
+        end
+
         if not state.Running or state.Pending ~= pending then return end
-        if not openingFlag(context) then
-            pending.SkipResult = policy .. " | animation already completed"
+        if not pending.NativeOpeningSeen then
+            pending.SkipResult = policy .. " | native OpeningEgg transition was not observed"
             return
         end
-        local sent, method = emitLocalSkipInput(context, pending)
+
+        local sent, method = false, nil
+        if type(pending.InputConnections) == "table" then
+            local connectionDeadline = os.clock() + NATIVE_SKIP_CONNECTION_WINDOW
+            repeat
+                if invokeNewEggSkipConnection(context, pending) then
+                    sent, method = true, "auto-detected native Egg Skip callback"
+                    break
+                end
+                task.wait(0.01)
+            until not state.Running or state.Pending ~= pending
+                or not openingFlag(context) or os.clock() >= connectionDeadline
+        end
+
+        if not sent and state.Running and state.Pending == pending and openingFlag(context) then
+            sent, method = emitLocalSkipInput(context, pending)
+        end
         if sent then
             state.NativeSkips = state.NativeSkips + 1
             pending.SkipResult = policy .. " | sent via " .. tostring(method)
+            context.Trace("auto egg native skip", pending.SkipResult)
         else
             pending.SkipResult = policy .. " | local skip failed: " .. tostring(method)
             context.Trace("auto egg native skip", pending.SkipResult)
@@ -732,6 +735,7 @@ local function completionNote(pending)
     if pending.Route and pending.Route ~= "" then notes[#notes + 1] = pending.Route end
     if pending.Headless then
         notes[#notes + 1] = "Egg Skip: immediate headless acknowledgement"
+        if pending.MatchMode then notes[#notes + 1] = pending.MatchMode end
         if pending.PostProcessNote then notes[#notes + 1] = pending.PostProcessNote end
     else
         notes[#notes + 1] = pending.SkipResult or pending.SkipPolicy
@@ -799,28 +803,35 @@ local function finishTimeout(state, context, pending)
     state.Timeouts = state.Timeouts + 1
     state.CleanSuccesses = 0
     state.ConsecutiveFailures = state.ConsecutiveFailures + 1
-    state.RequestDelay = math.min(MAX_REQUEST_DELAY, math.max(2, state.RequestDelay * 2))
 
     if not pending.ResponseDone then
-        local reason = "Buy Egg Yay did not return in " .. tostring(EVENT_TIMEOUT)
+        local reason = "Buy Egg Yay did not return in " .. tostring(pending.TimeoutSeconds)
             .. "s; auto hatch stopped so a second request cannot overlap it"
         stopForSafety(state, context, pending, reason)
         return
     end
 
-    state.Pending = nil
-    local pause = state.ConsecutiveFailures >= 2 and 30 or state.RequestDelay
-    state.SuspendedUntil = state.ConsecutiveFailures >= 2 and (os.clock() + pause) or 0
-    state.NextAction = os.clock() + pause
-    setStatus(state, context, string.format(
-        "Timed out waiting for matching Open Egg: %s\nNo duplicate was sent | next attempt in %.1fs",
-        requestLabel(pending), pause
-    ))
+    local observations = string.format(
+        "response accepted=%s | Open Egg events=%d | native OpeningEgg seen=%s",
+        tostring(pending.Accepted),
+        tonumber(pending.OpenEventsSeen) or 0,
+        tostring(pending.NativeOpeningSeen == true)
+    )
+    stopForSafety(state, context, pending,
+        "Timed out after an accepted/unknown egg request: " .. requestLabel(pending)
+        .. "\n" .. observations
+        .. "\nAuto hatch stopped; the request will not be repeated blindly.")
 end
 
 local function handlePending(state, context, now)
     local pending = state.Pending
     if not pending then return false end
+
+    local openingNow = openingFlag(context)
+    if not pending.Headless and openingNow then
+        pending.NativeOpeningSeen = true
+        pending.NativeOpeningAt = pending.NativeOpeningAt or now
+    end
 
     if pending.AckFailure then
         stopForSafety(state, context, pending,
@@ -844,6 +855,12 @@ local function handlePending(state, context, now)
         return true
     end
 
+    if not pending.Headless and pending.ResponseDone
+        and pending.NativeOpeningSeen and not openingNow then
+        finishSuccess(state, context, pending, completionNote(pending))
+        return true
+    end
+
     if pending.ResponseDone and pending.EventReceived then
         if pending.Accepted or pending.Acknowledged then
             if pending.Headless then
@@ -856,7 +873,7 @@ local function handlePending(state, context, now)
                     setStatus(state, context, "Headless hatch acknowledged for " .. requestLabel(pending)
                         .. "; applying the game's Auto Delete settings before the next purchase...")
                 end
-            elseif not openingFlag(context) then
+            elseif not openingNow then
                 finishSuccess(state, context, pending, completionNote(pending))
             else
                 setStatus(state, context, "Native animation is finishing for " .. requestLabel(pending)
@@ -869,22 +886,28 @@ local function handlePending(state, context, now)
         return true
     end
 
-    if pending.ResponseDone and not pending.Accepted and not pending.EventReceived then
+    if pending.ResponseDone and not pending.Accepted and not pending.EventReceived
+        and not pending.NativeOpeningSeen then
         finishRejection(state, context, pending)
         return true
     end
 
-    if now - pending.StartedAt >= EVENT_TIMEOUT then
+    if now - pending.StartedAt >= pending.TimeoutSeconds then
         finishTimeout(state, context, pending)
         return true
     end
 
-    if pending.EventReceived and not pending.ResponseDone then
+    if not pending.Headless and pending.NativeOpeningSeen and openingNow then
+        setStatus(state, context, "Native egg animation is active for " .. requestLabel(pending)
+            .. "; completion is tracked by Library.Variables.OpeningEgg.\n"
+            .. tostring(pending.SkipResult or pending.SkipPolicy or "Fast skip watcher is armed..."))
+    elseif pending.EventReceived and not pending.ResponseDone then
         setStatus(state, context, "Open Egg received for " .. requestLabel(pending)
             .. "; waiting for the single Buy Egg Yay call to return...")
     elseif pending.ResponseDone and pending.Accepted and not pending.EventReceived then
         setStatus(state, context, "Buy Egg Yay accepted for " .. requestLabel(pending)
-            .. "; waiting for its matching Open Egg event...")
+            .. "; waiting for native OpeningEgg or its matching Open Egg event...\n"
+            .. tostring(pending.SkipResult or pending.SkipPolicy or "Fast skip watcher is armed..."))
     end
     return true
 end
@@ -915,6 +938,7 @@ local function beginRequest(state, context, options, inspection)
         Triple = options.Count == 3,
         Headless = headless,
         StartedAt = os.clock(),
+        TimeoutSeconds = headless and HEADLESS_EVENT_TIMEOUT or NATIVE_EVENT_TIMEOUT,
         ResponseDone = false,
         Accepted = false,
         EventReceived = false,
@@ -924,14 +948,19 @@ local function beginRequest(state, context, options, inspection)
         PostProcessDone = not headless,
         PostProcessFailure = nil,
         SkipScheduled = false,
+        NativeOpeningSeen = false,
+        OpenEventsSeen = 0,
         InputConnections = not headless and inputConnectionSnapshot(context) or nil,
         Inspection = inspection,
     }
     state.Pending = pending
     state.Requests = state.Requests + 1
+    if not headless then armNativeSkip(state, context, pending) end
     setStatus(state, context, string.format(
-        "Sending one Buy Egg Yay request: %s\nDistance: %.1f/15 | request #%d | dynamic Network route",
-        requestLabel(pending), tonumber(inspection.Distance) or 0, state.Requests
+        "Sending one Buy Egg Yay request: %s\nDistance: %.1f/15 | request #%d | dynamic Network route\n%s",
+        requestLabel(pending), tonumber(inspection.Distance) or 0, state.Requests,
+        headless and "Headless gate armed before purchase"
+            or tostring(pending.SkipPolicy or "Native skip watcher is preparing...")
     ))
 
     task.spawn(function()
@@ -1062,6 +1091,7 @@ return function(action, context)
         NativeSkips = 0,
         AutoDeleted = 0,
         AutoDeleteBatches = 0,
+        OpenEvents = 0,
         CleanSuccesses = 0,
         ConsecutiveFailures = 0,
     }
@@ -1071,7 +1101,37 @@ return function(action, context)
         return signal:Connect(function(eggName, pets)
             if not state.Running or activeState ~= state then return end
             local pending = state.Pending
-            local matching = pending and tostring(pending.Egg) == tostring(eggName)
+            state.OpenEvents = state.OpenEvents + 1
+            if pending then pending.OpenEventsSeen = pending.OpenEventsSeen + 1 end
+
+            local exactMatch = pending
+                and normalizedEggName(pending.Egg) == normalizedEggName(eggName)
+            local gateFallback = pending and pending.Headless and state.GateOwned
+                and not pending.EventReceived
+            local matching = exactMatch or gateFallback
+            local age = pending and (os.clock() - pending.StartedAt) or -1
+            local payloadCount = 0
+            if type(pets) == "table" then
+                for _, pet in pairs(pets) do
+                    if type(pet) == "table" and (pet.id ~= nil or pet.ID ~= nil) then
+                        payloadCount = payloadCount + 1
+                    end
+                end
+            end
+            context.Trace("auto egg Open Egg", string.format(
+                "event #%d | expected=%s | actual=%s | match=%s | gateFallback=%s | pets=%d | age=%.2fs",
+                state.OpenEvents,
+                pending and tostring(pending.Egg) or "none",
+                tostring(eggName),
+                tostring(matching == true),
+                tostring(gateFallback == true and not exactMatch),
+                payloadCount,
+                age
+            ))
+            if matching and gateFallback and not exactMatch then
+                pending.MatchMode = "owned headless gate auto-detection"
+                pending.ActualEgg = tostring(eggName)
+            end
 
             if state.GateOwned then
                 local now = os.clock()
@@ -1098,8 +1158,6 @@ return function(action, context)
                     if pending.Acknowledged and not pending.AckFailure then
                         startHeadlessPostProcess(state, context, pending, pets)
                     end
-                else
-                    queueNativeSkip(state, context, pending, pets)
                 end
             elseif state.GateOwned then
                 context.Trace("auto egg", "acknowledged an unexpected Open Egg while the headless gate was owned: "
@@ -1117,7 +1175,8 @@ return function(action, context)
     state.Stop = function() return stopState(state, context) end
     env.PSX_OG_FastEggState = state
     context.Trace("auto egg module",
-        "started with dynamic Buy Egg Yay/Open Egg/Opening Egg/Delete Several Pets routes")
+        "v" .. MODULE_VERSION
+        .. " | pre-armed Native skip + dynamic Buy Egg Yay/Open Egg/Opening Egg/Delete Several Pets routes")
     setStatus(state, context,
         "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
         .. "Waiting for a valid egg within 15 studs...")
