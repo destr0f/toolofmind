@@ -1,4 +1,4 @@
-local VERSION = "1.3.0-dev.1"
+local VERSION = "1.3.0-dev.2"
 local env = type(getgenv) == "function" and getgenv() or _G
 local function trace(stage, detail)
 print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -1827,7 +1827,7 @@ local secs = seconds % 60
 if hours > 0 then return string.format("%dh %02dm %02ds", hours, minutes, secs) end
 return string.format("%dm %02ds", minutes, secs)
 end
-local AUTO_EGG_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/5ebc7a79adc7e59bcc18086ef10a8ba57c4e6351/auto_egg_module.lua"
+local AUTO_EGG_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/7818d22256de09adab7b0dde956749ff149f2ee7/auto_egg_module.lua"
 local autoEggController
 local autoEggLoading = false
 local autoEggLoadProblem
@@ -1903,6 +1903,7 @@ end
 if not config.AutoEgg or not running() then return end
 local context = {
 Library = Library,
+Player = player,
 Running = running,
 Enabled = function() return config.AutoEgg end,
 GetOptions = function()
@@ -2477,8 +2478,8 @@ Desc = initialEggSummary,
 })
 UI.EggAutomationSection = UI.EggTab:Section({ Title = "02 / Protocol-Safe Hatch Loop", Box = true, Opened = true })
 UI.EggAutomationSection:Paragraph({
-Title = "PREFLIGHT > BUY > OPEN EVENT > ACK > COOLDOWN",
-Desc = "Only one Buy Egg Yay call may exist at once. The worker waits for its matching Open Egg event and adapts timing after every result.",
+Title = "PREFLIGHT > BUY > OPEN EVENT > ACK > GAME SETTINGS > COOLDOWN",
+Desc = "Only one Buy Egg Yay call may exist at once. Headless mode mirrors the game's Auto Delete table; Native mode follows the game's Egg Skip setting without enabling its second auto-hatch loop.",
 })
 UI.EggAutomationSection:Dropdown({
 Flag = "egg_open_count",
@@ -2493,7 +2494,7 @@ Callback = function(value) config.EggCount = value == "Triple (x3)" and 3 or 1 e
 UI.EggAutomationSection:Dropdown({
 Flag = "egg_animation_mode",
 Title = "Animation Mode",
-Desc = "Headless blocks the original visual callback and immediately sends its required acknowledgement",
+Desc = "Headless skips visuals immediately and safely mirrors Auto Delete. Native keeps visuals and injects one local skip input only when the game's Egg Skip setting allows it.",
 Values = { "Headless (No Animation)", "Native Animation" },
 Value = "Headless (No Animation)",
 Multi = false,
