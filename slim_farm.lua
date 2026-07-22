@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.3.0-dev.2"
+local VERSION = "1.3.0-dev.3"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2007,7 +2007,7 @@ local function formatDuration(seconds)
     return string.format("%dm %02ds", minutes, secs)
 end
 
-local AUTO_EGG_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/7818d22256de09adab7b0dde956749ff149f2ee7/auto_egg_module.lua"
+local AUTO_EGG_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/6c53469c2763b1e626c2026f2d240104f7912667/auto_egg_module.lua"
 local autoEggController
 local autoEggLoading = false
 local autoEggLoadProblem
@@ -2709,7 +2709,7 @@ statusViews.EggCatalog = UI.EggCatalogSection:Paragraph({
 UI.EggAutomationSection = UI.EggTab:Section({ Title = "02 / Protocol-Safe Hatch Loop", Box = true, Opened = true })
 UI.EggAutomationSection:Paragraph({
     Title = "PREFLIGHT > BUY > OPEN EVENT > ACK > GAME SETTINGS > COOLDOWN",
-    Desc = "Only one Buy Egg Yay call may exist at once. Headless mode mirrors the game's Auto Delete table; Native mode follows the game's Egg Skip setting without enabling its second auto-hatch loop.",
+    Desc = "Only one Buy Egg Yay call may exist at once. Native completion follows OpeningEgg instead of a late Open Egg listener, and an accepted unknown request is never repeated blindly.",
 })
 UI.EggAutomationSection:Dropdown({
     Flag = "egg_open_count",
@@ -2724,7 +2724,7 @@ UI.EggAutomationSection:Dropdown({
 UI.EggAutomationSection:Dropdown({
     Flag = "egg_animation_mode",
     Title = "Animation Mode",
-    Desc = "Headless skips visuals immediately and safely mirrors Auto Delete. Native keeps visuals and injects one local skip input only when the game's Egg Skip setting allows it.",
+    Desc = "Headless is the fastest path. Native pre-arms an OpeningEgg watcher before purchase and auto-detects the temporary skip callback when the game setting is All Pets.",
     Values = { "Headless (No Animation)", "Native Animation" },
     Value = "Headless (No Animation)",
     Multi = false,
