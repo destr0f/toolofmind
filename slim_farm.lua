@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.0-dev.2"
+local VERSION = "1.4.1-dev.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -99,6 +99,12 @@ local config = {
     EggAnimation = "Headless (No Animation)",
 }
 
+local MODULE_REVISION = "37605acb544cf4c95b20f088d424046e5f1d536e"
+local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
+    .. MODULE_REVISION .. "/"
+local SUPPORT_MODULE_URL = RAW_MODULE_BASE .. "automation_support_module.lua"
+local AUTOMATION_UI_MODULE_URL = RAW_MODULE_BASE .. "automation_ui_module.lua"
+
 local DIAMOND_PACK_TIER = 4
 local DIAMOND_PACK_MINIMUM = 1e12
 local DIAMOND_PACK_INTERVAL = 180
@@ -127,77 +133,6 @@ env.PSX_OG_SLIM_TOKEN = token
 
 local function running()
     return env.PSX_OG_SLIM_TOKEN == token
-end
-
--- Inventory-mutating workers share one fair local gate. This prevents an egg
--- inventory delta from being confused with a machine conversion or DM claim.
-local operationGate = {
-    Owner = nil,
-    OwnerSince = 0,
-    Waiters = {},
-    Sequence = 0,
-}
-
-local function cleanOperationGate(now)
-    now = now or os.clock()
-    if operationGate.Owner and now - operationGate.OwnerSince > 45 then
-        trace("operation gate", "expired stale owner " .. tostring(operationGate.Owner))
-        operationGate.Owner = nil
-        operationGate.OwnerSince = 0
-    end
-    for owner, waiter in pairs(operationGate.Waiters) do
-        if now - (waiter.SeenAt or 0) > 2 then operationGate.Waiters[owner] = nil end
-    end
-end
-
-local function acquireOperation(owner)
-    owner = tostring(owner or "unknown")
-    local now = os.clock()
-    cleanOperationGate(now)
-    if operationGate.Owner == owner then return true, owner end
-
-    local waiter = operationGate.Waiters[owner]
-    if not waiter then
-        operationGate.Sequence = operationGate.Sequence + 1
-        waiter = { Sequence = operationGate.Sequence, SeenAt = now }
-        operationGate.Waiters[owner] = waiter
-    else
-        waiter.SeenAt = now
-    end
-    if operationGate.Owner then return false, operationGate.Owner end
-
-    local nextOwner, nextSequence
-    for candidate, item in pairs(operationGate.Waiters) do
-        if nextSequence == nil or item.Sequence < nextSequence then
-            nextOwner, nextSequence = candidate, item.Sequence
-        end
-    end
-    if nextOwner ~= owner then return false, nextOwner end
-
-    operationGate.Waiters[owner] = nil
-    operationGate.Owner = owner
-    operationGate.OwnerSince = now
-    return true, owner
-end
-
-local function releaseOperation(owner)
-    owner = tostring(owner or "unknown")
-    operationGate.Waiters[owner] = nil
-    if operationGate.Owner == owner then
-        operationGate.Owner = nil
-        operationGate.OwnerSince = 0
-    end
-end
-
-local function cancelOperation(owner)
-    releaseOperation(owner)
-end
-
-local function operationGateStatus()
-    cleanOperationGate()
-    local waiting = 0
-    for _ in pairs(operationGate.Waiters) do waiting = waiting + 1 end
-    return operationGate.Owner or "idle", waiting
 end
 
 local function track(connection)
@@ -266,6 +201,60 @@ local function networkReady()
     return network
 end
 
+-- Executors are much less stable when several large loadstring calls compile in
+-- parallel during profile auto-load. Every optional module now uses this one lane.
+local moduleLoadState = { Busy = false, Owner = nil, NextAt = 0, Cache = {} }
+
+local function loadRemoteController(url, label, statusCallback)
+    local cached = moduleLoadState.Cache[url]
+    if type(cached) == "function" then return cached, nil end
+
+    local deadline = os.clock() + 45
+    while running() and (moduleLoadState.Busy or os.clock() < moduleLoadState.NextAt)
+        and os.clock() < deadline do
+        task.wait(0.05)
+    end
+    if not running() then return nil, "script stopped before module load" end
+    if moduleLoadState.Busy then
+        return nil, "module loader timed out behind " .. tostring(moduleLoadState.Owner)
+    end
+    cached = moduleLoadState.Cache[url]
+    if type(cached) == "function" then return cached, nil end
+
+    moduleLoadState.Busy = true
+    moduleLoadState.Owner = tostring(label or "optional module")
+    if type(statusCallback) == "function" then
+        pcall(statusCallback, "Loading " .. moduleLoadState.Owner .. " in the serial module lane...")
+    end
+
+    local loaded, controllerOrProblem = pcall(function()
+        local source = game:HttpGet(url)
+        if type(source) ~= "string" or source == "" then
+            error("download returned an empty payload", 0)
+        end
+        local chunk, compileProblem = loadstring(source)
+        source = nil
+        if not chunk then error("compile failed: " .. tostring(compileProblem), 0) end
+        local controller = chunk()
+        chunk = nil
+        if type(controller) ~= "function" then
+            error("module entrypoint is not a function", 0)
+        end
+        return controller
+    end)
+
+    moduleLoadState.Busy = false
+    moduleLoadState.Owner = nil
+    moduleLoadState.NextAt = os.clock() + 0.25
+    if not loaded then
+        trace("module loader", tostring(label) .. " failed: " .. tostring(controllerOrProblem))
+        return nil, tostring(controllerOrProblem)
+    end
+    moduleLoadState.Cache[url] = controllerOrProblem
+    trace("module loader", tostring(label) .. " ready")
+    return controllerOrProblem, nil
+end
+
 local function normalize(value)
     value = string.lower(tostring(value or ""))
     value = string.gsub(value, "[%p_]+", " ")
@@ -273,126 +262,14 @@ local function normalize(value)
     return string.match(value, "^%s*(.-)%s*$") or value
 end
 
-local EVENT_MACHINE_FALLBACK_NAMES = {
-    ["Galaxy Fox"] = true,
-    ["Silver Stag"] = true,
-    ["Silver Dragon"] = true,
-    ["Santa Paws"] = true,
-}
-local machinePetCatalogCache = { ExpiresAt = 0, Ids = {}, Names = {}, Summary = "loading" }
-
-local function machinePetDefinitionAllowed(definition)
-    if type(definition) ~= "table" then return false end
-    local rarity = normalize(definition.rarity or definition.Rarity)
-    if definition.isPremium == true or definition.huge == true or definition.isHuge == true
-        or definition.isExclusive == true or definition.isVanity == true
-        or rarity == "exclusive" or rarity == "secret" then
-        return false
-    end
-    return rarity == "legendary" or rarity == "mythical"
-end
-
-local function getMachinePetCatalog(force)
-    local now = os.clock()
-    if not force and now < machinePetCatalogCache.ExpiresAt then
-        return machinePetCatalogCache.Ids, machinePetCatalogCache.Names,
-            machinePetCatalogCache.Summary
-    end
-
-    local directory = Library and Library.Directory or {}
-    local pets = type(directory.Pets) == "table" and directory.Pets or {}
-    local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
-    local ids, eventEggs = {}, {}
-
-    local function addPet(rawId)
-        if rawId == nil then return end
-        local id = tostring(rawId)
-        local definition = pets[id] or pets[tonumber(id)]
-        if not machinePetDefinitionAllowed(definition) then return end
-        ids[id] = true
-    end
-
-    local function addEggDrops(rawEgg, visiting)
-        local eggId = tostring(rawEgg or "")
-        if eggId == "" then return end
-        visiting = visiting or {}
-        if visiting[eggId] then return end
-        visiting[eggId] = true
-        local entry = eggs[eggId]
-        local drops = type(entry) == "table" and entry.drops or nil
-        if type(drops) == "string" then
-            addEggDrops(drops, visiting)
-        elseif type(drops) == "table" then
-            for _, drop in pairs(drops) do
-                local petId = type(drop) == "table"
-                    and (drop[1] or drop.id or drop.ID or drop.petId or drop.PetId) or drop
-                addPet(petId)
-            end
-        end
-        visiting[eggId] = nil
-    end
-
-    for eggId, entry in pairs(eggs) do
-        if type(entry) == "table" then
-            local marker = normalize(table.concat({
-                tostring(eggId), tostring(entry.displayName or ""),
-                tostring(entry.currency or ""), tostring(entry.area or ""),
-                tostring(entry.event or entry.Event or entry.eventName or entry.EventName or ""),
-            }, " "))
-            if normalize(entry.currency) == "gingerbread"
-                or string.find(marker, "christmas", 1, true)
-                or string.find(marker, "holiday", 1, true)
-                or string.find(marker, "new year", 1, true)
-                or string.find(marker, "newyear", 1, true)
-                or string.find(marker, "xmas", 1, true)
-                or string.find(marker, "jolly", 1, true)
-                or string.find(marker, "many gifts", 1, true) then
-                eventEggs[#eventEggs + 1] = tostring(eggId)
-                addEggDrops(eggId)
-            end
-        end
-    end
-
-    for id, definition in pairs(pets) do
-        if type(definition) == "table" and EVENT_MACHINE_FALLBACK_NAMES[tostring(definition.name)] then
-            addPet(id)
-        end
-    end
-
-    local names = {}
-    for id in pairs(ids) do
-        local definition = pets[id] or pets[tonumber(id)]
-        names[#names + 1] = tostring(type(definition) == "table" and definition.name or id)
-    end
-    table.sort(names)
-    table.sort(eventEggs)
-    local summary = string.format("%d eligible species from %d live event egg(s): %s",
-        #names, #eventEggs, #names > 0 and table.concat(names, ", ") or "none")
-    machinePetCatalogCache = {
-        ExpiresAt = now + 5,
-        Ids = ids,
-        Names = names,
-        Summary = summary,
-    }
-    return ids, names, summary
-end
-
 local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/640ac3ed2edf68868b439b639bb31b3d617d5f43/graphics_module.lua"
 local graphicsController
 
 local function graphicsAction(action, value)
     if not graphicsController then
-        local downloaded, source = pcall(function() return game:HttpGet(GRAPHICS_MODULE_URL) end)
-        if not downloaded then warn("[PSX SLIM] graphics download: " .. tostring(source)); return false end
-        local chunk, compileProblem = loadstring(source)
-        source = nil
-        if not chunk then warn("[PSX SLIM] graphics compile: " .. tostring(compileProblem)); return false end
-        local started, controller = pcall(chunk)
-        if not started or type(controller) ~= "function" then
-            warn("[PSX SLIM] graphics start: " .. tostring(controller)); return false
-        end
+        local controller, problem = loadRemoteController(GRAPHICS_MODULE_URL, "graphics module")
+        if not controller then warn("[PSX SLIM] graphics load: " .. tostring(problem)); return false end
         graphicsController = controller
-        trace("graphics module", "loaded on demand")
     end
 
     local called, accepted, problem = pcall(graphicsController, action, value)
@@ -1651,6 +1528,77 @@ local function fireCommand(commandName, ...)
     return true, nil, sourceName, sessionIndex
 end
 
+-- The inventory-operation gate, event pet catalog and route report live in one
+-- small lazy module. Keeping them outside the main chunk reduces compile load,
+-- while every network action still uses this session's Library.Network readers.
+local supportController
+local supportLoadProblem
+local supportRetryAt = 0
+local supportContext = {
+    Library = Library,
+    Trace = trace,
+    GetCommandRemote = getCommandRemote,
+    GetFireRemote = getFireRemote,
+}
+
+local function ensureSupportModule()
+    if supportController then return supportController, nil end
+    if os.clock() < supportRetryAt then return nil, supportLoadProblem end
+
+    local controller, problem = loadRemoteController(
+        SUPPORT_MODULE_URL,
+        "automation support coordinator"
+    )
+    if not controller then
+        supportLoadProblem = tostring(problem or "unknown load error")
+        supportRetryAt = os.clock() + 10
+        return nil, supportLoadProblem
+    end
+    supportController = controller
+    supportLoadProblem = nil
+    supportRetryAt = 0
+    return supportController, nil
+end
+
+local function acquireOperation(owner)
+    local controller, problem = ensureSupportModule()
+    if not controller then return false, "coordinator unavailable: " .. tostring(problem) end
+    local called, acquired, currentOwner = pcall(controller, "acquire", supportContext, owner)
+    if not called then return false, "coordinator error: " .. tostring(acquired) end
+    return acquired, currentOwner
+end
+
+local function releaseOperation(owner)
+    if not supportController then return false end
+    local called, released = pcall(supportController, "release", supportContext, owner)
+    return called and released == true
+end
+
+local function cancelOperation(owner)
+    if not supportController then return false end
+    local called, cancelled = pcall(supportController, "cancel", supportContext, owner)
+    return called and cancelled == true
+end
+
+local function operationGateStatus()
+    if not supportController then return "idle", 0 end
+    local called, owner, waiting = pcall(supportController, "status", supportContext)
+    if not called then return "coordinator error", 0 end
+    return owner, waiting
+end
+
+local function getMachinePetCatalog(force)
+    local controller, problem = ensureSupportModule()
+    if not controller then return {}, {}, "catalog unavailable: " .. tostring(problem) end
+    local called, ids, names, summary = pcall(controller, "catalog", supportContext, force == true)
+    if not called then return {}, {}, "catalog error: " .. tostring(ids) end
+    return ids, names, summary
+end
+
+local function resetSupportCoordinator()
+    if supportController then pcall(supportController, "reset", supportContext) end
+end
+
 local function runtimeTableScore(candidate)
     if type(candidate) ~= "table" then return 0 end
     local score, checked = 0, 0
@@ -2305,14 +2253,12 @@ local function formatDuration(seconds)
     return string.format("%dm %02ds", minutes, secs)
 end
 
-local MODULE_REVISION = "f0bac3b5a7823681a2b64c8a91e5fe9203d8d1c4"
-local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
-    .. MODULE_REVISION .. "/"
 local AUTO_EGG_MODULE_URL = RAW_MODULE_BASE .. "auto_egg_module.lua"
 local autoEggController
 local autoEggLoading = false
 local autoEggLoadProblem
 local autoEggToggleControl
+local refreshEggDropdown
 
 local function stopAutoEggModule(statusText)
     if autoEggController then pcall(autoEggController, "stop") end
@@ -2339,30 +2285,17 @@ local function ensureAutoEggModule()
     end
     autoEggLoading = true
     autoEggLoadProblem = nil
-    setEggStatus("Loading the protocol-safe auto egg worker on demand...")
-    local downloaded, source = pcall(function() return game:HttpGet(AUTO_EGG_MODULE_URL) end)
-    if downloaded then
-        local chunk, compileProblem = loadstring(source)
-        source = nil
-        if chunk then
-            local started, controller = pcall(chunk)
-            if started and type(controller) == "function" then
-                autoEggController = controller
-                trace("auto egg module", "loaded on demand")
-            else
-                downloaded = false
-                source = "module start failed: " .. tostring(controller)
-            end
-        else
-            downloaded = false
-            source = "module compile failed: " .. tostring(compileProblem)
-        end
-    end
+    local controller, problem = loadRemoteController(
+        AUTO_EGG_MODULE_URL,
+        "auto egg module",
+        setEggStatus
+    )
     autoEggLoading = false
-    if not downloaded then
-        autoEggLoadProblem = tostring(source)
+    if not controller then
+        autoEggLoadProblem = tostring(problem)
         return false, autoEggLoadProblem
     end
+    autoEggController = controller
     return true
 end
 
@@ -2387,6 +2320,7 @@ local function startAutoEggModule()
         return
     end
     if not config.AutoEgg or not running() then return end
+    if refreshEggDropdown then refreshEggDropdown(true) end
     local context = {
         Library = Library,
         Player = player,
@@ -2467,32 +2401,14 @@ function machineModules:Start(kind)
     entry.Loading = true
 
     if not entry.Controller then
-        entry.SetStatus("Loading the protected " .. entry.Label .. " worker on demand...")
-        local downloaded, source = pcall(function() return game:HttpGet(entry.URL) end)
-        if downloaded then
-            local chunk, compileProblem = loadstring(source)
-            source = nil
-            if chunk then
-                local started, controller = pcall(chunk)
-                if started and type(controller) == "function" then
-                    entry.Controller = controller
-                    trace(entry.Label .. " module", "loaded on demand")
-                else
-                    downloaded = false
-                    source = "module start failed: " .. tostring(controller)
-                end
-            else
-                downloaded = false
-                source = "module compile failed: " .. tostring(compileProblem)
-            end
-        end
-        if not downloaded then
+        local controller, problem = loadRemoteController(entry.URL, entry.Label .. " module", entry.SetStatus)
+        if not controller then
             entry.Loading = false
             self:Disable(entry)
-            entry.SetStatus("Module could not be loaded; no pets were sent: " .. tostring(source))
-            trace(entry.Label .. " module", tostring(source))
+            entry.SetStatus("Module could not be loaded; no pets were sent: " .. tostring(problem))
             return
         end
+        entry.Controller = controller
     end
 
     entry.Loading = false
@@ -2547,32 +2463,18 @@ local function startBoostModule()
     if boostLoading or not boostAutomationEnabled() or not running() then return end
     boostLoading = true
     if not boostController then
-        setBoostStatus("Loading the dynamic boost worker on demand...")
-        local downloaded, source = pcall(function() return game:HttpGet(BOOST_MODULE_URL) end)
-        if downloaded then
-            local chunk, compileProblem = loadstring(source)
-            source = nil
-            if chunk then
-                local started, controller = pcall(chunk)
-                if started and type(controller) == "function" then
-                    boostController = controller
-                    trace("auto boost module", "loaded on demand")
-                else
-                    downloaded = false
-                    source = "module start failed: " .. tostring(controller)
-                end
-            else
-                downloaded = false
-                source = "module compile failed: " .. tostring(compileProblem)
-            end
-        end
-        if not downloaded then
-            boostLoadProblem = tostring(source)
+        local controller, problem = loadRemoteController(
+            BOOST_MODULE_URL,
+            "auto boost module",
+            setBoostStatus
+        )
+        if not controller then
+            boostLoadProblem = tostring(problem)
             boostLoading = false
             setBoostStatus("Boost module could not be loaded; no request was sent: " .. boostLoadProblem)
-            trace("auto boost module", boostLoadProblem)
             return
         end
+        boostController = controller
     end
     boostLoading = false
     if not boostAutomationEnabled() or not running() then return end
@@ -2624,54 +2526,22 @@ local function reconcileBoostModule()
 end
 
 local routeHealthBusy = false
-local routeHealthNext = 0
 
-local function refreshRouteHealth(force)
-    if routeHealthBusy or (not force and os.clock() < routeHealthNext) then return end
+local function refreshRouteHealth()
+    if routeHealthBusy then return end
     routeHealthBusy = true
-    routeHealthNext = os.clock() + 8
 
-    local checked, result = pcall(function()
-        local function invokeState(command)
-            local remote, _, sessionIndex, problem = getCommandRemote(command)
-            return remote and ("ready #" .. tostring(sessionIndex or "?"))
-                or ("missing (" .. tostring(problem) .. ")")
-        end
-        local function fireState(command)
-            local remote, _, sessionIndex, problem = getFireRemote(command)
-            return remote and ("ready #" .. tostring(sessionIndex or "?"))
-                or ("missing (" .. tostring(problem) .. ")")
-        end
-        local function eventState(command)
-            local remote, _, sessionIndex, problem = getEventRemote(command)
-            return remote and ("ready #" .. tostring(sessionIndex or "?"))
-                or ("missing (" .. tostring(problem) .. ")")
-        end
-
-        local _, _, catalogSummary = getMachinePetCatalog(false)
-        local owner, waiting = operationGateStatus()
-        return table.concat({
-            "Egg: Buy=" .. invokeState("Buy Egg Yay") .. " | Open=" .. eventState("Open Egg"),
-            "Gold: use=" .. invokeState("Use Golden Machine")
-                .. " | info=" .. invokeState("Get Golden Machine Info"),
-            "Rainbow: use=" .. invokeState("Use Rainbow Machine")
-                .. " | info=" .. invokeState("Get Rainbow Machine Info"),
-            "Dark Matter: create=" .. invokeState("Convert To Dark Matter")
-                .. " | claim=" .. invokeState("Redeem Dark Matter Pet"),
-            "Boosts: activate=" .. fireState("Activate Boost")
-                .. " | bundle=" .. invokeState("Buy Boost Bundle"),
-            "Rewards: VIP=" .. invokeState("Redeem VIP Rewards")
-                .. " | Rank=" .. invokeState("Redeem Rank Rewards"),
-            "Pet catalog: " .. tostring(catalogSummary),
-            "Inventory gate: " .. tostring(owner) .. " | waiting workers: " .. tostring(waiting),
-            "Resolver checks are local; this panel sends no server request.",
-        }, "\n")
-    end)
-    if checked then
+    setRouteStatus("Loading the small diagnostics coordinator in the serial module lane...")
+    local controller, loadProblem = ensureSupportModule()
+    local checked, result = false, loadProblem
+    if controller then
+        checked, result = pcall(controller, "route-health", supportContext)
+    end
+    if checked and type(result) == "string" then
         setRouteStatus(result)
     else
         setRouteStatus("Local route preflight recovered from an error: " .. tostring(result)
-            .. "\nNo server request was sent; the next check will retry.")
+            .. "\nNo server request was sent. Press Refresh to retry.")
         trace("route preflight", tostring(result))
     end
     routeHealthBusy = false
@@ -2992,7 +2862,7 @@ UI.RewardsTab = Window:Tab({ Title = "Rewards", Icon = "gift" })
 UI.GraphicsTab = Window:Tab({ Title = "Graphics", Icon = "monitor" })
 UI.SessionTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
 
-local function refreshEggDropdown(force)
+refreshEggDropdown = function(force)
     local now = os.clock()
     if not force and UI.LastEggRefreshAt and now - UI.LastEggRefreshAt < 0.6 then return end
     UI.LastEggRefreshAt = now
@@ -3113,111 +2983,6 @@ UI.ZoneDropdown = UI.TargetSection:Dropdown({
 })
 UI.LastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(UI.InitialZones, "\0")
 
-UI.EggCatalogSection = UI.EggTab:Section({ Title = "01 / Live Egg Catalog", Box = true, Opened = true })
-UI.EggCatalogSection:Paragraph({
-    Title = "LOCAL DISCOVERY / ZERO PROBES",
-    Desc = "The catalog comes from Library.Directory.Eggs and the current __MAP. Refreshing or enabling it never purchases an egg.",
-})
-UI.EggScopeDropdown = UI.EggCatalogSection:Dropdown({
-    Flag = "egg_catalog_scope",
-    Title = "Catalog Scope",
-    Desc = "Nearby lists eggs within the game's 15-stud interaction radius; All keeps every hatchable ID selectable",
-    Values = { "Nearby Eggs", "All Hatchable Eggs" },
-    Value = "Nearby Eggs",
-    Multi = false,
-    AllowNone = false,
-    Callback = function(value)
-        config.EggScope = value == "All Hatchable Eggs" and "All Hatchable Eggs" or "Nearby Eggs"
-        refreshEggDropdown(true)
-    end,
-})
-local initialEggOptions = { "Egg catalog loads after startup..." }
-local initialEggLabel = initialEggOptions[1]
-local initialEggSummary = "Preparing the local Library.Directory.Eggs catalog..."
-UI.EggDropdown = UI.EggCatalogSection:Dropdown({
-    Flag = "selected_egg",
-    Title = "Egg",
-    Desc = "The selected ID is preserved while auto hatch is running; walking away blocks requests instead of switching eggs",
-    Values = initialEggOptions,
-    Value = initialEggLabel or initialEggOptions[1],
-    Multi = false,
-    AllowNone = false,
-    Callback = function(value)
-        local eggId = eggLabelToId[value]
-        if eggId then config.EggName = eggId end
-    end,
-})
-UI.EggCatalogSection:Button({
-    Title = "REFRESH LOCAL CATALOG",
-    Desc = "Re-indexes the current world's egg models without contacting the server",
-    Icon = "refresh-cw",
-    Callback = function()
-        task.spawn(function()
-            local loaded, problem = ensureAutoEggModule()
-            if not loaded then
-                setEggCatalogStatus("Catalog module could not be loaded: " .. tostring(problem))
-                return
-            end
-            pcall(autoEggController, "invalidate-catalog")
-            refreshEggDropdown(true)
-        end)
-    end,
-})
-statusViews.EggCatalog = UI.EggCatalogSection:Paragraph({
-    Title = "Catalog Status",
-    Desc = initialEggSummary,
-})
-
-UI.EggAutomationSection = UI.EggTab:Section({ Title = "02 / Protocol-Safe Hatch Loop", Box = true, Opened = true })
-UI.EggAutomationSection:Paragraph({
-    Title = "PREFLIGHT > BUY > OPEN EVENT > ACK > GAME SETTINGS > COOLDOWN",
-    Desc = "Only one Buy Egg Yay call may exist at once. Native follows OpeningEgg; Headless confirms the direct Open Egg event or an exact replicated inventory delta. Unknown requests are never repeated blindly.",
-})
-UI.EggAutomationSection:Dropdown({
-    Flag = "egg_open_count",
-    Title = "Eggs Per Purchase",
-    Desc = "x3 is blocked locally unless Triple Egg Open is present and three inventory slots are free",
-    Values = { "Single (x1)", "Triple (x3)" },
-    Value = "Single (x1)",
-    Multi = false,
-    AllowNone = false,
-    Callback = function(value) config.EggCount = value == "Triple (x3)" and 3 or 1 end,
-})
-UI.EggAutomationSection:Dropdown({
-    Flag = "egg_animation_mode",
-    Title = "Animation Mode",
-    Desc = "Headless suppresses visuals and auto-detects the live Open Egg RemoteEvent, with an exact 1/3-pet inventory-delta fallback. Native pre-arms the game's skip path.",
-    Values = { "Headless (No Animation)", "Native Animation" },
-    Value = "Headless (No Animation)",
-    Multi = false,
-    AllowNone = false,
-    Callback = function(value)
-        config.EggAnimation = value == "Native Animation" and "Native Animation" or "Headless (No Animation)"
-    end,
-})
-autoEggToggleControl = UI.EggAutomationSection:Toggle({
-    Flag = "auto_egg",
-    Title = "Enable Auto Hatch",
-    Desc = "Requires the selected physical egg to remain within 15 studs; no request is sent while any preflight check fails",
-    Value = false,
-    Callback = function(value)
-        local enabled = value == true
-        if config.AutoEgg == enabled then return end
-        config.AutoEgg = enabled
-        refreshEggDropdown(true)
-        if enabled then
-            task.spawn(startAutoEggModule)
-        else
-            stopAutoEggModule("Auto hatch disabled. No egg request is active.")
-        end
-    end,
-})
-statusViews.Egg = UI.EggAutomationSection:Paragraph({
-    Title = "Hatch Controller",
-    Desc = "Disabled | remotes will be resolved by stable Library.Network names when the first valid purchase is ready.",
-})
-refreshEggDropdown(true)
-
 UI.MonitorHero = UI.MonitorTab:Section({ Title = "Live Telemetry", Box = true, Opened = true })
 UI.MonitorHero:Paragraph({
     Title = "REAL-TIME CONTROL PLANE",
@@ -3253,127 +3018,52 @@ statusViews.Rate = UI.PerformanceSection:Paragraph({
     Desc = "Enable Pet Farm. Income is derived only from positive Library.Save balance changes.",
 })
 
-UI.RouteSection = UI.MonitorTab:Section({ Title = "Live Protocol Health", Box = true, Opened = true })
-UI.RouteSection:Paragraph({
-    Title = "SESSION-SAFE ROUTES",
-    Desc = "Every named command is resolved again after a rejoin. Child indices are displayed only as diagnostics.",
-})
-UI.RouteSection:Button({
-    Title = "REFRESH COMMAND STATUS",
-    Desc = "Read-only lookup through Library.Network; does not invoke the server",
-    Icon = "refresh-cw",
-    Callback = function() task.spawn(function() refreshRouteHealth(true) end) end,
-})
-statusViews.Routes = UI.RouteSection:Paragraph({
-    Title = "Command Status",
-    Desc = "Local route preflight is starting...",
-})
-
-UI.MachinesHero = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
-UI.MachinesHero:Paragraph({
-    Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
-    Desc = "Galaxy Fox plus the live New Year top-pet catalog. Every stage validates matching species and waits for Save confirmation.",
-})
-UI.MachinesHero:Slider({
-    Flag = "machine_batch_size",
-    Title = "Pets Per Machine Request",
-    Desc = "1-6 pets. Golden/Rainbow success chance follows the server tier; Dark Matter time follows its tier.",
-    Step = 1,
-    Value = { Min = 1, Max = 6, Default = 6 },
-    Callback = function(value)
-        config.MachineBatchSize = math.clamp(math.floor(tonumber(value) or 6), 1, 6)
-    end,
-})
-UI.MachinesHero:Button({
-    Title = "REFRESH NEW YEAR PET CATALOG",
-    Desc = "Re-reads Library.Directory.Eggs/Pets locally; no machine request is sent",
-    Icon = "refresh-cw",
-    Callback = function()
-        getMachinePetCatalog(true)
-        task.spawn(function() refreshRouteHealth(true) end)
-    end,
-})
-UI.GoldSection = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
-UI.GoldSection:Toggle({
-    Flag = "auto_golden_galaxy_fox",
-    Title = "Auto Golden Target Pets",
-    Desc = "Normal target pets / matching species per batch / protects equipped and locked pets; enchants are not filtered",
-    Value = false,
-    Callback = function(value)
-        config.AutoGoldenGalaxyFox = value == true
-        if config.AutoGoldenGalaxyFox then
-            setGoldMachineStatus("Enabled. Loading the protected worker without blocking script startup...")
-            task.spawn(function() machineModules:Start("Gold") end)
-        else
-            machineModules:Stop("Gold")
-            setGoldMachineStatus("Disabled. No pets will be sent to the Golden Machine.")
-        end
-    end,
-})
-statusViews.Gold = UI.GoldSection:Paragraph({
-    Title = "Golden Machine Status",
-    Desc = "Disabled / waiting for a verified batch",
-})
-
-UI.RainbowSection = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
-UI.RainbowSection:Toggle({
-    Flag = "auto_rainbow_galaxy_fox",
-    Title = "Auto Rainbow Target Pets",
-    Desc = "Golden target pets / matching species per batch / protects equipped and locked pets; enchants are not filtered",
-    Value = false,
-    Callback = function(value)
-        config.AutoRainbowGalaxyFox = value == true
-        if config.AutoRainbowGalaxyFox then
-            setRainbowMachineStatus("Enabled. Loading the protected worker and resolving live session remotes...")
-            task.spawn(function() machineModules:Start("Rainbow") end)
-        else
-            machineModules:Stop("Rainbow")
-            setRainbowMachineStatus("Disabled. No pets will be sent to the Rainbow Machine.")
-        end
-    end,
-})
-statusViews.Rainbow = UI.RainbowSection:Paragraph({
-    Title = "Rainbow Machine Status",
-    Desc = "Disabled / only golden target species are eligible",
-})
-
-UI.DarkMatterSection = UI.MachinesTab:Section({ Title = "Dark Matter Machine / Stage 3", Box = true, Opened = true })
-UI.DarkMatterSection:Toggle({
-    Flag = "auto_dark_matter_galaxy_fox",
-    Title = "Auto Dark Matter Target Pets",
-    Desc = "Rainbow target pets / protects Tech Coins IV-V plus equipped and locked pets",
-    Value = false,
-    Callback = function(value)
-        config.AutoDarkMatterGalaxyFox = value == true
-        if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then
-            setDarkMatterStatus("Enabled. Loading the protected Dark Matter create/claim worker...")
-            task.spawn(function() machineModules:Start("DarkMatter") end)
-        else
-            machineModules:Stop("DarkMatter")
-            setDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
-        end
-    end,
-})
-UI.DarkMatterSection:Toggle({
-    Flag = "auto_claim_dark_matter",
-    Title = "Auto Claim Dark Matter Pets",
-    Desc = "Redeems completed DarkMatterQueue slots using server time, from any world",
-    Value = false,
-    Callback = function(value)
-        config.AutoClaimDarkMatter = value == true
-        if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then
-            setDarkMatterStatus("Enabled. Reading DarkMatterQueue and server time...")
-            task.spawn(function() machineModules:Start("DarkMatter") end)
-        else
-            machineModules:Stop("DarkMatter")
-            setDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
-        end
-    end,
-})
-statusViews.DarkMatter = UI.DarkMatterSection:Paragraph({
-    Title = "Dark Matter Status",
-    Desc = "Disabled / create and claim routes are resolved independently each session",
-})
+trace("06A automation UI loading")
+local automationUIController, automationUILoadProblem = loadRemoteController(
+    AUTOMATION_UI_MODULE_URL,
+    "automation UI module"
+)
+if not automationUIController then
+    error("Automation UI module could not be loaded: " .. tostring(automationUILoadProblem), 0)
+end
+local automationUIBuilt, automationUIAccepted, automationUIControls = pcall(
+    automationUIController,
+    "build",
+    {
+        UI = UI,
+        Config = config,
+        StatusViews = statusViews,
+        RefreshEggs = function(force) refreshEggDropdown(force) end,
+        EnsureAutoEgg = ensureAutoEggModule,
+        InvalidateEggCatalog = function()
+            if autoEggController then pcall(autoEggController, "invalidate-catalog") end
+        end,
+        StartAutoEgg = startAutoEggModule,
+        StopAutoEgg = stopAutoEggModule,
+        EggIdForLabel = function(label) return eggLabelToId[label] end,
+        SetEggCatalogStatus = setEggCatalogStatus,
+        RefreshRoutes = refreshRouteHealth,
+        SetRouteStatus = setRouteStatus,
+        GetMachinePetCatalog = getMachinePetCatalog,
+        StartMachine = function(kind) machineModules:Start(kind) end,
+        StopMachine = function(kind) machineModules:Stop(kind) end,
+        SetGoldStatus = setGoldMachineStatus,
+        SetRainbowStatus = setRainbowMachineStatus,
+        SetDarkMatterStatus = setDarkMatterStatus,
+        ReconcileBoost = reconcileBoostModule,
+        BoostEnabled = boostAutomationEnabled,
+        StartBoost = startBoostModule,
+    }
+)
+if not automationUIBuilt or automationUIAccepted ~= true or type(automationUIControls) ~= "table" then
+    local reason = not automationUIBuilt and automationUIAccepted or automationUIControls
+    error("Automation UI module failed to build: " .. tostring(reason), 0)
+end
+autoEggToggleControl = automationUIControls.AutoEggToggle
+UI.EggScopeDropdown = automationUIControls.EggScopeDropdown
+UI.EggDropdown = automationUIControls.EggDropdown
+refreshEggDropdown(true)
+trace("06B automation UI ready")
 
 UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Box = true, Opened = true })
 UI.DiamondSection:Toggle({
@@ -3394,67 +3084,6 @@ UI.DiamondSection:Toggle({
 statusViews.Diamond = UI.DiamondSection:Paragraph({
     Title = "Diamond Exchange Status",
     Desc = "Disabled / the live purchase remote is resolved independently each session",
-})
-
-UI.BoostHero = UI.BoostsTab:Section({ Title = "Adaptive Boost Controller", Box = true, Opened = true })
-UI.BoostHero:Paragraph({
-    Title = "RENEW FROM SAVE / REFILL ONLY WHEN NEEDED",
-    Desc = "Uses Save.Boosts and BoostsInventory. One activation or bundle request may be pending at a time.",
-})
-UI.BoostHero:Slider({
-    Flag = "boost_renew_before",
-    Title = "Renew Before Expiration",
-    Desc = "Seconds remaining before the next inventory boost is activated",
-    Step = 1,
-    Value = { Min = 1, Max = 15, Default = 5 },
-    Callback = function(value)
-        config.BoostRenewBefore = math.clamp(math.floor(tonumber(value) or 5), 1, 15)
-    end,
-})
-
-local boostToggleDefinitions = {
-    { Flag = "auto_triple_coins", Key = "AutoTripleCoins", Title = "Auto Triple Coins" },
-    { Flag = "auto_triple_damage", Key = "AutoTripleDamage", Title = "Auto Triple Damage" },
-    { Flag = "auto_super_lucky", Key = "AutoSuperLucky", Title = "Auto Super Lucky" },
-    { Flag = "auto_ultra_lucky", Key = "AutoUltraLucky", Title = "Auto Ultra Lucky" },
-}
-for _, rawDefinition in ipairs(boostToggleDefinitions) do
-    local definition = rawDefinition
-    UI.BoostHero:Toggle({
-        Flag = definition.Flag,
-        Title = definition.Title,
-        Desc = "Renews only inside the configured window; an empty inventory may request one Boost Bundle",
-        Value = false,
-        Callback = function(value)
-            config[definition.Key] = value == true
-            reconcileBoostModule()
-        end,
-    })
-end
-
-UI.BoostBundleSection = UI.BoostsTab:Section({ Title = "Boost Bundle Fallback", Box = true, Opened = true })
-UI.BoostBundleSection:Toggle({
-    Flag = "auto_boost_bundle",
-    Title = "Auto Buy Boost Bundle",
-    Desc = "Costs 270k Diamonds: Ultra Lucky x3, Triple Coins x5, Super Lucky x7, Triple Damage x5. Buys only for an enabled boost with zero stock.",
-    Value = false,
-    Callback = function(value)
-        config.AutoBoostBundle = value == true
-        reconcileBoostModule()
-    end,
-})
-UI.BoostBundleSection:Button({
-    Title = "CHECK BOOST ROUTES",
-    Desc = "Resolves Activate Boost and Buy Boost Bundle locally without spending Diamonds",
-    Icon = "refresh-cw",
-    Callback = function()
-        task.spawn(function() refreshRouteHealth(true) end)
-        if boostAutomationEnabled() then task.spawn(startBoostModule) end
-    end,
-})
-statusViews.Boost = UI.BoostBundleSection:Paragraph({
-    Title = "Boost Automation Status",
-    Desc = "Disabled / no boost or bundle request is armed",
 })
 
 UI.LootHero = UI.LootTab:Section({ Title = "Local Pickup Layer", Box = true, Opened = true })
@@ -3721,9 +3350,10 @@ local function shutdown(reason)
     stopAutoEggModule()
     machineModules:StopAll()
     stopBoostModule()
-    operationGate.Owner = nil
-    operationGate.OwnerSince = 0
-    table.clear(operationGate.Waiters)
+    resetSupportCoordinator()
+    moduleLoadState.Busy = false
+    moduleLoadState.Owner = nil
+    moduleLoadState.NextAt = 0
     config.PotatoMode = false
     stopGraphics()
     farmResetRequested = false
@@ -3894,9 +3524,6 @@ end)
 task.spawn(function()
     while task.wait(0.4) do
         if not running() then break end
-        if os.clock() >= routeHealthNext and not routeHealthBusy then
-            task.spawn(function() refreshRouteHealth(false) end)
-        end
         refreshZoneDropdown(false)
         refreshEggDropdown(false)
         local targets, world, zone = orderedTargets(config.Mode)
@@ -3929,22 +3556,6 @@ task.spawn(function()
             lastRecovery,
             driverStatus
         ))
-    end
-end)
-
-task.delay(1.5, function()
-    if not running() then return end
-    local loaded, problem = ensureAutoEggModule()
-    if not loaded then
-        setEggCatalogStatus("Catalog module could not be loaded: " .. tostring(problem))
-        if config.AutoEgg then disableAutoEgg("Auto egg module load failed: " .. tostring(problem)) end
-        return
-    end
-    refreshEggDropdown(true)
-    if config.AutoEgg then
-        task.spawn(startAutoEggModule)
-    else
-        setEggStatus("Disabled | dynamic Network routes are resolved only when a valid purchase is ready.")
     end
 end)
 
