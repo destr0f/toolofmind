@@ -456,7 +456,63 @@ local function gameEggSkipPolicy(context, pets)
     )
 end
 
-local function emitLocalSkipInput()
+local function inputConnectionSnapshot(context)
+    if type(getconnections) ~= "function" then return nil end
+    local userInput = context.Library and context.Library.UserInputService
+    local signal = userInput and userInput.InputEnded
+    if not signal then return nil end
+    local ok, connections = pcall(getconnections, signal)
+    if not ok or type(connections) ~= "table" then return nil end
+
+    local snapshot = {}
+    for _, connection in ipairs(connections) do
+        local read, callback = pcall(function() return connection.Function end)
+        if read and type(callback) == "function" then snapshot[callback] = true end
+    end
+    return snapshot
+end
+
+local function invokeNewEggSkipConnection(context, pending)
+    local before = pending and pending.InputConnections
+    if type(before) ~= "table" or type(getconnections) ~= "function" then return false end
+    local userInput = context.Library and context.Library.UserInputService
+    local signal = userInput and userInput.InputEnded
+    if not signal then return false end
+    local ok, connections = pcall(getconnections, signal)
+    if not ok or type(connections) ~= "table" then return false end
+
+    local newCallbacks, eggCallbacks = {}, {}
+    for _, connection in ipairs(connections) do
+        local read, callback = pcall(function() return connection.Function end)
+        if read and type(callback) == "function" and not before[callback] then
+            newCallbacks[#newCallbacks + 1] = callback
+            local source = ""
+            if debug and type(debug.info) == "function" then
+                local sourceOk, value = pcall(debug.info, callback, "s")
+                if sourceOk then source = lower(value) end
+            end
+            if string.find(source, "open eggs", 1, true)
+                or string.find(source, "openegg", 1, true) then
+                eggCallbacks[#eggCallbacks + 1] = callback
+            end
+        end
+    end
+
+    local callback = #eggCallbacks == 1 and eggCallbacks[1]
+        or (#eggCallbacks == 0 and #newCallbacks == 1 and newCallbacks[1] or nil)
+    if not callback then return false end
+    local called = pcall(callback, {
+        UserInputType = Enum.UserInputType.MouseButton1,
+        KeyCode = Enum.KeyCode.Unknown,
+    }, false)
+    return called
+end
+
+local function emitLocalSkipInput(context, pending)
+    if invokeNewEggSkipConnection(context, pending) then
+        return true, "native Egg Skip callback"
+    end
+
     local inputOk, inputManager = pcall(function()
         return game:GetService("VirtualInputManager")
     end)
@@ -507,7 +563,7 @@ local function queueNativeSkip(state, context, pending, pets)
             pending.SkipResult = policy .. " | animation already completed"
             return
         end
-        local sent, method = emitLocalSkipInput()
+        local sent, method = emitLocalSkipInput(context, pending)
         if sent then
             state.NativeSkips = state.NativeSkips + 1
             pending.SkipResult = policy .. " | sent via " .. tostring(method)
@@ -868,6 +924,7 @@ local function beginRequest(state, context, options, inspection)
         PostProcessDone = not headless,
         PostProcessFailure = nil,
         SkipScheduled = false,
+        InputConnections = not headless and inputConnectionSnapshot(context) or nil,
         Inspection = inspection,
     }
     state.Pending = pending
