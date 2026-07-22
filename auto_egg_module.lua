@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -10,6 +10,8 @@ local INITIAL_REQUEST_DELAY = 0.75
 local MIN_REQUEST_DELAY = 0.55
 local MAX_REQUEST_DELAY = 8
 local HEADLESS_EVENT_TIMEOUT = 8
+local HEADLESS_REPLICATION_TIMEOUT = 4
+local HEADLESS_REPLICATION_POLL = 0.02
 local NATIVE_EVENT_TIMEOUT = 20
 local SUSPICIOUS_PAUSE = 60
 local EGG_INTERACT_DISTANCE = 15
@@ -351,6 +353,59 @@ local function releaseHeadlessGate(state, context)
     state.GateOwned = false
     local variables = context.Library and context.Library.Variables
     if variables then pcall(function() variables.OpeningEgg = false end) end
+end
+
+local function ownedPetSnapshot(context)
+    local save = saveFor(context)
+    local pets = save and save.Pets
+    if type(pets) ~= "table" then
+        return nil, "Player pet inventory is unavailable"
+    end
+
+    local snapshot = {}
+    for key, pet in pairs(pets) do
+        if type(pet) == "table" then
+            local uid = pet.uid or pet.UID
+            if uid == nil and type(key) == "string" then uid = key end
+            if uid ~= nil then snapshot[tostring(uid)] = true end
+        end
+    end
+    return snapshot
+end
+
+local function petsAddedSince(context, snapshot, expected)
+    local save = saveFor(context)
+    local pets = save and save.Pets
+    if type(pets) ~= "table" then
+        return nil, 0, "Player pet inventory is unavailable"
+    end
+
+    local added = {}
+    for key, pet in pairs(pets) do
+        if type(pet) == "table" then
+            local uid = pet.uid or pet.UID
+            if uid == nil and type(key) == "string" then uid = key end
+            if uid ~= nil and not snapshot[tostring(uid)] then
+                if pet.uid ~= nil or pet.UID ~= nil then
+                    added[#added + 1] = pet
+                else
+                    local copy = {}
+                    for field, value in pairs(pet) do copy[field] = value end
+                    copy.uid = tostring(uid)
+                    added[#added + 1] = copy
+                end
+            end
+        end
+    end
+
+    if #added > expected then
+        return nil, #added, string.format(
+            "Inventory delta is ambiguous: expected %d new pet(s), observed %d",
+            expected, #added
+        )
+    end
+    if #added < expected then return nil, #added, nil end
+    return added, #added, nil
 end
 
 local function eventSignature(eggName, pets)
@@ -730,6 +785,67 @@ local function startHeadlessPostProcess(state, context, pending, pets)
     end)
 end
 
+local function startHeadlessReconcile(state, context, pending)
+    if pending.ReconcileStarted or not pending.Headless or pending.EventReceived then return end
+    pending.ReconcileStarted = true
+    pending.ReconcileStartedAt = os.clock()
+
+    task.spawn(function()
+        local expected = pending.Triple and 3 or 1
+        local deadline = os.clock() + HEADLESS_REPLICATION_TIMEOUT
+        local lastObserved = 0
+
+        repeat
+            if not state.Running or state.Pending ~= pending or pending.EventReceived then return end
+
+            local pets, observed, problem = petsAddedSince(context, pending.PetSnapshot, expected)
+            lastObserved = tonumber(observed) or lastObserved
+            pending.InventoryDeltaSeen = lastObserved
+            if problem then
+                pending.ReconcileFailure = problem
+                pending.ReconcileDone = true
+                return
+            end
+            if pets then
+                pending.Pets = pets
+                pending.EventReceived = true
+                pending.EventAt = os.clock()
+                pending.MatchMode = "inventory delta auto-detection"
+
+                local network = context.Library and context.Library.Network
+                local acknowledged, ackProblem = false, "Library.Network.Fire is unavailable"
+                if network and type(network.Fire) == "function" then
+                    acknowledged, ackProblem = pcall(network.Fire, "Opening Egg", pending.Egg, pets)
+                end
+                if not acknowledged then
+                    pending.AckFailure = tostring(ackProblem)
+                    pending.ReconcileDone = true
+                    return
+                end
+
+                pending.Acknowledged = true
+                pending.ReconcileDone = true
+                state.AcknowledgedEvents[eventSignature(pending.Egg, pets)] = os.clock()
+                context.Trace("auto egg headless reconcile", string.format(
+                    "%s | observed %d/%d new pet(s) | Opening Egg acknowledged from inventory delta",
+                    requestLabel(pending), lastObserved, expected
+                ))
+                startHeadlessPostProcess(state, context, pending, pets)
+                return
+            end
+            task.wait(HEADLESS_REPLICATION_POLL)
+        until os.clock() >= deadline
+
+        if state.Running and state.Pending == pending and not pending.EventReceived then
+            pending.ReconcileFailure = string.format(
+                "Server accepted %s, but only %d/%d new pet(s) appeared in the replicated inventory within %.1fs",
+                requestLabel(pending), lastObserved, expected, HEADLESS_REPLICATION_TIMEOUT
+            )
+            pending.ReconcileDone = true
+        end
+    end)
+end
+
 local function completionNote(pending)
     local notes = {}
     if pending.Route and pending.Route ~= "" then notes[#notes + 1] = pending.Route end
@@ -812,9 +928,10 @@ local function finishTimeout(state, context, pending)
     end
 
     local observations = string.format(
-        "response accepted=%s | Open Egg events=%d | native OpeningEgg seen=%s",
+        "response accepted=%s | Open Egg events=%d | inventory delta=%d | native OpeningEgg seen=%s",
         tostring(pending.Accepted),
         tonumber(pending.OpenEventsSeen) or 0,
+        tonumber(pending.InventoryDeltaSeen) or 0,
         tostring(pending.NativeOpeningSeen == true)
     )
     stopForSafety(state, context, pending,
@@ -847,6 +964,13 @@ local function handlePending(state, context, now)
         return true
     end
 
+    if pending.ReconcileFailure then
+        stopForSafety(state, context, pending,
+            "Headless hatch could not be confirmed safely: " .. tostring(pending.ReconcileFailure)
+            .. "\nNo duplicate egg request was sent.")
+        return true
+    end
+
     if pending.PostProcessStarted and not pending.PostProcessDone
         and now - pending.PostProcessStartedAt >= POST_PROCESS_TIMEOUT then
         stopForSafety(state, context, pending,
@@ -859,6 +983,11 @@ local function handlePending(state, context, now)
         and pending.NativeOpeningSeen and not openingNow then
         finishSuccess(state, context, pending, completionNote(pending))
         return true
+    end
+
+    if pending.Headless and pending.ResponseDone and pending.Accepted
+        and not pending.EventReceived and not pending.ReconcileStarted then
+        startHeadlessReconcile(state, context, pending)
     end
 
     if pending.ResponseDone and pending.EventReceived then
@@ -904,6 +1033,13 @@ local function handlePending(state, context, now)
     elseif pending.EventReceived and not pending.ResponseDone then
         setStatus(state, context, "Open Egg received for " .. requestLabel(pending)
             .. "; waiting for the single Buy Egg Yay call to return...")
+    elseif pending.Headless and pending.ResponseDone and pending.Accepted and not pending.EventReceived then
+        local expected = pending.Triple and 3 or 1
+        setStatus(state, context, string.format(
+            "Headless purchase accepted for %s; confirming the replicated inventory delta...\n"
+                .. "Observed: %d/%d new pet(s) | no duplicate request is allowed",
+            requestLabel(pending), tonumber(pending.InventoryDeltaSeen) or 0, expected
+        ))
     elseif pending.ResponseDone and pending.Accepted and not pending.EventReceived then
         setStatus(state, context, "Buy Egg Yay accepted for " .. requestLabel(pending)
             .. "; waiting for native OpeningEgg or its matching Open Egg event...\n"
@@ -914,7 +1050,16 @@ end
 
 local function beginRequest(state, context, options, inspection)
     local headless = options.Animation == "Headless (No Animation)"
+    local headlessSnapshot
     if headless then
+        local snapshotProblem
+        headlessSnapshot, snapshotProblem = ownedPetSnapshot(context)
+        if not headlessSnapshot then
+            state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
+            setStatus(state, context, "Headless preflight is waiting locally: " .. tostring(snapshotProblem)
+                .. "\nNo purchase request was sent.")
+            return
+        end
         local acquired, problem = acquireHeadlessGate(state, context)
         if not acquired then
             state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
@@ -950,6 +1095,11 @@ local function beginRequest(state, context, options, inspection)
         SkipScheduled = false,
         NativeOpeningSeen = false,
         OpenEventsSeen = 0,
+        PetSnapshot = headlessSnapshot,
+        InventoryDeltaSeen = 0,
+        ReconcileStarted = false,
+        ReconcileDone = false,
+        ReconcileFailure = nil,
         InputConnections = not headless and inputConnectionSnapshot(context) or nil,
         Inspection = inspection,
     }
@@ -1070,9 +1220,27 @@ return function(action, context)
     if not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function" then
         return false, "Library.Network Fired/Fire is unavailable"
     end
-    local signalOk, signal = pcall(network.Fired, "Open Egg")
-    if not signalOk or not signal or type(signal.Connect) ~= "function" then
-        return false, "Open Egg event could not be resolved by Library.Network.Fired"
+    local signal, eventRoute, eventIndex, eventProblem
+    if type(context.GetEventRemote) == "function" then
+        local resolved, remote, sourceName, sessionIndex, problem =
+            pcall(context.GetEventRemote, "Open Egg")
+        if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
+            and remote:IsDescendantOf(game:GetService("ReplicatedStorage")) then
+            signal = remote.OnClientEvent
+            eventRoute = tostring(sourceName or "dynamic RemoteEvent")
+            eventIndex = sessionIndex
+        else
+            eventProblem = resolved and problem or remote
+        end
+    end
+    if not signal then
+        local signalOk, fallbackSignal = pcall(network.Fired, "Open Egg")
+        if not signalOk or not fallbackSignal or type(fallbackSignal.Connect) ~= "function" then
+            return false, "Open Egg event could not be resolved: "
+                .. tostring(eventProblem or fallbackSignal)
+        end
+        signal = fallbackSignal
+        eventRoute = "Library.Network.Fired fallback"
     end
 
     local state = {
@@ -1094,6 +1262,8 @@ return function(action, context)
         OpenEvents = 0,
         CleanSuccesses = 0,
         ConsecutiveFailures = 0,
+        EventRoute = eventRoute,
+        EventIndex = eventIndex,
     }
     activeState = state
 
@@ -1176,7 +1346,8 @@ return function(action, context)
     env.PSX_OG_FastEggState = state
     context.Trace("auto egg module",
         "v" .. MODULE_VERSION
-        .. " | pre-armed Native skip + dynamic Buy Egg Yay/Open Egg/Opening Egg/Delete Several Pets routes")
+        .. " | Native OpeningEgg + Headless direct-event/inventory-delta acknowledgement | Open Egg: "
+        .. tostring(eventRoute) .. " [session index " .. tostring(eventIndex or "?") .. "]")
     setStatus(state, context,
         "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
         .. "Waiting for a valid egg within 15 studs...")
