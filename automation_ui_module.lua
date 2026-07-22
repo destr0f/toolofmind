@@ -15,6 +15,7 @@ local function build(context)
     local valid, problem = requireKeys(context, {
         "UI", "Config", "StatusViews", "RefreshEggs", "EnsureAutoEgg",
         "InvalidateEggCatalog", "StartAutoEgg", "StopAutoEgg", "EggIdForLabel",
+        "SetEggCatalogStatus",
         "RefreshRoutes", "SetRouteStatus", "GetMachinePetCatalog", "StartMachine",
         "StopMachine", "SetGoldStatus", "SetRainbowStatus", "SetDarkMatterStatus",
         "ReconcileBoost", "BoostEnabled", "StartBoost",
