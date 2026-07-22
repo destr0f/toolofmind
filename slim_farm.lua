@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, loot magnet, anti-AFK and timer-gated automation.
 
-local VERSION = "1.3.0-dev.3"
+local VERSION = "1.3.0-dev.4"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -1342,6 +1342,65 @@ local function getCommandRemote(commandName)
         tostring(commandName) .. " did not resolve to a live RemoteFunction"
 end
 
+local eventRemoteCache = {}
+local eventRemoteSource = "Network.Fired GetRemoteEvent upvalue"
+
+local function getEventRemote(commandName)
+    local cached = eventRemoteCache[commandName]
+    if typeof(cached) == "Instance" and cached:IsA("RemoteEvent")
+        and cached:IsDescendantOf(ReplicatedStorage) then
+        return cached, eventRemoteSource, remoteSessionIndex(cached), nil
+    end
+    eventRemoteCache[commandName] = nil
+
+    local network = networkReady()
+    if not network or type(network.Fired) ~= "function" then
+        return nil, eventRemoteSource, nil, "Library.Network.Fired is unavailable"
+    end
+
+    local lastProblem = "GetRemoteEvent accessor was not exposed"
+    for index = 1, 8 do
+        local candidate, reader = functionUpvalueAt(network.Fired, index)
+        if typeof(candidate) == "Instance" and candidate:IsA("RemoteEvent")
+            and candidate:IsDescendantOf(ReplicatedStorage) then
+            eventRemoteCache[commandName] = candidate
+            eventRemoteSource = "Network.Fired direct RemoteEvent upvalue #" .. tostring(index)
+                .. " (" .. tostring(reader) .. ")"
+            return candidate, eventRemoteSource, remoteSessionIndex(candidate), nil
+        end
+
+        if type(candidate) == "table" then
+            local mapped = rawget(candidate, commandName)
+            if typeof(mapped) == "Instance" and mapped:IsA("RemoteEvent")
+                and mapped:IsDescendantOf(ReplicatedStorage) then
+                eventRemoteCache[commandName] = mapped
+                eventRemoteSource = "Network.Fired RemoteEvent map upvalue #" .. tostring(index)
+                    .. " (" .. tostring(reader) .. ")"
+                return mapped, eventRemoteSource, remoteSessionIndex(mapped), nil
+            end
+        elseif type(candidate) == "function" then
+            local called, first, second, third = pcall(candidate, commandName)
+            if called then
+                local values = { first, second, third }
+                for resultIndex = 1, 3 do
+                    local remote = values[resultIndex]
+                    if typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
+                        and remote:IsDescendantOf(ReplicatedStorage) then
+                        eventRemoteCache[commandName] = remote
+                        eventRemoteSource = "Network.Fired GetRemoteEvent upvalue #" .. tostring(index)
+                            .. " (" .. tostring(reader) .. ")"
+                        return remote, eventRemoteSource, remoteSessionIndex(remote), nil
+                    end
+                end
+            else
+                lastProblem = "upvalue #" .. tostring(index) .. " probe failed: " .. tostring(first)
+            end
+        end
+    end
+
+    return nil, eventRemoteSource, nil, lastProblem
+end
+
 local function invokeCommand(commandName, ...)
     local arguments = table.pack(...)
     local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
@@ -2007,7 +2066,7 @@ local function formatDuration(seconds)
     return string.format("%dm %02ds", minutes, secs)
 end
 
-local AUTO_EGG_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/6c53469c2763b1e626c2026f2d240104f7912667/auto_egg_module.lua"
+local AUTO_EGG_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/8f891a735496afa55911708d3d1154cf561a4865/auto_egg_module.lua"
 local autoEggController
 local autoEggLoading = false
 local autoEggLoadProblem
@@ -2100,6 +2159,7 @@ local function startAutoEggModule()
         end,
         InspectEgg = inspectEggThroughModule,
         InvokeCommand = invokeCommand,
+        GetEventRemote = getEventRemote,
         RouteText = routeText,
         SetStatus = setEggStatus,
         Trace = trace,
@@ -2709,7 +2769,7 @@ statusViews.EggCatalog = UI.EggCatalogSection:Paragraph({
 UI.EggAutomationSection = UI.EggTab:Section({ Title = "02 / Protocol-Safe Hatch Loop", Box = true, Opened = true })
 UI.EggAutomationSection:Paragraph({
     Title = "PREFLIGHT > BUY > OPEN EVENT > ACK > GAME SETTINGS > COOLDOWN",
-    Desc = "Only one Buy Egg Yay call may exist at once. Native completion follows OpeningEgg instead of a late Open Egg listener, and an accepted unknown request is never repeated blindly.",
+    Desc = "Only one Buy Egg Yay call may exist at once. Native follows OpeningEgg; Headless confirms the direct Open Egg event or an exact replicated inventory delta. Unknown requests are never repeated blindly.",
 })
 UI.EggAutomationSection:Dropdown({
     Flag = "egg_open_count",
@@ -2724,7 +2784,7 @@ UI.EggAutomationSection:Dropdown({
 UI.EggAutomationSection:Dropdown({
     Flag = "egg_animation_mode",
     Title = "Animation Mode",
-    Desc = "Headless is the fastest path. Native pre-arms an OpeningEgg watcher before purchase and auto-detects the temporary skip callback when the game setting is All Pets.",
+    Desc = "Headless suppresses visuals and auto-detects the live Open Egg RemoteEvent, with an exact 1/3-pet inventory-delta fallback. Native pre-arms the game's skip path.",
     Values = { "Headless (No Animation)", "Native Animation" },
     Value = "Headless (No Animation)",
     Multi = false,
