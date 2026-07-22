@@ -22,6 +22,6 @@ fs.writeFileSync(toolPath, source, "utf8");
 process.stdout.write(
     `Generated PSX OG slim farm\n`
     + `  source: ${Buffer.byteLength(source, "utf8")} bytes\n`
-    + `  features: pet farm, protocol-safe auto egg with a dynamic local catalog, active balance rates, safe Galaxy Fox gold/rainbow/dark matter machines, dark matter auto-claim, loot magnet, anti-AFK, persistent auto-load profile, texture-locked potato mode, FPS cap, timer-gated automation\n`
+    + `  features: pet farm, coordinated auto egg, dynamic New Year gold/rainbow/dark matter machines, dark matter auto-claim, adaptive boosts and Boost Bundle fallback, live route health, active balance rates, loot magnet, anti-AFK, persistent profile, potato mode, FPS cap, timer-gated automation\n`
     + `  external dependency: WindUI 1.6.64-fix\n`
 );

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
--- Pet farming, loot magnet, anti-AFK and timer-gated automation.
+-- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.3.0-dev.4"
+local VERSION = "1.4.0-dev.2"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -85,6 +85,13 @@ local config = {
     AutoRainbowGalaxyFox = false,
     AutoDarkMatterGalaxyFox = false,
     AutoClaimDarkMatter = false,
+    MachineBatchSize = 6,
+    AutoBoostBundle = false,
+    BoostRenewBefore = 5,
+    AutoTripleCoins = false,
+    AutoTripleDamage = false,
+    AutoSuperLucky = false,
+    AutoUltraLucky = false,
     AutoEgg = false,
     EggScope = "Nearby Eggs",
     EggName = nil,
@@ -120,6 +127,77 @@ env.PSX_OG_SLIM_TOKEN = token
 
 local function running()
     return env.PSX_OG_SLIM_TOKEN == token
+end
+
+-- Inventory-mutating workers share one fair local gate. This prevents an egg
+-- inventory delta from being confused with a machine conversion or DM claim.
+local operationGate = {
+    Owner = nil,
+    OwnerSince = 0,
+    Waiters = {},
+    Sequence = 0,
+}
+
+local function cleanOperationGate(now)
+    now = now or os.clock()
+    if operationGate.Owner and now - operationGate.OwnerSince > 45 then
+        trace("operation gate", "expired stale owner " .. tostring(operationGate.Owner))
+        operationGate.Owner = nil
+        operationGate.OwnerSince = 0
+    end
+    for owner, waiter in pairs(operationGate.Waiters) do
+        if now - (waiter.SeenAt or 0) > 2 then operationGate.Waiters[owner] = nil end
+    end
+end
+
+local function acquireOperation(owner)
+    owner = tostring(owner or "unknown")
+    local now = os.clock()
+    cleanOperationGate(now)
+    if operationGate.Owner == owner then return true, owner end
+
+    local waiter = operationGate.Waiters[owner]
+    if not waiter then
+        operationGate.Sequence = operationGate.Sequence + 1
+        waiter = { Sequence = operationGate.Sequence, SeenAt = now }
+        operationGate.Waiters[owner] = waiter
+    else
+        waiter.SeenAt = now
+    end
+    if operationGate.Owner then return false, operationGate.Owner end
+
+    local nextOwner, nextSequence
+    for candidate, item in pairs(operationGate.Waiters) do
+        if nextSequence == nil or item.Sequence < nextSequence then
+            nextOwner, nextSequence = candidate, item.Sequence
+        end
+    end
+    if nextOwner ~= owner then return false, nextOwner end
+
+    operationGate.Waiters[owner] = nil
+    operationGate.Owner = owner
+    operationGate.OwnerSince = now
+    return true, owner
+end
+
+local function releaseOperation(owner)
+    owner = tostring(owner or "unknown")
+    operationGate.Waiters[owner] = nil
+    if operationGate.Owner == owner then
+        operationGate.Owner = nil
+        operationGate.OwnerSince = 0
+    end
+end
+
+local function cancelOperation(owner)
+    releaseOperation(owner)
+end
+
+local function operationGateStatus()
+    cleanOperationGate()
+    local waiting = 0
+    for _ in pairs(operationGate.Waiters) do waiting = waiting + 1 end
+    return operationGate.Owner or "idle", waiting
 end
 
 local function track(connection)
@@ -193,6 +271,110 @@ local function normalize(value)
     value = string.gsub(value, "[%p_]+", " ")
     value = string.gsub(value, "%s+", " ")
     return string.match(value, "^%s*(.-)%s*$") or value
+end
+
+local EVENT_MACHINE_FALLBACK_NAMES = {
+    ["Galaxy Fox"] = true,
+    ["Silver Stag"] = true,
+    ["Silver Dragon"] = true,
+    ["Santa Paws"] = true,
+}
+local machinePetCatalogCache = { ExpiresAt = 0, Ids = {}, Names = {}, Summary = "loading" }
+
+local function machinePetDefinitionAllowed(definition)
+    if type(definition) ~= "table" then return false end
+    local rarity = normalize(definition.rarity or definition.Rarity)
+    if definition.isPremium == true or definition.huge == true or definition.isHuge == true
+        or definition.isExclusive == true or definition.isVanity == true
+        or rarity == "exclusive" or rarity == "secret" then
+        return false
+    end
+    return rarity == "legendary" or rarity == "mythical"
+end
+
+local function getMachinePetCatalog(force)
+    local now = os.clock()
+    if not force and now < machinePetCatalogCache.ExpiresAt then
+        return machinePetCatalogCache.Ids, machinePetCatalogCache.Names,
+            machinePetCatalogCache.Summary
+    end
+
+    local directory = Library and Library.Directory or {}
+    local pets = type(directory.Pets) == "table" and directory.Pets or {}
+    local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
+    local ids, eventEggs = {}, {}
+
+    local function addPet(rawId)
+        if rawId == nil then return end
+        local id = tostring(rawId)
+        local definition = pets[id] or pets[tonumber(id)]
+        if not machinePetDefinitionAllowed(definition) then return end
+        ids[id] = true
+    end
+
+    local function addEggDrops(rawEgg, visiting)
+        local eggId = tostring(rawEgg or "")
+        if eggId == "" then return end
+        visiting = visiting or {}
+        if visiting[eggId] then return end
+        visiting[eggId] = true
+        local entry = eggs[eggId]
+        local drops = type(entry) == "table" and entry.drops or nil
+        if type(drops) == "string" then
+            addEggDrops(drops, visiting)
+        elseif type(drops) == "table" then
+            for _, drop in pairs(drops) do
+                local petId = type(drop) == "table"
+                    and (drop[1] or drop.id or drop.ID or drop.petId or drop.PetId) or drop
+                addPet(petId)
+            end
+        end
+        visiting[eggId] = nil
+    end
+
+    for eggId, entry in pairs(eggs) do
+        if type(entry) == "table" then
+            local marker = normalize(table.concat({
+                tostring(eggId), tostring(entry.displayName or ""),
+                tostring(entry.currency or ""), tostring(entry.area or ""),
+                tostring(entry.event or entry.Event or entry.eventName or entry.EventName or ""),
+            }, " "))
+            if normalize(entry.currency) == "gingerbread"
+                or string.find(marker, "christmas", 1, true)
+                or string.find(marker, "holiday", 1, true)
+                or string.find(marker, "new year", 1, true)
+                or string.find(marker, "newyear", 1, true)
+                or string.find(marker, "xmas", 1, true)
+                or string.find(marker, "jolly", 1, true)
+                or string.find(marker, "many gifts", 1, true) then
+                eventEggs[#eventEggs + 1] = tostring(eggId)
+                addEggDrops(eggId)
+            end
+        end
+    end
+
+    for id, definition in pairs(pets) do
+        if type(definition) == "table" and EVENT_MACHINE_FALLBACK_NAMES[tostring(definition.name)] then
+            addPet(id)
+        end
+    end
+
+    local names = {}
+    for id in pairs(ids) do
+        local definition = pets[id] or pets[tonumber(id)]
+        names[#names + 1] = tostring(type(definition) == "table" and definition.name or id)
+    end
+    table.sort(names)
+    table.sort(eventEggs)
+    local summary = string.format("%d eligible species from %d live event egg(s): %s",
+        #names, #eventEggs, #names > 0 and table.concat(names, ", ") or "none")
+    machinePetCatalogCache = {
+        ExpiresAt = now + 5,
+        Ids = ids,
+        Names = names,
+        Summary = summary,
+    }
+    return ids, names, summary
 end
 
 local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/640ac3ed2edf68868b439b639bb31b3d617d5f43/graphics_module.lua"
@@ -1401,6 +1583,43 @@ local function getEventRemote(commandName)
     return nil, eventRemoteSource, nil, lastProblem
 end
 
+local fireRemoteCache = {}
+local fireRemoteSource = "Network.Fire GetRemoteEvent upvalue #2"
+
+local function getFireRemote(commandName)
+    local cached = fireRemoteCache[commandName]
+    if typeof(cached) == "Instance" and cached:IsA("RemoteEvent")
+        and cached:IsDescendantOf(ReplicatedStorage) then
+        return cached, fireRemoteSource, remoteSessionIndex(cached), nil
+    end
+    fireRemoteCache[commandName] = nil
+
+    local network = networkReady()
+    if not network or type(network.Fire) ~= "function" then
+        return nil, fireRemoteSource, nil, "Library.Network.Fire is unavailable"
+    end
+    local accessor, reader = functionUpvalueAt(network.Fire, 2)
+    if type(accessor) ~= "function" then
+        return nil, fireRemoteSource, nil,
+            "GetRemoteEvent accessor is unavailable (" .. tostring(reader) .. ")"
+    end
+
+    local ok, first, second, third = pcall(accessor, commandName)
+    if not ok then
+        return nil, fireRemoteSource, nil, "GetRemoteEvent failed: " .. tostring(first)
+    end
+    for _, remote in ipairs({ first, second, third }) do
+        if typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
+            and remote:IsDescendantOf(ReplicatedStorage) then
+            fireRemoteCache[commandName] = remote
+            local sourceName = fireRemoteSource .. " (" .. tostring(reader) .. ")"
+            return remote, sourceName, remoteSessionIndex(remote), nil
+        end
+    end
+    return nil, fireRemoteSource, nil,
+        tostring(commandName) .. " did not resolve to a live RemoteEvent"
+end
+
 local function invokeCommand(commandName, ...)
     local arguments = table.pack(...)
     local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
@@ -1416,6 +1635,20 @@ local function invokeCommand(commandName, ...)
         return false, false, tostring(result[2]), sourceName, sessionIndex
     end
     return true, result[2] == true, result[3], sourceName, sessionIndex, result[4]
+end
+
+local function fireCommand(commandName, ...)
+    local arguments = table.pack(...)
+    local remote, sourceName, sessionIndex, resolveProblem = getFireRemote(commandName)
+    if not remote then return false, resolveProblem, sourceName, sessionIndex end
+    local ok, problem = pcall(function()
+        remote:FireServer(table.unpack(arguments, 1, arguments.n))
+    end)
+    if not ok then
+        fireRemoteCache[commandName] = nil
+        return false, tostring(problem), sourceName, sessionIndex
+    end
+    return true, nil, sourceName, sessionIndex
 end
 
 local function runtimeTableScore(candidate)
@@ -1976,6 +2209,12 @@ end
 local function setEggCatalogStatus(text)
     setViewStatus("EggCatalog", text)
 end
+local function setBoostStatus(text)
+    setViewStatus("Boost", text)
+end
+local function setRouteStatus(text)
+    setViewStatus("Routes", text)
+end
 local function getRewardSave()
     if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
     local save
@@ -2066,7 +2305,10 @@ local function formatDuration(seconds)
     return string.format("%dm %02ds", minutes, secs)
 end
 
-local AUTO_EGG_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/8f891a735496afa55911708d3d1154cf561a4865/auto_egg_module.lua"
+local MODULE_REVISION = "f0bac3b5a7823681a2b64c8a91e5fe9203d8d1c4"
+local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
+    .. MODULE_REVISION .. "/"
+local AUTO_EGG_MODULE_URL = RAW_MODULE_BASE .. "auto_egg_module.lua"
 local autoEggController
 local autoEggLoading = false
 local autoEggLoadProblem
@@ -2161,6 +2403,10 @@ local function startAutoEggModule()
         InvokeCommand = invokeCommand,
         GetEventRemote = getEventRemote,
         RouteText = routeText,
+        AcquireOperation = acquireOperation,
+        ReleaseOperation = releaseOperation,
+        CancelOperation = cancelOperation,
+        OperationOwner = "AutoEgg",
         SetStatus = setEggStatus,
         Trace = trace,
         Disable = disableAutoEgg,
@@ -2174,19 +2420,19 @@ end
 
 local machineModules = {
     Gold = {
-        URL = "https://raw.githubusercontent.com/destr0f/toolofmind/28ba49b9290bc29f900ebf09ee62c9c229f0a731/gold_machine_module.lua",
+        URL = RAW_MODULE_BASE .. "gold_machine_module.lua",
         ConfigKeys = { "AutoGoldenGalaxyFox" },
         Label = "gold machine",
         SetStatus = setGoldMachineStatus,
     },
     Rainbow = {
-        URL = "https://raw.githubusercontent.com/destr0f/toolofmind/28ba49b9290bc29f900ebf09ee62c9c229f0a731/rainbow_machine_module.lua",
+        URL = RAW_MODULE_BASE .. "rainbow_machine_module.lua",
         ConfigKeys = { "AutoRainbowGalaxyFox" },
         Label = "rainbow machine",
         SetStatus = setRainbowMachineStatus,
     },
     DarkMatter = {
-        URL = "https://raw.githubusercontent.com/destr0f/toolofmind/28ba49b9290bc29f900ebf09ee62c9c229f0a731/dark_matter_module.lua",
+        URL = RAW_MODULE_BASE .. "dark_matter_module.lua",
         ConfigKeys = { "AutoDarkMatterGalaxyFox", "AutoClaimDarkMatter" },
         Label = "dark matter machine",
         SetStatus = setDarkMatterStatus,
@@ -2260,10 +2506,16 @@ function machineModules:Start(kind)
         GetSave = getRewardSave,
         GetCurrency = getCurrentCurrency,
         FormatNumber = formatRateNumber,
+        GetMachinePetCatalog = getMachinePetCatalog,
+        BatchSize = function() return config.MachineBatchSize end,
         GetCommandRemote = getCommandRemote,
         InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
         InvokeCommand = invokeCommand,
         RouteText = routeText,
+        AcquireOperation = acquireOperation,
+        ReleaseOperation = releaseOperation,
+        CancelOperation = cancelOperation,
+        OperationOwner = kind .. "Machine",
         SetStatus = entry.SetStatus,
         Trace = trace,
     }
@@ -2274,6 +2526,155 @@ function machineModules:Start(kind)
         entry.SetStatus("Module failed to start; no pets were sent: " .. tostring(reason))
         trace(entry.Label .. " module", "start failed: " .. tostring(reason))
     end
+end
+
+local BOOST_MODULE_URL = RAW_MODULE_BASE .. "boost_module.lua"
+local boostController
+local boostLoading = false
+local boostLoadProblem
+
+local function boostAutomationEnabled()
+    return config.AutoBoostBundle or config.AutoTripleCoins or config.AutoTripleDamage
+        or config.AutoSuperLucky or config.AutoUltraLucky
+end
+
+local function stopBoostModule(statusText)
+    if boostController then pcall(boostController, "stop") end
+    if statusText then setBoostStatus(statusText) end
+end
+
+local function startBoostModule()
+    if boostLoading or not boostAutomationEnabled() or not running() then return end
+    boostLoading = true
+    if not boostController then
+        setBoostStatus("Loading the dynamic boost worker on demand...")
+        local downloaded, source = pcall(function() return game:HttpGet(BOOST_MODULE_URL) end)
+        if downloaded then
+            local chunk, compileProblem = loadstring(source)
+            source = nil
+            if chunk then
+                local started, controller = pcall(chunk)
+                if started and type(controller) == "function" then
+                    boostController = controller
+                    trace("auto boost module", "loaded on demand")
+                else
+                    downloaded = false
+                    source = "module start failed: " .. tostring(controller)
+                end
+            else
+                downloaded = false
+                source = "module compile failed: " .. tostring(compileProblem)
+            end
+        end
+        if not downloaded then
+            boostLoadProblem = tostring(source)
+            boostLoading = false
+            setBoostStatus("Boost module could not be loaded; no request was sent: " .. boostLoadProblem)
+            trace("auto boost module", boostLoadProblem)
+            return
+        end
+    end
+    boostLoading = false
+    if not boostAutomationEnabled() or not running() then return end
+
+    local context = {
+        Library = Library,
+        Running = running,
+        Enabled = boostAutomationEnabled,
+        GetOptions = function()
+            return {
+                AutoBoostBundle = config.AutoBoostBundle,
+                AutoTripleCoins = config.AutoTripleCoins,
+                AutoTripleDamage = config.AutoTripleDamage,
+                AutoSuperLucky = config.AutoSuperLucky,
+                AutoUltraLucky = config.AutoUltraLucky,
+                RenewBefore = config.BoostRenewBefore,
+            }
+        end,
+        GetSave = getRewardSave,
+        GetCurrency = getCurrentCurrency,
+        FormatNumber = formatRateNumber,
+        GetCommandRemote = getCommandRemote,
+        GetFireRemote = getFireRemote,
+        InvokeCommand = invokeCommand,
+        FireCommand = fireCommand,
+        RouteText = routeText,
+        AcquireOperation = acquireOperation,
+        ReleaseOperation = releaseOperation,
+        CancelOperation = cancelOperation,
+        OperationStatus = operationGateStatus,
+        OperationOwner = "Boosts",
+        SetStatus = setBoostStatus,
+        Trace = trace,
+    }
+    local called, accepted, problem = pcall(boostController, "start", context)
+    if not called or accepted == false then
+        local reason = not called and accepted or problem
+        setBoostStatus("Boost worker failed to start; no request was sent: " .. tostring(reason))
+        trace("auto boost module", "start failed: " .. tostring(reason))
+    end
+end
+
+local function reconcileBoostModule()
+    if boostAutomationEnabled() then
+        task.spawn(startBoostModule)
+    else
+        stopBoostModule("Disabled. Boost timers and inventory remain untouched.")
+    end
+end
+
+local routeHealthBusy = false
+local routeHealthNext = 0
+
+local function refreshRouteHealth(force)
+    if routeHealthBusy or (not force and os.clock() < routeHealthNext) then return end
+    routeHealthBusy = true
+    routeHealthNext = os.clock() + 8
+
+    local checked, result = pcall(function()
+        local function invokeState(command)
+            local remote, _, sessionIndex, problem = getCommandRemote(command)
+            return remote and ("ready #" .. tostring(sessionIndex or "?"))
+                or ("missing (" .. tostring(problem) .. ")")
+        end
+        local function fireState(command)
+            local remote, _, sessionIndex, problem = getFireRemote(command)
+            return remote and ("ready #" .. tostring(sessionIndex or "?"))
+                or ("missing (" .. tostring(problem) .. ")")
+        end
+        local function eventState(command)
+            local remote, _, sessionIndex, problem = getEventRemote(command)
+            return remote and ("ready #" .. tostring(sessionIndex or "?"))
+                or ("missing (" .. tostring(problem) .. ")")
+        end
+
+        local _, _, catalogSummary = getMachinePetCatalog(false)
+        local owner, waiting = operationGateStatus()
+        return table.concat({
+            "Egg: Buy=" .. invokeState("Buy Egg Yay") .. " | Open=" .. eventState("Open Egg"),
+            "Gold: use=" .. invokeState("Use Golden Machine")
+                .. " | info=" .. invokeState("Get Golden Machine Info"),
+            "Rainbow: use=" .. invokeState("Use Rainbow Machine")
+                .. " | info=" .. invokeState("Get Rainbow Machine Info"),
+            "Dark Matter: create=" .. invokeState("Convert To Dark Matter")
+                .. " | claim=" .. invokeState("Redeem Dark Matter Pet"),
+            "Boosts: activate=" .. fireState("Activate Boost")
+                .. " | bundle=" .. invokeState("Buy Boost Bundle"),
+            "Rewards: VIP=" .. invokeState("Redeem VIP Rewards")
+                .. " | Rank=" .. invokeState("Redeem Rank Rewards"),
+            "Pet catalog: " .. tostring(catalogSummary),
+            "Inventory gate: " .. tostring(owner) .. " | waiting workers: " .. tostring(waiting),
+            "Resolver checks are local; this panel sends no server request.",
+        }, "\n")
+    end)
+    if checked then
+        setRouteStatus(result)
+    else
+        setRouteStatus("Local route preflight recovered from an error: " .. tostring(result)
+            .. "\nNo server request was sent; the next check will retry.")
+        trace("route preflight", tostring(result))
+    end
+    routeHealthBusy = false
 end
 
 local function invokeReward(kind)
@@ -2585,6 +2986,7 @@ UI.FarmTab = Window:Tab({ Title = "Farm", Icon = "paw-print" })
 UI.MonitorTab = Window:Tab({ Title = "Monitor", Icon = "activity" })
 UI.EggTab = Window:Tab({ Title = "Eggs", Icon = "egg" })
 UI.MachinesTab = Window:Tab({ Title = "Machines", Icon = "settings" })
+UI.BoostsTab = Window:Tab({ Title = "Boosts", Icon = "zap" })
 UI.LootTab = Window:Tab({ Title = "Loot", Icon = "package-open" })
 UI.RewardsTab = Window:Tab({ Title = "Rewards", Icon = "gift" })
 UI.GraphicsTab = Window:Tab({ Title = "Graphics", Icon = "monitor" })
@@ -2851,16 +3253,51 @@ statusViews.Rate = UI.PerformanceSection:Paragraph({
     Desc = "Enable Pet Farm. Income is derived only from positive Library.Save balance changes.",
 })
 
+UI.RouteSection = UI.MonitorTab:Section({ Title = "Live Protocol Health", Box = true, Opened = true })
+UI.RouteSection:Paragraph({
+    Title = "SESSION-SAFE ROUTES",
+    Desc = "Every named command is resolved again after a rejoin. Child indices are displayed only as diagnostics.",
+})
+UI.RouteSection:Button({
+    Title = "REFRESH COMMAND STATUS",
+    Desc = "Read-only lookup through Library.Network; does not invoke the server",
+    Icon = "refresh-cw",
+    Callback = function() task.spawn(function() refreshRouteHealth(true) end) end,
+})
+statusViews.Routes = UI.RouteSection:Paragraph({
+    Title = "Command Status",
+    Desc = "Local route preflight is starting...",
+})
+
 UI.MachinesHero = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
 UI.MachinesHero:Paragraph({
     Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
-    Desc = "Each stage resolves live session remotes, validates every UID and waits for Save confirmation before continuing.",
+    Desc = "Galaxy Fox plus the live New Year top-pet catalog. Every stage validates matching species and waits for Save confirmation.",
+})
+UI.MachinesHero:Slider({
+    Flag = "machine_batch_size",
+    Title = "Pets Per Machine Request",
+    Desc = "1-6 pets. Golden/Rainbow success chance follows the server tier; Dark Matter time follows its tier.",
+    Step = 1,
+    Value = { Min = 1, Max = 6, Default = 6 },
+    Callback = function(value)
+        config.MachineBatchSize = math.clamp(math.floor(tonumber(value) or 6), 1, 6)
+    end,
+})
+UI.MachinesHero:Button({
+    Title = "REFRESH NEW YEAR PET CATALOG",
+    Desc = "Re-reads Library.Directory.Eggs/Pets locally; no machine request is sent",
+    Icon = "refresh-cw",
+    Callback = function()
+        getMachinePetCatalog(true)
+        task.spawn(function() refreshRouteHealth(true) end)
+    end,
 })
 UI.GoldSection = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
 UI.GoldSection:Toggle({
     Flag = "auto_golden_galaxy_fox",
-    Title = "Auto Golden Galaxy Fox",
-    Desc = "100% batches only / protects Tech Coins IV-V, equipped and locked pets",
+    Title = "Auto Golden Target Pets",
+    Desc = "Normal target pets / matching species per batch / protects equipped and locked pets; enchants are not filtered",
     Value = false,
     Callback = function(value)
         config.AutoGoldenGalaxyFox = value == true
@@ -2881,8 +3318,8 @@ statusViews.Gold = UI.GoldSection:Paragraph({
 UI.RainbowSection = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
 UI.RainbowSection:Toggle({
     Flag = "auto_rainbow_galaxy_fox",
-    Title = "Auto Rainbow Galaxy Fox",
-    Desc = "Golden Foxes only / 100% batches / protects Tech Coins IV-V, equipped and locked pets",
+    Title = "Auto Rainbow Target Pets",
+    Desc = "Golden target pets / matching species per batch / protects equipped and locked pets; enchants are not filtered",
     Value = false,
     Callback = function(value)
         config.AutoRainbowGalaxyFox = value == true
@@ -2897,14 +3334,14 @@ UI.RainbowSection:Toggle({
 })
 statusViews.Rainbow = UI.RainbowSection:Paragraph({
     Title = "Rainbow Machine Status",
-    Desc = "Disabled / only golden Mythical Galaxy Foxes are eligible",
+    Desc = "Disabled / only golden target species are eligible",
 })
 
 UI.DarkMatterSection = UI.MachinesTab:Section({ Title = "Dark Matter Machine / Stage 3", Box = true, Opened = true })
 UI.DarkMatterSection:Toggle({
     Flag = "auto_dark_matter_galaxy_fox",
-    Title = "Auto Dark Matter Galaxy Fox",
-    Desc = "Rainbow Foxes only / protects Tech Coins IV-V, equipped and locked pets",
+    Title = "Auto Dark Matter Target Pets",
+    Desc = "Rainbow target pets / protects Tech Coins IV-V plus equipped and locked pets",
     Value = false,
     Callback = function(value)
         config.AutoDarkMatterGalaxyFox = value == true
@@ -2957,6 +3394,67 @@ UI.DiamondSection:Toggle({
 statusViews.Diamond = UI.DiamondSection:Paragraph({
     Title = "Diamond Exchange Status",
     Desc = "Disabled / the live purchase remote is resolved independently each session",
+})
+
+UI.BoostHero = UI.BoostsTab:Section({ Title = "Adaptive Boost Controller", Box = true, Opened = true })
+UI.BoostHero:Paragraph({
+    Title = "RENEW FROM SAVE / REFILL ONLY WHEN NEEDED",
+    Desc = "Uses Save.Boosts and BoostsInventory. One activation or bundle request may be pending at a time.",
+})
+UI.BoostHero:Slider({
+    Flag = "boost_renew_before",
+    Title = "Renew Before Expiration",
+    Desc = "Seconds remaining before the next inventory boost is activated",
+    Step = 1,
+    Value = { Min = 1, Max = 15, Default = 5 },
+    Callback = function(value)
+        config.BoostRenewBefore = math.clamp(math.floor(tonumber(value) or 5), 1, 15)
+    end,
+})
+
+local boostToggleDefinitions = {
+    { Flag = "auto_triple_coins", Key = "AutoTripleCoins", Title = "Auto Triple Coins" },
+    { Flag = "auto_triple_damage", Key = "AutoTripleDamage", Title = "Auto Triple Damage" },
+    { Flag = "auto_super_lucky", Key = "AutoSuperLucky", Title = "Auto Super Lucky" },
+    { Flag = "auto_ultra_lucky", Key = "AutoUltraLucky", Title = "Auto Ultra Lucky" },
+}
+for _, rawDefinition in ipairs(boostToggleDefinitions) do
+    local definition = rawDefinition
+    UI.BoostHero:Toggle({
+        Flag = definition.Flag,
+        Title = definition.Title,
+        Desc = "Renews only inside the configured window; an empty inventory may request one Boost Bundle",
+        Value = false,
+        Callback = function(value)
+            config[definition.Key] = value == true
+            reconcileBoostModule()
+        end,
+    })
+end
+
+UI.BoostBundleSection = UI.BoostsTab:Section({ Title = "Boost Bundle Fallback", Box = true, Opened = true })
+UI.BoostBundleSection:Toggle({
+    Flag = "auto_boost_bundle",
+    Title = "Auto Buy Boost Bundle",
+    Desc = "Costs 270k Diamonds: Ultra Lucky x3, Triple Coins x5, Super Lucky x7, Triple Damage x5. Buys only for an enabled boost with zero stock.",
+    Value = false,
+    Callback = function(value)
+        config.AutoBoostBundle = value == true
+        reconcileBoostModule()
+    end,
+})
+UI.BoostBundleSection:Button({
+    Title = "CHECK BOOST ROUTES",
+    Desc = "Resolves Activate Boost and Buy Boost Bundle locally without spending Diamonds",
+    Icon = "refresh-cw",
+    Callback = function()
+        task.spawn(function() refreshRouteHealth(true) end)
+        if boostAutomationEnabled() then task.spawn(startBoostModule) end
+    end,
+})
+statusViews.Boost = UI.BoostBundleSection:Paragraph({
+    Title = "Boost Automation Status",
+    Desc = "Disabled / no boost or bundle request is armed",
 })
 
 UI.LootHero = UI.LootTab:Section({ Title = "Local Pickup Layer", Box = true, Opened = true })
@@ -3214,9 +3712,18 @@ local function shutdown(reason)
     config.AutoRainbowGalaxyFox = false
     config.AutoDarkMatterGalaxyFox = false
     config.AutoClaimDarkMatter = false
+    config.AutoBoostBundle = false
+    config.AutoTripleCoins = false
+    config.AutoTripleDamage = false
+    config.AutoSuperLucky = false
+    config.AutoUltraLucky = false
     config.AutoEgg = false
     stopAutoEggModule()
     machineModules:StopAll()
+    stopBoostModule()
+    operationGate.Owner = nil
+    operationGate.OwnerSince = 0
+    table.clear(operationGate.Waiters)
     config.PotatoMode = false
     stopGraphics()
     farmResetRequested = false
@@ -3387,6 +3894,9 @@ end)
 task.spawn(function()
     while task.wait(0.4) do
         if not running() then break end
+        if os.clock() >= routeHealthNext and not routeHealthBusy then
+            task.spawn(function() refreshRouteHealth(false) end)
+        end
         refreshZoneDropdown(false)
         refreshEggDropdown(false)
         local targets, world, zone = orderedTargets(config.Mode)
