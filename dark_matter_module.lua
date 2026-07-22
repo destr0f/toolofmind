@@ -1,9 +1,7 @@
--- Lazy Galaxy Fox Dark Matter Machine worker for PSX OG Nova develop.
--- Queues verified rainbow pets and redeems completed queue slots.
+-- Lazy event-pet Dark Matter Machine worker for PSX OG Nova develop.
+-- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local PET_NAME = "Galaxy Fox"
-local PET_RARITY = "Mythical"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 
@@ -74,6 +72,27 @@ local function definitionFor(context, pet)
     return directory[pet.id] or directory[tostring(pet.id)]
 end
 
+local function targetCatalog(context)
+    local ids, names, summary = context.GetMachinePetCatalog()
+    return type(ids) == "table" and ids or {}, type(names) == "table" and names or {},
+        tostring(summary or "event pet catalog unavailable")
+end
+
+local function acquireOperation(state, context)
+    if state.OperationOwned then return true end
+    local ok, acquired, owner = pcall(context.AcquireOperation, context.OperationOwner)
+    if not ok then return false, tostring(acquired) end
+    if acquired ~= true then return false, tostring(owner or "another inventory worker") end
+    state.OperationOwned = true
+    return true
+end
+
+local function releaseOperation(state, context)
+    if not state.OperationOwned then return end
+    state.OperationOwned = false
+    pcall(context.ReleaseOperation, context.OperationOwner)
+end
+
 local function dictionaryCount(value)
     local count = 0
     for _ in pairs(type(value) == "table" and value or {}) do count = count + 1 end
@@ -102,7 +121,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "all Fox: %d | rainbow: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
+        "target pets: %d | rainbow: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
         stats.All, stats.Rainbow, stats.Eligible, stats.Protected,
         stats.Equipped, stats.Locked, stats.Other, stats.Pending
     )
@@ -114,10 +133,11 @@ local function setStatus(state, context, text)
     context.SetStatus(text)
 end
 
-local function clearPendingCreate(state)
+local function clearPendingCreate(state, context)
     table.clear(state.PendingCreate)
     state.PendingCreateAt = 0
     state.PendingCreateAudit = nil
+    if context then releaseOperation(state, context) end
 end
 
 local function refreshPendingCreate(state, context, save)
@@ -135,14 +155,14 @@ local function refreshPendingCreate(state, context, save)
             state.LastQueuedAudit = state.PendingCreateAudit
             context.Trace("dark matter confirmed queued pets", state.PendingCreateAudit)
         end
-        clearPendingCreate(state)
+        clearPendingCreate(state, context)
         return 0
     end
     state.PendingCreate = stillPresent
     if os.clock() - state.PendingCreateAt >= PENDING_TIMEOUT then
         context.Trace("dark matter", "Save.Pets timeout; releasing queued UID guard | "
             .. tostring(state.PendingCreateAudit or "unknown"))
-        clearPendingCreate(state)
+        clearPendingCreate(state, context)
         return 0
     end
     return count
@@ -158,17 +178,21 @@ local function normalizedQueue(save)
 end
 
 local function refreshPendingClaims(state, context, queue)
+    local released = false
     for key, pending in pairs(state.PendingClaims) do
         if queue[key] == nil then
             state.PendingClaims[key] = nil
             state.Claimed = state.Claimed + 1
             context.Trace("dark matter claim confirmed", "slot=" .. tostring(pending.Id))
+            released = true
         elseif os.clock() - pending.At >= PENDING_TIMEOUT then
             state.PendingClaims[key] = nil
             context.Trace("dark matter", "claim refresh timeout; releasing slot guard "
                 .. tostring(pending.Id))
+            released = true
         end
     end
+    if released and next(state.PendingClaims) == nil then releaseOperation(state, context) end
 end
 
 local function getServerTime(state, context)
@@ -224,6 +248,7 @@ end
 
 local function collectCandidates(state, context, save)
     local groups = {}
+    local targetIds, _, catalogSummary = targetCatalog(context)
     local stats = {
         All = 0, Rainbow = 0, Eligible = 0, Protected = 0,
         Equipped = 0, Locked = 0, Other = 0, Pending = 0,
@@ -231,8 +256,8 @@ local function collectCandidates(state, context, save)
     for _, pet in pairs((save and save.Pets) or {}) do
         if type(pet) == "table" then
             local definition = definitionFor(context, pet)
-            if type(definition) == "table" and definition.name == PET_NAME
-                and definition.rarity == PET_RARITY then
+            local petId = tostring(pet.id or "")
+            if type(definition) == "table" and targetIds[petId] then
                 stats.All = stats.All + 1
                 if not pet.r or pet.g or pet.dm then
                     stats.Other = stats.Other + 1
@@ -252,27 +277,37 @@ local function collectCandidates(state, context, save)
                         stats.Pending = stats.Pending + 1
                     else
                         stats.Eligible = stats.Eligible + 1
-                        local id = tostring(pet.id)
+                        local id = petId
                         groups[id] = groups[id] or {}
-                        groups[id][#groups[id] + 1] = { Uid = uid, Id = id }
+                        groups[id][#groups[id] + 1] = {
+                            Uid = uid,
+                            Id = id,
+                            Name = tostring(definition.name or id),
+                        }
                     end
                 end
             end
         end
     end
     local selected, selectedId = {}, nil
+    local groupCounts = {}
     for id, group in pairs(groups) do
         table.sort(group, function(left, right) return left.Uid < right.Uid end)
+        groupCounts[#groupCounts + 1] = tostring(group[1] and group[1].Name or id)
+            .. "=" .. tostring(#group)
         if #group > #selected or (#group == #selected and (selectedId == nil or id < selectedId)) then
             selected, selectedId = group, id
         end
     end
-    return selected, stats
+    table.sort(groupCounts)
+    return selected, stats, catalogSummary,
+        #groupCounts > 0 and table.concat(groupCounts, ", ") or "none"
 end
 
 local function validateSelection(context, candidates)
     local save = context.GetSave()
     if not save then return false, nil, nil, "fresh Save.Pets is unavailable" end
+    local targetIds = targetCatalog(context)
     local byUID = {}
     for _, pet in pairs(save.Pets or {}) do
         if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
@@ -283,9 +318,9 @@ local function validateSelection(context, candidates)
         local pet = byUID[uid]
         if not pet then return false, nil, nil, shortUID(uid) .. " disappeared before dispatch" end
         local definition = definitionFor(context, pet)
-        if type(definition) ~= "table" or definition.name ~= PET_NAME
-            or definition.rarity ~= PET_RARITY then
-            return false, nil, nil, shortUID(uid) .. " is no longer a Mythical Galaxy Fox"
+        local petId = tostring(pet.id or "")
+        if type(definition) ~= "table" or not targetIds[petId] then
+            return false, nil, nil, shortUID(uid) .. " is no longer in the event-pet catalog"
         end
         if not pet.r or pet.g or pet.dm then
             return false, nil, nil, shortUID(uid) .. " is no longer an eligible rainbow pet"
@@ -301,7 +336,6 @@ local function validateSelection(context, candidates)
         if definition.isPremium or definition.rarity == "Exclusive" then
             return false, nil, nil, shortUID(uid) .. " is not machine-eligible"
         end
-        local petId = tostring(pet.id)
         expectedId = expectedId or petId
         if petId ~= expectedId then
             return false, nil, nil, "selected pets no longer share the same directory id"
@@ -350,9 +384,24 @@ local function runCheck(state, context)
     local slots = slotLimit(save, queueCount)
     refreshPendingClaims(state, context, queue)
     local pendingCreate = refreshPendingCreate(state, context, save)
-    local candidates, stats = collectCandidates(state, context, save)
+    local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, save)
     local serverTime, clockProblem = getServerTime(state, context)
     local ready, nearest = queueSnapshot(queue, serverTime)
+
+    if pendingCreate > 0 then
+        setStatus(state, context, "Previous Dark Matter batch accepted; waiting for Save.Pets ("
+            .. tostring(pendingCreate) .. " UID remaining).\nPending: "
+            .. tostring(state.PendingCreateAudit or "unknown") .. "\n" .. statsText(stats))
+        finish(0.5)
+        return
+    end
+    if next(state.PendingClaims) ~= nil then
+        setStatus(state, context, "Dark Matter claim accepted; waiting for DarkMatterQueue confirmation.\n"
+            .. "Queue: " .. tostring(queueCount) .. "/" .. tostring(slots)
+            .. " | claimed this session: " .. tostring(state.Claimed))
+        finish(0.5)
+        return
+    end
 
     if context.ClaimEnabled() and #ready > 0 then
         local claim
@@ -360,13 +409,22 @@ local function runCheck(state, context)
             if not state.PendingClaims[candidate.Key] then claim = candidate; break end
         end
         if claim then
+            local acquired, owner = acquireOperation(state, context)
+            if not acquired then
+                setStatus(state, context, "A completed Dark Matter pet is ready, but pet inventory is reserved by "
+                    .. tostring(owner) .. ". No claim sent.")
+                finish(0.2)
+                return
+            end
             local transportOk, accepted, message, sourceName, sessionIndex =
                 context.InvokeCommand("Redeem Dark Matter Pet", claim.Id)
             if not transportOk then
+                releaseOperation(state, context)
                 setStatus(state, context, "Dark Matter claim transport error: " .. tostring(message)
                     .. "\nQueue: " .. tostring(queueCount) .. "/" .. tostring(slots))
                 finish(RETRY_DELAY)
             elseif not accepted then
+                releaseOperation(state, context)
                 local reason = message ~= nil and tostring(message) or "request rejected"
                 setStatus(state, context, "Claim rejected via "
                     .. context.RouteText(sourceName, sessionIndex) .. ": " .. reason)
@@ -396,15 +454,9 @@ local function runCheck(state, context)
     local info, maxBatch, infoProblem = resolveMachineInfo(state, context)
     if not info then
         setStatus(state, context, "Dark Matter route/info error; no pets were sent: "
-            .. tostring(infoProblem) .. "\n" .. statsText(stats))
+            .. tostring(infoProblem) .. "\n" .. statsText(stats)
+            .. "\nCatalog: " .. catalogSummary)
         finish(RETRY_DELAY)
-        return
-    end
-    if pendingCreate > 0 then
-        setStatus(state, context, "Previous Dark Matter batch accepted; waiting for Save.Pets ("
-            .. tostring(pendingCreate) .. " UID remaining).\nPending: "
-            .. tostring(state.PendingCreateAudit or "unknown") .. "\n" .. statsText(stats))
-        finish(0.5)
         return
     end
     if queueCount >= slots then
@@ -415,13 +467,23 @@ local function runCheck(state, context)
         return
     end
     if #candidates == 0 then
-        setStatus(state, context, "No eligible rainbow Mythical Galaxy Foxes.\n"
-            .. statsText(stats) .. "\nLast queued: " .. state.LastQueuedAudit)
+        setStatus(state, context, "No eligible rainbow target pets.\n"
+            .. statsText(stats) .. "\nGroups: " .. groupSummary
+            .. "\nCatalog: " .. catalogSummary .. "\nLast queued: " .. state.LastQueuedAudit)
         finish(2)
         return
     end
 
-    local batchSize = math.min(#candidates, maxBatch)
+    local requested = math.floor(tonumber(context.BatchSize()) or 6)
+    local batchSize = math.clamp(requested, 1, maxBatch)
+    if #candidates < batchSize then
+        setStatus(state, context, "Waiting for " .. tostring(batchSize)
+            .. " matching rainbow pets; largest species group has " .. tostring(#candidates)
+            .. ". No request sent.\n" .. statsText(stats) .. "\nGroups: " .. groupSummary
+            .. "\nCatalog: " .. catalogSummary)
+        finish(2)
+        return
+    end
     local tier = type(info[batchSize]) == "table" and info[batchSize] or {}
     local batchCost = tonumber(tier.cost or tier.Cost)
     local waitTime = tonumber(tier.waitTime or tier.WaitTime)
@@ -436,8 +498,17 @@ local function runCheck(state, context)
 
     local selected = {}
     for index = 1, batchSize do selected[index] = candidates[index] end
+    local acquired, owner = acquireOperation(state, context)
+    if not acquired then
+        setStatus(state, context, "A " .. tostring(batchSize)
+            .. "-pet Dark Matter batch is ready, but pet inventory is reserved by "
+            .. tostring(owner) .. ". No request sent.\n" .. statsText(stats))
+        finish(0.2)
+        return
+    end
     local safe, selectedUIDs, labels, problem = validateSelection(context, selected)
     if not safe then
+        releaseOperation(state, context)
         local status = "Dark Matter safety recheck blocked the batch: " .. tostring(problem)
         setStatus(state, context, status .. "\n" .. statsText(stats))
         context.Trace("dark matter safety", status)
@@ -445,6 +516,7 @@ local function runCheck(state, context)
         return
     end
     if not state.Running or not context.Running() or not context.CreateEnabled() then
+        releaseOperation(state, context)
         finish(0.5)
         return
     end
@@ -454,10 +526,12 @@ local function runCheck(state, context)
     local transportOk, accepted, message, sourceName, sessionIndex =
         context.InvokeCommand("Convert To Dark Matter", selectedUIDs)
     if not transportOk then
+        releaseOperation(state, context)
         setStatus(state, context, "Dark Matter transport error; no queue confirmed: "
             .. tostring(message) .. "\nValidated but not confirmed: " .. audit)
         finish(RETRY_DELAY)
     elseif not accepted then
+        releaseOperation(state, context)
         local reason = message ~= nil and tostring(message) or "request rejected"
         setStatus(state, context, "Server reached via "
             .. context.RouteText(sourceName, sessionIndex) .. ": " .. reason
@@ -487,8 +561,9 @@ local function stop()
     if activeState then
         activeState.Running = false
         activeState.Busy = false
-        clearPendingCreate(activeState)
+        clearPendingCreate(activeState, activeState.Context)
         table.clear(activeState.PendingClaims)
+        pcall(activeState.Context.CancelOperation, activeState.Context.OperationOwner)
         activeState = nil
     end
     return true
@@ -501,14 +576,16 @@ return function(action, context)
     if type(context) ~= "table" then return false, "module context is missing" end
     local required = {
         "Library", "Running", "Enabled", "CreateEnabled", "ClaimEnabled",
-        "GetSave", "GetCurrency", "FormatNumber", "GetCommandRemote",
-        "InvalidateCommand", "InvokeCommand", "RouteText", "SetStatus", "Trace",
+        "GetSave", "GetCurrency", "FormatNumber", "GetMachinePetCatalog", "BatchSize",
+        "GetCommandRemote", "InvalidateCommand", "InvokeCommand", "RouteText",
+        "AcquireOperation", "ReleaseOperation", "CancelOperation", "OperationOwner",
+        "SetStatus", "Trace",
     }
     for _, key in ipairs(required) do
         if context[key] == nil then return false, "module context is missing " .. key end
     end
     local state = {
-        Running = true, Busy = false, NextCheck = 0,
+        Context = context, Running = true, Busy = false, OperationOwned = false, NextCheck = 0,
         PendingCreate = {}, PendingCreateAt = 0, PendingClaims = {},
         LastQueuedAudit = "none", QueuedBatches = 0, Claimed = 0,
         ServerRetryAt = 0,
@@ -521,6 +598,7 @@ return function(action, context)
                 local ok, problem = pcall(runCheck, state, context)
                 if not ok then
                     state.Busy = false
+                    releaseOperation(state, context)
                     state.NextCheck = os.clock() + RETRY_DELAY
                     local status = "Dark Matter worker error; no action confirmed: " .. tostring(problem)
                     context.Trace("dark matter", status)

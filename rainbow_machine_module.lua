@@ -1,9 +1,7 @@
--- Lazy Galaxy Fox Rainbow Machine worker for PSX OG Slim Farm.
--- Converts only verified golden pets in a server-confirmed 100% tier.
+-- Lazy event-pet Rainbow Machine worker for PSX OG Nova develop.
+-- Converts verified golden pets through a user-selected server tier.
 
 local activeState
-local PET_NAME = "Galaxy Fox"
-local PET_RARITY = "Mythical"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
 
@@ -22,18 +20,6 @@ local function readPower(power)
     local level = tonumber(rawLevel)
     if level == nil and rawLevel ~= nil then level = ROMAN_LEVELS[string.upper(tostring(rawLevel))] end
     return name ~= nil and tostring(name) or nil, level
-end
-
-local function protectedTechCoins(pet)
-    local powers = type(pet) == "table" and (pet.powers or pet.Powers) or nil
-    if type(powers) ~= "table" then return false end
-    for _, power in pairs(powers) do
-        local name, level = readPower(power)
-        if string.lower(tostring(name or "")) == "tech coins" and level and level >= 4 then
-            return true, level
-        end
-    end
-    return false
 end
 
 local function abbreviate(name)
@@ -72,10 +58,32 @@ local function definitionFor(context, pet)
     return directory[pet.id] or directory[tostring(pet.id)]
 end
 
-local function clearPending(state)
+local function targetCatalog(context)
+    local ids, names, summary = context.GetMachinePetCatalog()
+    return type(ids) == "table" and ids or {}, type(names) == "table" and names or {},
+        tostring(summary or "event pet catalog unavailable")
+end
+
+local function acquireOperation(state, context)
+    if state.OperationOwned then return true end
+    local ok, acquired, owner = pcall(context.AcquireOperation, context.OperationOwner)
+    if not ok then return false, tostring(acquired) end
+    if acquired ~= true then return false, tostring(owner or "another inventory worker") end
+    state.OperationOwned = true
+    return true
+end
+
+local function releaseOperation(state, context)
+    if not state.OperationOwned then return end
+    state.OperationOwned = false
+    pcall(context.ReleaseOperation, context.OperationOwner)
+end
+
+local function clearPending(state, context)
     table.clear(state.Pending)
     state.PendingAt = 0
     state.PendingAudit = nil
+    if context then releaseOperation(state, context) end
 end
 
 local function refreshPending(state, context, save)
@@ -93,14 +101,14 @@ local function refreshPending(state, context, save)
             state.LastConfirmedAudit = state.PendingAudit
             context.Trace("rainbow machine confirmed pets", state.PendingAudit)
         end
-        clearPending(state)
+        clearPending(state, context)
         return 0
     end
     state.Pending = stillGolden
     if os.clock() - state.PendingAt >= PENDING_TIMEOUT then
         context.Trace("rainbow machine", "save refresh timeout; releasing pending UID guard | "
             .. tostring(state.PendingAudit or "unknown batch"))
-        clearPending(state)
+        clearPending(state, context)
         return 0
     end
     return count
@@ -108,23 +116,24 @@ end
 
 local function statsText(stats)
     return string.format(
-        "all Fox: %d | golden: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
-        stats.All, stats.Golden, stats.Eligible, stats.Protected, stats.Equipped,
+        "target pets: %d | golden: %d | eligible: %d | equipped skipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
+        stats.All, stats.Golden, stats.Eligible, stats.Equipped,
         stats.Locked, stats.Upgraded, stats.Normal, stats.Pending
     )
 end
 
 local function collectCandidates(state, context, save)
-    local candidates = {}
+    local groups = {}
+    local targetIds, _, catalogSummary = targetCatalog(context)
     local stats = {
-        All = 0, Golden = 0, Eligible = 0, Protected = 0, Equipped = 0,
+        All = 0, Golden = 0, Eligible = 0, Equipped = 0,
         Locked = 0, Upgraded = 0, Normal = 0, Pending = 0,
     }
     for _, pet in pairs((save and save.Pets) or {}) do
         if type(pet) == "table" then
             local definition = definitionFor(context, pet)
-            if type(definition) == "table" and definition.name == PET_NAME
-                and definition.rarity == PET_RARITY then
+            local petId = tostring(pet.id or "")
+            if type(definition) == "table" and targetIds[petId] then
                 stats.All = stats.All + 1
                 if pet.r or pet.dm then
                     stats.Upgraded = stats.Upgraded + 1
@@ -133,32 +142,46 @@ local function collectCandidates(state, context, save)
                 else
                     stats.Golden = stats.Golden + 1
                     local uid = pet.uid ~= nil and tostring(pet.uid) or nil
-                    local protected = protectedTechCoins(pet)
                     local equipped = pet.e == true
                     local locked = pet.l == true or pet.locked == true
-                    if protected then stats.Protected = stats.Protected + 1 end
                     if equipped then stats.Equipped = stats.Equipped + 1 end
                     if locked then stats.Locked = stats.Locked + 1 end
-                    if protected or equipped or locked or uid == nil
+                    if equipped or locked or uid == nil
                         or definition.isPremium or definition.rarity == "Exclusive" then
                         -- Deliberately excluded.
                     elseif state.Pending[uid] then
                         stats.Pending = stats.Pending + 1
                     else
                         stats.Eligible = stats.Eligible + 1
-                        candidates[#candidates + 1] = { Uid = uid }
+                        groups[petId] = groups[petId] or {}
+                        groups[petId][#groups[petId] + 1] = {
+                            Uid = uid,
+                            Id = petId,
+                            Name = tostring(definition.name or petId),
+                        }
                     end
                 end
             end
         end
     end
-    table.sort(candidates, function(left, right) return left.Uid < right.Uid end)
-    return candidates, stats
+    local candidates, selectedId = {}, nil
+    local groupCounts = {}
+    for id, group in pairs(groups) do
+        table.sort(group, function(left, right) return left.Uid < right.Uid end)
+        groupCounts[#groupCounts + 1] = tostring(group[1] and group[1].Name or id)
+            .. "=" .. tostring(#group)
+        if #group > #candidates or (#group == #candidates and (selectedId == nil or id < selectedId)) then
+            candidates, selectedId = group, id
+        end
+    end
+    table.sort(groupCounts)
+    return candidates, stats, catalogSummary,
+        #groupCounts > 0 and table.concat(groupCounts, ", ") or "none"
 end
 
 local function reportInventory(state, context, stats)
-    local signature = string.format("%d:%d:%d:%d:%d:%d:%d:%d:%d",
-        stats.All, stats.Golden, stats.Eligible, stats.Protected, stats.Equipped,
+    local signature = string.format("%d:%d:%d:%d:%d:%d:%d:%d",
+        stats.All, stats.Golden, stats.Eligible, stats.Equipped,
         stats.Locked, stats.Upgraded, stats.Normal, stats.Pending)
     if signature ~= state.LastInventorySignature then
         state.LastInventorySignature = signature
@@ -169,6 +192,7 @@ end
 local function validateSelection(context, selectedCandidates)
     local save = context.GetSave()
     if not save then return false, nil, nil, "fresh Save.Pets is unavailable" end
+    local targetIds = targetCatalog(context)
     local byUID = {}
     for _, pet in pairs(save.Pets or {}) do
         if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
@@ -179,23 +203,18 @@ local function validateSelection(context, selectedCandidates)
         local pet = byUID[uid]
         if not pet then return false, nil, nil, shortUID(uid) .. " disappeared before dispatch" end
         local definition = definitionFor(context, pet)
-        if type(definition) ~= "table" or definition.name ~= PET_NAME
-            or definition.rarity ~= PET_RARITY then
-            return false, nil, nil, shortUID(uid) .. " is no longer a Mythical Galaxy Fox"
+        local petId = tostring(pet.id or "")
+        if type(definition) ~= "table" or not targetIds[petId] then
+            return false, nil, nil, shortUID(uid) .. " is no longer in the event-pet catalog"
         end
         if not pet.g or pet.r or pet.dm then
             return false, nil, nil, shortUID(uid) .. " is no longer an eligible golden pet"
-        end
-        local protected, level = protectedTechCoins(pet)
-        if protected then
-            return false, nil, nil, shortUID(uid) .. " has protected Tech Coins " .. tostring(level)
         end
         if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then return false, nil, nil, shortUID(uid) .. " is locked" end
         if definition.isPremium or definition.rarity == "Exclusive" then
             return false, nil, nil, shortUID(uid) .. " is not machine-eligible"
         end
-        local petId = tostring(pet.id)
         expectedId = expectedId or petId
         if petId ~= expectedId then
             return false, nil, nil, "selected pets no longer share the same directory id"
@@ -207,27 +226,27 @@ local function validateSelection(context, selectedCandidates)
 end
 
 local function resolveBatch(state, context)
-    if state.BatchSize then return state.BatchSize, state.BatchCost, nil end
-    local remote, sourceName, sessionIndex, problem = context.GetCommandRemote("Get Rainbow Machine Info")
-    if not remote then return nil, nil, problem end
-    local ok, info = pcall(function() return remote:InvokeServer() end)
-    if not ok then
-        context.InvalidateCommand("Get Rainbow Machine Info")
-        return nil, nil, "Get Rainbow Machine Info transport error: " .. tostring(info)
-    end
-    if type(info) ~= "table" then return nil, nil, "Get Rainbow Machine Info returned " .. typeof(info) end
-    for count, tier in ipairs(info) do
-        local chance = type(tier) == "table" and tonumber(tier.chance or tier.Chance) or nil
-        if chance and chance >= 100 then
-            state.BatchSize = count
-            state.BatchCost = tonumber(tier.cost or tier.Cost)
-            context.Trace("rainbow machine route", context.RouteText(sourceName, sessionIndex)
-                .. " | guaranteed batch=" .. tostring(count)
-                .. " | cost=" .. tostring(state.BatchCost or "unknown"))
-            return state.BatchSize, state.BatchCost, nil
+    if not state.MachineInfo then
+        local remote, sourceName, sessionIndex, problem =
+            context.GetCommandRemote("Get Rainbow Machine Info")
+        if not remote then return nil, nil, nil, problem end
+        local ok, info = pcall(function() return remote:InvokeServer() end)
+        if not ok then
+            context.InvalidateCommand("Get Rainbow Machine Info")
+            return nil, nil, nil, "Get Rainbow Machine Info transport error: " .. tostring(info)
         end
+        if type(info) ~= "table" or #info < 1 then
+            return nil, nil, nil, "Get Rainbow Machine Info returned no batch tiers"
+        end
+        state.MachineInfo = info
+        context.Trace("rainbow machine route", context.RouteText(sourceName, sessionIndex)
+            .. " | server batch tiers=" .. tostring(#info))
     end
-    return nil, nil, "the server did not expose a 100% Rainbow Machine tier"
+    local requested = math.floor(tonumber(context.BatchSize()) or 6)
+    local batchSize = math.clamp(requested, 1, #state.MachineInfo)
+    local tier = type(state.MachineInfo[batchSize]) == "table" and state.MachineInfo[batchSize] or {}
+    return batchSize, tonumber(tier.cost or tier.Cost),
+        tonumber(tier.chance or tier.Chance), nil
 end
 
 local function runCheck(state, context)
@@ -245,12 +264,13 @@ local function runCheck(state, context)
         return
     end
     local pendingCount = refreshPending(state, context, save)
-    local candidates, stats = collectCandidates(state, context, save)
+    local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, save)
     reportInventory(state, context, stats)
-    local batchSize, batchCost, batchProblem = resolveBatch(state, context)
+    local batchSize, batchCost, tierChance, batchProblem = resolveBatch(state, context)
     if not batchSize then
         context.SetStatus("Inventory counted before routing. Route/info error; no pets were sent: "
-            .. tostring(batchProblem) .. "\n" .. statsText(stats) .. "\nNext retry in 10 seconds.")
+            .. tostring(batchProblem) .. "\n" .. statsText(stats)
+            .. "\nCatalog: " .. catalogSummary .. "\nNext retry in 10 seconds.")
         finish(RETRY_DELAY)
         return
     end
@@ -262,9 +282,10 @@ local function runCheck(state, context)
         return
     end
     if #candidates < batchSize then
-        context.SetStatus("Waiting for a guaranteed " .. tostring(batchSize) .. "/" .. tostring(batchSize)
-            .. " golden batch; currently " .. tostring(#candidates) .. ". No request sent.\n"
-            .. statsText(stats) .. "\nLast confirmed: " .. state.LastConfirmedAudit)
+        context.SetStatus("Waiting for " .. tostring(batchSize) .. " matching golden pets; largest species group has "
+            .. tostring(#candidates) .. ". No request sent.\n"
+            .. statsText(stats) .. "\nGroups: " .. groupSummary
+            .. "\nCatalog: " .. catalogSummary .. "\nLast confirmed: " .. state.LastConfirmedAudit)
         finish(2)
         return
     end
@@ -278,25 +299,39 @@ local function runCheck(state, context)
 
     local selectedCandidates = {}
     for index = 1, batchSize do selectedCandidates[index] = candidates[index] end
+    local acquired, owner = acquireOperation(state, context)
+    if not acquired then
+        context.SetStatus("A " .. tostring(batchSize) .. "-pet Rainbow batch is ready, but pet inventory is reserved by "
+            .. tostring(owner) .. ". No request sent.\n" .. statsText(stats))
+        finish(0.2)
+        return
+    end
     local safe, selectedUIDs, selectedAudit, problem = validateSelection(context, selectedCandidates)
     if not safe then
+        releaseOperation(state, context)
         local status = "Safety recheck blocked the batch; no request sent: " .. tostring(problem)
         context.SetStatus(status .. "\n" .. statsText(stats))
         context.Trace("rainbow machine safety", status)
         finish(0.5)
         return
     end
-    if not state.Running or not context.Running() or not context.Enabled() then finish(0.5); return end
+    if not state.Running or not context.Running() or not context.Enabled() then
+        releaseOperation(state, context)
+        finish(0.5)
+        return
+    end
 
     local auditText = table.concat(selectedAudit, " | ")
     context.Trace("rainbow machine validated pets", auditText)
     local transportOk, accepted, serverMessage, sourceName, sessionIndex, serverChance =
         context.InvokeCommand("Use Rainbow Machine", selectedUIDs)
     if not transportOk then
+        releaseOperation(state, context)
         context.SetStatus("Route/transport error; no conversion confirmed: " .. tostring(serverMessage)
             .. "\nValidated but not confirmed: " .. auditText .. "\n" .. statsText(stats))
         finish(RETRY_DELAY)
     elseif not accepted then
+        releaseOperation(state, context)
         local reason = serverMessage ~= nil and tostring(serverMessage) or "request rejected"
         context.SetStatus("Server reached via " .. context.RouteText(sourceName, sessionIndex) .. ": " .. reason
             .. "\nRejected batch: " .. auditText .. "\n" .. statsText(stats))
@@ -308,7 +343,7 @@ local function runCheck(state, context)
         state.PendingAt = os.clock()
         state.PendingAudit = auditText
         state.CompletedBatches = state.CompletedBatches + 1
-        local chance = tonumber(serverChance) or 100
+        local chance = tonumber(serverChance) or tonumber(tierChance) or 0
         local status = "Batch accepted via " .. context.RouteText(sourceName, sessionIndex)
             .. " | golden pets: " .. tostring(batchSize) .. " | chance: " .. tostring(chance)
             .. "% | completed batches: " .. tostring(state.CompletedBatches)
@@ -324,7 +359,8 @@ local function stop()
     if activeState then
         activeState.Running = false
         activeState.Busy = false
-        clearPending(activeState)
+        clearPending(activeState, activeState.Context)
+        pcall(activeState.Context.CancelOperation, activeState.Context.OperationOwner)
         activeState = nil
     end
     return true
@@ -337,13 +373,16 @@ return function(action, context)
     if type(context) ~= "table" then return false, "module context is missing" end
     local required = {
         "Library", "Running", "Enabled", "GetSave", "GetCurrency", "FormatNumber",
-        "GetCommandRemote", "InvalidateCommand", "InvokeCommand", "RouteText", "SetStatus", "Trace",
+        "GetMachinePetCatalog", "BatchSize", "GetCommandRemote", "InvalidateCommand",
+        "InvokeCommand", "RouteText", "AcquireOperation", "ReleaseOperation",
+        "CancelOperation", "OperationOwner", "SetStatus", "Trace",
     }
     for _, key in ipairs(required) do
         if context[key] == nil then return false, "module context is missing " .. key end
     end
     local state = {
-        Running = true, Busy = false, NextCheck = 0, Pending = {}, PendingAt = 0,
+        Context = context, Running = true, Busy = false, OperationOwned = false,
+        NextCheck = 0, Pending = {}, PendingAt = 0,
         LastConfirmedAudit = "none", CompletedBatches = 0,
     }
     activeState = state
@@ -354,6 +393,7 @@ return function(action, context)
                 local ok, problem = pcall(runCheck, state, context)
                 if not ok then
                     state.Busy = false
+                    releaseOperation(state, context)
                     state.NextCheck = os.clock() + RETRY_DELAY
                     local status = "Worker error; no conversion confirmed: " .. tostring(problem)
                     context.Trace("rainbow machine", status)

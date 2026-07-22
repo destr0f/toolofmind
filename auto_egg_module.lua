@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.2.0"
+local MODULE_VERSION = "1.3.0"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -353,6 +353,21 @@ local function releaseHeadlessGate(state, context)
     state.GateOwned = false
     local variables = context.Library and context.Library.Variables
     if variables then pcall(function() variables.OpeningEgg = false end) end
+end
+
+local function acquireInventoryOperation(state, context)
+    if state.OperationOwned then return true end
+    local ok, acquired, owner = pcall(context.AcquireOperation, context.OperationOwner)
+    if not ok then return false, tostring(acquired) end
+    if acquired ~= true then return false, tostring(owner or "another inventory worker") end
+    state.OperationOwned = true
+    return true
+end
+
+local function releaseInventoryOperation(state, context)
+    if not state.OperationOwned then return end
+    state.OperationOwned = false
+    pcall(context.ReleaseOperation, context.OperationOwner)
 end
 
 local function ownedPetSnapshot(context)
@@ -864,6 +879,7 @@ end
 local function finishSuccess(state, context, pending, note)
     if state.Pending ~= pending then return end
     releaseHeadlessGate(state, context)
+    releaseInventoryOperation(state, context)
     state.Pending = nil
     state.Successes = state.Successes + 1
     state.ConsecutiveFailures = 0
@@ -885,6 +901,7 @@ end
 local function finishRejection(state, context, pending)
     if state.Pending ~= pending then return end
     releaseHeadlessGate(state, context)
+    releaseInventoryOperation(state, context)
     state.Pending = nil
     state.Rejections = state.Rejections + 1
     state.ConsecutiveFailures = state.ConsecutiveFailures + 1
@@ -905,6 +922,7 @@ end
 local function stopForSafety(state, context, pending, reason)
     if pending and state.Pending ~= pending then return end
     releaseHeadlessGate(state, context)
+    releaseInventoryOperation(state, context)
     state.Pending = nil
     state.Running = false
     reason = tostring(reason or "auto egg safety stop")
@@ -916,6 +934,7 @@ end
 local function finishTimeout(state, context, pending)
     if state.Pending ~= pending then return end
     releaseHeadlessGate(state, context)
+    releaseInventoryOperation(state, context)
     state.Timeouts = state.Timeouts + 1
     state.CleanSuccesses = 0
     state.ConsecutiveFailures = state.ConsecutiveFailures + 1
@@ -1050,11 +1069,20 @@ end
 
 local function beginRequest(state, context, options, inspection)
     local headless = options.Animation == "Headless (No Animation)"
+    local operationAcquired, operationOwner = acquireInventoryOperation(state, context)
+    if not operationAcquired then
+        state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
+        setStatus(state, context, "Ready, but the pet inventory is reserved by "
+            .. tostring(operationOwner) .. ".\nNo egg request was sent.")
+        return
+    end
+
     local headlessSnapshot
     if headless then
         local snapshotProblem
         headlessSnapshot, snapshotProblem = ownedPetSnapshot(context)
         if not headlessSnapshot then
+            releaseInventoryOperation(state, context)
             state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
             setStatus(state, context, "Headless preflight is waiting locally: " .. tostring(snapshotProblem)
                 .. "\nNo purchase request was sent.")
@@ -1062,12 +1090,14 @@ local function beginRequest(state, context, options, inspection)
         end
         local acquired, problem = acquireHeadlessGate(state, context)
         if not acquired then
+            releaseInventoryOperation(state, context)
             state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
             setStatus(state, context, "Ready, but waiting locally: " .. tostring(problem)
                 .. "\nNo purchase request was sent.")
             return
         end
     elseif openingFlag(context) then
+        releaseInventoryOperation(state, context)
         state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
         setStatus(state, context, "Waiting for the current native egg animation to finish.\nNo purchase request was sent.")
         return
@@ -1075,6 +1105,7 @@ local function beginRequest(state, context, options, inspection)
 
     if not state.Running or not context.Running() or not context.Enabled() then
         releaseHeadlessGate(state, context)
+        releaseInventoryOperation(state, context)
         return
     end
 
@@ -1132,6 +1163,7 @@ local function runCycle(state, context)
     local now = os.clock()
     if handlePending(state, context, now) then return end
     releaseHeadlessGate(state, context)
+    releaseInventoryOperation(state, context)
     if now < state.NextAction then return end
 
     if state.SuspendedUntil > now then
@@ -1166,6 +1198,8 @@ local function stopState(state, context)
     if not state then return true end
     state.Running = false
     releaseHeadlessGate(state, context)
+    releaseInventoryOperation(state, context)
+    pcall(context.CancelOperation, context.OperationOwner)
     if state.Connection and type(state.Connection.Disconnect) == "function" then
         pcall(function() state.Connection:Disconnect() end)
     end
@@ -1204,7 +1238,8 @@ return function(action, context)
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
         "Library", "Running", "Enabled", "GetOptions", "InspectEgg", "InvokeCommand",
-        "RouteText", "SetStatus", "Trace", "Disable",
+        "RouteText", "AcquireOperation", "ReleaseOperation", "CancelOperation",
+        "OperationOwner", "SetStatus", "Trace", "Disable",
     }) do
         if context[key] == nil then return false, "module context is missing " .. key end
     end
@@ -1247,6 +1282,7 @@ return function(action, context)
         Context = context,
         Running = true,
         GateOwned = false,
+        OperationOwned = false,
         Pending = nil,
         NextAction = os.clock() + ARM_DELAY,
         RequestDelay = INITIAL_REQUEST_DELAY,
@@ -1357,6 +1393,7 @@ return function(action, context)
             local ok, problem = pcall(runCycle, state, context)
             if not ok then
                 releaseHeadlessGate(state, context)
+                releaseInventoryOperation(state, context)
                 state.NextAction = os.clock() + 2
                 state.RequestDelay = math.min(MAX_REQUEST_DELAY, math.max(2, state.RequestDelay * 1.5))
                 local status = "Auto egg worker recovered from a local error: " .. tostring(problem)
