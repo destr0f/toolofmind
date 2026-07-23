@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.5"
+local VERSION = "1.4.1-dev.6"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -101,7 +101,7 @@ local config = {
     EggAnimation = "Headless (No Animation)",
 }
 
-local MODULE_REVISION = "be7151a4a0696d3ab03f8dbf6c12ad88df3f1064"
+local MODULE_REVISION = "5f1e2bf832e8e2bc17fa1cb7cfa92768dc86e3d8"
 local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
     .. MODULE_REVISION .. "/"
 local SUPPORT_MODULE_URL = RAW_MODULE_BASE .. "automation_support_module.lua"
@@ -874,6 +874,25 @@ local coinGeneration = 0
 local coinEventRevision = 0
 local removalRevisions = {}
 local removedUntil = {}
+local coinIndex = {
+    Revision = 0,
+    Models = {},
+    IdByModel = setmetatable({}, { __mode = "k" }),
+    Folder = nil,
+    Connections = {},
+    Cache = {
+        Signature = nil,
+        Revision = -1,
+        Targets = {},
+        World = nil,
+        Zone = nil,
+    },
+}
+
+function coinIndex:Invalidate()
+    self.Revision = self.Revision + 1
+    self.Cache.Revision = -1
+end
 
 local function normalizePetSet(rawPets)
     local result = {}
@@ -899,8 +918,11 @@ end
 local function applyCoinData(rawId, data, fromEvent)
     if rawId == nil or type(data) ~= "table" then return nil end
     local id = tostring(rawId)
+    local created = coinRecords[id] == nil
     local record = coinRecords[id] or { Id = id, Pets = {} }
     coinRecords[id] = record
+    local selectionChanged = created
+    local previousHealth = tonumber(record.Health)
 
     local health = tonumber(data.h or data.Health or data.health)
     local maxHealth = tonumber(data.mh or data.MaxHealth or data.maxHealth)
@@ -909,18 +931,37 @@ local function applyCoinData(rawId, data, fromEvent)
     if typeof(position) == "CFrame" then position = position.Position end
 
     if data.a ~= nil or data.Area ~= nil or data.area ~= nil then
-        record.Area = tostring(data.a or data.Area or data.area)
+        local value = tostring(data.a or data.Area or data.area)
+        if record.Area ~= value then record.Area = value; selectionChanged = true end
     end
     if data.n ~= nil or data.Name ~= nil or data.name ~= nil then
-        record.Name = tostring(data.n or data.Name or data.name)
+        local value = tostring(data.n or data.Name or data.name)
+        if record.Name ~= value then record.Name = value; selectionChanged = true end
     end
-    if world ~= nil then record.World = tostring(world) end
-    if typeof(position) == "Vector3" then record.Position = position end
+    if world ~= nil then
+        local value = tostring(world)
+        if record.World ~= value then record.World = value; selectionChanged = true end
+    end
+    if typeof(position) == "Vector3" and record.Position ~= position then
+        record.Position = position
+        record.DetectedArea = nil
+        record.DetectedPosition = nil
+        selectionChanged = true
+    end
     if health ~= nil then record.Health = health end
-    if maxHealth ~= nil then record.MaxHealth = maxHealth end
+    if maxHealth ~= nil and tonumber(record.MaxHealth) ~= maxHealth then
+        record.MaxHealth = maxHealth
+        selectionChanged = true
+    end
     record.Health = tonumber(record.Health) or 0
+    if previousHealth ~= nil and ((previousHealth > 0) ~= (record.Health > 0)) then
+        selectionChanged = true
+    end
+    local previousPeak = peakHealth[id] or 0
+    local previousMax = tonumber(record.MaxHealth) or 0
     peakHealth[id] = math.max(peakHealth[id] or 0, record.Health, tonumber(record.MaxHealth) or 0)
     record.MaxHealth = math.max(tonumber(record.MaxHealth) or 0, peakHealth[id], record.Health)
+    if peakHealth[id] ~= previousPeak or record.MaxHealth ~= previousMax then selectionChanged = true end
     record.Removed = false
     record.FromServer = true
     if fromEvent then
@@ -934,6 +975,7 @@ local function applyCoinData(rawId, data, fromEvent)
     if pets ~= nil then record.Pets = normalizePetSet(pets) end
     local farmingPets = data.petsFarming or data.PetsFarming
     if farmingPets ~= nil then record.PetsFarming = normalizePetSet(farmingPets) end
+    if selectionChanged then coinIndex:Invalidate() end
     if fromEvent and type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     return record
 end
@@ -953,17 +995,119 @@ local function removeCoin(rawId, fromEvent)
     end
     coinRecords[id] = nil
     peakHealth[id] = nil
+    local model = coinIndex.Models[id]
+    if model then coinIndex.IdByModel[model] = nil end
+    coinIndex.Models[id] = nil
     removedUntil[id] = os.clock() + 0.75
+    coinIndex:Invalidate()
     if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(id) end
     if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
 end
 
 local nextWorkspaceScanAt = 0
-local function refreshWorkspaceCoins()
-    if os.clock() < nextWorkspaceScanAt then return end
-    nextWorkspaceScanAt = os.clock() + 0.1
+function coinIndex:DisconnectFolder()
+    for _, connection in ipairs(self.Connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(self.Connections)
+    self.Folder = nil
+end
+
+function coinIndex:IndexModel(model, refreshHealth)
+    if not model then return nil end
+    local id = tostring(readObjectValue(model, "ID") or model.Name)
+    if removedUntil[id] ~= nil then return nil end
+
+    local record = coinRecords[id] or { Id = id, Pets = {} }
+    local created = coinRecords[id] == nil
+    local modelChanged = record.Model ~= model
+    local selectionChanged = created or modelChanged
+    coinRecords[id] = record
+    self.Models[id] = model
+    self.IdByModel[model] = id
+    record.Model = model
+    record.NextModelLookupAt = nil
+
+    if modelChanged or not record.WorkspaceIndexed then
+        local position = getInstancePosition(model)
+        local area = readObjectValue(model, "Area")
+        local name = readObjectValue(model, "Name") or model.Name
+        local world = readObjectValue(model, "World")
+        if position and record.Position ~= position then
+            record.Position = position
+            record.DetectedArea = nil
+            record.DetectedPosition = nil
+            selectionChanged = true
+        end
+        if area ~= nil and record.Area ~= area then record.Area = area; selectionChanged = true end
+        if name ~= nil and record.Name ~= name then record.Name = name; selectionChanged = true end
+        if world ~= nil and record.World ~= world then record.World = world; selectionChanged = true end
+        record.WorkspaceIndexed = true
+    end
+
+    -- Live Network health/removal events are authoritative. Reading all 128+
+    -- workspace Health attributes is only a fallback for records that have not
+    -- appeared in the server snapshot yet.
+    if refreshHealth and not record.FromServer then
+        local previousHealth = tonumber(record.Health)
+        local health = tonumber(readObjectValue(model, "Health"))
+        if health ~= nil then
+            if record.FromServer and tonumber(record.Health) ~= nil then
+                record.Health = math.min(tonumber(record.Health), health)
+            else
+                record.Health = health
+            end
+            local previousPeak = peakHealth[id] or 0
+            local previousMax = tonumber(record.MaxHealth) or 0
+            peakHealth[id] = math.max(previousPeak, health)
+            record.MaxHealth = math.max(previousMax, peakHealth[id])
+            if peakHealth[id] ~= previousPeak or record.MaxHealth ~= previousMax then
+                selectionChanged = true
+            end
+            if previousHealth ~= nil and ((previousHealth > 0) ~= (record.Health > 0)) then
+                selectionChanged = true
+            end
+        end
+    end
+    record.Removed = false
+    if selectionChanged then self:Invalidate() end
+    return id, record
+end
+
+function coinIndex:WatchFolder(folder)
+    if self.Folder == folder then return end
+    self:DisconnectFolder()
+    self.Folder = folder
+    if not folder then return end
+
+    self.Connections[#self.Connections + 1] = folder.ChildAdded:Connect(function(model)
+        task.defer(function()
+            if not running() or model.Parent ~= folder then return end
+            self:IndexModel(model, true)
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+        end)
+    end)
+    self.Connections[#self.Connections + 1] = folder.ChildRemoved:Connect(function(model)
+        local id = self.IdByModel[model]
+        if not id then return end
+        self.IdByModel[model] = nil
+        if self.Models[id] == model then self.Models[id] = nil end
+        local record = coinRecords[id]
+        if record and record.Model == model then
+            record.Model = nil
+            record.WorkspaceIndexed = nil
+            record.NextModelLookupAt = nil
+            if not record.FromServer then removeCoin(id, false) end
+        end
+    end)
+end
+
+local function refreshWorkspaceCoins(force)
+    if not force and os.clock() < nextWorkspaceScanAt then return end
+    nextWorkspaceScanAt = os.clock() + 1.25
     local things = workspace:FindFirstChild("__THINGS")
     local folder = things and things:FindFirstChild("Coins")
+    coinIndex:WatchFolder(folder)
     if not folder then return end
 
     local now = os.clock()
@@ -972,28 +1116,8 @@ local function refreshWorkspaceCoins()
     end
     local seen = {}
     for _, model in ipairs(folder:GetChildren()) do
-        local id = tostring(readObjectValue(model, "ID") or model.Name)
-        if removedUntil[id] == nil then
-            seen[id] = true
-            local record = coinRecords[id] or { Id = id, Pets = {} }
-            coinRecords[id] = record
-            record.Model = model
-            record.Position = getInstancePosition(model) or record.Position
-            record.Area = readObjectValue(model, "Area") or record.Area
-            record.Name = readObjectValue(model, "Name") or record.Name or model.Name
-            record.World = readObjectValue(model, "World") or record.World
-            local health = tonumber(readObjectValue(model, "Health"))
-            if health ~= nil then
-                if record.FromServer and tonumber(record.Health) ~= nil then
-                    record.Health = math.min(tonumber(record.Health), health)
-                else
-                    record.Health = health
-                end
-                peakHealth[id] = math.max(peakHealth[id] or 0, health)
-                record.MaxHealth = math.max(tonumber(record.MaxHealth) or 0, peakHealth[id])
-            end
-            record.Removed = false
-        end
+        local id = coinIndex:IndexModel(model, true)
+        if id then seen[id] = true end
     end
 
     local staleIds = {}
@@ -1103,7 +1227,11 @@ local function connectCoinSignals()
                 table.clear(peakHealth)
                 table.clear(removalRevisions)
                 table.clear(removedUntil)
+                table.clear(coinIndex.Models)
+                table.clear(coinIndex.IdByModel)
                 table.clear(boundsCache)
+                coinIndex:DisconnectFolder()
+                coinIndex:Invalidate()
                 if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(nil) end
                 currentZone = nil
                 currentZoneAnchor = nil
@@ -1184,7 +1312,11 @@ local function recordInZone(record, zone, zoneAnchor)
     if bossZone and namesMatch(bossZone, zone) then return true end
     if record.Area and namesMatch(record.Area, zone) then return true end
     if record.Name and namesMatch(record.Name, zone) then return true end
-    local detected = record.Position and areaForPosition(record.Position)
+    if record.Position and record.DetectedPosition ~= record.Position then
+        record.DetectedPosition = record.Position
+        record.DetectedArea = areaForPosition(record.Position)
+    end
+    local detected = record.DetectedArea
     if detected ~= nil then return namesMatch(detected, zone) end
     return zoneAnchor ~= nil and record.Position ~= nil
         and (record.Position - zoneAnchor).Magnitude <= 240
@@ -1194,6 +1326,11 @@ local function orderedTargets(mode)
     refreshWorkspaceCoins()
     local world = getSelectedWorld()
     local zone = getSelectedZone()
+    local signature = table.concat({ tostring(mode), tostring(world), tostring(zone) }, "|")
+    local cache = coinIndex.Cache
+    if cache.Revision == coinIndex.Revision and cache.Signature == signature then
+        return cache.Targets, cache.World, cache.Zone
+    end
     local zoneAnchor = findZoneAnchor(zone)
     local targets = {}
     for _, record in pairs(coinRecords) do
@@ -1220,6 +1357,11 @@ local function orderedTargets(mode)
         end
         return left.Id < right.Id
     end)
+    cache.Signature = signature
+    cache.Revision = coinIndex.Revision
+    cache.Targets = targets
+    cache.World = world
+    cache.Zone = zone
     return targets, world, zone
 end
 
@@ -1243,6 +1385,7 @@ local petFarm = {
     Engine = nil,
     Loading = false,
     Problem = nil,
+    AllocatorScheduled = false,
     RouteSummary = "resolving 0/4",
     StatsCache = {
         Version = "loading",
@@ -1701,19 +1844,27 @@ end
 
 local function getRecordModel(record)
     if record and record.Model and record.Model.Parent then return record.Model end
+    if not record then return nil end
+    local id = tostring(record.Id)
+    local indexed = coinIndex.Models[id]
+    if indexed and indexed.Parent then
+        record.Model = indexed
+        record.NextModelLookupAt = nil
+        return indexed
+    end
+    local now = os.clock()
+    if now < (record.NextModelLookupAt or 0) then return nil end
+    record.NextModelLookupAt = now + 0.75
     local things = workspace:FindFirstChild("__THINGS")
     local folder = things and things:FindFirstChild("Coins")
-    if not folder or not record then return nil end
-    local direct = folder:FindFirstChild(tostring(record.Id))
+    if not folder then return nil end
+    local direct = folder:FindFirstChild(id)
     if direct then
         record.Model = direct
+        coinIndex.Models[id] = direct
+        coinIndex.IdByModel[direct] = id
+        record.NextModelLookupAt = nil
         return direct
-    end
-    for _, model in ipairs(folder:GetChildren()) do
-        if tostring(readObjectValue(model, "ID") or model.Name) == tostring(record.Id) then
-            record.Model = model
-            return model
-        end
     end
     return nil
 end
@@ -1721,11 +1872,18 @@ end
 function petFarm:RuntimeStateForPet(petId)
     if type(petRuntime) ~= "table" then return nil end
     petId = tostring(petId)
+    self.RuntimeByUid = self.RuntimeByUid or {}
+    local indexed = self.RuntimeByUid[petId]
+    if type(indexed) == "table" and indexed.owner == player then return indexed end
     local direct = rawget(petRuntime, petId)
-    if type(direct) == "table" and direct.owner == player then return direct end
+    if type(direct) == "table" and direct.owner == player then
+        self.RuntimeByUid[petId] = direct
+        return direct
+    end
     for key, runtimeState in pairs(petRuntime) do
         if type(runtimeState) == "table" and runtimeState.owner == player
             and tostring(runtimeState.uid or key) == petId then
+            self.RuntimeByUid[petId] = runtimeState
             return runtimeState
         end
     end
@@ -1941,10 +2099,13 @@ local function syncRuntimeAssignments(equipped)
 
     local now = os.clock()
     local observed, runtimeSeen = {}, {}
+    petFarm.RuntimeByUid = petFarm.RuntimeByUid or {}
+    table.clear(petFarm.RuntimeByUid)
     for key, runtimeState in pairs(petRuntime) do
         if type(runtimeState) == "table" and runtimeState.owner == player then
             local petId = tostring(runtimeState.uid or key)
             if equipped[petId] then
+                petFarm.RuntimeByUid[petId] = runtimeState
                 runtimeSeen[petId] = runtimeState
                 local target = runtimeState.target
                 local coinModel = runtimeState.farming and target and target.Parent or nil
@@ -2327,9 +2488,14 @@ end
 
 local statusViews = {}
 local statusSetters = {}
+statusSetters.Cache = {}
 function statusSetters.Set(key, text)
     local view = statusViews[key]
-    if view then pcall(function() view:SetDesc(text) end) end
+    if not view then return end
+    text = tostring(text)
+    if statusSetters.Cache[key] == text then return end
+    statusSetters.Cache[key] = text
+    pcall(function() view:SetDesc(text) end)
 end
 function statusSetters.Farm(text)
     statusSetters.Set("Farm", text)
@@ -2812,16 +2978,28 @@ local function runDiamondPackCheck()
     statusSetters.Diamond(status .. "\nNext local check in 3 minutes.")
 end
 
-local function allocatorPass()
+local allocatorPass
+
+function petFarm:ScheduleAllocatorPass()
+    if self.AllocatorScheduled or allocatorBusy or not running() then return end
+    self.AllocatorScheduled = true
+    task.spawn(function()
+        -- Collapse every New/Remove/Update Coin and worker callback produced in
+        -- one render frame into one allocator pass on the following frame.
+        RunService.Heartbeat:Wait()
+        self.AllocatorScheduled = false
+        if running() then allocatorPass() end
+    end)
+end
+
+allocatorPass = function()
     if allocatorBusy then
         allocatorRequested = true
         return
     end
     allocatorBusy = true
-
-    repeat
-        allocatorRequested = false
-        local ok, problem = pcall(function()
+    allocatorRequested = false
+    local ok, problem = pcall(function()
         if os.clock() >= nextSnapshotAt and not snapshotBusy then task.spawn(refreshCoinSnapshot) end
         connectCoinSignals()
 
@@ -2929,16 +3107,16 @@ local function allocatorPass()
             end
         end
         for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
-        end)
-        if not ok then driverStatus = "allocator error: " .. tostring(problem) end
-    until not allocatorRequested or not running()
+    end)
+    if not ok then driverStatus = "allocator error: " .. tostring(problem) end
 
     allocatorBusy = false
+    if allocatorRequested then petFarm:ScheduleAllocatorPass() end
 end
 
 requestAllocatorPulse = function()
     allocatorRequested = true
-    if not allocatorBusy and running() then task.defer(allocatorPass) end
+    petFarm:ScheduleAllocatorPass()
 end
 
 task.spawn(function()
@@ -2981,8 +3159,8 @@ end)
 
 task.spawn(function()
     while running() do
-        allocatorPass()
-        RunService.Heartbeat:Wait()
+        requestAllocatorPulse()
+        task.wait(config.PetFarm and 0.08 or 0.4)
     end
 end)
 
@@ -3030,6 +3208,12 @@ track(player.Idled:Connect(function()
 end))
 
 local function startInterfaceAndWorkers()
+local function uiStageYield(stage)
+    if not running() then return end
+    if stage then trace("UI stage", stage) end
+    RunService.Heartbeat:Wait()
+end
+
 WindUI:AddTheme({
     Name = "Nova Stable",
     Accent = Color3.fromRGB(56, 189, 248),
@@ -3059,6 +3243,7 @@ local Window = WindUI:CreateWindow({
     ScrollBarEnabled = true,
     Acrylic = false,
 })
+uiStageYield("window ready")
 
 if Window.ConfigManager then
     local created, profile = pcall(function()
@@ -3077,15 +3262,21 @@ else
     UI.ProfileProblem = "executor filesystem API is unavailable"
 end
 
-UI.FarmTab = Window:Tab({ Title = "Farm", Icon = "paw-print" })
-UI.MonitorTab = Window:Tab({ Title = "Monitor", Icon = "activity" })
-UI.EggTab = Window:Tab({ Title = "Eggs", Icon = "egg" })
-UI.MachinesTab = Window:Tab({ Title = "Machines", Icon = "settings" })
-UI.BoostsTab = Window:Tab({ Title = "Boosts", Icon = "zap" })
-UI.LootTab = Window:Tab({ Title = "Loot", Icon = "package-open" })
-UI.RewardsTab = Window:Tab({ Title = "Rewards", Icon = "gift" })
-UI.GraphicsTab = Window:Tab({ Title = "Graphics", Icon = "monitor" })
-UI.SessionTab = Window:Tab({ Title = "Session", Icon = "shield-check" })
+for index, definition in ipairs({
+    { "FarmTab", "Farm", "paw-print" },
+    { "MonitorTab", "Monitor", "activity" },
+    { "EggTab", "Eggs", "egg" },
+    { "MachinesTab", "Machines", "settings" },
+    { "BoostsTab", "Boosts", "zap" },
+    { "LootTab", "Loot", "package-open" },
+    { "RewardsTab", "Rewards", "gift" },
+    { "GraphicsTab", "Graphics", "monitor" },
+    { "SessionTab", "Session", "shield-check" },
+}) do
+    UI[definition[1]] = Window:Tab({ Title = definition[2], Icon = definition[3] })
+    if index % 2 == 0 then uiStageYield("tabs " .. tostring(index) .. "/9") end
+end
+uiStageYield("tabs complete")
 
 refreshEggDropdown = function(force)
     local now = os.clock()
@@ -3158,6 +3349,7 @@ UI.FarmHero:Dropdown({
         if config.PetFarm then requestFarmReset("assignment mode changed") end
     end,
 })
+uiStageYield("farm controls")
 
 UI.WorldValues = { "Current World" }
 for _, worldName in ipairs(WorldOrder) do table.insert(UI.WorldValues, worldName) end
@@ -3213,6 +3405,7 @@ UI.ZoneDropdown = UI.TargetSection:Dropdown({
     end,
 })
 UI.LastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(UI.InitialZones, "\0")
+uiStageYield("target controls")
 
 UI.MonitorHero = UI.MonitorTab:Section({ Title = "Live Telemetry", Box = true, Opened = true })
 UI.MonitorHero:Paragraph({
@@ -3248,6 +3441,7 @@ statusViews.Rate = UI.PerformanceSection:Paragraph({
     Title = "Balance Farm Rate",
     Desc = "Enable Pet Farm. Income is derived only from positive Library.Save balance changes.",
 })
+uiStageYield("monitor controls")
 
 do
     trace("06A automation UI loading")
@@ -3285,6 +3479,7 @@ do
             ReconcileBoost = reconcileBoostModule,
             BoostEnabled = boostAutomationEnabled,
             StartBoost = startBoostModule,
+            YieldUI = uiStageYield,
         }
     )
     if not automationUIBuilt or automationUIAccepted ~= true or type(automationUIControls) ~= "table" then
@@ -3300,6 +3495,7 @@ do
     refreshEggDropdown(true)
     trace("06B automation UI ready")
 end
+uiStageYield("automation controls")
 
 UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Box = true, Opened = true })
 UI.DiamondSection:Toggle({
@@ -3321,6 +3517,7 @@ statusViews.Diamond = UI.DiamondSection:Paragraph({
     Title = "Diamond Exchange Status",
     Desc = "Disabled / the live purchase remote is resolved independently each session",
 })
+uiStageYield("diamond controls")
 
 UI.LootHero = UI.LootTab:Section({ Title = "Local Pickup Layer", Box = true, Opened = true })
 UI.LootHero:Paragraph({
@@ -3341,6 +3538,7 @@ UI.LootHero:Toggle({
     Value = false,
     Callback = function(value) config.Lootbags = value == true end,
 })
+uiStageYield("loot controls")
 
 UI.RewardsHero = UI.RewardsTab:Section({ Title = "Timer-Gated Rewards", Box = true, Opened = true })
 UI.RewardsHero:Paragraph({
@@ -3379,6 +3577,7 @@ UI.RewardsHero:Paragraph({
     Title = "Remote Policy",
     Desc = "VIP and Rank resolve separate live remotes; every accepted or rejected server response is logged.",
 })
+uiStageYield("reward controls")
 
 UI.GraphicsHero = UI.GraphicsTab:Section({ Title = "Client Performance Profile", Box = true, Opened = true })
 UI.GraphicsHero:Paragraph({
@@ -3406,6 +3605,7 @@ UI.GraphicsHero:Paragraph({
     Title = "Preservation Boundary",
     Desc = "Animations and geometry stay active. Dynamic eggs, pets, coins and chests are texture-locked while POS, _SELECTIONFX and Network workers remain untouched.",
 })
+uiStageYield("graphics controls")
 
 UI.SessionSection = UI.SessionTab:Section({ Title = "Session Control", Box = true, Opened = true })
 UI.SessionSection:Paragraph({
@@ -3759,10 +3959,18 @@ task.spawn(function()
 end)
 
 task.spawn(function()
-    while task.wait(0.4) do
+    local nextZoneRefreshAt, nextEggRefreshAt = 0, 0
+    while task.wait(0.75) do
         if not running() then break end
-        refreshZoneDropdown(false)
-        refreshEggDropdown(false)
+        local now = os.clock()
+        if now >= nextZoneRefreshAt then
+            nextZoneRefreshAt = now + 1.5
+            refreshZoneDropdown(false)
+        end
+        if now >= nextEggRefreshAt then
+            nextEggRefreshAt = now + 2
+            refreshEggDropdown(false)
+        end
         local targets, world, zone = orderedTargets(config.Mode)
         local equippedIds = getEquippedPetIds()
         local equippedCount = #equippedIds
