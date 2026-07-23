@@ -7,6 +7,10 @@ local DEFAULT_MIN_LANES = 4
 local DEFAULT_MAX_LANES = 16
 local DEFAULT_INITIAL_LANES = 12
 local MAX_JOIN_ATTEMPTS = 3
+local scheduler = task or {
+    spawn = function(callback) coroutine.wrap(callback)() end,
+    delay = function(_, callback) coroutine.wrap(callback)() end,
+}
 
 local run = {
     Context = nil,
@@ -228,7 +232,7 @@ local function scheduleRetry(job, entries, reason)
         end
     end
     local epoch = job.Epoch
-    task.delay(retryDelay(job.Attempt), function()
+    scheduler.delay(retryDelay(job.Attempt), function()
         if epoch ~= run.Epoch then return end
         local retryEntries = {}
         for _, entry in ipairs(entries) do
@@ -333,7 +337,7 @@ pump = function()
         run.Head = run.Head + 1
         if contextActive(job) then
             run.Active = run.Active + 1
-            task.spawn(function()
+            scheduler.spawn(function()
                 local handled, problem = pcall(process, job)
                 if not handled then
                     run.Errors = run.Errors + 1
