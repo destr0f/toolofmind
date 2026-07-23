@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -25,6 +25,7 @@ local function build(context)
     local UI = context.UI
     local config = context.Config
     local statusViews = context.StatusViews
+    local yieldUI = type(context.YieldUI) == "function" and context.YieldUI or function() end
 
     local eggCatalog = UI.EggTab:Section({ Title = "01 / Live Egg Catalog", Box = true, Opened = true })
     eggCatalog:Paragraph({
@@ -77,6 +78,7 @@ local function build(context)
         Title = "Catalog Status",
         Desc = "Catalog is lazy-loaded to keep startup stable.",
     })
+    yieldUI("egg catalog")
 
     local eggAutomation = UI.EggTab:Section({ Title = "02 / Protocol-Safe Hatch Loop", Box = true, Opened = true })
     eggAutomation:Paragraph({
@@ -126,6 +128,7 @@ local function build(context)
         Title = "Hatch Controller",
         Desc = "Disabled | live Network routes resolve only for a valid purchase.",
     })
+    yieldUI("egg automation")
 
     local routes = UI.MonitorTab:Section({ Title = "Live Protocol Health", Box = true, Opened = true })
     routes:Paragraph({
@@ -142,6 +145,7 @@ local function build(context)
         Title = "Command Status",
         Desc = "Manual diagnostics are idle. Press Refresh when needed.",
     })
+    yieldUI("route diagnostics")
 
     local machines = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
     machines:Paragraph({
@@ -169,6 +173,7 @@ local function build(context)
             end)
         end,
     })
+    yieldUI("machine controls")
 
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
@@ -191,6 +196,7 @@ local function build(context)
         Title = "Golden Machine Status",
         Desc = "Disabled / waiting for a verified batch",
     })
+    yieldUI("gold machine")
 
     local rainbow = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
     rainbow:Toggle({
@@ -213,6 +219,7 @@ local function build(context)
         Title = "Rainbow Machine Status",
         Desc = "Disabled / only golden target species are eligible",
     })
+    yieldUI("rainbow machine")
 
     local darkMatter = UI.MachinesTab:Section({ Title = "Dark Matter Machine / Stage 3", Box = true, Opened = true })
     darkMatter:Slider({
@@ -281,6 +288,7 @@ local function build(context)
         Title = "Dark Matter Status",
         Desc = "Disabled / create and claim routes resolve independently each session",
     })
+    yieldUI("dark matter machine")
 
     local boost = UI.BoostsTab:Section({ Title = "Adaptive Boost Controller", Box = true, Opened = true })
     boost:Paragraph({
@@ -315,6 +323,7 @@ local function build(context)
             end,
         })
     end
+    yieldUI("boost toggles")
 
     local bundle = UI.BoostsTab:Section({ Title = "Boost Bundle Fallback", Box = true, Opened = true })
     bundle:Toggle({
@@ -340,6 +349,7 @@ local function build(context)
         Title = "Boost Automation Status",
         Desc = "Disabled / no boost or bundle request is armed",
     })
+    yieldUI("boost bundle")
 
     return true, {
         AutoEggToggle = autoEggToggle,

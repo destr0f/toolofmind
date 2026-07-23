@@ -40,6 +40,7 @@ for _, key in ipairs({ "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMa
 end
 
 local noOp = function() end
+local uiYieldCount = 0
 local accepted, controls = automationUI("build", {
     UI = {
         EggTab = newTab(),
@@ -67,10 +68,12 @@ local accepted, controls = automationUI("build", {
     ReconcileBoost = noOp,
     BoostEnabled = function() return false end,
     StartBoost = noOp,
+    YieldUI = function() uiYieldCount = uiYieldCount + 1 end,
 })
 
 assert(accepted == true, tostring(controls))
 assert(type(controls) == "table", "automation controls were not returned")
+assert(uiYieldCount >= 8, "automation UI was not split into enough frame-sized stages")
 
 local countSlider = controlsByFlag.dark_matter_batch_size
 local timeSlider = controlsByFlag.dark_matter_max_wait_hours

@@ -6,6 +6,8 @@ local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
 local state
+local FRAME_OBJECT_LIMIT = 72
+local FRAME_TIME_BUDGET = 0.0025
 
 local function disconnect(target)
     if type(target) ~= "table" then return end
@@ -214,7 +216,8 @@ local function processQueue(active)
     enqueue(active, Lighting)
     while active.Running and env.PSX_POTATO_STATE == active do
         local processed = 0
-        while processed < 240 and #active.Queue > 0 do
+        local deadline = os.clock() + FRAME_TIME_BUDGET
+        while processed < FRAME_OBJECT_LIMIT and #active.Queue > 0 and os.clock() < deadline do
             local object = table.remove(active.Queue)
             processObject(active, object)
             processed = processed + 1
@@ -259,11 +262,14 @@ local function startPotato()
     env.PSX_POTATO_STATE = active
     optimizeRendering()
 
+    -- Replication can add hundreds of descendants in one frame. Never mutate
+    -- those instances synchronously inside the replication callback; enqueue
+    -- them for the same bounded worker used by the initial pass.
     active.Connections[#active.Connections + 1] = workspace.DescendantAdded:Connect(function(object)
-        processObject(active, object)
+        enqueue(active, object)
     end)
     active.Connections[#active.Connections + 1] = Lighting.DescendantAdded:Connect(function(object)
-        processObject(active, object)
+        enqueue(active, object)
     end)
 
     task.spawn(processQueue, active)
