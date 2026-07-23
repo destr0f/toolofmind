@@ -2,8 +2,7 @@
 -- The caller owns target selection and lock state. This module only schedules
 -- named Network calls, classifies Join Coin replies and reports outcomes.
 
-local MODULE_VERSION = "2.3.0"
-local PROFILE_MODULE = "petFarmEngine"
+local MODULE_VERSION = "2.2.0"
 local DEFAULT_MIN_LANES = 4
 local DEFAULT_MAX_LANES = 16
 local DEFAULT_INITIAL_LANES = 12
@@ -37,47 +36,6 @@ local run = {
 }
 
 local pump
-local queueSize
-
-local function profiler()
-    return run.Context and run.Context.Profiler or nil
-end
-
-local function profileBegin()
-    local active = profiler()
-    return active and active.Begin() or nil
-end
-
-local function profileFinish(operation, startedAt)
-    local active = profiler()
-    if active then active.Finish(PROFILE_MODULE, operation, startedAt) end
-end
-
-local function profileCount(metric, amount)
-    local active = profiler()
-    if active then active.Count(PROFILE_MODULE, metric, amount or 1) end
-end
-
-local function profileGauge(metric, value)
-    local active = profiler()
-    if active then active.Gauge(PROFILE_MODULE, metric, value) end
-end
-
-local function profileScanned(amount)
-    local active = profiler()
-    if active then active.Scanned(PROFILE_MODULE, amount) end
-end
-
-local function profileTemporary(amount)
-    local active = profiler()
-    if active then active.Temporary(PROFILE_MODULE, amount) end
-end
-
-local function profileQueues()
-    profileGauge("network_queue", queueSize())
-    profileGauge("network_active", run.Active)
-    profileGauge("network_lane_limit", run.Limit)
-end
 
 local function trace(stage, detail)
     local context = run.Context
@@ -86,14 +44,13 @@ local function trace(stage, detail)
     end
 end
 
-queueSize = function()
+local function queueSize()
     return math.max(#run.Queue - run.Head + 1, 0)
 end
 
 local function compactQueue()
     if run.Head <= 64 or run.Head <= #run.Queue / 2 then return end
     local compacted = {}
-    profileTemporary(1)
     for index = run.Head, #run.Queue do compacted[#compacted + 1] = run.Queue[index] end
     run.Queue = compacted
     run.Head = 1
@@ -113,7 +70,7 @@ local function normalizedPetId(value)
     return value ~= nil and tostring(value) or nil
 end
 
-local function responseContainsPet(response, wanted, seen, depth, scan)
+local function responseContainsPet(response, wanted, seen, depth)
     if response == true then return true end
     if type(response) ~= "table" then return tostring(response) == wanted end
     depth = depth or 0
@@ -131,11 +88,9 @@ local function responseContainsPet(response, wanted, seen, depth, scan)
     end
 
     for key, value in pairs(response) do
-        scan.Count = scan.Count + 1
         if tostring(key) == wanted then return value ~= false end
         if normalizedPetId(value) == wanted then return true end
-        if type(value) == "table"
-            and responseContainsPet(value, wanted, seen, depth + 1, scan) then
+        if type(value) == "table" and responseContainsPet(value, wanted, seen, depth + 1) then
             return true
         end
     end
@@ -144,17 +99,14 @@ end
 
 local function classifyResponse(response, petIds)
     local accepted = {}
-    local scan = { Count = 0 }
-    profileTemporary(2)
     if response == true then
         for _, petId in ipairs(petIds or {}) do accepted[tostring(petId)] = true end
         return accepted
     end
     for _, petId in ipairs(petIds or {}) do
         petId = tostring(petId)
-        if responseContainsPet(response, petId, nil, nil, scan) then accepted[petId] = true end
+        if responseContainsPet(response, petId) then accepted[petId] = true end
     end
-    profileScanned(scan.Count)
     return accepted
 end
 
@@ -181,7 +133,6 @@ end
 
 local function currentEntries(job)
     local entries, ids = {}, {}
-    profileTemporary(2)
     if not contextActive(job) then return entries, ids end
     for _, entry in ipairs(job.Entries) do
         if entryCurrent(entry) then
@@ -195,18 +146,12 @@ end
 local function callNamedInvoke(command, ...)
     local context = run.Context
     local arguments = table.pack(...)
-    profileTemporary(1)
     if context and type(context.GetCommandRemote) == "function" then
         local resolved, remote = pcall(context.GetCommandRemote, command)
         if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteFunction") then
-            local networkAt = profileBegin()
-            local active = profiler()
-            if active then active.NetworkCall(PROFILE_MODULE, "invoke_" .. tostring(command), 1) end
             local result = table.pack(pcall(function()
                 return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
             end))
-            profileTemporary(1)
-            profileFinish("network_invoke", networkAt)
             if result[1] then return true, result[2], "direct named remote" end
         end
     end
@@ -215,12 +160,7 @@ local function callNamedInvoke(command, ...)
     if not network or type(network.Invoke) ~= "function" then
         return false, "Library.Network.Invoke unavailable", "none"
     end
-    local networkAt = profileBegin()
-    local active = profiler()
-    if active then active.NetworkCall(PROFILE_MODULE, "invoke_" .. tostring(command), 1) end
     local result = table.pack(pcall(network.Invoke, command, table.unpack(arguments, 1, arguments.n)))
-    profileTemporary(1)
-    profileFinish("network_invoke", networkAt)
     if not result[1] then return false, result[2], "Library.Network.Invoke" end
     return true, result[2], "Library.Network.Invoke"
 end
@@ -228,17 +168,12 @@ end
 local function callNamedFire(command, ...)
     local context = run.Context
     local arguments = table.pack(...)
-    profileTemporary(1)
     if context and type(context.GetFireRemote) == "function" then
         local resolved, remote = pcall(context.GetFireRemote, command)
         if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent") then
-            local networkAt = profileBegin()
-            local active = profiler()
-            if active then active.NetworkCall(PROFILE_MODULE, "fire_" .. tostring(command), 1) end
             local fired = pcall(function()
                 remote:FireServer(table.unpack(arguments, 1, arguments.n))
             end)
-            profileFinish("network_fire", networkAt)
             if fired then return true, "direct named remote" end
         end
     end
@@ -247,11 +182,7 @@ local function callNamedFire(command, ...)
     if not network or type(network.Fire) ~= "function" then
         return false, "Library.Network.Fire unavailable"
     end
-    local networkAt = profileBegin()
-    local active = profiler()
-    if active then active.NetworkCall(PROFILE_MODULE, "fire_" .. tostring(command), 1) end
     local fired, problem = pcall(network.Fire, command, table.unpack(arguments, 1, arguments.n))
-    profileFinish("network_fire", networkAt)
     return fired, fired and "Library.Network.Fire" or tostring(problem)
 end
 
@@ -319,7 +250,6 @@ local function scheduleRetry(job, entries, reason)
 
     local nextAttempt = job.Attempt + 1
     run.Retries = run.Retries + #entries
-    profileCount("join_retries", #entries)
     for _, entry in ipairs(entries) do
         if entryCurrent(entry) and context and type(context.OnRetry) == "function" then
             pcall(context.OnRetry, entry.PetId, entry.State, job.Record, reason, nextAttempt)
@@ -346,8 +276,6 @@ local function scheduleRetry(job, entries, reason)
             Entries = retryEntries,
             Attempt = nextAttempt,
         }
-        profileTemporary(2)
-        profileQueues()
         pump()
     end)
 end
@@ -364,7 +292,6 @@ local function process(job)
 
     if not invoked then
         run.Errors = run.Errors + #entries
-        profileCount("join_errors", #entries)
         run.LastProblem = tostring(response)
         adjustLanes(0, 0, true, elapsed)
         scheduleRetry(job, entries, "Join Coin transport error: " .. tostring(response))
@@ -396,8 +323,6 @@ local function process(job)
 
     run.Accepted = run.Accepted + #acceptedEntries
     run.Rejected = run.Rejected + #rejectedEntries
-    profileCount("join_accepted", #acceptedEntries)
-    profileCount("join_rejected", #rejectedEntries)
     run.CompletedJobs = run.CompletedJobs + 1
     adjustLanes(#acceptedEntries, #rejectedEntries, false, elapsed)
 
@@ -435,7 +360,6 @@ end
 
 pump = function()
     compactQueue()
-    profileQueues()
     while run.Context and run.Active < run.Limit and run.Head <= #run.Queue do
         local job = run.Queue[run.Head]
         run.Queue[run.Head] = false
@@ -443,7 +367,6 @@ pump = function()
         if contextActive(job) then
             run.Active = run.Active + 1
             scheduler.spawn(function()
-                local profiledAt = profileBegin()
                 local handled, problem = pcall(process, job)
                 if not handled then
                     run.Errors = run.Errors + 1
@@ -453,9 +376,7 @@ pump = function()
                     scheduleRetry(job, entries, "dispatch worker error: " .. tostring(problem))
                     trace("pet dispatch worker", tostring(problem))
                 end
-                profileFinish("dispatch_job", profiledAt)
                 run.Active = math.max(run.Active - 1, 0)
-                profileQueues()
                 pump()
                 local context = run.Context
                 if context and type(context.Pulse) == "function" then pcall(context.Pulse) end
@@ -463,7 +384,6 @@ pump = function()
         end
     end
     compactQueue()
-    profileQueues()
 end
 
 local function start(context)
@@ -478,7 +398,6 @@ local function start(context)
     run.CleanStreak = 0
     run.FailureStreak = 0
     run.LastProblem = "none"
-    profileQueues()
     return true
 end
 
@@ -488,7 +407,6 @@ local function dispatch(payload)
         return false, "dispatch payload is invalid"
     end
     local entries = {}
-    profileTemporary(1)
     for _, entry in ipairs(payload.Entries) do
         if type(entry) == "table" and entry.PetId ~= nil and entry.State ~= nil then
             entries[#entries + 1] = {
@@ -506,10 +424,6 @@ local function dispatch(payload)
         Entries = entries,
         Attempt = math.max(1, tonumber(payload.Attempt) or 1),
     }
-    profileTemporary(2)
-    profileCount("dispatch_jobs", 1)
-    profileCount("dispatch_pets", #entries)
-    profileQueues()
     pump()
     return true
 end

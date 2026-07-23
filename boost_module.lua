@@ -2,8 +2,7 @@
 -- Named Library.Network routes are resolved locally; no session index is hard-coded.
 
 local activeState
-local MODULE_VERSION = "1.1.0"
-local PROFILE_MODULE = "boost"
+local MODULE_VERSION = "1.0.0"
 
 local BUNDLE_COST = 270000
 local CHECK_INTERVAL = 0.25
@@ -19,30 +18,6 @@ local BOOSTS = {
     { Key = "Super Lucky", ConfigKey = "AutoSuperLucky", BundleCount = 7 },
     { Key = "Ultra Lucky", ConfigKey = "AutoUltraLucky", BundleCount = 3 },
 }
-
-local function profile(context)
-    return type(context) == "table" and context.Profiler or nil
-end
-
-local function profileBegin(context)
-    local profiler = profile(context)
-    return profiler and profiler.Begin() or nil
-end
-
-local function profileFinish(context, operation, startedAt)
-    local profiler = profile(context)
-    if profiler then profiler.Finish(PROFILE_MODULE, operation, startedAt) end
-end
-
-local function profileInventoryScan(context, amount)
-    local profiler = profile(context)
-    if profiler then profiler.InventoryScan(PROFILE_MODULE, amount) end
-end
-
-local function profileTemporary(context, amount)
-    local profiler = profile(context)
-    if profiler then profiler.Temporary(PROFILE_MODULE, amount) end
-end
 
 local function normalize(value)
     return string.lower(tostring(value or "")):gsub("[%s_%-]", "")
@@ -226,13 +201,6 @@ end
 
 local function runCycle(state, context)
     local now = os.clock()
-    local profiler = profile(context)
-    if profiler then
-        profiler.Gauge(PROFILE_MODULE, "network_queue",
-            (state.PendingActivation or state.PendingBundle) and 1 or 0)
-        profiler.Gauge(PROFILE_MODULE, "inventory_queue", state.OperationOwned and 1 or 0)
-    end
-    profileTemporary(context, 3)
     refreshRoutes(state, context, false)
     local save = context.GetSave()
     if not save then
@@ -246,7 +214,6 @@ local function runCycle(state, context)
             "Waiting for Save.Boosts and Save.BoostsInventory; no boost or bundle request was sent.")
         return
     end
-    profileInventoryScan(context, #BOOSTS)
 
     local pendingAction = confirmPending(state, context, save, now)
     if state.PendingActivation or state.PendingBundle then
@@ -308,7 +275,6 @@ local function runCycle(state, context)
                 "Boost Save data changed during the safety recheck; no activation was sent.")
             return
         end
-        profileInventoryScan(context, #BOOSTS)
         local freshActive, freshInventory = saveTables(fresh)
         local freshName = resolveName(activationCandidate.Definition, freshActive, freshInventory)
         local stock = tonumber(freshInventory[freshName]) or 0
@@ -376,7 +342,6 @@ local function runCycle(state, context)
                 "Boost Save data changed during the bundle safety recheck; no purchase was sent.")
             return
         end
-        profileInventoryScan(context, #BOOSTS)
         local freshActive, freshInventory = saveTables(fresh)
         local stillMissing = {}
         for _, definition in ipairs(selected) do
@@ -444,7 +409,6 @@ local function stop()
 end
 
 return function(action, context)
-    if action == "version" then return MODULE_VERSION end
     if action == "stop" then return stop() end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
@@ -474,9 +438,7 @@ return function(action, context)
         .. " | dynamic Activate Boost + Buy Boost Bundle routes")
     task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
-            local profiledAt = profileBegin(context)
             local ok, problem = pcall(runCycle, state, context)
-            profileFinish(context, "worker_cycle", profiledAt)
             if not ok then
                 releaseOperation(state, context)
                 state.NextBundleAttempt = os.clock() + TRANSPORT_RETRY

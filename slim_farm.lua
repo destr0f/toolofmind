@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.12"
+local VERSION = "1.4.1-dev.11"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -110,11 +110,6 @@ if type(env.PSX_OG_MENU_TEST_CLEANUP) == "function" then
     pcall(env.PSX_OG_MENU_TEST_CLEANUP)
     env.PSX_OG_MENU_TEST_CLEANUP = nil
 end
-if type(env.PSX_OG_PROFILER) == "table"
-    and type(env.PSX_OG_PROFILER.Destroy) == "function" then
-    pcall(env.PSX_OG_PROFILER.Destroy)
-    env.PSX_OG_PROFILER = nil
-end
 env.PSX_OG_RunToken = nil
 env.PSX_OG_Running = false
 if type(env.PSX_OG_LOADER_STATE) == "table" then
@@ -159,42 +154,9 @@ end
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
-local Profile = {
-    Api = nil,
-    NetworkInFlight = 0,
-}
-
-function Profile.Begin()
-    return Profile.Api and Profile.Api.Begin() or nil
-end
-
-function Profile.Finish(moduleName, operation, startedAt)
-    if Profile.Api then Profile.Api.Finish(moduleName, operation, startedAt) end
-end
-
-function Profile.Count(moduleName, metric, amount)
-    if Profile.Api then Profile.Api.Count(moduleName, metric, amount or 1) end
-end
-
-function Profile.Gauge(moduleName, metric, value)
-    if Profile.Api then Profile.Api.Gauge(moduleName, metric, value) end
-end
-
-function Profile.Scanned(moduleName, amount)
-    if Profile.Api then Profile.Api.Scanned(moduleName, amount) end
-end
-
-function Profile.Temporary(moduleName, amount)
-    if Profile.Api then Profile.Api.Temporary(moduleName, amount) end
-end
-
-function Profile.InventoryScan(moduleName, amount)
-    if Profile.Api then Profile.Api.InventoryScan(moduleName, amount) end
-end
 
 local token = {}
 local connections = {}
@@ -359,26 +321,18 @@ local function loadRemoteController(moduleKey, label, statusCallback)
     local cacheKey = tostring(moduleKey) .. "@" .. tostring(entry.commit) .. ":" .. tostring(entry.djb2)
     local cached = moduleLoadState.Cache[cacheKey]
     if type(cached) == "function" then return cached, nil end
-    local profiledAt = Profile.Begin()
 
     local deadline = os.clock() + 45
     while running() and (moduleLoadState.Busy or os.clock() < moduleLoadState.NextAt)
         and os.clock() < deadline do
         task.wait(0.05)
     end
-    if not running() then
-        Profile.Finish("module_loader", tostring(moduleKey), profiledAt)
-        return nil, "script stopped before module load"
-    end
+    if not running() then return nil, "script stopped before module load" end
     if moduleLoadState.Busy then
-        Profile.Finish("module_loader", tostring(moduleKey), profiledAt)
         return nil, "module loader timed out behind " .. tostring(moduleLoadState.Owner)
     end
     cached = moduleLoadState.Cache[cacheKey]
-    if type(cached) == "function" then
-        Profile.Finish("module_loader", tostring(moduleKey), profiledAt)
-        return cached, nil
-    end
+    if type(cached) == "function" then return cached, nil end
 
     moduleLoadState.Busy = true
     moduleLoadState.Owner = tostring(label or "optional module")
@@ -387,7 +341,6 @@ local function loadRemoteController(moduleKey, label, statusCallback)
     end
 
     local loaded, controllerOrProblem = pcall(function()
-        Profile.Count("module_loader", "module_downloads", 1)
         local source = game:HttpGet(runtimeModuleURL(entry))
         local verified, verifyProblem = verifyRuntimeSource(entry, source)
         if not verified then error("identity rejected: " .. tostring(verifyProblem), 0) end
@@ -413,7 +366,6 @@ local function loadRemoteController(moduleKey, label, statusCallback)
     moduleLoadState.Busy = false
     moduleLoadState.Owner = nil
     moduleLoadState.NextAt = os.clock() + 0.25
-    Profile.Finish("module_loader", tostring(moduleKey), profiledAt)
     if not loaded then
         trace("module loader", tostring(label) .. " failed: " .. tostring(controllerOrProblem))
         return nil, tostring(controllerOrProblem)
@@ -424,33 +376,6 @@ local function loadRemoteController(moduleKey, label, statusCallback)
         .. " | sha256=" .. tostring(entry.sha256)
         .. " | djb2=" .. tostring(entry.djb2))
     return controllerOrProblem, nil
-end
-
-function Profile.PreloadRuntimeModules()
-    local loaded, failures = 0, {}
-    for _, moduleKey in ipairs(RUNTIME_MANIFEST.moduleOrder) do
-        if moduleKey ~= "profiler" then
-            local entry = RUNTIME_MANIFEST.modules[moduleKey]
-            local controller, problem = loadRemoteController(
-                moduleKey,
-                "baseline preload: " .. tostring(entry and entry.label or moduleKey)
-            )
-            if controller then
-                loaded = loaded + 1
-                if moduleKey == "graphics" then
-                    pcall(controller, "set-profiler", Profile.Api)
-                end
-            else
-                failures[#failures + 1] = tostring(moduleKey) .. ": " .. tostring(problem)
-            end
-        end
-    end
-    local summary = string.format(
-        "Preloaded %d/%d non-profiler runtime modules; no feature was started.",
-        loaded, math.max(#RUNTIME_MANIFEST.moduleOrder - 1, 0)
-    )
-    if #failures > 0 then summary = summary .. "\nFailures: " .. table.concat(failures, " | ") end
-    return summary
 end
 
 local function normalize(value)
@@ -467,7 +392,6 @@ local function graphicsAction(action, value)
         local controller, problem = loadRemoteController("graphics", "graphics module")
         if not controller then warn("[PSX SLIM] graphics load: " .. tostring(problem)); return false end
         graphicsController = controller
-        pcall(graphicsController, "set-profiler", Profile.Api)
     end
 
     local called, accepted, problem = pcall(graphicsController, action, value)
@@ -1010,9 +934,7 @@ function currencyMonitor:TrackedNames()
 end
 
 function currencyMonitor:GetBalances(currencyNames)
-    local profiledAt = Profile.Begin()
     local balances = {}
-    Profile.Temporary("currency_monitor", 1)
     local save
     if Library.Save and type(Library.Save.Get) == "function" then
         pcall(function() save = Library.Save.Get() end)
@@ -1027,8 +949,6 @@ function currencyMonitor:GetBalances(currencyNames)
         if amount == nil then amount = getCurrentCurrency(currencyName) end
         if amount ~= nil then balances[currencyName] = amount end
     end
-    Profile.InventoryScan("currency_monitor", #currencyNames)
-    Profile.Finish("currency_monitor", "balance_scan", profiledAt)
     return balances
 end
 
@@ -1360,30 +1280,23 @@ local function refreshWorkspaceCoins(force)
     if not force and now < nextWorkspaceScanAt then return end
     nextWorkspaceScanAt = now + WORKSPACE_RECONCILE_INTERVAL
     if not folder then return end
-    local profiledAt = Profile.Begin()
 
     for id, expiresAt in pairs(removedUntil) do
         if now >= expiresAt then removedUntil[id] = nil end
     end
     local seen = {}
-    local children = folder:GetChildren()
-    local scanned = #children
-    Profile.Temporary("coin_index", 3)
-    for _, model in ipairs(children) do
+    for _, model in ipairs(folder:GetChildren()) do
         local id = coinIndex:IndexModel(model, true)
         if id then seen[id] = true end
     end
 
     local staleIds = {}
     for id, record in pairs(coinRecords) do
-        scanned = scanned + 1
         if record.Model and not seen[id] and not record.FromServer then
             table.insert(staleIds, id)
         end
     end
     for _, id in ipairs(staleIds) do removeCoin(id) end
-    Profile.Scanned("coin_index", scanned)
-    Profile.Finish("coin_index", "workspace_reconcile", profiledAt)
 end
 
 local function refreshCoinSnapshot()
@@ -1391,25 +1304,17 @@ local function refreshCoinSnapshot()
     local network = networkReady()
     if not network then return end
     snapshotBusy = true
-    local profiledAt = Profile.Begin()
     local generation = coinGeneration
     local revisionAtStart = coinEventRevision
-    local networkAt = Profile.Begin()
-    if Profile.Api then Profile.Api.NetworkCall("coin_index", "invoke_Get_Coins", 1) end
     local ok, response = pcall(network.Invoke, "Get Coins")
-    Profile.Finish("coin_index", "network_get_coins", networkAt)
     if generation ~= coinGeneration then
         snapshotBusy = false
         nextSnapshotAt = 0
-        Profile.Finish("coin_index", "server_snapshot", profiledAt)
         return
     end
-    local scanned = 0
     if ok and type(response) == "table" then
         local seen = {}
-        Profile.Temporary("coin_index", 1)
         for id, data in pairs(response) do
-            scanned = scanned + 1
             if type(data) == "table" then
                 id = tostring(id)
                 local removalRevision = removalRevisions[id] or 0
@@ -1423,7 +1328,6 @@ local function refreshCoinSnapshot()
             end
         end
         for id, record in pairs(coinRecords) do
-            scanned = scanned + 1
             if record.FromServer and not seen[id] and (record.EventRevision or 0) <= revisionAtStart then
                 removeCoin(id, false)
             end
@@ -1436,8 +1340,6 @@ local function refreshCoinSnapshot()
         nextSnapshotAt = os.clock() + 0.55 + ((tonumber(player.UserId) or 0) % 7) * 0.04
     end
     snapshotBusy = false
-    Profile.Scanned("coin_index", scanned)
-    Profile.Finish("coin_index", "server_snapshot", profiledAt)
 end
 
 local function connectCoinSignals()
@@ -1450,9 +1352,7 @@ local function connectCoinSignals()
         if ok and signal and type(signal.Connect) == "function" then
             local connected, connection = pcall(function()
                 return signal:Connect(function(...)
-                    local profiledAt = Profile.Begin()
                     local handled, problem = pcall(callback, ...)
-                    Profile.Finish("coin_events", tostring(name), profiledAt)
                     if not handled then warn("[PSX SLIM] " .. name .. ": " .. tostring(problem)) end
                 end)
             end)
@@ -1531,24 +1431,18 @@ local nextPetScanAt = 0
 local function getEquippedPetIds()
     if os.clock() < nextPetScanAt then return cachedPetIds end
     nextPetScanAt = os.clock() + 0.1
-    local profiledAt = Profile.Begin()
     local save
     if Library.Save and type(Library.Save.Get) == "function" then
         pcall(function() save = Library.Save.Get() end)
     end
     local ids = {}
-    local scanned = 0
-    Profile.Temporary("pet_inventory", 1)
     for _, pet in pairs((save and save.Pets) or {}) do
-        scanned = scanned + 1
         if type(pet) == "table" and pet.e and pet.uid then
             table.insert(ids, tostring(pet.uid))
         end
     end
     table.sort(ids)
     cachedPetIds = ids
-    Profile.InventoryScan("pet_inventory", scanned)
-    Profile.Finish("pet_inventory", "equipped_scan", profiledAt)
     return cachedPetIds
 end
 
@@ -1608,16 +1502,11 @@ local function orderedTargets(mode)
     local signature = table.concat({ tostring(mode), tostring(world), tostring(zone) }, "|")
     local cache = coinIndex.Cache
     if cache.Revision == coinIndex.Revision and cache.Signature == signature then
-        Profile.Count("target_selector", "cache_hits", 1)
         return cache.Targets, cache.World, cache.Zone
     end
-    local profiledAt = Profile.Begin()
     local zoneAnchor = findZoneAnchor(zone)
     local targets = {}
-    local scanned = 0
-    Profile.Temporary("target_selector", 1)
     for _, record in pairs(coinRecords) do
-        scanned = scanned + 1
         local boss = isBossChest(record)
         local allowed = mode == "Boss Chest Only" and boss or mode ~= "Boss Chest Only" and not boss
         if allowed and worldMatches(record.World, world) and recordInZone(record, zone, zoneAnchor) then
@@ -1646,8 +1535,6 @@ local function orderedTargets(mode)
     cache.Targets = targets
     cache.World = world
     cache.Zone = zone
-    Profile.Scanned("target_selector", scanned)
-    Profile.Finish("target_selector", "ordered_targets", profiledAt)
     return targets, world, zone
 end
 
@@ -1821,17 +1708,13 @@ end
 
 local commandRemoteCache = {}
 local commandRemoteSource = "Network.Invoke GetRemoteFunction upvalue #2"
-local RemoteResolver = {}
 
 local function remoteSessionIndex(remote)
     if typeof(remote) ~= "Instance" then return nil end
-    local children = ReplicatedStorage:GetChildren()
-    Profile.Temporary("route_resolver", 1)
-    Profile.Scanned("route_resolver", #children)
-    return table.find(children, remote)
+    return table.find(ReplicatedStorage:GetChildren(), remote)
 end
 
-function RemoteResolver.ResolveCommand(commandName)
+local function getCommandRemote(commandName)
     local cached = commandRemoteCache[commandName]
     if typeof(cached) == "Instance" and cached:IsA("RemoteFunction")
         and cached:IsDescendantOf(ReplicatedStorage) then
@@ -1871,18 +1754,10 @@ function RemoteResolver.ResolveCommand(commandName)
         tostring(commandName) .. " did not resolve to a live RemoteFunction"
 end
 
-function RemoteResolver.Command(commandName)
-    local profiledAt = Profile.Begin()
-    local result = table.pack(RemoteResolver.ResolveCommand(commandName))
-    Profile.Temporary("route_resolver", 1)
-    Profile.Finish("route_resolver", "command_remote", profiledAt)
-    return table.unpack(result, 1, result.n)
-end
-
 local eventRemoteCache = {}
 local eventRemoteSource = "Network.Fired GetRemoteEvent upvalue"
 
-function RemoteResolver.ResolveEvent(commandName)
+local function getEventRemote(commandName)
     local cached = eventRemoteCache[commandName]
     if typeof(cached) == "Instance" and cached:IsA("RemoteEvent")
         and cached:IsDescendantOf(ReplicatedStorage) then
@@ -1938,18 +1813,10 @@ function RemoteResolver.ResolveEvent(commandName)
     return nil, eventRemoteSource, nil, lastProblem
 end
 
-function RemoteResolver.Event(commandName)
-    local profiledAt = Profile.Begin()
-    local result = table.pack(RemoteResolver.ResolveEvent(commandName))
-    Profile.Temporary("route_resolver", 1)
-    Profile.Finish("route_resolver", "event_remote", profiledAt)
-    return table.unpack(result, 1, result.n)
-end
-
 local fireRemoteCache = {}
 local fireRemoteSource = "Network.Fire GetRemoteEvent upvalue #2"
 
-function RemoteResolver.ResolveFire(commandName)
+local function getFireRemote(commandName)
     local cached = fireRemoteCache[commandName]
     if typeof(cached) == "Instance" and cached:IsA("RemoteEvent")
         and cached:IsDescendantOf(ReplicatedStorage) then
@@ -1983,35 +1850,16 @@ function RemoteResolver.ResolveFire(commandName)
         tostring(commandName) .. " did not resolve to a live RemoteEvent"
 end
 
-function RemoteResolver.Fire(commandName)
-    local profiledAt = Profile.Begin()
-    local result = table.pack(RemoteResolver.ResolveFire(commandName))
-    Profile.Temporary("route_resolver", 1)
-    Profile.Finish("route_resolver", "fire_remote", profiledAt)
-    return table.unpack(result, 1, result.n)
-end
-
 local function invokeCommand(commandName, ...)
-    local profiledAt = Profile.Begin()
     local arguments = table.pack(...)
-    Profile.Temporary("network", 1)
-    local remote, sourceName, sessionIndex, resolveProblem = RemoteResolver.Command(commandName)
+    local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
     if not remote then
-        Profile.Count("network", "resolve_failures", 1)
-        Profile.Finish("network", "invoke_" .. tostring(commandName), profiledAt)
         return false, false, resolveProblem, sourceName, sessionIndex
     end
 
-    if Profile.Api then Profile.Api.NetworkCall("network", "invoke_" .. tostring(commandName), 1) end
-    Profile.NetworkInFlight = Profile.NetworkInFlight + 1
-    Profile.Gauge("network", "network_queue", Profile.NetworkInFlight)
     local result = table.pack(pcall(function()
         return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
     end))
-    Profile.NetworkInFlight = math.max(Profile.NetworkInFlight - 1, 0)
-    Profile.Gauge("network", "network_queue", Profile.NetworkInFlight)
-    Profile.Temporary("network", 1)
-    Profile.Finish("network", "invoke_" .. tostring(commandName), profiledAt)
     if not result[1] then
         commandRemoteCache[commandName] = nil
         return false, false, tostring(result[2]), sourceName, sessionIndex
@@ -2020,24 +1868,12 @@ local function invokeCommand(commandName, ...)
 end
 
 local function fireCommand(commandName, ...)
-    local profiledAt = Profile.Begin()
     local arguments = table.pack(...)
-    Profile.Temporary("network", 1)
-    local remote, sourceName, sessionIndex, resolveProblem = RemoteResolver.Fire(commandName)
-    if not remote then
-        Profile.Count("network", "resolve_failures", 1)
-        Profile.Finish("network", "fire_" .. tostring(commandName), profiledAt)
-        return false, resolveProblem, sourceName, sessionIndex
-    end
-    if Profile.Api then Profile.Api.NetworkCall("network", "fire_" .. tostring(commandName), 1) end
-    Profile.NetworkInFlight = Profile.NetworkInFlight + 1
-    Profile.Gauge("network", "network_queue", Profile.NetworkInFlight)
+    local remote, sourceName, sessionIndex, resolveProblem = getFireRemote(commandName)
+    if not remote then return false, resolveProblem, sourceName, sessionIndex end
     local ok, problem = pcall(function()
         remote:FireServer(table.unpack(arguments, 1, arguments.n))
     end)
-    Profile.NetworkInFlight = math.max(Profile.NetworkInFlight - 1, 0)
-    Profile.Gauge("network", "network_queue", Profile.NetworkInFlight)
-    Profile.Finish("network", "fire_" .. tostring(commandName), profiledAt)
     if not ok then
         fireRemoteCache[commandName] = nil
         return false, tostring(problem), sourceName, sessionIndex
@@ -2054,9 +1890,8 @@ local supportRetryAt = 0
 local supportContext = {
     Library = Library,
     Trace = trace,
-    GetCommandRemote = RemoteResolver.Command,
-    GetFireRemote = RemoteResolver.Fire,
-    Profiler = Profile.Api,
+    GetCommandRemote = getCommandRemote,
+    GetFireRemote = getFireRemote,
 }
 
 local function ensureSupportModule()
@@ -2267,11 +2102,7 @@ function petFarm:FireNamed(command, ...)
     if sent == true then return true end
     local network = networkReady()
     if not network then return false end
-    local profiledAt = Profile.Begin()
-    if Profile.Api then Profile.Api.NetworkCall("pet_farm", "fallback_fire_" .. tostring(command), 1) end
-    local ok, problem = pcall(network.Fire, command, ...)
-    Profile.Finish("pet_farm", "fallback_fire", profiledAt)
-    return ok, problem
+    return pcall(network.Fire, command, ...)
 end
 
 function petFarm:MaintainLock(petId, state, record, now, source)
@@ -2337,13 +2168,12 @@ function petFarm:EnsureEngine()
     end
 
     local context = {
-        Profiler = Profile.Api,
         Running = running,
         Enabled = function() return config.PetFarm end,
         Resetting = function() return farmResetRunning or farmResetRequested end,
         NetworkReady = networkReady,
-        GetCommandRemote = RemoteResolver.Command,
-        GetFireRemote = RemoteResolver.Fire,
+        GetCommandRemote = getCommandRemote,
+        GetFireRemote = getFireRemote,
         RecordAlive = recordAlive,
         StateCurrent = function(petId, state)
             return petStates[tostring(petId)] == state
@@ -2463,11 +2293,11 @@ function petFarm:EnsureEngine()
     self.Engine = controller
     local resolvedRoutes = 0
     for _, command in ipairs({ "Join Coin", "Leave Coin" }) do
-        local remote = RemoteResolver.Command(command)
+        local remote = getCommandRemote(command)
         if remote then resolvedRoutes = resolvedRoutes + 1 end
     end
     for _, command in ipairs({ "Change Pet Target", "Farm Coin" }) do
-        local remote = RemoteResolver.Fire(command)
+        local remote = getFireRemote(command)
         if remote then resolvedRoutes = resolvedRoutes + 1 end
     end
     self.RouteSummary = "named routes " .. tostring(resolvedRoutes) .. "/4"
@@ -2879,7 +2709,6 @@ function statusSetters.Set(key, text)
     if statusSetters.Cache[key] == text then return end
     statusSetters.Cache[key] = text
     pcall(function() view:SetDesc(text) end)
-    if Profile.Api then Profile.Api.UIUpdate("main_ui", 1) end
 end
 function statusSetters.Farm(text)
     statusSetters.Set("Farm", text)
@@ -2918,7 +2747,6 @@ local function getRewardSave()
     if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
     local save
     pcall(function() save = Library.Save.Get() end)
-    Profile.InventoryScan("save_reader", type(save) == "table" and 1 or 0)
     return type(save) == "table" and save or nil
 end
 
@@ -2933,17 +2761,14 @@ local function getRewardServerTime()
         return nil, rewardClockProblem or "server clock retry pending"
     end
 
-    local remote, _, _, resolveProblem = RemoteResolver.Command("Get OSTime")
+    local remote, _, _, resolveProblem = getCommandRemote("Get OSTime")
     if not remote then
         rewardClockRetryAt = os.clock() + 10
         rewardClockProblem = resolveProblem
         return nil, resolveProblem
     end
 
-    local profiledAt = Profile.Begin()
-    if Profile.Api then Profile.Api.NetworkCall("rewards", "invoke_Get_OSTime", 1) end
     local ok, rawValue = pcall(function() return remote:InvokeServer() end)
-    Profile.Finish("rewards", "network_get_ostime", profiledAt)
     local value = ok and tonumber(rawValue) or nil
     if value == nil then
         commandRemoteCache["Get OSTime"] = nil
@@ -3056,7 +2881,6 @@ end
 local function inspectEggThroughModule(eggId, count, animation)
     if not autoEggController then return false, "Auto egg module is not loaded" end
     return autoEggController("inspect", {
-        Profiler = Profile.Api,
         Library = Library,
         Player = player,
         Egg = eggId,
@@ -3077,7 +2901,6 @@ local function startAutoEggModule()
     if not config.AutoEgg or not running() then return end
     if refreshEggDropdown then refreshEggDropdown(true) end
     local context = {
-        Profiler = Profile.Api,
         Library = Library,
         Player = player,
         Running = running,
@@ -3091,7 +2914,7 @@ local function startAutoEggModule()
         end,
         InspectEgg = inspectEggThroughModule,
         InvokeCommand = invokeCommand,
-        GetEventRemote = RemoteResolver.Event,
+        GetEventRemote = getEventRemote,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
         ReleaseOperation = releaseOperation,
@@ -3170,7 +2993,6 @@ function machineModules:Start(kind)
     entry.Loading = false
     if not self:Enabled(entry) or not running() then return end
     local context = {
-        Profiler = Profile.Api,
         Library = Library,
         Running = running,
         Enabled = function() return machineModules:Enabled(entry) end,
@@ -3188,7 +3010,7 @@ function machineModules:Start(kind)
             local hours = tonumber(config.DarkMatterMaxWaitHours) or 0
             return hours > 0 and hours * 3600 or nil
         end,
-        GetCommandRemote = RemoteResolver.Command,
+        GetCommandRemote = getCommandRemote,
         InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
         InvokeCommand = invokeCommand,
         RouteText = routeText,
@@ -3243,7 +3065,6 @@ local function startBoostModule()
     if not boostAutomationEnabled() or not running() then return end
 
     local context = {
-        Profiler = Profile.Api,
         Library = Library,
         Running = running,
         Enabled = boostAutomationEnabled,
@@ -3260,8 +3081,8 @@ local function startBoostModule()
         GetSave = getRewardSave,
         GetCurrency = getCurrentCurrency,
         FormatNumber = formatRateNumber,
-        GetCommandRemote = RemoteResolver.Command,
-        GetFireRemote = RemoteResolver.Fire,
+        GetCommandRemote = getCommandRemote,
+        GetFireRemote = getFireRemote,
         InvokeCommand = invokeCommand,
         FireCommand = fireCommand,
         RouteText = routeText,
@@ -3504,7 +3325,6 @@ allocatorPass = function()
     end
     allocatorBusy = true
     allocatorRequested = false
-    local profiledAt = Profile.Begin()
     local ok, problem = pcall(function()
         if os.clock() >= nextSnapshotAt and not snapshotBusy then task.spawn(refreshCoinSnapshot) end
         connectCoinSignals()
@@ -3532,7 +3352,6 @@ allocatorPass = function()
         local petIds = getEquippedPetIds()
         petFarm.EquippedCount = #petIds
         local equipped = {}
-        Profile.Temporary("pet_allocator", 1)
         for _, petId in ipairs(petIds) do equipped[petId] = true end
         if #petIds == 0 then return end
 
@@ -3541,7 +3360,6 @@ allocatorPass = function()
         if not usingRuntime then syncServerAssignments(equipped) end
 
         local freePets = {}
-        Profile.Temporary("pet_allocator", 1)
         for _, petId in ipairs(petIds) do
             if not petStates[petId] and not releaseWait[petId] then
                 table.insert(freePets, petId)
@@ -3555,8 +3373,6 @@ allocatorPass = function()
 
         local targets = orderedTargets(config.Mode)
         local targetIds = {}
-        Profile.Temporary("pet_allocator", 1)
-        Profile.Scanned("pet_allocator", #targets)
         for _, record in ipairs(targets) do targetIds[tostring(record.Id)] = true end
         for _, state in pairs(petStates) do
             local coinId = tostring(state.CoinId)
@@ -3567,7 +3383,6 @@ allocatorPass = function()
         end
 
         local usable = {}
-        Profile.Temporary("pet_allocator", 1)
         for _, record in ipairs(targets) do
             if os.clock() >= (rejectedUntil[tostring(record.Id)] or 0) then
                 table.insert(usable, record)
@@ -3576,7 +3391,6 @@ allocatorPass = function()
         if #usable == 0 then return end
 
         local plans, plansById = {}, {}
-        Profile.Temporary("pet_allocator", 2)
         if config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only" then
             petFarm.TargetWindow = math.min(#usable, 1)
             petFarm.TargetShards = 1
@@ -3593,14 +3407,12 @@ allocatorPass = function()
             end
             groupTarget = groupTarget or usable[1]
             local external = {}
-            Profile.Temporary("pet_allocator", 2)
             petFarm.ExternalPetCount = petFarm:RecordExternalPets(
                 groupTarget, equipped, external)
             petFarm.ContendedTargets = petFarm.ExternalPetCount > 0 and 1 or 0
             plans[1] = { Record = groupTarget, Pets = freePets }
         else
             local claimed = {}
-            Profile.Temporary("pet_allocator", 1)
             for _, state in pairs(petStates) do
                 local coinId = tostring(state.CoinId)
                 if targetIds[coinId] and recordAlive(coinRecords[coinId]) then claimed[coinId] = true end
@@ -3628,11 +3440,7 @@ allocatorPass = function()
             end
         end
         for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
-        Profile.Gauge("pet_allocator", "equipped_pets", #petIds)
-        Profile.Gauge("pet_allocator", "idle_pets", #freePets)
-        Profile.Gauge("pet_allocator", "assignment_plans", #plans)
     end)
-    Profile.Finish("pet_allocator", "allocator_pass", profiledAt)
     if not ok then driverStatus = "allocator error: " .. tostring(problem) end
 
     allocatorBusy = false
@@ -3684,11 +3492,9 @@ end)
 
 task.spawn(function()
     while running() do
-        local profiledAt = Profile.Begin()
         requestAllocatorPulse()
         local expected = tonumber(petFarm.EquippedCount) or 0
         local recovering = expected > 0 and assignmentCount() < expected
-        Profile.Finish("pet_allocator", "watchdog_tick", profiledAt)
         -- Coin/pet events do the immediate work. The watchdog runs quickly only
         -- while a pet is missing a lock, then backs off to reduce steady CPU.
         task.wait(config.PetFarm and (recovering and 0.03 or 0.22) or 0.4)
@@ -3721,12 +3527,6 @@ local lootCollector = {
         LastBulkMs = 0,
     },
 }
-
-function Profile.LootQueues()
-    Profile.Gauge("loot", "loot_queue", lootCollector.Pending)
-    Profile.Gauge("loot", "loot_ready_queue", lootCollector:QueueSpan("Ready"))
-    Profile.Gauge("loot", "loot_retry_queue", lootCollector:QueueSpan("Retry"))
-end
 
 function lootCollector:IsEnabled(kind)
     return kind == "Orbs" and config.Orbs == true
@@ -3853,7 +3653,6 @@ function lootCollector:QueueItem(item, kind)
         OwnerChecked = ownerResolved,
         NextOwnerCheckAt = createdAt + 0.5,
     }
-    Profile.Temporary("loot", 1)
     -- New orb visuals disappear before the deferred bulk touch pass. This is a
     -- shallow preparation path: no GetDescendants and no Model:PivotTo.
     local primed, part = pcall(preparePickupPart, item)
@@ -3943,7 +3742,6 @@ function lootCollector:ScheduleImmediateDrain()
     self.ImmediateScheduled = true
     task.defer(function()
         local startedAt = os.clock()
-        local profiledAt = Profile.Begin()
         local character = player.Character
         local root = character and character:FindFirstChild("HumanoidRootPart")
         local processed = 0
@@ -3962,9 +3760,6 @@ function lootCollector:ScheduleImmediateDrain()
                 self.Stats.LastBulkMs = math.max(os.clock() - startedAt, 0) * 1000
             end
         end
-        Profile.Scanned("loot", processed)
-        Profile.LootQueues()
-        Profile.Finish("loot", "immediate_drain", profiledAt)
         self.ImmediateScheduled = false
         if running() and root and self:QueueSpan("Ready") > 0 then
             self:ScheduleImmediateDrain()
@@ -3976,15 +3771,9 @@ function lootCollector:Scan(kind)
     local binding = self.Bindings[kind]
     local folder = binding and binding.Folder
     if not folder or not self:IsEnabled(kind) then return end
-    local profiledAt = Profile.Begin()
     local children = folder:GetChildren()
-    Profile.Temporary("loot", 1)
     local count = #children
-    if count == 0 then
-        self.ScanCursor[kind] = 1
-        Profile.Finish("loot", "folder_scan_" .. tostring(kind), profiledAt)
-        return
-    end
+    if count == 0 then self.ScanCursor[kind] = 1; return end
     local cursor = math.clamp(tonumber(self.ScanCursor[kind]) or 1, 1, count)
     local scanLimit = kind == "Orbs" and count or math.min(count, 512)
     for offset = 0, scanLimit - 1 do
@@ -3992,8 +3781,6 @@ function lootCollector:Scan(kind)
         self:QueueItem(children[index], kind)
     end
     self.ScanCursor[kind] = ((cursor + scanLimit - 1) % count) + 1
-    Profile.Scanned("loot", scanLimit)
-    Profile.Finish("loot", "folder_scan_" .. tostring(kind), profiledAt)
 end
 
 function lootCollector:Bind(kind, folder)
@@ -4011,7 +3798,6 @@ function lootCollector:Bind(kind, folder)
     self.ScanWarmupUntil = math.max(self.ScanWarmupUntil, os.clock() + 4)
 
     local binding = { Folder = folder, Connections = {} }
-    Profile.Temporary("loot", 2)
     binding.Connections[1] = track(folder.ChildAdded:Connect(function(item)
         self:QueueItem(item, kind)
     end))
@@ -4022,7 +3808,6 @@ function lootCollector:Bind(kind, folder)
 end
 
 function lootCollector:RefreshBindings(now)
-    local profiledAt = Profile.Begin()
     local things = workspace:FindFirstChild("__THINGS")
     for _, kind in ipairs({ "Orbs", "Lootbags" }) do
         local folder = things and things:FindFirstChild(kind)
@@ -4035,7 +3820,6 @@ function lootCollector:RefreshBindings(now)
                 self:Scan(kind)
             else
                 local disabledEntries = {}
-                Profile.Temporary("loot", 1)
                 for _, entry in pairs(self.Entries) do
                     if entry.Kind == kind then disabledEntries[#disabledEntries + 1] = entry end
                 end
@@ -4050,14 +3834,11 @@ function lootCollector:RefreshBindings(now)
         if config.Orbs then self:Scan("Orbs") end
         if config.Lootbags then self:Scan("Lootbags") end
     end
-    Profile.LootQueues()
-    Profile.Finish("loot", "refresh_bindings", profiledAt)
 end
 
 function lootCollector:ProcessFrame(root, now)
     local backlog = self.Pending
     if backlog <= 0 then return end
-    local profiledAt = Profile.Begin()
     local readyBacklog = self:QueueSpan("Ready")
     local itemLimit = readyBacklog >= 512 and 512
         or readyBacklog >= 128 and 256
@@ -4080,12 +3861,7 @@ function lootCollector:ProcessFrame(root, now)
     -- Never let retries delay a fresh drop. Once the first-touch lane is empty,
     -- inspect only a small retry batch so ten clients cannot amplify stale
     -- foreign/replicated drops into a touch storm.
-    if self:QueueSpan("Ready") > 0 then
-        Profile.Scanned("loot", processed)
-        Profile.LootQueues()
-        Profile.Finish("loot", "process_frame", profiledAt)
-        return
-    end
+    if self:QueueSpan("Ready") > 0 then return end
     local retryChecks = self:QueueSpan("Retry")
     local retryLimit = math.min(32, math.max(itemLimit - processed, 0))
     local retried = 0
@@ -4101,9 +3877,6 @@ function lootCollector:ProcessFrame(root, now)
             self:Push("Retry", entry)
         end
     end
-    Profile.Scanned("loot", processed + retried)
-    Profile.LootQueues()
-    Profile.Finish("loot", "process_frame", profiledAt)
 end
 
 function lootCollector:Status()
@@ -4126,7 +3899,6 @@ end
 task.spawn(function()
     while running() do
         RunService.Heartbeat:Wait()
-        local profiledAt = Profile.Begin()
         local now = os.clock()
         if now >= lootCollector.NextBindingAt then
             lootCollector.NextBindingAt = now + 0.5
@@ -4141,7 +3913,6 @@ task.spawn(function()
             lootCollector.NextStatusAt = now + 0.75
             statusSetters.Set("Loot", lootCollector:Status())
         end
-        Profile.Finish("loot", "heartbeat_tick", profiledAt)
     end
 end)
 
@@ -4219,11 +3990,10 @@ for index, definition in ipairs({
     { "LootTab", "Loot", "package-open" },
     { "RewardsTab", "Rewards", "gift" },
     { "GraphicsTab", "Graphics", "monitor" },
-    { "ProfilerTab", "Profiler", "gauge" },
     { "SessionTab", "Session", "shield-check" },
 }) do
     UI[definition[1]] = Window:Tab({ Title = definition[2], Icon = definition[3] })
-    if index % 2 == 0 then uiStageYield("tabs " .. tostring(index) .. "/10") end
+    if index % 2 == 0 then uiStageYield("tabs " .. tostring(index) .. "/9") end
 end
 uiStageYield("tabs complete")
 
@@ -4231,14 +4001,11 @@ refreshEggDropdown = function(force)
     local now = os.clock()
     if not force and UI.LastEggRefreshAt and now - UI.LastEggRefreshAt < 0.6 then return end
     UI.LastEggRefreshAt = now
-    local profiledAt = Profile.Begin()
     if not autoEggController then
         statusSetters.EggCatalog("Egg catalog worker is loading; no server request is involved.")
-        Profile.Finish("main_ui", "egg_dropdown_refresh", profiledAt)
         return
     end
     local called, options, selectedLabel, selectedId, summary, labelMap = pcall(autoEggController, "catalog", {
-        Profiler = Profile.Api,
         Library = Library,
         Player = player,
         Scope = config.EggScope,
@@ -4249,7 +4016,6 @@ refreshEggDropdown = function(force)
     })
     if not called or type(options) ~= "table" then
         statusSetters.EggCatalog("Local egg catalog error: " .. tostring(called and summary or options))
-        Profile.Finish("main_ui", "egg_dropdown_refresh", profiledAt)
         return
     end
     config.EggName = selectedId ~= "" and selectedId or nil
@@ -4259,15 +4025,10 @@ refreshEggDropdown = function(force)
     local signature = tostring(config.EggScope) .. "|" .. tostring(selectedLabel)
         .. "|" .. table.concat(options, "\0")
     statusSetters.EggCatalog(summary)
-    if not UI.EggDropdown or (not force and signature == UI.LastEggSignature) then
-        Profile.Finish("main_ui", "egg_dropdown_refresh", profiledAt)
-        return
-    end
+    if not UI.EggDropdown or (not force and signature == UI.LastEggSignature) then return end
     UI.LastEggSignature = signature
     pcall(function() UI.EggDropdown:Refresh(options) end)
     if selectedLabel then pcall(function() UI.EggDropdown:Select(selectedLabel) end) end
-    if Profile.Api then Profile.Api.UIUpdate("main_ui", selectedLabel and 2 or 1) end
-    Profile.Finish("main_ui", "egg_dropdown_refresh", profiledAt)
 end
 
 UI.FarmHero = UI.FarmTab:Section({ Title = "01 / Adaptive Routing", Box = true, Opened = true })
@@ -4315,13 +4076,9 @@ UI.TargetSection = UI.FarmTab:Section({ Title = "02 / Target Space", Box = true,
 
 local function refreshZoneDropdown(force)
     if not UI.ZoneDropdown then return end
-    local profiledAt = Profile.Begin()
     local options, resolvedWorld = getZoneOptions(config.World)
     local signature = config.World .. "|" .. tostring(resolvedWorld) .. "|" .. table.concat(options, "\0")
-    if not force and signature == UI.LastZoneSignature then
-        Profile.Finish("main_ui", "zone_dropdown_refresh", profiledAt)
-        return
-    end
+    if not force and signature == UI.LastZoneSignature then return end
     local selected, valid = config.Zone, false
     for _, option in ipairs(options) do
         if option == selected then valid = true; break end
@@ -4333,8 +4090,6 @@ local function refreshZoneDropdown(force)
         config.Zone = selected
         pcall(function() UI.ZoneDropdown:Select(selected) end)
     end
-    if Profile.Api then Profile.Api.UIUpdate("main_ui", selected and 2 or 1) end
-    Profile.Finish("main_ui", "zone_dropdown_refresh", profiledAt)
 end
 
 UI.WorldDropdown = UI.TargetSection:Dropdown({
@@ -4420,7 +4175,6 @@ do
         automationUIController,
         "build",
         {
-            Profiler = Profile.Api,
             UI = UI,
             Config = config,
             StatusViews = statusViews,
@@ -4582,18 +4336,6 @@ UI.GraphicsHero:Paragraph({
 })
 uiStageYield("graphics controls")
 
-do
-    local built, accepted, problem = pcall(Profile.Api.BuildUI, {
-        Tab = UI.ProfilerTab,
-        PreloadAll = Profile.PreloadRuntimeModules,
-    })
-    if not built or accepted ~= true then
-        error("Profiler UI failed to build: "
-            .. tostring(not built and accepted or problem), 0)
-    end
-end
-uiStageYield("profiler controls")
-
 UI.SessionSection = UI.SessionTab:Section({ Title = "Session Control", Box = true, Opened = true })
 UI.SessionSection:Paragraph({
     Title = "SAFE START / CLEAN STOP",
@@ -4623,7 +4365,6 @@ UI.ProfileStatus = UI.ProfileSection:Paragraph({
 function UI.SetProfileStatus(text)
     if UI.ProfileStatus then
         pcall(function() UI.ProfileStatus:SetDesc(tostring(text)) end)
-        if Profile.Api then Profile.Api.UIUpdate("main_ui", 1) end
     end
 end
 
@@ -4781,8 +4522,6 @@ local function shutdown(reason)
     moduleLoadState.NextAt = 0
     config.PotatoMode = false
     stopGraphics()
-    if Profile.Api then pcall(Profile.Api.Destroy) end
-    if env.PSX_OG_PROFILER == Profile.Api then env.PSX_OG_PROFILER = nil end
     farmResetRequested = false
     if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
     disconnectAll()
@@ -4825,7 +4564,6 @@ UI.SessionSection:Button({
 task.spawn(function()
     while task.wait(1) do
         if not running() then break end
-        local profiledAt = Profile.Begin()
         if config.AutoTechDiamondPack and not diamondPackBusy and os.clock() >= diamondPackNextCheck then
             local ok, problem = pcall(runDiamondPackCheck)
             if not ok then
@@ -4836,7 +4574,6 @@ task.spawn(function()
                 statusSetters.Diamond(status .. "\nNext retry in 3 minutes.")
             end
         end
-        Profile.Finish("diamond_pack", "worker_tick", profiledAt)
     end
 end)
 
@@ -4844,7 +4581,6 @@ task.spawn(function()
     local order = { "VIP", "Rank" }
     while task.wait(1) do
         if not running() then break end
-        local profiledAt = Profile.Begin()
         local now = os.clock()
 
         for _, kind in ipairs(order) do
@@ -4861,7 +4597,7 @@ task.spawn(function()
                     state.NextAttempt = 0
                     if not state.ArmedReported then
                         local remote, sourceName, sessionIndex, routeProblem =
-                            RemoteResolver.Command(state.Command)
+                            getCommandRemote(state.Command)
                         local route = remote and routeText(sourceName, sessionIndex)
                             or ("route pending: " .. tostring(routeProblem))
                         trace(string.lower(state.Label) .. " reward armed",
@@ -4878,7 +4614,6 @@ task.spawn(function()
                 end
             end
         end
-        Profile.Finish("rewards", "worker_tick", profiledAt)
     end
 end)
 
@@ -4886,7 +4621,6 @@ task.spawn(function()
     local lastSelection, lastRateText = nil, nil
     while task.wait(1) do
         if not running() then break end
-        local profiledAt = Profile.Begin()
 
         local selection = config.TrackedCurrency
         if selection == "Auto" then selection = selection .. "|" .. tostring(getTrackedCurrencyName()) end
@@ -4950,7 +4684,6 @@ task.spawn(function()
             lastRateText = rateText
             statusSetters.Rate(rateText)
         end
-        Profile.Finish("currency_monitor", "worker_tick", profiledAt)
     end
 end)
 
@@ -4958,7 +4691,6 @@ task.spawn(function()
     local nextZoneRefreshAt, nextEggRefreshAt = 0, 0
     while task.wait(0.75) do
         if not running() then break end
-        local profiledAt = Profile.Begin()
         local now = os.clock()
         if now >= nextZoneRefreshAt then
             nextZoneRefreshAt = now + 1.5
@@ -5017,11 +4749,6 @@ task.spawn(function()
             lastRecovery,
             driverStatus
         ))
-        Profile.Gauge("pet_monitor", "network_queue", tonumber(dispatchStats.Queued) or 0)
-        Profile.Gauge("pet_monitor", "network_active", tonumber(dispatchStats.Active) or 0)
-        Profile.Gauge("pet_monitor", "equipped_pets", equippedCount)
-        Profile.Gauge("pet_monitor", "assigned_pets", assignedCount)
-        Profile.Finish("pet_monitor", "worker_tick", profiledAt)
     end
 end)
 
@@ -5035,103 +4762,4 @@ task.defer(function()
 end)
 end
 
-function Profile.ConfigSnapshot()
-    local machines = config.AutoGoldenGalaxyFox or config.AutoRainbowGalaxyFox
-        or config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter
-    local boosts = config.AutoBoostBundle or config.AutoTripleCoins
-        or config.AutoTripleDamage or config.AutoSuperLucky or config.AutoUltraLucky
-    local rewards = config.AutoVIPRewards or config.AutoRankRewards
-    return {
-        Farm = config.PetFarm == true,
-        Loot = config.Orbs == true or config.Lootbags == true,
-        Eggs = config.AutoEgg == true,
-        Machines = machines == true,
-        Boosts = boosts == true,
-        Rewards = rewards == true,
-        Potato = config.PotatoMode == true,
-        Players = #Players:GetPlayers(),
-        Orbs = config.Orbs == true,
-        Lootbags = config.Lootbags == true,
-        GoldMachine = config.AutoGoldenGalaxyFox == true,
-        RainbowMachine = config.AutoRainbowGalaxyFox == true,
-        DarkMatterCreate = config.AutoDarkMatterGalaxyFox == true,
-        DarkMatterClaim = config.AutoClaimDarkMatter == true,
-        VIPRewards = config.AutoVIPRewards == true,
-        RankRewards = config.AutoRankRewards == true,
-        World = tostring(config.World),
-        Zone = tostring(config.Zone),
-        FarmMode = tostring(config.Mode),
-        Egg = tostring(config.EggName or "none"),
-        EggCount = tonumber(config.EggCount) or 1,
-        EggAnimation = tostring(config.EggAnimation),
-    }
-end
-
-function Profile.Environment()
-    local executor = "unknown"
-    if type(identifyexecutor) == "function" then
-        local ok, name = pcall(identifyexecutor)
-        if ok then executor = tostring(name) end
-    end
-    local moduleVersions = {}
-    for _, moduleKey in ipairs(RUNTIME_MANIFEST.moduleOrder) do
-        local entry = RUNTIME_MANIFEST.modules[moduleKey]
-        moduleVersions[moduleKey] = tostring(entry and entry.version or "missing")
-    end
-    return {
-        PlaceId = game.PlaceId,
-        JobId = tostring(game.JobId),
-        UserId = player.UserId,
-        PlayerCount = #Players:GetPlayers(),
-        CurrentWorld = tostring(getCurrentWorld()),
-        CurrentZone = tostring(getCurrentZone()),
-        FPSLimit = tostring(config.FPSLimit),
-        Executor = executor,
-        ModuleVersions = moduleVersions,
-    }
-end
-
-function Profile.Initialize()
-    local controller, loadProblem = loadRemoteController(
-        "profiler",
-        "runtime profiler"
-    )
-    if not controller then
-        error("Runtime profiler could not be loaded: " .. tostring(loadProblem), 0)
-    end
-    local called, created, createProblem = pcall(controller, "create", {
-        Task = task,
-        ReportEnvironment = env,
-        RunService = RunService,
-        Players = Players,
-        Player = player,
-        HttpService = HttpService,
-        Running = running,
-        Trace = trace,
-        Version = VERSION,
-        ManifestFingerprint = tostring(
-            RUNTIME_MANIFEST.fingerprint and RUNTIME_MANIFEST.fingerprint.sha256 or "unknown"
-        ),
-        KnownModules = {
-            "main_ui", "module_loader", "network", "route_resolver", "coin_index", "coin_events",
-            "target_selector", "pet_inventory", "pet_allocator", "pet_monitor",
-            "loot", "currency_monitor", "save_reader", "rewards", "diamond_pack",
-            "profiler",
-        },
-        GetConfigSnapshot = Profile.ConfigSnapshot,
-        GetEnvironment = Profile.Environment,
-    })
-    if not called or type(created) ~= "table" then
-        error("Runtime profiler initialization failed: "
-            .. tostring(not called and created or createProblem), 0)
-    end
-    Profile.Api = created
-    env.PSX_OG_PROFILER = Profile.Api
-    supportContext.Profiler = Profile.Api
-    if graphicsController then pcall(graphicsController, "set-profiler", Profile.Api) end
-    local scenarios = Profile.Api.GetScenarioOrder()
-    trace("06 profiler ready", "baseline scenarios=" .. tostring(#scenarios))
-end
-
-Profile.Initialize()
 startInterfaceAndWorkers()
