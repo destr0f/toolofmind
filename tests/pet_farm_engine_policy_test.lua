@@ -128,4 +128,50 @@ assert(rejectedStats.Retries - beforeRetries == 2,
     "three attempts require exactly two retries")
 assert(failedCount == 1 and states["bounded-failure"] == nil)
 
-print("PASS pet farm engine fills 15 UID locks and bounds rejected retries")
+local freshTargetFailures = 0
+local noRetryState = { Phase = "pending" }
+states["fresh-target"] = noRetryState
+assert(engine("start", {
+    Running = function() return true end,
+    Enabled = function() return true end,
+    Resetting = function() return false end,
+    NetworkReady = function() return network end,
+    RecordAlive = function(record) return record.Alive end,
+    StateCurrent = function(petId, state) return states[petId] == state end,
+    TargetContainsPet = function() return false end,
+    ShouldRetry = function(_, reason)
+        assert(string.find(reason, "rejected", 1, true))
+        return false
+    end,
+    OnFailed = function(petId, state)
+        assert(petId == "fresh-target" and state == noRetryState)
+        states[petId] = nil
+        freshTargetFailures = freshTargetFailures + 1
+    end,
+    MinLanes = 4,
+    InitialLanes = 16,
+    MaxLanes = 16,
+}) == true)
+local beforeFreshStats = engine("stats")
+assert(engine("dispatch", {
+    CoinId = "contended-coin",
+    Record = { Alive = true },
+    Entries = { { PetId = "fresh-target", State = noRetryState } },
+}) == true)
+local afterFreshStats = engine("stats")
+assert(afterFreshStats.Rejected - beforeFreshStats.Rejected == 1)
+assert(afterFreshStats.Retries == beforeFreshStats.Retries,
+    "a contended different-target coin must immediately select a fresh target")
+assert(freshTargetFailures == 1 and states["fresh-target"] == nil)
+assert(afterFreshStats.Limit == 16,
+    "application-level Join rejection must not collapse transport lanes")
+
+assert(engine("set-limit", 8) == true)
+local limitedStats = engine("stats")
+assert(limitedStats.PolicyMaxLanes == 8 and limitedStats.Limit == 8)
+assert(engine("set-limit", 16) == true)
+local recoveringStats = engine("stats")
+assert(recoveringStats.PolicyMaxLanes == 16 and recoveringStats.Limit == 9,
+    "lifting backpressure should recover gradually instead of bursting")
+
+print("PASS pet farm engine fills 15 UID locks, avoids rejection lane collapse and bounds retries")

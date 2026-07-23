@@ -2,7 +2,7 @@
 -- The caller owns target selection and lock state. This module only schedules
 -- named Network calls, classifies Join Coin replies and reports outcomes.
 
-local MODULE_VERSION = "2.0.0"
+local MODULE_VERSION = "2.1.0"
 local DEFAULT_MIN_LANES = 4
 local DEFAULT_MAX_LANES = 16
 local DEFAULT_INITIAL_LANES = 12
@@ -21,6 +21,7 @@ local run = {
     Limit = DEFAULT_INITIAL_LANES,
     MinLanes = DEFAULT_MIN_LANES,
     MaxLanes = DEFAULT_MAX_LANES,
+    PolicyMaxLanes = DEFAULT_MAX_LANES,
     Accepted = 0,
     Rejected = 0,
     Errors = 0,
@@ -195,26 +196,48 @@ local function leaveStale(job, petIds)
     callNamedInvoke("Leave Coin", job.CoinId, petIds)
 end
 
-local function adjustLanes(acceptedCount, rejectedCount, invokeFailed)
+local function adjustLanes(acceptedCount, rejectedCount, invokeFailed, elapsed)
     if invokeFailed then
         run.CleanStreak = 0
         run.Limit = math.max(run.MinLanes, math.floor(run.Limit / 2))
-    elseif rejectedCount > 0 then
+    elseif tonumber(elapsed) and elapsed >= 0.9 then
+        run.CleanStreak = 0
+        run.Limit = math.max(run.MinLanes, run.Limit - 2)
+    elseif tonumber(elapsed) and elapsed >= 0.6 then
         run.CleanStreak = 0
         run.Limit = math.max(run.MinLanes, run.Limit - 1)
+    elseif rejectedCount > 0 then
+        -- A false Join Coin result normally means that this particular coin was
+        -- destroyed or won by another client. It is not transport congestion,
+        -- so reducing every UID lane here creates the familiar 15 -> 8 collapse.
+        run.CleanStreak = 0
     elseif acceptedCount > 0 then
         run.CleanStreak = run.CleanStreak + acceptedCount
         if run.CleanStreak >= math.max(run.Limit, 4) then
             run.CleanStreak = 0
-            run.Limit = math.min(run.MaxLanes, run.Limit + 1)
+            run.Limit = math.min(run.PolicyMaxLanes, run.Limit + 1)
         end
     end
+    run.Limit = math.min(run.Limit, run.PolicyMaxLanes)
 end
 
 local function scheduleRetry(job, entries, reason)
     if #entries == 0 then return end
+    local context = run.Context
+    if context and type(context.ShouldRetry) == "function" then
+        local checked, shouldRetry = pcall(context.ShouldRetry,
+            job.Record, reason, job.Attempt, entries)
+        if checked and shouldRetry == false then
+            for _, entry in ipairs(entries) do
+                if entryCurrent(entry) and type(context.OnFailed) == "function" then
+                    pcall(context.OnFailed,
+                        entry.PetId, entry.State, job.Record, reason, job.Attempt)
+                end
+            end
+            return
+        end
+    end
     if job.Attempt >= MAX_JOIN_ATTEMPTS then
-        local context = run.Context
         for _, entry in ipairs(entries) do
             if entryCurrent(entry) and context and type(context.OnFailed) == "function" then
                 pcall(context.OnFailed, entry.PetId, entry.State, job.Record, reason, job.Attempt)
@@ -225,14 +248,18 @@ local function scheduleRetry(job, entries, reason)
 
     local nextAttempt = job.Attempt + 1
     run.Retries = run.Retries + #entries
-    local context = run.Context
     for _, entry in ipairs(entries) do
         if entryCurrent(entry) and context and type(context.OnRetry) == "function" then
             pcall(context.OnRetry, entry.PetId, entry.State, job.Record, reason, nextAttempt)
         end
     end
     local epoch = job.Epoch
-    scheduler.delay(retryDelay(job.Attempt), function()
+    local jitter = 0
+    if context and type(context.RetryJitter) == "function" then
+        local jittered, value = pcall(context.RetryJitter, job.Record, job.Attempt)
+        if jittered then jitter = math.clamp(tonumber(value) or 0, 0, 0.08) end
+    end
+    scheduler.delay(retryDelay(job.Attempt) + jitter, function()
         if epoch ~= run.Epoch then return end
         local retryEntries = {}
         for _, entry in ipairs(entries) do
@@ -264,7 +291,7 @@ local function process(job)
     if not invoked then
         run.Errors = run.Errors + #entries
         run.LastProblem = tostring(response)
-        adjustLanes(0, 0, true)
+        adjustLanes(0, 0, true, elapsed)
         scheduleRetry(job, entries, "Join Coin transport error: " .. tostring(response))
         return
     end
@@ -295,7 +322,7 @@ local function process(job)
     run.Accepted = run.Accepted + #acceptedEntries
     run.Rejected = run.Rejected + #rejectedEntries
     run.CompletedJobs = run.CompletedJobs + 1
-    adjustLanes(#acceptedEntries, #rejectedEntries, false)
+    adjustLanes(#acceptedEntries, #rejectedEntries, false, elapsed)
 
     for _, entry in ipairs(acceptedEntries) do
         if entryCurrent(entry) then
@@ -363,8 +390,9 @@ local function start(context)
     run.Context = context
     run.MinLanes = math.max(1, tonumber(context.MinLanes) or DEFAULT_MIN_LANES)
     run.MaxLanes = math.max(run.MinLanes, tonumber(context.MaxLanes) or DEFAULT_MAX_LANES)
+    run.PolicyMaxLanes = run.MaxLanes
     run.Limit = math.clamp(tonumber(context.InitialLanes) or DEFAULT_INITIAL_LANES,
-        run.MinLanes, run.MaxLanes)
+        run.MinLanes, run.PolicyMaxLanes)
     run.LastProblem = "none"
     return true
 end
@@ -403,6 +431,7 @@ local function stats()
         Active = run.Active,
         Queued = queueSize(),
         Limit = run.Limit,
+        PolicyMaxLanes = run.PolicyMaxLanes,
         Accepted = run.Accepted,
         Rejected = run.Rejected,
         Errors = run.Errors,
@@ -415,6 +444,23 @@ local function stats()
     }
 end
 
+local function setLimit(value)
+    if not run.Context then return false, "engine is not started" end
+    local desired = math.clamp(math.floor(tonumber(value) or run.MaxLanes),
+        run.MinLanes, run.MaxLanes)
+    local previous = run.PolicyMaxLanes
+    run.PolicyMaxLanes = desired
+    if run.Limit > desired then
+        run.Limit = desired
+    elseif desired > previous and run.Limit < desired then
+        -- Restore one lane immediately; subsequent clean accepts continue the
+        -- additive ramp without producing a new burst.
+        run.Limit = math.min(desired, run.Limit + 1)
+    end
+    pump()
+    return true, desired
+end
+
 return function(action, context, value)
     if action == "start" then return start(context) end
     if action == "dispatch" then return dispatch(value or context) end
@@ -422,6 +468,7 @@ return function(action, context, value)
     if action == "reset" then resetQueue(); return true end
     if action == "stop" then resetQueue(); run.Context = nil; return true end
     if action == "stats" then return stats() end
+    if action == "set-limit" then return setLimit(context) end
     if action == "classify" then return classifyResponse(context, value) end
     if action == "retry-delay" then return retryDelay(context) end
     if action == "version" then return MODULE_VERSION end
