@@ -186,12 +186,14 @@ const sourceCodePaths = [
     manifest.windUI.vendorPath,
 ].filter((value, index, values) => values.indexOf(value) === index);
 const sourceCommit = git(["log", "-1", "--format=%H", "--", ...sourceCodePaths]).trim();
-const sourceTree = git([
-    "status", "--porcelain", "--",
+const releaseInputPaths = [
     ...sourceCodePaths,
     "runtime_manifest.json",
-    "PROJECT_LAYOUT.md",
-    "tests/runtime_manifest_test.js",
+    ...(manifest.layout.tests.files || []),
+    ...(manifest.layout.documentation.files || []),
+].filter((value, index, values) => values.indexOf(value) === index);
+const sourceTree = git([
+    "status", "--porcelain", "--", ...releaseInputPaths,
 ]).trim() === "" ? "clean" : "dirty";
 
 const embeddedManifest = {

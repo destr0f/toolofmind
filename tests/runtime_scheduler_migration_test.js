@@ -83,7 +83,7 @@ for (const priority of ["P0", "P1", "P2", "P3", "P4"]) {
     assert(mainSource.includes(`"${priority}"`),
         `main runtime has no ${priority} registration`);
 }
-assert(mainSource.includes('RuntimeKernel:Stop("session stop")'),
+assert(mainSource.includes('RuntimeKernel:Stop("script shutdown")'),
     "STOP does not shut down RuntimeKernel");
 
 process.stdout.write(
