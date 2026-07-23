@@ -1,12 +1,12 @@
 -- Native zero-physics loot collection for PSX OG.
 -- Retained state contains only unsent orb IDs and genuinely unready lootbags.
 
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0"
 local ORB_FLUSH_INTERVAL = 0.25
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
 local BAG_RETRY_DELAY = 0.2
-local STATUS_INTERVAL = 0.25
+local STATUS_INTERVAL = 1
 
 local run = {
     Context = nil,
@@ -33,6 +33,7 @@ local run = {
     RetryBags = {},
     RetryArmed = false,
     StatusArmed = false,
+    LastStatusText = nil,
     RouteOrbs = "unavailable",
     RouteLootbags = "unavailable",
     OrbBatches = 0,
@@ -114,15 +115,11 @@ local function objectPosition(object)
     return typeof(position) == "Vector3" and position or nil
 end
 
-local function destroyLocal(object)
-    if object then pcall(function() object:Destroy() end) end
-end
-
-local function disableOrb(object)
+local function suppressLocalInstance(object)
     if not object then return end
     pcall(function()
         if object:IsA("BasePart") then
-            object.Transparency = 1
+            object.LocalTransparencyModifier = 1
             object.Anchored = true
             object.CanCollide = false
             object.CanTouch = false
@@ -130,13 +127,29 @@ local function disableOrb(object)
             object.AssemblyLinearVelocity = Vector3.zero
             object.AssemblyAngularVelocity = Vector3.zero
         end
-        local billboard = object:FindFirstChildOfClass("BillboardGui")
-        if billboard then billboard.Enabled = false end
-        local bodyPosition = object:FindFirstChildOfClass("BodyPosition")
-        if bodyPosition then bodyPosition:Destroy() end
-        local bodyGyro = object:FindFirstChildOfClass("BodyGyro")
-        if bodyGyro then bodyGyro:Destroy() end
+        if object:IsA("BillboardGui") or object:IsA("SurfaceGui")
+            or object:IsA("ParticleEmitter") or object:IsA("Trail")
+            or object:IsA("Beam") or object:IsA("Smoke")
+            or object:IsA("Fire") or object:IsA("Sparkles") then
+            object.Enabled = false
+        elseif object:IsA("BodyPosition") then
+            object.MaxForce = Vector3.zero
+            object.P = 0
+            object.D = 0
+        elseif object:IsA("BodyGyro") then
+            object.MaxTorque = Vector3.zero
+            object.P = 0
+            object.D = 0
+        end
     end)
+end
+
+local function disableLocalPickup(object)
+    if not object then return end
+    suppressLocalInstance(object)
+    for _, child in ipairs(object:GetChildren()) do
+        suppressLocalInstance(child)
+    end
 end
 
 local function statusText()
@@ -167,11 +180,14 @@ local function armStatus()
     run.StatusArmed = true
     local generation = run.Generation
     task.delay(STATUS_INTERVAL, function()
-        run.StatusArmed = false
         if generation ~= run.Generation then return end
+        run.StatusArmed = false
         local context = run.Context
-        if context and type(context.Status) == "function" then
-            pcall(context.Status, statusText())
+        local text = statusText()
+        if text ~= run.LastStatusText and context
+            and type(context.Status) == "function" then
+            run.LastStatusText = text
+            pcall(context.Status, text)
         end
     end)
 end
@@ -264,7 +280,7 @@ local function queueOrb(itemOrId)
         run.PendingOrbIds[orbId] = true
         run.PendingOrbCount = run.PendingOrbCount + 1
     end
-    if isObject then disableOrb(itemOrId) end
+    if isObject then disableLocalPickup(itemOrId) end
     armOrbFlush()
     armStatus()
 end
@@ -313,8 +329,8 @@ tryCollectBag = function(record, retrying)
     run.RouteLootbags = route or "unavailable"
     if sent then
         run.BagSent = run.BagSent + 1
+        disableLocalPickup(item)
         closeBag(record)
-        destroyLocal(item)
     elseif not retrying and record.RetryCount == 0 then
         record.RetryCount = 1
         record.RetryQueued = true
@@ -334,9 +350,9 @@ armBagRetry = function()
     local generation = run.Generation
     local token = run.BagToken
     task.delay(BAG_RETRY_DELAY, function()
-        run.RetryArmed = false
         if generation ~= run.Generation or token ~= run.BagToken
             or not bagsEnabled() then return end
+        run.RetryArmed = false
         local retry = run.RetryBags
         run.RetryBags = {}
         for _, record in pairs(retry) do
@@ -513,6 +529,7 @@ local function resetStats()
     run.BagRetried = 0
     run.BagSkipped = 0
     run.BagErrors = 0
+    run.LastStatusText = nil
 end
 
 local function start(context)
@@ -522,6 +539,7 @@ local function start(context)
     clearWorld()
     run.Context = context
     run.Active = true
+    run.StatusArmed = false
     run.OrbsOn, run.BagsOn = wantedFlags()
     resetStats()
     local generation = run.Generation
@@ -560,6 +578,7 @@ local function stop()
     run.OrbsOn = false
     run.BagsOn = false
     run.StatusArmed = false
+    run.LastStatusText = nil
     return true
 end
 

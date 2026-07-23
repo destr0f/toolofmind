@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.3.0"
+local MODULE_VERSION = "1.4.0"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -15,13 +15,44 @@ local HEADLESS_REPLICATION_POLL = 0.02
 local NATIVE_EVENT_TIMEOUT = 20
 local SUSPICIOUS_PAUSE = 60
 local EGG_INTERACT_DISTANCE = 15
-local EGG_SCAN_INTERVAL = 0.75
 local AUTO_DELETE_SYNC_TIMEOUT = 2.5
 local AUTO_DELETE_POLL = 0.05
 local POST_PROCESS_TIMEOUT = 8
 local NATIVE_SKIP_ARM_TIMEOUT = 8
 local NATIVE_SKIP_CONNECTION_WINDOW = 0.35
-local physicalCache = { Root = nil, ById = {}, ScannedAt = 0 }
+local PHYSICAL_RESCAN_COOLDOWN = 2
+local physicalCache = {
+    Root = nil,
+    ById = {},
+    Dirty = true,
+    LastScanAt = -math.huge,
+    Connections = {},
+}
+
+local function clearPhysicalBindings(clearRoot)
+    for index = 1, #physicalCache.Connections do
+        local connection = physicalCache.Connections[index]
+        if connection then pcall(function() connection:Disconnect() end) end
+        physicalCache.Connections[index] = nil
+    end
+    physicalCache.Dirty = true
+    physicalCache.ById = {}
+    physicalCache.LastScanAt = -math.huge
+    if clearRoot ~= false then physicalCache.Root = nil end
+end
+
+local function bindPhysicalRoot(root)
+    if physicalCache.Root == root then return end
+    clearPhysicalBindings(true)
+    physicalCache.Root = root
+    if not root then return end
+    physicalCache.Connections[1] = root.DescendantAdded:Connect(function()
+        physicalCache.Dirty = true
+    end)
+    physicalCache.Connections[2] = root.DescendantRemoving:Connect(function()
+        physicalCache.Dirty = true
+    end)
+end
 
 local function lower(value)
     return string.lower(tostring(value or ""))
@@ -91,23 +122,24 @@ local function instancePosition(object)
 end
 
 local function currentEggRoot()
+    local cached = physicalCache.Root
+    if cached and cached.Parent and cached:IsDescendantOf(workspace) then return cached end
     local map = workspace:FindFirstChild("__MAP")
     if not map then return nil end
     return map:FindFirstChild("Eggs") or map:FindFirstChild("Eggs", true)
 end
 
 local function scanPhysical(context, force)
-    local now = os.clock()
     local root = currentEggRoot()
+    bindPhysicalRoot(root)
     if not root then
-        if physicalCache.Root ~= nil then
-            physicalCache.Root, physicalCache.ById = nil, {}
-        end
-        physicalCache.ScannedAt = now
         return physicalCache.ById
     end
-    if not force and root == physicalCache.Root
-        and now - physicalCache.ScannedAt < EGG_SCAN_INTERVAL then
+    if not force and not physicalCache.Dirty then
+        return physicalCache.ById
+    end
+    local now = os.clock()
+    if not force and now - physicalCache.LastScanAt < PHYSICAL_RESCAN_COOLDOWN then
         return physicalCache.ById
     end
 
@@ -122,7 +154,9 @@ local function scanPhysical(context, force)
             end
         end
     end
-    physicalCache.Root, physicalCache.ById, physicalCache.ScannedAt = root, byId, now
+    physicalCache.ById = byId
+    physicalCache.Dirty = false
+    physicalCache.LastScanAt = now
     return byId
 end
 
@@ -787,6 +821,7 @@ local function startHeadlessPostProcess(state, context, pending, pets)
     pending.PostProcessStarted = true
     pending.PostProcessStartedAt = os.clock()
     task.spawn(function()
+        if not state.Running or state.Pending ~= pending then return end
         local result = table.pack(pcall(runHeadlessAutoDelete, state, context, pending, pets))
         if not state.Running or state.Pending ~= pending then return end
         if not result[1] then
@@ -882,6 +917,9 @@ local function finishSuccess(state, context, pending, note)
     releaseInventoryOperation(state, context)
     state.Pending = nil
     state.Successes = state.Successes + 1
+    if type(context.InventoryChanged) == "function" then
+        pcall(context.InventoryChanged)
+    end
     state.ConsecutiveFailures = 0
     state.CleanSuccesses = state.CleanSuccesses + 1
     if state.CleanSuccesses >= 8 then
@@ -1145,6 +1183,7 @@ local function beginRequest(state, context, options, inspection)
     ))
 
     task.spawn(function()
+        if state.Pending ~= pending or not state.Running then return end
         local result = table.pack(context.InvokeCommand("Buy Egg Yay", pending.Egg, pending.Triple))
         if state.Pending ~= pending or not state.Running then return end
         pending.ResponseDone = true
@@ -1167,7 +1206,7 @@ local function runCycle(state, context)
     if now < state.NextAction then return end
 
     if state.SuspendedUntil > now then
-        state.NextAction = math.min(state.SuspendedUntil, now + 1)
+        state.NextAction = state.SuspendedUntil
         setStatus(state, context, string.format(
             "Safety pause after a rate-limit style reply: %.0fs remaining.\nNo purchase requests are being sent.",
             state.SuspendedUntil - now
@@ -1197,6 +1236,14 @@ end
 local function stopState(state, context)
     if not state then return true end
     state.Running = false
+    state.Generation = (tonumber(state.Generation) or 0) + 1
+    local pending = state.Pending
+    state.Pending = nil
+    if type(pending) == "table" then
+        pending.PetSnapshot = nil
+        pending.InputConnections = nil
+        pending.Pets = nil
+    end
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     pcall(context.CancelOperation, context.OperationOwner)
@@ -1204,21 +1251,40 @@ local function stopState(state, context)
         pcall(function() state.Connection:Disconnect() end)
     end
     state.Connection = nil
+    table.clear(state.AcknowledgedEvents)
+    clearPhysicalBindings(true)
+    local worker = state.WorkerThread
+    state.WorkerThread = nil
+    if worker and worker ~= coroutine.running() and type(task.cancel) == "function" then
+        pcall(task.cancel, worker)
+    end
     if activeState == state then activeState = nil end
     local env = type(getgenv) == "function" and getgenv() or _G
     if env.PSX_OG_FastEggState == state then env.PSX_OG_FastEggState = nil end
+    state.Stop = nil
+    state.Context = nil
     return true
 end
 
 local function stop()
     if activeState then return stopState(activeState, activeState.Context) end
+    clearPhysicalBindings(true)
     return true
+end
+
+local function workerDelay(state)
+    if state.Pending then return 0.05 end
+    local remaining = (tonumber(state.NextAction) or 0) - os.clock()
+    if remaining <= 0 then return 0.05 end
+    return math.clamp(remaining, 0.05, MAX_REQUEST_DELAY)
 end
 
 return function(action, context)
     if action == "stop" then return stop() end
     if action == "invalidate-catalog" then
-        physicalCache.Root, physicalCache.ById, physicalCache.ScannedAt = nil, {}, 0
+        physicalCache.Dirty = true
+        physicalCache.ById = {}
+        physicalCache.LastScanAt = -math.huge
         return true
     end
     if action == "catalog" then
@@ -1281,6 +1347,7 @@ return function(action, context)
     local state = {
         Context = context,
         Running = true,
+        Generation = 1,
         GateOwned = false,
         OperationOwned = false,
         Pending = nil,
@@ -1300,6 +1367,7 @@ return function(action, context)
         ConsecutiveFailures = 0,
         EventRoute = eventRoute,
         EventIndex = eventIndex,
+        WorkerThread = nil,
     }
     activeState = state
 
@@ -1388,7 +1456,7 @@ return function(action, context)
         "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
         .. "Waiting for a valid egg within 15 studs...")
 
-    task.spawn(function()
+    state.WorkerThread = task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
             local ok, problem = pcall(runCycle, state, context)
             if not ok then
@@ -1400,7 +1468,9 @@ return function(action, context)
                 context.Trace("auto egg", status)
                 setStatus(state, context, status .. "\nNo immediate retry; waiting 2 seconds.")
             end
-            task.wait(0.05)
+            if state.Running and activeState == state then
+                task.wait(workerDelay(state))
+            end
         end
         stopState(state, context)
     end)

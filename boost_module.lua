@@ -2,15 +2,15 @@
 -- Named Library.Network routes are resolved locally; no session index is hard-coded.
 
 local activeState
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.1.0"
 
 local BUNDLE_COST = 270000
-local CHECK_INTERVAL = 0.25
 local ROUTE_REFRESH_INTERVAL = 8
 local ACTIVATION_TIMEOUT = 5
 local BUNDLE_CONFIRM_TIMEOUT = 10
 local TRANSPORT_RETRY = 8
 local REJECTED_RETRY = 30
+local IDLE_SAFETY_DELAY = 30
 
 local BOOSTS = {
     { Key = "Triple Coins", ConfigKey = "AutoTripleCoins", BundleCount = 5 },
@@ -201,14 +201,17 @@ end
 
 local function runCycle(state, context)
     local now = os.clock()
+    state.NextWakeAt = now + IDLE_SAFETY_DELAY
     refreshRoutes(state, context, false)
     local save = context.GetSave()
     if not save then
+        state.NextWakeAt = now + 2
         releaseOperation(state, context)
         setStatus(state, context, "Waiting for Library.Save; no boost request was sent.")
         return
     end
     if not boostSaveReady(save) then
+        state.NextWakeAt = now + 2
         releaseOperation(state, context)
         setStatus(state, context,
             "Waiting for Save.Boosts and Save.BoostsInventory; no boost or bundle request was sent.")
@@ -217,6 +220,7 @@ local function runCycle(state, context)
 
     local pendingAction = confirmPending(state, context, save, now)
     if state.PendingActivation or state.PendingBundle then
+        state.NextWakeAt = now + 0.25
         setStatus(state, context, statusText(state, context, save, pendingAction))
         return
     end
@@ -245,7 +249,8 @@ local function runCycle(state, context)
         local remaining = tonumber(active[name]) or 0
         local stock = tonumber(inventory[name]) or 0
         if remaining <= renewBefore then
-            if stock > 0 and now >= (state.NextAttempt[definition.Key] or 0)
+            local nextAttempt = state.NextAttempt[definition.Key] or 0
+            if stock > 0 and now >= nextAttempt
                 and not activationCandidate then
                 activationCandidate = {
                     Definition = definition,
@@ -253,15 +258,21 @@ local function runCycle(state, context)
                     Remaining = remaining,
                     Stock = stock,
                 }
+            elseif stock > 0 and nextAttempt > now then
+                state.NextWakeAt = math.min(state.NextWakeAt, nextAttempt)
             elseif stock <= 0 then
                 missing[#missing + 1] = definition.Key
             end
+        else
+            state.NextWakeAt = math.min(state.NextWakeAt,
+                now + math.max(remaining - renewBefore, 0.25))
         end
     end
 
     if activationCandidate then
         local acquired, owner = acquireOperation(state, context)
         if not acquired then
+            state.NextWakeAt = now + 0.25
             setStatus(state, context, statusText(state, context, save,
                 "ready to activate " .. activationCandidate.Definition.Key
                 .. ", waiting for " .. tostring(owner)))
@@ -289,6 +300,8 @@ local function runCycle(state, context)
         if not sent then
             releaseOperation(state, context)
             state.NextAttempt[activationCandidate.Definition.Key] = now + TRANSPORT_RETRY
+            state.NextWakeAt = math.min(state.NextWakeAt,
+                state.NextAttempt[activationCandidate.Definition.Key])
             setStatus(state, context, statusText(state, context, fresh,
                 "Activate Boost transport error: " .. tostring(problem)))
             return
@@ -301,6 +314,7 @@ local function runCycle(state, context)
             SentAt = now,
             Route = context.RouteText(sourceName, sessionIndex),
         }
+        state.NextWakeAt = now + 0.25
         setStatus(state, context, statusText(state, context, fresh,
             "sent Activate Boost for " .. activationCandidate.Definition.Key
             .. "; waiting for Save"))
@@ -309,6 +323,7 @@ local function runCycle(state, context)
 
     if #missing > 0 and options.AutoBoostBundle == true then
         if now < state.NextBundleAttempt then
+            state.NextWakeAt = math.min(state.NextWakeAt, state.NextBundleAttempt)
             setStatus(state, context, statusText(state, context, save,
                 "bundle retry cooldown; missing: " .. table.concat(missing, ", ")))
             return
@@ -330,6 +345,7 @@ local function runCycle(state, context)
 
         local acquired, owner = acquireOperation(state, context)
         if not acquired then
+            state.NextWakeAt = now + 0.25
             setStatus(state, context, statusText(state, context, save,
                 "bundle is needed, waiting for " .. tostring(owner)))
             return
@@ -368,6 +384,7 @@ local function runCycle(state, context)
         if not transportOk or not accepted then
             releaseOperation(state, context)
             state.NextBundleAttempt = now + (transportOk and REJECTED_RETRY or TRANSPORT_RETRY)
+            state.NextWakeAt = math.min(state.NextWakeAt, state.NextBundleAttempt)
             local reason = transportOk and tostring(message or "request rejected")
                 or ("transport error: " .. tostring(message))
             setStatus(state, context, statusText(state, context, fresh,
@@ -380,6 +397,7 @@ local function runCycle(state, context)
             SentAt = now,
             Route = context.RouteText(sourceName, sessionIndex),
         }
+        state.NextWakeAt = now + 0.25
         setStatus(state, context, statusText(state, context, fresh,
             "Boost Bundle accepted; waiting for BoostsInventory"))
         return
@@ -392,6 +410,12 @@ local function runCycle(state, context)
     setStatus(state, context, statusText(state, context, save, action))
 end
 
+local function workerDelay(state)
+    local remaining = (tonumber(state.NextWakeAt) or 0) - os.clock()
+    if remaining <= 0 then return 0.05 end
+    return math.clamp(remaining, 0.05, IDLE_SAFETY_DELAY)
+end
+
 local function stopState(state, context)
     if not state then return true end
     state.Running = false
@@ -399,7 +423,14 @@ local function stopState(state, context)
     state.PendingBundle = nil
     releaseOperation(state, context)
     pcall(context.CancelOperation, context.OperationOwner)
+    table.clear(state.NextAttempt)
+    local worker = state.WorkerThread
+    state.WorkerThread = nil
+    if worker and worker ~= coroutine.running() and type(task.cancel) == "function" then
+        pcall(task.cancel, worker)
+    end
     if activeState == state then activeState = nil end
+    state.Context = nil
     return true
 end
 
@@ -431,12 +462,14 @@ return function(action, context)
         NextAttempt = {},
         NextBundleAttempt = 0,
         NextRouteRefresh = 0,
+        NextWakeAt = 0,
+        WorkerThread = nil,
     }
     activeState = state
     refreshRoutes(state, context, true)
     context.Trace("auto boost module", "v" .. MODULE_VERSION
         .. " | dynamic Activate Boost + Buy Boost Bundle routes")
-    task.spawn(function()
+    state.WorkerThread = task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
             local ok, problem = pcall(runCycle, state, context)
             if not ok then
@@ -446,7 +479,9 @@ return function(action, context)
                 context.Trace("auto boost", status)
                 setStatus(state, context, status .. "\nNo immediate request; retry delayed.")
             end
-            task.wait(CHECK_INTERVAL)
+            if state.Running and activeState == state then
+                task.wait(workerDelay(state))
+            end
         end
         stopState(state, context)
     end)

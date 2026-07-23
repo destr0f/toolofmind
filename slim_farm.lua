@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.23"
+local VERSION = "1.4.1-dev.24"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -160,6 +160,8 @@ local camera = workspace.CurrentCamera
 
 local token = {}
 local connections = {}
+local zoneCatalogDirty = true
+local eggCatalogDirty = true
 local config = {
     PetFarm = false,
     Mode = "Different Strongest",
@@ -429,17 +431,35 @@ local function formatRateNumber(amount)
     amount = tonumber(amount) or 0
     if amount ~= amount or amount == math.huge or amount == -math.huge then return "0" end
     local suffixes = {
-        { 1e33, "Dc" }, { 1e30, "No" }, { 1e27, "Oc" }, { 1e24, "Sp" },
-        { 1e21, "Sx" }, { 1e18, "Qi" }, { 1e15, "Qa" }, { 1e12, "T" },
-        { 1e9, "B" }, { 1e6, "M" }, { 1e3, "K" },
+        { 1e3, "K" }, { 1e6, "M" }, { 1e9, "B" }, { 1e12, "T" },
+        { 1e15, "Qa" }, { 1e18, "Qi" }, { 1e21, "Sx" }, { 1e24, "Sp" },
+        { 1e27, "Oc" }, { 1e30, "No" }, { 1e33, "Dc" },
     }
-    for _, suffix in ipairs(suffixes) do
-        if math.abs(amount) >= suffix[1] then
-            local scaled = amount / suffix[1]
-            local pattern = math.abs(scaled) >= 100 and "%.0f%s"
-                or math.abs(scaled) >= 10 and "%.1f%s" or "%.2f%s"
-            return string.format(pattern, scaled, suffix[2])
+    local absolute = math.abs(amount)
+    local suffixIndex = 0
+    for index = #suffixes, 1, -1 do
+        if absolute >= suffixes[index][1] then
+            suffixIndex = index
+            break
         end
+    end
+    if suffixIndex > 0 then
+        local function displayParts(index)
+            local scaled = amount / suffixes[index][1]
+            local decimals = math.abs(scaled) >= 100 and 0
+                or math.abs(scaled) >= 10 and 1 or 2
+            local factor = 10 ^ decimals
+            local rounded = math.floor(math.abs(scaled) * factor + 0.5) / factor
+            if scaled < 0 then rounded = -rounded end
+            return rounded, decimals
+        end
+        local scaled, decimals = displayParts(suffixIndex)
+        if math.abs(scaled) >= 1000 and suffixIndex < #suffixes then
+            suffixIndex = suffixIndex + 1
+            scaled, decimals = displayParts(suffixIndex)
+        end
+        return string.format("%." .. tostring(decimals) .. "f%s",
+            scaled, suffixes[suffixIndex][2])
     end
     return tostring(math.floor(amount + 0.5))
 end
@@ -466,46 +486,73 @@ local function readCurrencyNumber(value)
     return nil
 end
 
-local function readCurrencyFromTable(container, currencyName)
-    if type(container) ~= "table" then return nil end
-    local wanted = normalizeCurrencyName(currencyName)
-    for key, value in pairs(container) do
-        if normalizeCurrencyName(key) == wanted then
-            local amount = readCurrencyNumber(value)
-            if amount ~= nil then return amount end
+local CURRENCY_FALLBACK_INTERVAL = 15
+local currencyFallback = {
+    At = -math.huge,
+    Values = {},
+}
+
+local function buildCurrencyMap(save, currencyNames)
+    local wanted = {}
+    for _, currencyName in ipairs(currencyNames or {}) do
+        wanted[normalizeCurrencyName(currencyName)] = true
+    end
+    local values = {}
+    local function scan(container)
+        if type(container) ~= "table" then return end
+        for key, value in pairs(container) do
+            local normalized = normalizeCurrencyName(key)
+            if wanted[normalized] and values[normalized] == nil then
+                local amount = readCurrencyNumber(value)
+                if amount ~= nil then values[normalized] = amount end
+            end
         end
     end
-    return nil
+    scan(save)
+    if type(save) == "table" then
+        scan(save.Currency)
+        scan(save.Currencies)
+    end
+    return values
 end
 
-local function getCurrentCurrency(currencyName)
-    local save
-    if Library.Save and type(Library.Save.Get) == "function" then
-        pcall(function() save = Library.Save.Get() end)
+local function refreshCurrencyFallback(now)
+    now = tonumber(now) or os.clock()
+    if now - currencyFallback.At < CURRENCY_FALLBACK_INTERVAL then
+        return currencyFallback.Values
     end
-    if type(save) == "table" then
-        local amount = readCurrencyFromTable(save, currencyName)
-            or readCurrencyFromTable(save.Currency, currencyName)
-            or readCurrencyFromTable(save.Currencies, currencyName)
-        if amount ~= nil then return amount end
-    end
-
-    local wanted = normalizeCurrencyName(currencyName)
+    local values = {}
     local attributesOk, attributes = pcall(function() return player:GetAttributes() end)
     if attributesOk then
         for key, value in pairs(attributes) do
-            if normalizeCurrencyName(key) == wanted then
-                local amount = readCurrencyNumber(value)
-                if amount ~= nil then return amount end
+            local amount = readCurrencyNumber(value)
+            if amount ~= nil then
+                values[normalizeCurrencyName(key)] = amount
             end
         end
     end
     for _, object in ipairs(player:GetDescendants()) do
-        if normalizeCurrencyName(object.Name) == wanted then
-            local amount = readCurrencyNumber(object)
-            if amount ~= nil then return amount end
+        local amount = readCurrencyNumber(object)
+        if amount ~= nil then
+            local normalized = normalizeCurrencyName(object.Name)
+            if values[normalized] == nil then values[normalized] = amount end
         end
     end
+    currencyFallback.At = now
+    currencyFallback.Values = values
+    return values
+end
+
+local function getCurrentCurrency(currencyName, save, allowFallback, now)
+    if save == nil and Library.Save and type(Library.Save.Get) == "function" then
+        pcall(function() save = Library.Save.Get() end)
+    end
+    local normalized = normalizeCurrencyName(currencyName)
+    local mapped = buildCurrencyMap(save, { currencyName })
+    if mapped[normalized] ~= nil then return mapped[normalized] end
+    if allowFallback == false then return nil end
+    local fallback = refreshCurrencyFallback(now)
+    if fallback[normalized] ~= nil then return fallback[normalized] end
     return nil
 end
 
@@ -921,6 +968,48 @@ local currencyMonitor = {
         "Rainbow Coins", "Cartoon Coins", "Gingerbread",
     },
 }
+local CURRENCY_WINDOW_SECONDS = 60
+local CURRENCY_WINDOW_CAPACITY = 128
+
+local function pruneCurrencyWindow(sample, now)
+    local count = sample.WindowCount or 0
+    local head = sample.WindowHead or 1
+    local total = sample.RollingEarned or 0
+    local cutoff = now - CURRENCY_WINDOW_SECONDS
+    while count > 0 do
+        local timestamp = sample.WindowTimes[head]
+        if type(timestamp) ~= "number" or timestamp >= cutoff then break end
+        total = total - (sample.WindowAmounts[head] or 0)
+        sample.WindowTimes[head] = nil
+        sample.WindowAmounts[head] = nil
+        head = head % CURRENCY_WINDOW_CAPACITY + 1
+        count = count - 1
+    end
+    sample.WindowHead = head
+    sample.WindowCount = count
+    sample.RollingEarned = math.max(total, 0)
+    sample.WindowEarned = sample.RollingEarned
+end
+
+local function appendCurrencyGain(sample, now, delta)
+    local count = sample.WindowCount or 0
+    local head = sample.WindowHead or 1
+    if count >= CURRENCY_WINDOW_CAPACITY then
+        sample.RollingEarned = math.max(0,
+            (sample.RollingEarned or 0) - (sample.WindowAmounts[head] or 0))
+        sample.WindowTimes[head] = nil
+        sample.WindowAmounts[head] = nil
+        head = head % CURRENCY_WINDOW_CAPACITY + 1
+        count = count - 1
+    end
+    local tail = (head + count - 1) % CURRENCY_WINDOW_CAPACITY + 1
+    sample.WindowTimes[tail] = now
+    sample.WindowAmounts[tail] = delta
+    sample.WindowHead = head
+    sample.WindowCount = count + 1
+    sample.RollingEarned = (sample.RollingEarned or 0) + delta
+    sample.WindowEarned = sample.RollingEarned
+end
 
 function currencyMonitor:Reset()
     table.clear(self.Samples)
@@ -933,26 +1022,28 @@ function currencyMonitor:TrackedNames()
     return selected and { selected } or {}
 end
 
-function currencyMonitor:GetBalances(currencyNames)
+function currencyMonitor:GetBalances(currencyNames, now)
     local balances = {}
     local save
     if Library.Save and type(Library.Save.Get) == "function" then
         pcall(function() save = Library.Save.Get() end)
     end
+    local mapped = buildCurrencyMap(save, currencyNames)
+    local allowFallback = #currencyNames == 1
+    local fallback
     for _, currencyName in ipairs(currencyNames) do
-        local amount
-        if type(save) == "table" then
-            amount = readCurrencyFromTable(save, currencyName)
-                or readCurrencyFromTable(save.Currency, currencyName)
-                or readCurrencyFromTable(save.Currencies, currencyName)
+        local normalized = normalizeCurrencyName(currencyName)
+        local amount = mapped[normalized]
+        if amount == nil and allowFallback then
+            fallback = fallback or refreshCurrencyFallback(now)
+            amount = fallback[normalized]
         end
-        if amount == nil then amount = getCurrentCurrency(currencyName) end
         if amount ~= nil then balances[currencyName] = amount end
     end
     return balances
 end
 
-function currencyMonitor:Update(currencyName, currentAmount, now)
+function currencyMonitor:Update(currencyName, currentAmount, now, recordDelta)
     local sample = self.Samples[currencyName]
     if type(sample) ~= "table" then
         sample = {
@@ -961,7 +1052,11 @@ function currencyMonitor:Update(currencyName, currentAmount, now)
             LastBalance = currentAmount,
             TotalEarned = 0,
             TotalSpent = 0,
-            WindowStartedAt = now,
+            WindowTimes = table.create(CURRENCY_WINDOW_CAPACITY),
+            WindowAmounts = table.create(CURRENCY_WINDOW_CAPACITY),
+            WindowHead = 1,
+            WindowCount = 0,
+            RollingEarned = 0,
             WindowEarned = 0,
             WindowSeconds = 0,
         }
@@ -970,24 +1065,20 @@ function currencyMonitor:Update(currencyName, currentAmount, now)
     end
 
     local delta = currentAmount - sample.LastBalance
-    if delta > 0 then
+    pruneCurrencyWindow(sample, now)
+    if recordDelta ~= false and delta > 0 then
         sample.TotalEarned = sample.TotalEarned + delta
-        sample.WindowEarned = (sample.WindowEarned or 0) + delta
+        appendCurrencyGain(sample, now, delta)
         sample.LastGainAt = now
         sample.LastGain = delta
-    elseif delta < 0 then
+    elseif recordDelta ~= false and delta < 0 then
         sample.TotalSpent = sample.TotalSpent - delta
         sample.LastSpendAt = now
     end
     sample.LastBalance = currentAmount
 
-    local windowAge = math.max(0, now - (sample.WindowStartedAt or now))
-    if windowAge >= 60 then
-        sample.WindowStartedAt = now
-        sample.WindowEarned = math.max(delta, 0)
-        windowAge = 0
-    end
-    sample.WindowSeconds = windowAge
+    sample.WindowSeconds = math.min(CURRENCY_WINDOW_SECONDS,
+        math.max(0, now - sample.StartedAt))
     sample.SessionSeconds = math.max(0, now - sample.StartedAt)
     sample.PerMinute = sample.SessionSeconds > 0
         and sample.TotalEarned * 60 / sample.SessionSeconds or 0
@@ -1359,6 +1450,8 @@ local function connectCoinSignals()
                 nextZoneCheck = 0
                 cachedWorld = nil
                 nextWorldCheck = 0
+                zoneCatalogDirty = true
+                eggCatalogDirty = true
                 snapshotPrimed = false
                 if config.PetFarm and type(requestFarmReset) == "function" then
                     requestFarmReset("world changed")
@@ -2174,15 +2267,34 @@ function petFarm:PhaseCounts()
 end
 
 local statusViews = {}
+local statusTabs = {}
 local statusSetters = {}
-statusSetters.Cache = {}
+statusSetters.Pending = {}
+statusSetters.Published = {}
+local function interfaceIsVisible()
+    local screenGui = WindUI and WindUI.ScreenGui
+    if screenGui and screenGui.Enabled == false then return false end
+    if Window and (Window.Closed == true or Window.Destroyed == true) then return false end
+    local main = Window and Window.UIElements and Window.UIElements.Main
+    if main and main.Visible == false then return false end
+    return true
+end
 function statusSetters.Set(key, text)
-    local view = statusViews[key]
-    if not view then return end
     text = tostring(text)
-    if statusSetters.Cache[key] == text then return end
-    statusSetters.Cache[key] = text
-    pcall(function() view:SetDesc(text) end)
+    if statusSetters.Pending[key] == text then return end
+    statusSetters.Pending[key] = text
+end
+function statusSetters.Flush()
+    if not interfaceIsVisible() then return end
+    for key, text in pairs(statusSetters.Pending) do
+        local view = statusViews[key]
+        local tab = statusTabs[key]
+        local visible = view ~= nil and (tab == nil or tab.Selected == true)
+        if visible and statusSetters.Published[key] ~= text then
+            local updated = pcall(function() view:SetDesc(text) end)
+            if updated then statusSetters.Published[key] = text end
+        end
+    end
 end
 function statusSetters.Farm(text)
     statusSetters.Set("Farm", text)
@@ -2312,6 +2424,7 @@ local autoEggLoading = false
 local autoEggLoadProblem
 local autoEggToggleControl
 local refreshEggDropdown
+local invalidateMachinePetSnapshot
 
 local function stopAutoEggModule(statusText)
     if autoEggController then pcall(autoEggController, "stop") end
@@ -2394,6 +2507,7 @@ local function startAutoEggModule()
         ReleaseOperation = releaseOperation,
         CancelOperation = cancelOperation,
         OperationOwner = "AutoEgg",
+        InventoryChanged = invalidateMachinePetSnapshot,
         SetStatus = statusSetters.Egg,
         Trace = trace,
         Disable = disableAutoEgg,
@@ -2425,6 +2539,41 @@ local machineModules = {
         SetStatus = statusSetters.DarkMatter,
     },
 }
+
+local MACHINE_PET_SNAPSHOT_TTL = 5
+local machinePetSnapshot = {
+    At = -math.huge,
+    Save = nil,
+    Pets = {},
+    ByUID = {},
+}
+
+invalidateMachinePetSnapshot = function()
+    machinePetSnapshot.At = -math.huge
+end
+
+local function getMachinePetSnapshot(force)
+    local now = os.clock()
+    if not force and machinePetSnapshot.Save
+        and now - machinePetSnapshot.At < MACHINE_PET_SNAPSHOT_TTL then
+        return machinePetSnapshot
+    end
+    local save = getRewardSave()
+    local pets, byUID = {}, {}
+    for _, pet in pairs(type(save and save.Pets) == "table" and save.Pets or {}) do
+        if type(pet) == "table" then
+            pets[#pets + 1] = pet
+            if pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
+        end
+    end
+    machinePetSnapshot = {
+        At = now,
+        Save = save,
+        Pets = pets,
+        ByUID = byUID,
+    }
+    return machinePetSnapshot
+end
 
 function machineModules:Enabled(entry)
     for _, key in ipairs(entry and entry.ConfigKeys or {}) do
@@ -2472,8 +2621,13 @@ function machineModules:Start(kind)
         Enabled = function() return machineModules:Enabled(entry) end,
         CreateEnabled = function() return config.AutoDarkMatterGalaxyFox end,
         ClaimEnabled = function() return config.AutoClaimDarkMatter end,
-        GetSave = getRewardSave,
-        GetCurrency = getCurrentCurrency,
+        GetSave = function() return getMachinePetSnapshot(false).Save end,
+        GetPetSnapshot = getMachinePetSnapshot,
+        InvalidatePetSnapshot = invalidateMachinePetSnapshot,
+        GetCurrency = function(currencyName)
+            local snapshot = getMachinePetSnapshot(false)
+            return getCurrentCurrency(currencyName, snapshot.Save, true, snapshot.At)
+        end,
         FormatNumber = formatRateNumber,
         GetMachinePetCatalog = getMachinePetCatalog,
         BatchSize = function()
@@ -2664,7 +2818,25 @@ local function runDiamondPackCheck()
 end
 
 local diamondWorkerGeneration = 0
+local diamondWorkerThread
 local runDiamondWorker
+local scheduleDiamondWorker
+
+local function cancelScheduledTask(thread)
+    if thread and thread ~= coroutine.running() and type(task.cancel) == "function" then
+        pcall(task.cancel, thread)
+    end
+end
+
+scheduleDiamondWorker = function(generation, delay)
+    cancelScheduledTask(diamondWorkerThread)
+    local scheduled
+    scheduled = task.delay(math.max(tonumber(delay) or 0, 0), function()
+        if diamondWorkerThread == scheduled then diamondWorkerThread = nil end
+        runDiamondWorker(generation)
+    end)
+    diamondWorkerThread = scheduled
+end
 
 runDiamondWorker = function(generation)
     if generation ~= diamondWorkerGeneration or not running()
@@ -2681,27 +2853,39 @@ runDiamondWorker = function(generation)
         end
     end
     local remaining = math.max(diamondPackNextCheck - os.clock(), 0)
-    task.delay(math.clamp(remaining, 0.25, 5), function()
-        runDiamondWorker(generation)
-    end)
+    scheduleDiamondWorker(generation, math.max(remaining, 0.25))
 end
 
 local function reconcileDiamondWorker()
     diamondWorkerGeneration = diamondWorkerGeneration + 1
+    cancelScheduledTask(diamondWorkerThread)
+    diamondWorkerThread = nil
     local generation = diamondWorkerGeneration
     diamondPackNextCheck = 0
     if not running() or not config.AutoTechDiamondPack then return end
-    task.defer(function() runDiamondWorker(generation) end)
+    scheduleDiamondWorker(generation, 0)
 end
 
 local rewardWorkerGeneration = 0
+local rewardWorkerThread
 local runRewardWorker
+local scheduleRewardWorker
+
+scheduleRewardWorker = function(generation, delay)
+    cancelScheduledTask(rewardWorkerThread)
+    local scheduled
+    scheduled = task.delay(math.max(tonumber(delay) or 0, 0), function()
+        if rewardWorkerThread == scheduled then rewardWorkerThread = nil end
+        runRewardWorker(generation)
+    end)
+    rewardWorkerThread = scheduled
+end
 
 runRewardWorker = function(generation)
     if generation ~= rewardWorkerGeneration or not running()
         or not (config.AutoVIPRewards or config.AutoRankRewards) then return end
     local now = os.clock()
-    local nextWake = 5
+    local nextWake = 300
     for _, kind in ipairs({ "VIP", "Rank" }) do
         local state = rewardStates[kind]
         if config[state.ConfigKey] then
@@ -2711,7 +2895,7 @@ runRewardWorker = function(generation)
                     state.LastTimingError = timingError
                     trace(string.lower(state.Label) .. " reward timer", timingError)
                 end
-                nextWake = math.min(nextWake, 1)
+                nextWake = math.min(nextWake, 5)
             elseif remaining > 0 then
                 state.LastTimingError = nil
                 state.NextAttempt = 0
@@ -2738,16 +2922,16 @@ runRewardWorker = function(generation)
             end
         end
     end
-    task.delay(math.clamp(nextWake, 0.25, 5), function()
-        runRewardWorker(generation)
-    end)
+    scheduleRewardWorker(generation, math.clamp(nextWake, 0.25, 300))
 end
 
 local function reconcileRewardWorker()
     rewardWorkerGeneration = rewardWorkerGeneration + 1
+    cancelScheduledTask(rewardWorkerThread)
+    rewardWorkerThread = nil
     local generation = rewardWorkerGeneration
     if not running() or not (config.AutoVIPRewards or config.AutoRankRewards) then return end
-    task.defer(function() runRewardWorker(generation) end)
+    scheduleRewardWorker(generation, 0)
 end
 
 function petFarm:RecordExternalPets(record, equipped, allExternal)
@@ -2950,6 +3134,14 @@ end
 local petLifecycleSignals = {}
 local petLifecycleBindToken = 0
 
+local function disconnectPetLifecycleSignals()
+    for key, connection in pairs(petLifecycleSignals) do
+        pcall(function() connection:Disconnect() end)
+        petLifecycleSignals[key] = nil
+    end
+    table.clear(petLifecycleSignals)
+end
+
 local function connectPetLifecycleSignal(name, removed)
     if petLifecycleSignals[name] then return true end
     local signal = Library and Library.Signal
@@ -2961,6 +3153,9 @@ local function connectPetLifecycleSignal(name, removed)
         return event:Connect(function(rawPetId)
             local petId = rawPetId ~= nil and tostring(rawPetId) or nil
             petCacheValid = false
+            if type(invalidateMachinePetSnapshot) == "function" then
+                invalidateMachinePetSnapshot()
+            end
             if removed and petId then petStates[petId] = nil end
             if config.PetFarm then
                 driverStatus = removed and "pet unequipped; assignments reconciled"
@@ -2971,7 +3166,6 @@ local function connectPetLifecycleSignal(name, removed)
     end)
     if not connected or not connection then return false end
     petLifecycleSignals[name] = connection
-    track(connection)
     return true
 end
 
@@ -3262,6 +3456,7 @@ refreshEggDropdown = function(force)
     if not force and UI.LastEggRefreshAt and now - UI.LastEggRefreshAt < 0.6 then return end
     UI.LastEggRefreshAt = now
     if not autoEggController then
+        eggCatalogDirty = false
         statusSetters.EggCatalog("Egg catalog worker is loading; no server request is involved.")
         return
     end
@@ -3275,6 +3470,7 @@ refreshEggDropdown = function(force)
         FormatNumber = formatRateNumber,
     })
     if not called or type(options) ~= "table" then
+        eggCatalogDirty = false
         statusSetters.EggCatalog("Local egg catalog error: " .. tostring(called and summary or options))
         return
     end
@@ -3285,6 +3481,7 @@ refreshEggDropdown = function(force)
     local signature = tostring(config.EggScope) .. "|" .. tostring(selectedLabel)
         .. "|" .. table.concat(options, "\0")
     statusSetters.EggCatalog(summary)
+    eggCatalogDirty = false
     if not UI.EggDropdown or (not force and signature == UI.LastEggSignature) then return end
     UI.LastEggSignature = signature
     pcall(function() UI.EggDropdown:Refresh(options) end)
@@ -3339,13 +3536,17 @@ local function refreshZoneDropdown(force)
     if not UI.ZoneDropdown then return end
     local options, resolvedWorld = getZoneOptions(config.World)
     local signature = config.World .. "|" .. tostring(resolvedWorld) .. "|" .. table.concat(options, "\0")
-    if not force and signature == UI.LastZoneSignature then return end
+    if not force and signature == UI.LastZoneSignature then
+        zoneCatalogDirty = false
+        return
+    end
     local selected, valid = config.Zone, false
     for _, option in ipairs(options) do
         if option == selected then valid = true; break end
     end
     if not valid then selected = config.World == "Current World" and "Player Zone" or options[1] end
     UI.LastZoneSignature = signature
+    zoneCatalogDirty = false
     UI.ZoneDropdown:Refresh(options)
     if selected then
         config.Zone = selected
@@ -3427,6 +3628,9 @@ statusViews.Rate = UI.PerformanceSection:Paragraph({
     Title = "Balance Farm Rate",
     Desc = "Enable Pet Farm. Income is derived only from positive Library.Save balance changes.",
 })
+statusTabs.Farm = UI.MonitorTab
+statusTabs.Health = UI.MonitorTab
+statusTabs.Rate = UI.MonitorTab
 uiStageYield("monitor controls")
 
 do
@@ -3478,6 +3682,13 @@ do
     autoEggToggleControl = automationUIControls.AutoEggToggle
     UI.EggScopeDropdown = automationUIControls.EggScopeDropdown
     UI.EggDropdown = automationUIControls.EggDropdown
+    statusTabs.EggCatalog = UI.EggTab
+    statusTabs.Egg = UI.EggTab
+    statusTabs.Routes = UI.MonitorTab
+    statusTabs.Gold = UI.MachinesTab
+    statusTabs.Rainbow = UI.MachinesTab
+    statusTabs.DarkMatter = UI.MachinesTab
+    statusTabs.Boost = UI.BoostsTab
     refreshEggDropdown(true)
     trace("06B automation UI ready")
 end
@@ -3503,6 +3714,7 @@ statusViews.Diamond = UI.DiamondSection:Paragraph({
     Title = "Diamond Exchange Status",
     Desc = "Disabled / the live purchase remote is resolved independently each session",
 })
+statusTabs.Diamond = UI.MachinesTab
 uiStageYield("diamond controls")
 
 UI.LootHero = UI.LootTab:Section({ Title = "Native Loot Reactor", Box = true, Opened = true })
@@ -3534,6 +3746,7 @@ statusViews.Loot = UI.LootHero:Paragraph({
     Title = "Native Protocol Health",
     Desc = "The reactor is binding named Orb/Lootbag events without touching local physics.",
 })
+statusTabs.Loot = UI.LootTab
 statusSetters.Set("Loot", lootCollector:Status())
 uiStageYield("loot controls")
 
@@ -3581,7 +3794,7 @@ uiStageYield("reward controls")
 UI.GraphicsHero = UI.GraphicsTab:Section({ Title = "Client Performance Profile", Box = true, Opened = true })
 UI.GraphicsHero:Paragraph({
     Title = "CROWDED-ZONE RENDER FIREWALL",
-    Desc = "Only farm roots and __DEBRIS are reduced; the map, camera, eggs, machines and UI are never traversed.",
+    Desc = "Map visuals, eggs, machines, coins, pets and __DEBRIS are coalesced; gameplay UI and loot roots stay isolated.",
 })
 UI.GraphicsHero:Toggle({
     Flag = "balanced_potato_mode",
@@ -3602,7 +3815,7 @@ UI.GraphicsHero:Dropdown({
 })
 UI.GraphicsHero:Paragraph({
     Title = "Preservation Boundary",
-    Desc = "Map geometry, egg stands, POS, _SELECTIONFX and all Network state remain active. Coin/pet render parts and __DEBRIS are hidden locally only.",
+    Desc = "Map physics, egg stands, POS, _SELECTIONFX and all Network state remain active. Game-owned instances are never destroyed or reparented.",
 })
 uiStageYield("graphics controls")
 
@@ -3742,7 +3955,29 @@ UI.ProfileSection:Button({
 })
 
 if UI.Profile and UI.ProfileExists then
-    task.delay(0.8, function() UI.LoadProfile("Automatic load complete") end)
+    task.delay(0.8, function()
+        if running() then UI.LoadProfile("Automatic load complete") end
+    end)
+end
+
+do
+    local tabModule = Window and Window.TabModule
+    if tabModule and type(tabModule.OnChange) == "function" then
+        local previousOnChange = tabModule.OnChangeFunc
+        tabModule:OnChange(function(index)
+            if type(previousOnChange) == "function" then
+                pcall(previousOnChange, index)
+            end
+            statusSetters.Flush()
+        end)
+    end
+    if Window and type(Window.OnOpen) == "function" then
+        Window:OnOpen(function()
+            task.delay(0.08, function()
+                if running() then statusSetters.Flush() end
+            end)
+        end)
+    end
 end
 
 local shutdownStarted = false
@@ -3806,9 +4041,19 @@ local function shutdown(reason)
     config.AutoUltraLucky = false
     config.AutoEgg = false
     disconnectAll()
+    disconnectPetLifecycleSignals()
     restartFarmWatchers()
     reconcileDiamondWorker()
     reconcileRewardWorker()
+    diamondPackBusy = false
+    diamondPackNextCheck = 0
+    rewardServerTime = nil
+    rewardClockStarted = nil
+    for _, state in pairs(rewardStates) do
+        state.NextAttempt = 0
+        state.LastTimingError = nil
+        state.ArmedReported = nil
+    end
     finishShutdown()
     if petFarm.Engine then
         pcall(petFarm.Engine, "stop")
@@ -3828,10 +4073,26 @@ local function shutdown(reason)
     moduleLoadState.Owner = nil
     moduleLoadState.NextAt = 0
     table.clear(moduleLoadState.Cache)
+    machinePetSnapshot = {
+        At = -math.huge,
+        Save = nil,
+        Pets = {},
+        ByUID = {},
+    }
     config.PotatoMode = false
     stopGraphics()
     lootCollector:StopWorker()
     lootCollector.Controller = nil
+    table.clear(currencyMonitor.Samples)
+    currencyMonitor.StartedAt = nil
+    currencyFallback.At = -math.huge
+    table.clear(currencyFallback.Values)
+    table.clear(eggLabelToId)
+    table.clear(eggIdToLabel)
+    table.clear(statusSetters.Pending)
+    table.clear(statusSetters.Published)
+    table.clear(statusTabs)
+    table.clear(statusViews)
     farmResetScheduled = false
     farmResetRunning = false
     if env.PSX_OG_SLIM_CLEANUP == shutdown then env.PSX_OG_SLIM_CLEANUP = nil end
@@ -3867,7 +4128,8 @@ UI.SessionSection:Button({
 
 local lastCurrencySelection, lastRateText = nil, nil
 
-local function updateCurrencyMonitorStatus()
+local function updateCurrencyMonitorStatus(publish)
+    local farmEnabled = config.PetFarm == true
     local selection = config.TrackedCurrency
     if selection == "Auto" then selection = selection .. "|" .. tostring(getTrackedCurrencyName()) end
     if selection ~= lastCurrencySelection then
@@ -3876,57 +4138,64 @@ local function updateCurrencyMonitorStatus()
     end
 
     local rateText
-    if not config.PetFarm then
-        currencyMonitor:Reset()
-        rateText = "Balance farm rate: pet farm disabled"
-    else
-        local now = os.clock()
-        local currencyNames = currencyMonitor:TrackedNames()
-        local balances = currencyMonitor:GetBalances(currencyNames)
-        local available = 0
-        local active = {}
+    local now = os.clock()
+    local currencyNames = currencyMonitor:TrackedNames()
+    local balances = currencyMonitor:GetBalances(currencyNames, now)
+    local available = 0
 
-        for _, currencyName in ipairs(currencyNames) do
-            local currentAmount = balances[currencyName]
-            if currentAmount ~= nil then
-                available = available + 1
-                local sample = currencyMonitor:Update(currencyName, currentAmount, now)
-                if config.TrackedCurrency ~= "Active Balances" or sample.TotalEarned > 0 then
-                    active[#active + 1] = { Name = currencyName, Sample = sample }
-                end
-            end
-        end
-
-        table.sort(active, function(left, right)
-            local leftGain = left.Sample.PerMinute or 0
-            local rightGain = right.Sample.PerMinute or 0
-            if leftGain == rightGain then return left.Name < right.Name end
-            return leftGain > rightGain
-        end)
-
-        if available == 0 then
-            currencyMonitor:Reset()
-            rateText = "Balance farm rate: currencies were not found in Library.Save"
-        elseif #active == 0 then
-            local elapsed = math.max(0, now - (currencyMonitor.StartedAt or now))
-            rateText = string.format(
-                "Watching %d exact balances | waiting for a positive change...\nSession: %ds | no orb/event estimates",
-                available,
-                math.floor(elapsed + 0.5)
-            )
-        else
-            local lines = {}
-            local limit = math.min(#active, 4)
-            for index = 1, limit do
-                local entry = active[index]
-                lines[#lines + 1] = currencyMonitor:RateLine(entry.Name, entry.Sample, now)
-            end
-            if #active > limit then lines[#lines + 1] = "+" .. tostring(#active - limit) .. " more active balance(s)" end
-            rateText = table.concat(lines, "\n")
+    for _, currencyName in ipairs(currencyNames) do
+        local currentAmount = balances[currencyName]
+        if currentAmount ~= nil then
+            available = available + 1
+            currencyMonitor:Update(currencyName, currentAmount, now, farmEnabled)
         end
     end
 
-    if rateText ~= lastRateText then
+    if publish then
+        if not farmEnabled then
+            rateText = "Balance farm rate: pet farm disabled\nBalances remain rebased; the rolling/session totals are preserved."
+        else
+            local active = {}
+            for _, currencyName in ipairs(currencyNames) do
+                local sample = balances[currencyName] ~= nil
+                    and currencyMonitor.Samples[currencyName] or nil
+                if sample and (config.TrackedCurrency ~= "Active Balances"
+                    or sample.TotalEarned > 0) then
+                    active[#active + 1] = { Name = currencyName, Sample = sample }
+                end
+            end
+            table.sort(active, function(left, right)
+                local leftGain = left.Sample.PerMinute or 0
+                local rightGain = right.Sample.PerMinute or 0
+                if leftGain == rightGain then return left.Name < right.Name end
+                return leftGain > rightGain
+            end)
+
+            if available == 0 then
+                rateText = "Balance farm rate: currencies were not found in Library.Save"
+            elseif #active == 0 then
+                local elapsed = math.max(0, now - (currencyMonitor.StartedAt or now))
+                rateText = string.format(
+                    "Watching %d exact balances | waiting for a positive change...\nSession: %ds | no orb/event estimates",
+                    available,
+                    math.floor(elapsed + 0.5)
+                )
+            else
+                local lines = {}
+                local limit = math.min(#active, 4)
+                for index = 1, limit do
+                    local entry = active[index]
+                    lines[#lines + 1] = currencyMonitor:RateLine(entry.Name, entry.Sample, now)
+                end
+                if #active > limit then
+                    lines[#lines + 1] = "+" .. tostring(#active - limit) .. " more active balance(s)"
+                end
+                rateText = table.concat(lines, "\n")
+            end
+        end
+    end
+
+    if publish and rateText ~= lastRateText then
         lastRateText = rateText
         statusSetters.Rate(rateText)
     end
@@ -3934,21 +4203,23 @@ end
 
 local function updateRuntimeTelemetry()
     if not running() then return end
-    local nextZoneRefreshAt, nextEggRefreshAt = 0, 0
     local function tick()
         if not running() then return end
-        local screenGui = WindUI and WindUI.ScreenGui
-        if not screenGui or screenGui.Enabled ~= false then
-            local now = os.clock()
-            updateCurrencyMonitorStatus()
-            if now >= nextZoneRefreshAt then
-                nextZoneRefreshAt = now + 1.5
-                refreshZoneDropdown(false)
-            end
-            if now >= nextEggRefreshAt then
-                nextEggRefreshAt = now + 2
-                refreshEggDropdown(false)
-            end
+        local interfaceVisible = interfaceIsVisible()
+        local monitorVisible = interfaceVisible and UI.MonitorTab
+            and UI.MonitorTab.Selected == true
+        updateCurrencyMonitorStatus(monitorVisible)
+
+        if interfaceVisible and UI.FarmTab and UI.FarmTab.Selected == true
+            and zoneCatalogDirty then
+            refreshZoneDropdown(false)
+        end
+        if interfaceVisible and UI.EggTab and UI.EggTab.Selected == true
+            and eggCatalogDirty then
+            refreshEggDropdown(false)
+        end
+
+        if monitorVisible then
             local equippedIds = petFarm.LastEquippedIds or {}
             local equippedCount = tonumber(petFarm.EquippedCount) or #equippedIds
             local assignedCount = assignmentCount()
@@ -3988,6 +4259,7 @@ local function updateRuntimeTelemetry()
                 driverStatus
             ))
         end
+        statusSetters.Flush()
         task.delay(1, tick)
     end
     task.delay(1, tick)

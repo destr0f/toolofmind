@@ -2,9 +2,10 @@
 -- Converts verified golden pets through a user-selected server tier.
 
 local activeState
-local MODULE_VERSION = "1.0.1"
+local MODULE_VERSION = "1.1.0"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
+local IDLE_CHECK_DELAY = 5
 
 local ABBREVIATIONS = {
     ["Agility"] = "AG", ["Chest"] = "CH", ["Chests"] = "CH",
@@ -87,10 +88,10 @@ local function clearPending(state, context)
     if context then releaseOperation(state, context) end
 end
 
-local function refreshPending(state, context, save)
+local function refreshPending(state, context, pets)
     if next(state.Pending) == nil then return 0 end
     local stillGolden, count = {}, 0
-    for _, pet in pairs((save and save.Pets) or {}) do
+    for _, pet in pairs(pets or {}) do
         local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
         if uid and state.Pending[uid] and pet.g and not pet.r and not pet.dm then
             stillGolden[uid] = true
@@ -123,14 +124,14 @@ local function statsText(stats)
     )
 end
 
-local function collectCandidates(state, context, save)
+local function collectCandidates(state, context, pets)
     local groups = {}
     local targetIds, _, catalogSummary = targetCatalog(context)
     local stats = {
         All = 0, Golden = 0, Eligible = 0, Equipped = 0,
         Locked = 0, Upgraded = 0, Normal = 0, Pending = 0,
     }
-    for _, pet in pairs((save and save.Pets) or {}) do
+    for _, pet in pairs(pets or {}) do
         if type(pet) == "table" then
             local definition = definitionFor(context, pet)
             local petId = tostring(pet.id or "")
@@ -192,12 +193,16 @@ local function reportInventory(state, context, stats)
 end
 
 local function validateSelection(context, selectedCandidates)
-    local save = context.GetSave()
+    local snapshot = type(context.GetPetSnapshot) == "function"
+        and context.GetPetSnapshot(true) or nil
+    local save = snapshot and snapshot.Save or context.GetSave()
     if not save then return false, nil, nil, "fresh Save.Pets is unavailable" end
     local targetIds = targetCatalog(context)
-    local byUID = {}
-    for _, pet in pairs(save.Pets or {}) do
-        if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
+    local byUID = snapshot and snapshot.ByUID or {}
+    if not snapshot then
+        for _, pet in pairs(save.Pets or {}) do
+            if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
+        end
     end
     local selectedUIDs, auditLabels, expectedId = {}, {}, nil
     for index, candidate in ipairs(selectedCandidates) do
@@ -266,8 +271,11 @@ local function runCheck(state, context)
         finish(2)
         return
     end
-    local pendingCount = refreshPending(state, context, save)
-    local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, save)
+    local snapshot = type(context.GetPetSnapshot) == "function"
+        and context.GetPetSnapshot(false) or nil
+    local pets = snapshot and snapshot.Pets or save.Pets
+    local pendingCount = refreshPending(state, context, pets)
+    local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, pets)
     reportInventory(state, context, stats)
     local batchSize, batchCost, tierChance, batchProblem = resolveBatch(state, context)
     if not batchSize then
@@ -289,7 +297,7 @@ local function runCheck(state, context)
             .. tostring(#candidates) .. ". No request sent.\n"
             .. statsText(stats) .. "\nGroups: " .. groupSummary
             .. "\nCatalog: " .. catalogSummary .. "\nLast confirmed: " .. state.LastConfirmedAudit)
-        finish(2)
+        finish(IDLE_CHECK_DELAY)
         return
     end
     local diamonds = context.GetCurrency("Diamonds")
@@ -341,6 +349,9 @@ local function runCheck(state, context)
         context.Trace("rainbow machine", "request rejected: " .. reason .. " | " .. auditText)
         finish(RETRY_DELAY)
     else
+        if type(context.InvalidatePetSnapshot) == "function" then
+            context.InvalidatePetSnapshot()
+        end
         clearPending(state)
         for _, uid in ipairs(selectedUIDs) do state.Pending[uid] = true end
         state.PendingAt = os.clock()
@@ -360,13 +371,26 @@ end
 
 local function stop()
     if activeState then
-        activeState.Running = false
-        activeState.Busy = false
-        clearPending(activeState, activeState.Context)
-        pcall(activeState.Context.CancelOperation, activeState.Context.OperationOwner)
+        local stopped = activeState
+        local wasBusy = stopped.Busy == true
+        stopped.Running = false
+        stopped.Busy = false
+        clearPending(stopped, stopped.Context)
+        pcall(stopped.Context.CancelOperation, stopped.Context.OperationOwner)
+        local worker = stopped.WorkerThread
+        stopped.WorkerThread = nil
+        if worker and not wasBusy and type(task.cancel) == "function" then
+            pcall(task.cancel, worker)
+        end
         activeState = nil
     end
     return true
+end
+
+local function workerDelay(state)
+    local remaining = (tonumber(state.NextCheck) or 0) - os.clock()
+    if remaining <= 0 then return 0.05 end
+    return math.clamp(remaining, 0.05, IDLE_CHECK_DELAY)
 end
 
 return function(action, context)
@@ -388,11 +412,12 @@ return function(action, context)
         Context = context, Running = true, Busy = false, OperationOwned = false,
         NextCheck = 0, Pending = {}, PendingAt = 0,
         LastConfirmedAudit = "none", CompletedBatches = 0,
+        WorkerThread = nil,
     }
     activeState = state
     context.Trace("rainbow machine module", "lazy worker started")
     local workerTask = context.Task or task
-    workerTask.spawn(function()
+    state.WorkerThread = workerTask.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
             if not state.Busy and os.clock() >= state.NextCheck then
                 local ok, problem = pcall(runCheck, state, context)
@@ -405,8 +430,11 @@ return function(action, context)
                     context.SetStatus(status .. "\nNext retry in 10 seconds.")
                 end
             end
-            workerTask.wait(0.5)
+            if state.Running and activeState == state then
+                workerTask.wait(workerDelay(state))
+            end
         end
+        state.WorkerThread = nil
         if activeState == state then activeState = nil end
     end)
     return true

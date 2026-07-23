@@ -2,9 +2,11 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.0.1"
+local MODULE_VERSION = "1.1.0"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
+local IDLE_CHECK_DELAY = 5
+local READY_SAFETY_DELAY = 30
 
 local ABBREVIATIONS = {
     ["Agility"] = "AG", ["Chest"] = "CH", ["Chests"] = "CH",
@@ -198,10 +200,10 @@ local function clearPendingCreate(state, context)
     if context then releaseOperation(state, context) end
 end
 
-local function refreshPendingCreate(state, context, save)
+local function refreshPendingCreate(state, context, pets)
     if next(state.PendingCreate) == nil then return 0 end
     local stillPresent, count = {}, 0
-    for _, pet in pairs((save and save.Pets) or {}) do
+    for _, pet in pairs(pets or {}) do
         local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
         if uid and state.PendingCreate[uid] then
             stillPresent[uid] = true
@@ -304,14 +306,14 @@ local function resolveMachineInfo(state, context)
     return info, state.MaxBatch, nil
 end
 
-local function collectCandidates(state, context, save)
+local function collectCandidates(state, context, pets)
     local groups = {}
     local targetIds, _, catalogSummary = targetCatalog(context)
     local stats = {
         All = 0, Rainbow = 0, Eligible = 0, Protected = 0,
         Equipped = 0, Locked = 0, Other = 0, Pending = 0,
     }
-    for _, pet in pairs((save and save.Pets) or {}) do
+    for _, pet in pairs(pets or {}) do
         if type(pet) == "table" then
             local definition = definitionFor(context, pet)
             local petId = tostring(pet.id or "")
@@ -364,12 +366,16 @@ local function collectCandidates(state, context, save)
 end
 
 local function validateSelection(context, candidates)
-    local save = context.GetSave()
+    local snapshot = type(context.GetPetSnapshot) == "function"
+        and context.GetPetSnapshot(true) or nil
+    local save = snapshot and snapshot.Save or context.GetSave()
     if not save then return false, nil, nil, "fresh Save.Pets is unavailable" end
     local targetIds = targetCatalog(context)
-    local byUID = {}
-    for _, pet in pairs(save.Pets or {}) do
-        if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
+    local byUID = snapshot and snapshot.ByUID or {}
+    if not snapshot then
+        for _, pet in pairs(save.Pets or {}) do
+            if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
+        end
     end
     local selectedUIDs, labels, expectedId = {}, {}, nil
     for index, candidate in ipairs(candidates) do
@@ -443,8 +449,11 @@ local function runCheck(state, context)
     local queueCount = dictionaryCount(queue)
     local slots = slotLimit(save, queueCount)
     refreshPendingClaims(state, context, queue)
-    local pendingCreate = refreshPendingCreate(state, context, save)
-    local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, save)
+    local snapshot = type(context.GetPetSnapshot) == "function"
+        and context.GetPetSnapshot(false) or nil
+    local pets = snapshot and snapshot.Pets or save.Pets
+    local pendingCreate = refreshPendingCreate(state, context, pets)
+    local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, pets)
     local serverTime, clockProblem = getServerTime(state, context)
     local ready, nearest = queueSnapshot(queue, serverTime)
 
@@ -490,6 +499,9 @@ local function runCheck(state, context)
                     .. context.RouteText(sourceName, sessionIndex) .. ": " .. reason)
                 finish(RETRY_DELAY)
             else
+                if type(context.InvalidatePetSnapshot) == "function" then
+                    context.InvalidatePetSnapshot()
+                end
                 state.PendingClaims[claim.Key] = { Id = claim.Id, At = os.clock() }
                 setStatus(state, context, "Claim accepted via "
                     .. context.RouteText(sourceName, sessionIndex) .. " | slot=" .. tostring(claim.Id)
@@ -507,7 +519,8 @@ local function runCheck(state, context)
         setStatus(state, context, "Auto claim active | queue: " .. tostring(queueCount)
             .. "/" .. tostring(slots) .. timer .. clock
             .. "\nClaimed this session: " .. tostring(state.Claimed))
-        finish(2)
+        finish(nearest and math.clamp(nearest - 0.5, 1, READY_SAFETY_DELAY)
+            or IDLE_CHECK_DELAY)
         return
     end
 
@@ -523,14 +536,15 @@ local function runCheck(state, context)
         local timer = nearest and (" | next ready in " .. formatDuration(nearest)) or ""
         setStatus(state, context, "Dark Matter queue is full: " .. tostring(queueCount)
             .. "/" .. tostring(slots) .. timer .. "\n" .. statsText(stats))
-        finish(2)
+        finish(nearest and math.clamp(nearest - 0.5, 1, READY_SAFETY_DELAY)
+            or IDLE_CHECK_DELAY)
         return
     end
     if #candidates == 0 then
         setStatus(state, context, "No eligible rainbow target pets.\n"
             .. statsText(stats) .. "\nGroups: " .. groupSummary
             .. "\nCatalog: " .. catalogSummary .. "\nLast queued: " .. state.LastQueuedAudit)
-        finish(2)
+        finish(IDLE_CHECK_DELAY)
         return
     end
 
@@ -555,7 +569,7 @@ local function runCheck(state, context)
             .. ". No request sent.\nPolicy: " .. policySummary
             .. "\n" .. statsText(stats) .. "\nGroups: " .. groupSummary
             .. "\nCatalog: " .. catalogSummary)
-        finish(2)
+        finish(IDLE_CHECK_DELAY)
         return
     end
     local batchCost = tonumber(tier.cost or tier.Cost)
@@ -614,6 +628,9 @@ local function runCheck(state, context)
         context.Trace("dark matter", "request rejected: " .. reason .. " | " .. audit)
         finish(RETRY_DELAY)
     else
+        if type(context.InvalidatePetSnapshot) == "function" then
+            context.InvalidatePetSnapshot()
+        end
         clearPendingCreate(state)
         for _, uid in ipairs(selectedUIDs) do state.PendingCreate[uid] = true end
         state.PendingCreateAt = os.clock()
@@ -635,14 +652,27 @@ end
 
 local function stop()
     if activeState then
-        activeState.Running = false
-        activeState.Busy = false
-        clearPendingCreate(activeState, activeState.Context)
-        table.clear(activeState.PendingClaims)
-        pcall(activeState.Context.CancelOperation, activeState.Context.OperationOwner)
+        local stopped = activeState
+        local wasBusy = stopped.Busy == true
+        stopped.Running = false
+        stopped.Busy = false
+        clearPendingCreate(stopped, stopped.Context)
+        table.clear(stopped.PendingClaims)
+        pcall(stopped.Context.CancelOperation, stopped.Context.OperationOwner)
+        local worker = stopped.WorkerThread
+        stopped.WorkerThread = nil
+        if worker and not wasBusy and type(task.cancel) == "function" then
+            pcall(task.cancel, worker)
+        end
         activeState = nil
     end
     return true
+end
+
+local function workerDelay(state)
+    local remaining = (tonumber(state.NextCheck) or 0) - os.clock()
+    if remaining <= 0 then return 0.05 end
+    return math.clamp(remaining, 0.05, READY_SAFETY_DELAY)
 end
 
 return function(action, context)
@@ -670,11 +700,12 @@ return function(action, context)
         PendingCreate = {}, PendingCreateAt = 0, PendingClaims = {},
         LastQueuedAudit = "none", QueuedBatches = 0, Claimed = 0,
         ServerRetryAt = 0,
+        WorkerThread = nil,
     }
     activeState = state
     context.Trace("dark matter module", "lazy create/claim worker started")
     local workerTask = context.Task or task
-    workerTask.spawn(function()
+    state.WorkerThread = workerTask.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
             if not state.Busy and os.clock() >= state.NextCheck then
                 local ok, problem = pcall(runCheck, state, context)
@@ -687,8 +718,11 @@ return function(action, context)
                     context.SetStatus(status .. "\nNext retry in 10 seconds.")
                 end
             end
-            workerTask.wait(0.5)
+            if state.Running and activeState == state then
+                workerTask.wait(workerDelay(state))
+            end
         end
+        state.WorkerThread = nil
         if activeState == state then activeState = nil end
     end)
     return true
