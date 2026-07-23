@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.1.1"
 
 local gate = {
     Owner = nil,
@@ -24,6 +24,12 @@ local MACHINE_PET_NAMES = {
     ["santa paws"] = "Santa Paws",
 }
 
+local MACHINE_PET_IDS = {
+    ["263"] = "Santa Paws",
+    ["264"] = "Silver Stag",
+    ["265"] = "Silver Dragon",
+}
+
 local function normalize(value)
     value = string.lower(tostring(value or ""))
     value = string.gsub(value, "[%p_]+", " ")
@@ -37,7 +43,8 @@ local function definitionName(definition)
         or definition.displayName or definition.DisplayName
 end
 
-local function explicitMachinePet(definition)
+local function explicitMachinePet(definition, rawId)
+    if rawId ~= nil and MACHINE_PET_IDS[tostring(rawId)] ~= nil then return true end
     local name = definitionName(definition)
     return name ~= nil and MACHINE_PET_NAMES[normalize(name)] ~= nil
 end
@@ -107,7 +114,7 @@ local function gateStatus(context)
     return gate.Owner or "idle", waiting
 end
 
-local function definitionAllowed(definition)
+local function definitionAllowed(definition, rawId)
     if type(definition) ~= "table" then return false end
     local rarity = normalize(definition.rarity or definition.Rarity)
     if definition.isPremium == true or definition.huge == true or definition.isHuge == true
@@ -115,7 +122,7 @@ local function definitionAllowed(definition)
         or rarity == "exclusive" or rarity == "secret" then
         return false
     end
-    if explicitMachinePet(definition) then return true end
+    if explicitMachinePet(definition, rawId) then return true end
     return rarity == "legendary" or rarity == "mythical"
 end
 
@@ -140,7 +147,7 @@ local function getCatalog(context, force)
         if rawId == nil then return end
         local id = tostring(rawId)
         local definition = petDefinition(rawId)
-        if definitionAllowed(definition) then ids[id] = true end
+        if definitionAllowed(definition, rawId) then ids[id] = true end
     end
 
     local function addEggDrops(rawEgg, visiting)
@@ -192,7 +199,7 @@ local function getCatalog(context, force)
     end
 
     for id, definition in pairs(pets) do
-        if explicitMachinePet(definition) then
+        if explicitMachinePet(definition, id) then
             addPet(id)
         end
     end
@@ -200,7 +207,7 @@ local function getCatalog(context, force)
     local names = {}
     for id in pairs(ids) do
         local definition = petDefinition(id)
-        names[#names + 1] = tostring(definitionName(definition) or id)
+        names[#names + 1] = tostring(definitionName(definition) or MACHINE_PET_IDS[id] or id)
     end
     table.sort(names)
     table.sort(eventEggs)

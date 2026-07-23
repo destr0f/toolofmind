@@ -1,16 +1,16 @@
 local support = require("../automation_support_module")
 
-assert(support("version") == "1.1.0")
+assert(support("version") == "1.1.1")
 
 local context = {
     Library = {
         Directory = {
             Pets = {
                 ["240"] = { name = "Galaxy Fox", rarity = "Mythical" },
-                ["241"] = { Name = "Silver Stag", Rarity = "Mythical" },
-                [242] = { displayName = "Silver Dragon", rarity = "mythical" },
-                ["243"] = { DisplayName = "Santa Paws", rarity = "MYTHICAL" },
-                ["244"] = {
+                ["264"] = { Name = "Silver Stag", Rarity = "Mythical" },
+                [265] = { displayName = "Silver Dragon", rarity = "mythical" },
+                ["263"] = { rarity = "MYTHICAL" },
+                ["266"] = {
                     name = "Santa Paws",
                     rarity = "Mythical",
                     huge = true,
@@ -34,10 +34,10 @@ local context = {
 }
 
 local ids, names, summary = support("catalog", context, true)
-for _, id in ipairs({ "240", "241", "242", "243", "245" }) do
+for _, id in ipairs({ "240", "263", "264", "265", "245" }) do
     assert(ids[id] == true, "machine catalog omitted pet id " .. id)
 end
-assert(ids["244"] == nil, "Huge pet bypassed the machine protection")
+assert(ids["266"] == nil, "Huge pet bypassed the machine protection")
 
 local byName = {}
 for _, name in ipairs(names) do byName[name] = true end
