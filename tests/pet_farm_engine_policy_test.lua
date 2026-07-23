@@ -68,7 +68,7 @@ local started, startProblem = engine("start", {
     end,
     OnFailed = function() error("15-pet acceptance test must not fail") end,
     MinLanes = 4,
-    InitialLanes = 12,
+    InitialLanes = 16,
     MaxLanes = 16,
 })
 assert(started == true, tostring(startProblem))
@@ -92,4 +92,40 @@ assert(dispatchStats.Queued == 0 and dispatchStats.Active == 0)
 assert(fireCalls == 30, "each accepted lock needs exactly target + farm signals")
 for _, state in pairs(states) do assert(state.Phase == "locked") end
 
-print("PASS pet farm engine recognizes replies and fills 15 UID locks")
+local beforeRejects = dispatchStats.Rejected
+local beforeRetries = dispatchStats.Retries
+local failedCount = 0
+network.Invoke = function() return false end
+local failedState = { Phase = "pending" }
+states["bounded-failure"] = failedState
+
+local restarted = engine("start", {
+    Running = function() return true end,
+    Enabled = function() return true end,
+    Resetting = function() return false end,
+    NetworkReady = function() return network end,
+    RecordAlive = function(record) return record.Alive end,
+    StateCurrent = function(petId, state) return states[petId] == state end,
+    TargetContainsPet = function() return false end,
+    OnRetry = function(_, state) state.Phase = "retry" end,
+    OnFailed = function(petId, state)
+        assert(states[petId] == state)
+        states[petId] = nil
+        failedCount = failedCount + 1
+    end,
+})
+assert(restarted == true)
+assert(engine("dispatch", {
+    CoinId = "rejected-coin",
+    Record = { Alive = true },
+    Entries = { { PetId = "bounded-failure", State = failedState } },
+}) == true)
+
+local rejectedStats = engine("stats")
+assert(rejectedStats.Rejected - beforeRejects == 3,
+    "a rejected UID must stop after exactly three Join Coin attempts")
+assert(rejectedStats.Retries - beforeRetries == 2,
+    "three attempts require exactly two retries")
+assert(failedCount == 1 and states["bounded-failure"] == nil)
+
+print("PASS pet farm engine fills 15 UID locks and bounds rejected retries")

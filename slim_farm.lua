@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.4"
+local VERSION = "1.4.1-dev.5"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -101,11 +101,12 @@ local config = {
     EggAnimation = "Headless (No Animation)",
 }
 
-local MODULE_REVISION = "88f48f18e167df39dcddd1f00d31c8796d06acd3"
+local MODULE_REVISION = "be7151a4a0696d3ab03f8dbf6c12ad88df3f1064"
 local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
     .. MODULE_REVISION .. "/"
 local SUPPORT_MODULE_URL = RAW_MODULE_BASE .. "automation_support_module.lua"
 local AUTOMATION_UI_MODULE_URL = RAW_MODULE_BASE .. "automation_ui_module.lua"
+local PET_FARM_ENGINE_URL = RAW_MODULE_BASE .. "pet_farm_engine.lua"
 
 local DIAMOND_PACK_TIER = 4
 local DIAMOND_PACK_MINIMUM = 1e12
@@ -871,7 +872,6 @@ local nextSnapshotAt = 0
 local coinSignalsReady = false
 local coinGeneration = 0
 local coinEventRevision = 0
-local coinPetRevision = 0
 local removalRevisions = {}
 local removedUntil = {}
 
@@ -1083,9 +1083,9 @@ local function connectCoinSignals()
         local record = coinRecords[tostring(id)]
         if record then
             coinEventRevision = coinEventRevision + 1
-            coinPetRevision = coinPetRevision + 1
             record.Pets = normalizePetSet(pets)
             record.EventRevision = coinEventRevision
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
         else
             nextSnapshotAt = 0
         end
@@ -1099,7 +1099,6 @@ local function connectCoinSignals()
             track(worldChanged:Connect(function()
                 coinGeneration = coinGeneration + 1
                 coinEventRevision = 0
-                coinPetRevision = 0
                 table.clear(coinRecords)
                 table.clear(peakHealth)
                 table.clear(removalRevisions)
@@ -1145,7 +1144,11 @@ end
 local function recordAlive(record)
     if not record or record.Removed or (tonumber(record.Health) or 0) <= 0 then return false end
     if os.clock() < (removedUntil[tostring(record.Id)] or 0) then return false end
-    if record.Model and record.Model.Parent == nil then return false end
+    -- Animated/potato-mode models can be replaced locally while the server coin
+    -- is still alive. Keep the authoritative record and reacquire its model.
+    if record.Model and record.Model.Parent == nil then
+        if record.FromServer then record.Model = nil else return false end
+    end
     return true
 end
 
@@ -1236,17 +1239,36 @@ local controllerHandlers = {}
 local nextControllerLookup = {}
 local petRuntime = nil
 local runtimeDriverReady = false
+local petFarm = {
+    Engine = nil,
+    Loading = false,
+    Problem = nil,
+    RouteSummary = "resolving 0/4",
+    StatsCache = {
+        Version = "loading",
+        Active = 0,
+        Queued = 0,
+        Limit = 0,
+        Accepted = 0,
+        Rejected = 0,
+        Errors = 0,
+        Retries = 0,
+        AverageRTT = 0,
+        LastProblem = "none",
+    },
+}
 
 local function queuePetRelease(petId, now)
     petStates[petId] = nil
     releaseWait[petId] = {
-        ReadyAt = now + 0.04,
-        ForceAt = now + 0.25,
+        ReadyAt = now,
+        ForceAt = now,
     }
 end
 
 releaseAssignmentsForCoin = function(rawId)
     if rawId == nil then
+        if petFarm.Engine then pcall(petFarm.Engine, "reset") end
         table.clear(petStates)
         table.clear(rejectedUntil)
         table.clear(releaseWait)
@@ -1638,20 +1660,6 @@ local function inspectControllerHandler(handler)
     if bestScore > 0 then petRuntime = bestTable end
 end
 
-local function runtimeTargetCount(model)
-    if type(petRuntime) ~= "table" or not model then return nil end
-    local target = model:FindFirstChild("POS")
-    if not target then return nil end
-    local count = 0
-    for _, runtimeState in pairs(petRuntime) do
-        if type(runtimeState) == "table" and runtimeState.owner == player
-            and runtimeState.farming and runtimeState.target == target then
-            count = count + 1
-        end
-    end
-    return count
-end
-
 local function resolveControllerHandler(signalName)
     local cached = controllerHandlers[signalName]
     if type(cached) == "function" then return cached end
@@ -1691,53 +1699,6 @@ local function resolveControllerHandler(signalName)
     return handler
 end
 
-local function callPetController(signalName, model)
-    local handler = resolveControllerHandler(signalName)
-    if handler then
-        local targetCountBefore = runtimeTargetCount(model)
-        local ok, problem = pcall(handler, model)
-        if ok then
-            inspectControllerHandler(handler)
-            runtimeDriverReady = petRuntime ~= nil
-            local targetCountAfter = runtimeTargetCount(model)
-            if targetCountBefore ~= nil and targetCountAfter ~= nil
-                and targetCountAfter <= targetCountBefore then
-                driverStatus = "game handler rejected target"
-                return false
-            end
-            driverStatus = runtimeDriverReady and "game Pets handler + local state" or "game Pets handler"
-            return true
-        end
-        controllerHandlers[signalName] = nil
-        nextControllerLookup[signalName] = 0
-        runtimeDriverReady = false
-        driverStatus = "handler error: " .. tostring(problem)
-    end
-
-    local signal = Library and Library.Signal
-    if not signal or type(signal.Fire) ~= "function" then
-        driverStatus = "Library.Signal.Fire unavailable"
-        return false
-    end
-
-    local revision = coinPetRevision
-    local ok, problem = pcall(signal.Fire, signalName, model)
-    if not ok then
-        driverStatus = "signal error: " .. tostring(problem)
-        return false
-    end
-
-    driverStatus = "Library.Signal fallback"
-    local deadline = os.clock() + 0.25
-    repeat
-        RunService.Heartbeat:Wait()
-    until not running() or not config.PetFarm or farmResetRunning or farmResetRequested
-        or coinPetRevision > revision or os.clock() >= deadline
-    if farmResetRunning or farmResetRequested then return false end
-    if coinPetRevision <= revision then driverStatus = "signal sent; awaiting server" end
-    return true
-end
-
 local function getRecordModel(record)
     if record and record.Model and record.Model.Parent then return record.Model end
     local things = workspace:FindFirstChild("__THINGS")
@@ -1757,16 +1718,233 @@ local function getRecordModel(record)
     return nil
 end
 
+function petFarm:RuntimeStateForPet(petId)
+    if type(petRuntime) ~= "table" then return nil end
+    petId = tostring(petId)
+    local direct = rawget(petRuntime, petId)
+    if type(direct) == "table" and direct.owner == player then return direct end
+    for key, runtimeState in pairs(petRuntime) do
+        if type(runtimeState) == "table" and runtimeState.owner == player
+            and tostring(runtimeState.uid or key) == petId then
+            return runtimeState
+        end
+    end
+    return nil
+end
+
+function petFarm:BindRuntimePet(petId, record, model)
+    local runtimeState = self:RuntimeStateForPet(petId)
+    model = model or getRecordModel(record)
+    local target = model and model:FindFirstChild("POS")
+    if not runtimeState or not target then return false end
+    if runtimeState.farming and runtimeState.target == target then return true end
+
+    if type(runtimeState.selectionFunc) == "function" then pcall(runtimeState.selectionFunc) end
+    runtimeState.selectionFunc = nil
+    runtimeState.farming = true
+    runtimeState.target = target
+    runtimeState.follower = nil
+    runtimeState.arrived = false
+    runtimeState.targetuid = (tonumber(runtimeState.targetuid) or 0) + 1
+    runtimeState.randomRotation = math.random() * 360
+    return true
+end
+
+function petFarm:TargetContainsPet(record, petId)
+    if not record then return false end
+    petId = tostring(petId)
+    return (record.Pets and record.Pets[petId] == true)
+        or (record.PetsFarming and record.PetsFarming[petId] == true)
+end
+
+function petFarm:FireNamed(command, ...)
+    local sent = fireCommand(command, ...)
+    if sent == true then return true end
+    local network = networkReady()
+    if not network then return false end
+    return pcall(network.Fire, command, ...)
+end
+
+function petFarm:MaintainLock(petId, state, record, now, source)
+    local health = tonumber(record and record.Health)
+    if health and (state.LastHealth == nil or health < state.LastHealth) then
+        state.LastProgressAt = now
+    end
+    state.LastHealth = health or state.LastHealth
+
+    if state.Phase ~= "locked" and now >= (state.DeadlineAt or math.huge) then
+        petStates[petId] = nil
+        releaseWait[petId] = nil
+        idleRecoveryCount = idleRecoveryCount + 1
+        lastRecovery = "expired " .. tostring(source or "UID") .. " request on "
+            .. string.sub(tostring(petId), 1, 8)
+        driverStatus = "expired UID request recovered"
+        if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+        return false
+    end
+
+    local stalled = state.Phase == "locked" and state.FarmSent == true
+        and now - (state.LastProgressAt or now) >= 0.75
+        and (state.WireRepairs or 0) < 2
+    local signalMissing = state.Phase == "locked"
+        and (state.TargetSent == false or state.FarmSent == false)
+    if (stalled or signalMissing) and now >= (state.NextWireRepair or 0) then
+        local targetOk = self:FireNamed(
+            "Change Pet Target", petId, "Coin", tostring(record.Id))
+        local farmOk = self:FireNamed("Farm Coin", tostring(record.Id), petId)
+        state.TargetSent = targetOk == true or state.TargetSent
+        state.FarmSent = farmOk == true or state.FarmSent
+        state.WireRepairs = (state.WireRepairs or 0) + 1
+        state.NextWireRepair = now + 0.75
+        driverStatus = "repaired the same locked target signals"
+    end
+    return true
+end
+
+function petFarm:RefreshStats()
+    if not self.Engine then return self.StatsCache end
+    local ok, stats = pcall(self.Engine, "stats")
+    if ok and type(stats) == "table" then self.StatsCache = stats end
+    return self.StatsCache
+end
+
+function petFarm:EnsureEngine()
+    if self.Engine then return true end
+    if self.Loading then return false, "engine load already in progress" end
+    self.Loading = true
+    self.Problem = nil
+    driverStatus = "loading high-throughput UID engine"
+
+    local controller, problem = loadRemoteController(
+        PET_FARM_ENGINE_URL,
+        "pet farm engine",
+        function(message) driverStatus = tostring(message) end
+    )
+    if not controller then
+        self.Loading = false
+        self.Problem = tostring(problem)
+        driverStatus = "pet engine unavailable: " .. self.Problem
+        return false, self.Problem
+    end
+
+    local context = {
+        Running = running,
+        Enabled = function() return config.PetFarm end,
+        Resetting = function() return farmResetRunning or farmResetRequested end,
+        NetworkReady = networkReady,
+        GetCommandRemote = getCommandRemote,
+        GetFireRemote = getFireRemote,
+        RecordAlive = recordAlive,
+        StateCurrent = function(petId, state)
+            return petStates[tostring(petId)] == state
+        end,
+        TargetContainsPet = function(record, petId) return self:TargetContainsPet(record, petId) end,
+        OnAccepted = function(petId, state, record, model, attempt, route)
+            petId = tostring(petId)
+            if petStates[petId] ~= state or not recordAlive(record) then return false end
+            local now = os.clock()
+            state.Phase = "locked"
+            state.AcceptedAt = now
+            state.ConfirmedAt = now
+            state.JoinAttempts = attempt
+            state.Route = route
+            state.LastHealth = tonumber(record.Health)
+            state.LastProgressAt = now
+            state.Runtime = self:BindRuntimePet(petId, record, model)
+            state.NextRuntimeRepair = now + 0.2
+            state.WireRepairs = state.WireRepairs or 0
+            state.ArrivalFarmSent = false
+            state.DeadlineAt = nil
+            record.Pets = record.Pets or {}
+            record.Pets[petId] = true
+            driverStatus = "UID-direct assignment accepted"
+            return true
+        end,
+        OnSignalsSent = function(petId, state, _, targetSent, farmSent, targetRoute, farmRoute)
+            if petStates[tostring(petId)] ~= state then return end
+            state.TargetSent = targetSent == true
+            state.FarmSent = farmSent == true
+            state.TargetRoute = targetRoute
+            state.FarmRoute = farmRoute
+            state.SignalsAt = os.clock()
+            state.NextWireRepair = os.clock() + 0.12
+        end,
+        OnRetry = function(petId, state, _, reason, nextAttempt)
+            if petStates[tostring(petId)] ~= state then return end
+            state.Phase = "retry"
+            state.JoinAttempts = math.max(tonumber(nextAttempt) - 1, 1)
+            state.LastProblem = tostring(reason)
+            state.DeadlineAt = os.clock() + 3
+            driverStatus = "retrying the same pet target"
+        end,
+        OnFailed = function(petId, state, record, reason)
+            petId = tostring(petId)
+            if petStates[petId] ~= state then return end
+            petStates[petId] = nil
+            releaseWait[petId] = nil
+            if record then rejectedUntil[tostring(record.Id)] = os.clock() + 0.18 end
+            idleRecoveryCount = idleRecoveryCount + 1
+            lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
+            driverStatus = "UID join exhausted; selecting a fresh target"
+            trace("pet dispatch exhausted", tostring(reason))
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+        end,
+        OnStaleAccepted = function(record, petIds)
+            local network = networkReady()
+            if not network or not record then return end
+            pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
+            for _, petId in ipairs(petIds) do
+                petId = tostring(petId)
+                -- A destroyed coin can finish an old Invoke after this pet has
+                -- already received its next lock. Never let stale cleanup
+                -- overwrite that newer target with Player.
+                if not petStates[petId] then
+                    pcall(network.Fire, "Change Pet Target", petId, "Player")
+                end
+            end
+        end,
+        Pulse = function()
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+        end,
+        Trace = trace,
+        MinLanes = 4,
+        InitialLanes = 16,
+        MaxLanes = 16,
+    }
+    local started, accepted, startProblem = pcall(controller, "start", context)
+    self.Loading = false
+    if not started or accepted ~= true then
+        self.Problem = tostring(started and startProblem or accepted)
+        driverStatus = "pet engine start failed: " .. self.Problem
+        return false, self.Problem
+    end
+
+    self.Engine = controller
+    local resolvedRoutes = 0
+    for _, command in ipairs({ "Join Coin", "Leave Coin" }) do
+        local remote = getCommandRemote(command)
+        if remote then resolvedRoutes = resolvedRoutes + 1 end
+    end
+    for _, command in ipairs({ "Change Pet Target", "Farm Coin" }) do
+        local remote = getFireRemote(command)
+        if remote then resolvedRoutes = resolvedRoutes + 1 end
+    end
+    self.RouteSummary = "named routes " .. tostring(resolvedRoutes) .. "/4"
+    self:RefreshStats()
+    driverStatus = "high-throughput UID engine ready"
+    if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+    return true
+end
+
 local function syncRuntimeAssignments(equipped)
     if not runtimeDriverReady or type(petRuntime) ~= "table" then return false, nil end
 
     local now = os.clock()
-    local observed, runtimeSeen, localPets = {}, {}, 0
+    local observed, runtimeSeen = {}, {}
     for key, runtimeState in pairs(petRuntime) do
         if type(runtimeState) == "table" and runtimeState.owner == player then
             local petId = tostring(runtimeState.uid or key)
             if equipped[petId] then
-                localPets = localPets + 1
                 runtimeSeen[petId] = runtimeState
                 local target = runtimeState.target
                 local coinModel = runtimeState.farming and target and target.Parent or nil
@@ -1781,23 +1959,19 @@ local function syncRuntimeAssignments(equipped)
         end
     end
 
-    if localPets == 0 then return true, runtimeSeen end
-
+    -- Adopt a pre-existing game assignment only when this allocator has no
+    -- intent for the pet. A stale/conflicting runtime target never overwrites a
+    -- live UID lock created by this script.
     for petId, coinId in pairs(observed) do
-        releaseWait[petId] = nil
-        local state = petStates[petId]
-        if not state or tostring(state.CoinId) ~= coinId then
+        if not petStates[petId] then
             petStates[petId] = {
                 CoinId = coinId,
                 Phase = "locked",
                 Runtime = true,
                 ConfirmedAt = now,
+                AcceptedAt = now,
+                External = true,
             }
-        else
-            state.Phase = "locked"
-            state.Runtime = true
-            state.ConfirmedAt = now
-            state.RuntimeIdleChecks = nil
         end
     end
 
@@ -1808,37 +1982,41 @@ local function syncRuntimeAssignments(equipped)
             releaseWait[petId] = nil
         elseif not recordAlive(record) then
             queuePetRelease(petId, now)
-        elseif observed[petId] == nil then
+        else
             local runtimeState = runtimeSeen[petId]
-            if runtimeState and runtimeState.farming == false then
-                state.RuntimeIdleChecks = (state.RuntimeIdleChecks or 0) + 1
-                if state.RuntimeIdleChecks >= 2 then
-                    petStates[petId] = nil
-                    releaseWait[petId] = nil
-                    idleRecoveryCount = idleRecoveryCount + 1
-                    local petLabel = tostring(petId)
-                    lastRecovery = "idle lock on " .. string.sub(petLabel, 1, 8)
-                    driverStatus = "idle pet recovered; assigning next target"
-                    trace("pet recovery", petLabel)
+            local intendedModel = getRecordModel(record)
+            local intendedTarget = intendedModel and intendedModel:FindFirstChild("POS")
+            local runtimeMatches = runtimeState and runtimeState.farming
+                and intendedTarget and runtimeState.target == intendedTarget
+
+            if runtimeMatches then
+                state.Runtime = true
+                state.RuntimeSeenAt = now
+                state.RuntimeMismatchSince = nil
+                if runtimeState.arrived == true and not state.ArrivalFarmSent then
+                    state.ArrivalFarmSent = true
+                    state.FarmSent = petFarm:FireNamed(
+                        "Farm Coin", tostring(record.Id), petId) or state.FarmSent
+                    driverStatus = "arrival-confirmed farm signal sent"
                 end
-            else
-                state.RuntimeIdleChecks = nil
+            elseif state.Phase == "locked" then
+                state.Runtime = false
+                state.RuntimeMismatchSince = state.RuntimeMismatchSince or now
+                if now >= (state.NextRuntimeRepair or 0) then
+                    state.Runtime = petFarm:BindRuntimePet(petId, record, intendedModel)
+                    state.NextRuntimeRepair = now + 0.2
+                end
             end
+
+            petFarm:MaintainLock(petId, state, record, now, "runtime")
         end
     end
 
     for petId, releaseState in pairs(releaseWait) do
         if not equipped[petId] then
             releaseWait[petId] = nil
-        else
-            local runtimeState = runtimeSeen[petId]
-            if runtimeState and runtimeState.farming == false then
-                releaseWait[petId] = nil
-            elseif runtimeState == nil and now >= (releaseState.ReadyAt or now) then
-                releaseWait[petId] = nil
-            elseif now >= (releaseState.ForceAt or math.huge) then
-                releaseWait[petId] = nil
-            end
+        elseif now >= (releaseState.ReadyAt or now) then
+            releaseWait[petId] = nil
         end
     end
     return true, runtimeSeen
@@ -1914,6 +2092,7 @@ local function collectAssignmentsForReset()
 end
 
 local function clearAssignments(sendBack)
+    if petFarm.Engine then pcall(petFarm.Engine, "reset") end
     local groups, allPets = collectAssignmentsForReset()
     local network = sendBack and networkReady() or nil
     if network then
@@ -2002,49 +2181,50 @@ requestFarmReset = function(reason)
     end)
 end
 
-local function dispatchPlan(record, petIds, groupMode)
+local function dispatchPlan(record, petIds)
     if not recordAlive(record) or #petIds == 0 then return end
-    local model = getRecordModel(record)
-    if not model or not model:FindFirstChild("POS") then
-        driverStatus = "coin model/POS unavailable"
-        rejectedUntil[record.Id] = os.clock() + 0.12
+    if not petFarm.Engine then
+        driverStatus = petFarm.Loading and "high-throughput engine is loading"
+            or "high-throughput engine is unavailable"
         return
     end
+    local model = getRecordModel(record)
+    if model and not model:FindFirstChild("POS") then model = nil end
 
     local coinId = tostring(record.Id)
-    local stateTokens = {}
+    local entries = {}
+    local startedAt = os.clock()
     for _, petId in ipairs(petIds) do
+        petId = tostring(petId)
         local state = {
             CoinId = coinId,
             Phase = "pending",
-            StartedAt = os.clock(),
+            StartedAt = startedAt,
             StartedHealth = tonumber(record.Health),
+            LastHealth = tonumber(record.Health),
+            LastProgressAt = startedAt,
+            JoinAttempts = 1,
+            DeadlineAt = startedAt + 3,
         }
+        state.Runtime = petFarm:BindRuntimePet(petId, record, model)
+        state.NextRuntimeRepair = startedAt + 0.2
         petStates[petId] = state
-        stateTokens[petId] = state
+        entries[#entries + 1] = { PetId = petId, State = state }
     end
 
-    local firedAny = false
-    if groupMode then
-        if not farmResetRunning and not farmResetRequested then
-            firedAny = callPetController("Group Select Coin", model)
-        end
-    else
-        for _, petId in ipairs(petIds) do
-            local state = stateTokens[petId]
-            if running() and config.PetFarm and not farmResetRunning and not farmResetRequested
-                and recordAlive(record) and petStates[petId] == state then
-                local ok = callPetController("Select Coin", model)
-                firedAny = ok or firedAny
-                if not ok then petStates[petId] = nil end
-            end
-        end
-    end
-    if not firedAny then
-        for petId, state in pairs(stateTokens) do
-            if petStates[petId] == state then petStates[petId] = nil end
+    local called, accepted, problem = pcall(petFarm.Engine, "dispatch", {
+        Record = record,
+        Model = model,
+        CoinId = coinId,
+        Entries = entries,
+    })
+    if not called or accepted ~= true then
+        for _, entry in ipairs(entries) do
+            if petStates[entry.PetId] == entry.State then petStates[entry.PetId] = nil end
         end
         rejectedUntil[coinId] = os.clock() + 0.12
+        driverStatus = "UID dispatch queue error: " .. tostring(called and problem or accepted)
+        if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     end
 end
 
@@ -2053,24 +2233,27 @@ local function syncServerAssignments(equipped)
     local observed = {}
     for _, record in pairs(coinRecords) do
         if recordAlive(record) then
-            for petId in pairs(record.Pets or {}) do
-                petId = tostring(petId)
-                if equipped[petId] then
-                    local choices = observed[petId]
-                    if not choices then choices = {}; observed[petId] = choices end
-                    choices[tostring(record.Id)] = record
+            for _, petSet in ipairs({ record.Pets or {}, record.PetsFarming or {} }) do
+                for petId in pairs(petSet) do
+                    petId = tostring(petId)
+                    if equipped[petId] then
+                        local choices = observed[petId]
+                        if not choices then choices = {}; observed[petId] = choices end
+                        choices[tostring(record.Id)] = record
+                    end
                 end
             end
         end
     end
 
     for petId, choices in pairs(observed) do
-        releaseWait[petId] = nil
         local state = petStates[petId]
-        local coinId = state and tostring(state.CoinId) or nil
-        if not coinId or not choices[coinId] then
+        if state and choices[tostring(state.CoinId)] then
+            state.ConfirmedAt = now
+            state.MembershipSeenAt = now
+        elseif not state then
+            local coinId
             local bestRevision = -1
-            coinId = nil
             for candidateId, record in pairs(choices) do
                 local revision = tonumber(record.EventRevision) or 0
                 if revision > bestRevision
@@ -2079,13 +2262,15 @@ local function syncServerAssignments(equipped)
                     bestRevision = revision
                 end
             end
-        end
-
-        if not state or tostring(state.CoinId) ~= coinId then
-            petStates[petId] = { CoinId = coinId, Phase = "locked", ConfirmedAt = now }
-        else
-            state.Phase = "locked"
-            state.ConfirmedAt = now
+            if coinId then
+                petStates[petId] = {
+                    CoinId = coinId,
+                    Phase = "locked",
+                    ConfirmedAt = now,
+                    AcceptedAt = now,
+                    External = true,
+                }
+            end
         end
     end
 
@@ -2096,12 +2281,13 @@ local function syncServerAssignments(equipped)
             releaseWait[petId] = nil
         elseif not recordAlive(record) then
             queuePetRelease(petId, now)
+        else
+            petFarm:MaintainLock(petId, state, record, now, "server")
         end
     end
 
     for petId, releaseState in pairs(releaseWait) do
-        if not equipped[petId] or observed[petId] ~= nil
-            or now >= (releaseState.ReadyAt or now) then
+        if not equipped[petId] or now >= (releaseState.ReadyAt or now) then
             releaseWait[petId] = nil
         end
     end
@@ -2111,6 +2297,14 @@ local function assignmentCount()
     local count = 0
     for _ in pairs(petStates) do count = count + 1 end
     return count
+end
+
+function petFarm:PhaseCounts()
+    local locked, pending = 0, 0
+    for _, state in pairs(petStates) do
+        if state.Phase == "locked" then locked = locked + 1 else pending = pending + 1 end
+    end
+    return locked, pending
 end
 
 local function runtimePetCounts(petIds)
@@ -2633,6 +2827,18 @@ local function allocatorPass()
 
         if not config.PetFarm or farmResetRunning or farmResetRequested then return end
 
+        if not petFarm.Engine then
+            if not petFarm.Loading then
+                task.spawn(function()
+                    local ready, engineProblem = petFarm:EnsureEngine()
+                    if not ready then trace("pet engine load", tostring(engineProblem)) end
+                end)
+            end
+            driverStatus = petFarm.Loading and "loading high-throughput UID engine"
+                or "waiting for high-throughput UID engine"
+            return
+        end
+
         local signature = currentFarmSignature()
         if farmSelectionSignature ~= signature then
             requestFarmReset("selection changed")
@@ -2642,10 +2848,22 @@ local function allocatorPass()
         local petIds = getEquippedPetIds()
         local equipped = {}
         for _, petId in ipairs(petIds) do equipped[petId] = true end
+        if #petIds == 0 then return end
 
         if not runtimeDriverReady then resolveControllerHandler("Select Coin") end
-        local usingRuntime, runtimeSeen = syncRuntimeAssignments(equipped)
+        local usingRuntime = syncRuntimeAssignments(equipped)
         if not usingRuntime then syncServerAssignments(equipped) end
+
+        local freePets = {}
+        for _, petId in ipairs(petIds) do
+            if not petStates[petId] and not releaseWait[petId] then
+                table.insert(freePets, petId)
+            end
+        end
+        if #freePets == 0 then
+            pcall(petFarm.Engine, "pump")
+            return
+        end
 
         local targets = orderedTargets(config.Mode)
         local targetIds = {}
@@ -2658,24 +2876,15 @@ local function allocatorPass()
             end
         end
 
-        local freePets = {}
-        for _, petId in ipairs(petIds) do
-            local runtimeReady = not usingRuntime or runtimeSeen[petId] ~= nil
-            if runtimeReady and not petStates[petId] and not releaseWait[petId] then
-                table.insert(freePets, petId)
-            end
-        end
-        if #freePets == 0 then return end
-
         local usable = {}
         for _, record in ipairs(targets) do
-            if os.clock() >= (rejectedUntil[record.Id] or 0) then table.insert(usable, record) end
+            if os.clock() >= (rejectedUntil[tostring(record.Id)] or 0) then
+                table.insert(usable, record)
+            end
         end
-        if #usable == 0 then
-            return
-        end
+        if #usable == 0 then return end
 
-        local plans = {}
+        local plans, plansById = {}, {}
         if config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only" then
             local groupTarget
             for _, state in pairs(petStates) do
@@ -2689,7 +2898,7 @@ local function allocatorPass()
                 end
             end
             groupTarget = groupTarget or usable[1]
-            plans[groupTarget.Id] = { Record = groupTarget, Pets = freePets }
+            plans[1] = { Record = groupTarget, Pets = freePets }
         else
             local claimed = {}
             for _, state in pairs(petStates) do
@@ -2698,27 +2907,28 @@ local function allocatorPass()
             end
             local unique = {}
             for _, record in ipairs(usable) do
-                if not claimed[record.Id] then table.insert(unique, record) end
+                if not claimed[tostring(record.Id)] then table.insert(unique, record) end
             end
-            local sharedIndex = 1
+            local uniqueIndex, sharedIndex = 1, 1
             for _, petId in ipairs(freePets) do
-                local record = table.remove(unique, 1)
+                local record = unique[uniqueIndex]
+                uniqueIndex = uniqueIndex + 1
                 if not record then
                     record = usable[((sharedIndex - 1) % #usable) + 1]
                     sharedIndex = sharedIndex + 1
                 end
-                local plan = plans[record.Id]
+                local recordId = tostring(record.Id)
+                local plan = plansById[recordId]
                 if not plan then
                     plan = { Record = record, Pets = {} }
-                    plans[record.Id] = plan
+                    plansById[recordId] = plan
+                    plans[#plans + 1] = plan
                 end
                 table.insert(plan.Pets, petId)
-                claimed[record.Id] = true
+                claimed[recordId] = true
             end
         end
-        local groupMode = config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only"
-        local useGroupHandler = groupMode and assignmentCount() == 0 and #freePets == #petIds
-        for _, plan in pairs(plans) do dispatchPlan(plan.Record, plan.Pets, useGroupHandler) end
+        for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
         end)
         if not ok then driverStatus = "allocator error: " .. tostring(problem) end
     until not allocatorRequested or not running()
@@ -2913,8 +3123,8 @@ end
 
 UI.FarmHero = UI.FarmTab:Section({ Title = "01 / Adaptive Routing", Box = true, Opened = true })
 UI.FarmHero:Paragraph({
-    Title = "LOCK > BREAK > REASSIGN",
-    Desc = "A deterministic pet allocator with dynamic world/zone discovery and idle-pet recovery.",
+    Title = "RESERVE > JOIN > FARM > BREAK",
+    Desc = "Explicit UID routing fills up to 16 transport lanes while every accepted pet stays locked to one live target.",
 })
 UI.FarmHero:Toggle({
     Flag = "pet_farm",
@@ -2925,6 +3135,12 @@ UI.FarmHero:Toggle({
         local enabled = value == true
         if config.PetFarm == enabled then return end
         config.PetFarm = enabled
+        if enabled and not petFarm.Engine and not petFarm.Loading then
+            task.spawn(function()
+                local ready, problem = petFarm:EnsureEngine()
+                if not ready then trace("pet engine load", tostring(problem)) end
+            end)
+        end
         requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
     end,
 })
@@ -3367,6 +3583,7 @@ local function shutdown(reason)
     config.AutoSuperLucky = false
     config.AutoUltraLucky = false
     config.AutoEgg = false
+    if petFarm.Engine then pcall(petFarm.Engine, "reset") end
     stopAutoEggModule()
     machineModules:StopAll()
     stopBoostModule()
@@ -3550,28 +3767,41 @@ task.spawn(function()
         local equippedIds = getEquippedPetIds()
         local equippedCount = #equippedIds
         local assignedCount = assignmentCount()
+        local lockedCount, pendingCount = petFarm:PhaseCounts()
+        local dispatchStats = petFarm:RefreshStats()
         local networkState = networkReady() and "ready" or "waiting"
         local signalState = Library.Signal and type(Library.Signal.Fire) == "function" and "ready" or "waiting"
         local controllerState = runtimeDriverReady and "linked" or signalState
         local runtimeActive, runtimeIdle, runtimeMissing = runtimePetCounts(equippedIds)
         local runtimeLine = runtimeActive ~= nil
-            and string.format("Runtime: %d active | %d ready | %d unseen", runtimeActive, runtimeIdle, runtimeMissing)
-            or "Runtime: discovering game pet state"
+            and string.format("Visual runtime: %d moving/farming | %d ready | %d unseen",
+                runtimeActive, runtimeIdle, runtimeMissing)
+            or "Visual runtime: optional game-state mirror is still being discovered"
         statusSetters.Farm(string.format(
-            "%s  >  %s\nTargets: %d | reserved: %d/%d | local idle: %d\n%s",
+            "%s  >  %s\nTargets: %d | locks: %d/%d | joining: %d | idle: %d\n%s",
             tostring(world or "unknown"),
             tostring(zone or "unknown"),
             #targets,
-            assignedCount,
+            lockedCount,
             equippedCount,
+            pendingCount,
             math.max(equippedCount - assignedCount, 0),
             runtimeLine
         ))
         statusSetters.Health(string.format(
-            "Network: %s | pet controller: %s | allocator: %s\nRecoveries: %d | last: %s\nDriver: %s",
+            "Network: %s | %s | runtime mirror: %s | allocator: %s\nUID lanes: %d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nRecoveries: %d | last: %s\nDriver: %s",
             networkState,
+            petFarm.RouteSummary,
             controllerState,
             farmResetRunning and "reconfiguring" or "stable",
+            tonumber(dispatchStats.Limit) or 0,
+            tonumber(dispatchStats.Active) or 0,
+            tonumber(dispatchStats.Queued) or 0,
+            math.floor((tonumber(dispatchStats.AverageRTT) or 0) * 1000 + 0.5),
+            tonumber(dispatchStats.Accepted) or 0,
+            tonumber(dispatchStats.Retries) or 0,
+            tonumber(dispatchStats.Rejected) or 0,
+            tonumber(dispatchStats.Errors) or 0,
             idleRecoveryCount,
             lastRecovery,
             driverStatus
@@ -3581,6 +3811,12 @@ end)
 
 pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
+task.defer(function()
+    local ready, problem = petFarm:EnsureEngine()
+    if not ready and problem ~= "engine load already in progress" then
+        trace("pet engine preload", tostring(problem))
+    end
+end)
 end
 
 startInterfaceAndWorkers()
