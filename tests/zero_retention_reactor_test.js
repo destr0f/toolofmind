@@ -31,9 +31,9 @@ assert(!/workspace\s*\.\s*DescendantAdded/.test(graphics),
 
 for (const marker of [
     "MAX_QUEUED_JOBS = 64",
-    "MAX_ORB_QUEUE = 1024",
-    "MAX_ORB_IN_FLIGHT = 2048",
-    "MAX_LOOTBAG_RECORDS = 512",
+    "OrbQueue = 1024",
+    "OrbInFlight = 2048",
+    "LootbagRecords = 512",
     "MAX_PERSISTENT_OBJECTS = 4096",
     "MAX_URGENT_QUEUE = 4096",
     "MAX_NORMAL_QUEUE = 8192",
@@ -56,16 +56,16 @@ assert(engine.includes("clearPending(job.Entries)"),
     "stale pet jobs can retain their pending UID marker");
 assert(farm.includes("if self.AllocatorScheduled or allocatorBusy"),
     "allocator callbacks are not coalesced");
-assert(farm.includes("ORB_BATCH_INTERVAL = 0.25"),
+assert(farm.includes("OrbBatchInterval = 0.25"),
     "native orb microbatch interval drifted from the game protocol");
-assert(farm.includes("ORB_BATCH_LIMIT = 256")
-    && farm.includes("INITIAL_ORB_SCAN_LIMIT = 128")
-    && farm.includes("INITIAL_LOOTBAG_SCAN_LIMIT = 128"),
+assert(farm.includes("OrbBatchSize = 256")
+    && farm.includes("InitialOrbScan = 128")
+    && farm.includes("InitialLootbagScan = 128"),
     "loot reactor startup or batch bounds are unsafe");
 assert(farm.includes("OrbQueuedAt = {}")
-    && farm.includes("age >= ORB_BATCH_INTERVAL"),
+    && farm.includes("age >= LOOT_LIMITS.OrbBatchInterval"),
     "fresh orb IDs can be claimed before the game's native creation window");
-assert(farm.includes("ORB_BATCH_JITTER"),
+assert(farm.includes("LOOT_LIMITS.OrbBatchJitter"),
     "crowded clients no longer stagger their native orb batches");
 assert(farm.includes('self:FireNative("Claim Orbs", ids)'),
     "orb IDs are not sent through one named native batch");
@@ -88,7 +88,7 @@ assert(earlyStartupEnd > 0
     && !farm.slice(0, earlyStartupEnd).includes("lootCollector.StartupArmed = true"),
     "loot reactor can arm before the interface is fully initialized");
 assert(farm.includes("lootCollector.StartupArmed = true")
-    && farm.includes("LOOT_REACTOR_START_DELAY = 0.75")
+    && farm.includes("StartupDelay = 0.75")
     && farm.includes('trace("07A loot reactor starting"'),
     "deferred loot reactor startup guard is missing");
 assert(!farm.includes("self:ScheduleOrbFlush(0)"),

@@ -3595,18 +3595,20 @@ local function reconcileFarmWatchdog()
     end)
 end
 
-local ORB_BATCH_INTERVAL = 0.25
-local ORB_BATCH_JITTER = ((tonumber(player.UserId) or 0) % 31) / 1000
-local ORB_BATCH_LIMIT = 256
-local MAX_ORB_QUEUE = 1024
-local MAX_ORB_IN_FLIGHT = 2048
-local ORB_ACK_TIMEOUT = 0.9
-local INITIAL_ORB_SCAN_LIMIT = 128
-local INITIAL_LOOTBAG_SCAN_LIMIT = 128
-local MAX_LOOTBAG_RECORDS = 512
-local LOOTBAG_ACK_TIMEOUT = 1
-local LOOTBAG_RECORD_TIMEOUT = 12
-local LOOT_REACTOR_START_DELAY = 0.75
+local LOOT_LIMITS = {
+    OrbBatchInterval = 0.25,
+    OrbBatchJitter = ((tonumber(player.UserId) or 0) % 31) / 1000,
+    OrbBatchSize = 256,
+    OrbQueue = 1024,
+    OrbInFlight = 2048,
+    OrbAckTimeout = 0.9,
+    InitialOrbScan = 128,
+    InitialLootbagScan = 128,
+    LootbagRecords = 512,
+    LootbagAckTimeout = 1,
+    LootbagRecordTimeout = 12,
+    StartupDelay = 0.75,
+}
 
 local function disconnectConnection(connection)
     if connection then pcall(function() connection:Disconnect() end) end
@@ -3816,10 +3818,10 @@ function lootCollector:QueueOrb(orbId, attempt)
     if not self.WorkerActive or not config.Orbs then return end
     orbId = tostring(orbId or "")
     if orbId == "" or self.OrbQueued[orbId] or self.OrbInFlight[orbId] then return end
-    if #self.OrbQueue >= MAX_ORB_QUEUE
-        or self.OrbInFlightSize + #self.OrbQueue >= MAX_ORB_IN_FLIGHT then
+    if #self.OrbQueue >= LOOT_LIMITS.OrbQueue
+        or self.OrbInFlightSize + #self.OrbQueue >= LOOT_LIMITS.OrbInFlight then
         self.Stats.Orbs.Expired = self.Stats.Orbs.Expired + 1
-        self:ScheduleOrbFlush(ORB_BATCH_INTERVAL + ORB_BATCH_JITTER)
+        self:ScheduleOrbFlush(LOOT_LIMITS.OrbBatchInterval + LOOT_LIMITS.OrbBatchJitter)
         self:MarkStatus()
         return
     end
@@ -3829,13 +3831,13 @@ function lootCollector:QueueOrb(orbId, attempt)
     self.OrbQueue[#self.OrbQueue + 1] = orbId
     -- Orb visuals are parented by the game after a random delay of up to 0.25s.
     -- Never claim a fresh ID before that native creation window has elapsed.
-    self:ScheduleOrbFlush(ORB_BATCH_INTERVAL + ORB_BATCH_JITTER)
+    self:ScheduleOrbFlush(LOOT_LIMITS.OrbBatchInterval + LOOT_LIMITS.OrbBatchJitter)
     self:MarkStatus()
 end
 
 function lootCollector:ScheduleOrbFlush(delaySeconds)
     if not self.WorkerActive or not config.Orbs then return end
-    local due = os.clock() + math.max(tonumber(delaySeconds) or ORB_BATCH_INTERVAL, 0)
+    local due = os.clock() + math.max(tonumber(delaySeconds) or LOOT_LIMITS.OrbBatchInterval, 0)
     if self.OrbFlushDue and self.OrbFlushDue <= due then return end
     self.OrbFlushDue = due
     self.OrbFlushToken = self.OrbFlushToken + 1
@@ -3863,13 +3865,13 @@ function lootCollector:FlushOrbs()
         local orbId = queuedIds[index]
         if queuedSet[orbId] then
             local age = now - (self.OrbQueuedAt[orbId] or now)
-            if age >= ORB_BATCH_INTERVAL and #ids < ORB_BATCH_LIMIT then
+            if age >= LOOT_LIMITS.OrbBatchInterval and #ids < LOOT_LIMITS.OrbBatchSize then
                 ids[#ids + 1] = orbId
                 self.OrbQueuedAt[orbId] = nil
             else
                 carry[#carry + 1] = orbId
                 carrySet[orbId] = true
-                local waitFor = math.max(ORB_BATCH_INTERVAL - age, 0)
+                local waitFor = math.max(LOOT_LIMITS.OrbBatchInterval - age, 0)
                 nextDelay = nextDelay and math.min(nextDelay, waitFor) or waitFor
             end
         end
@@ -3878,8 +3880,8 @@ function lootCollector:FlushOrbs()
     self.OrbQueued = carrySet
     if #carry > 0 then
         local carryDelay = nextDelay and nextDelay > 0
-            and (nextDelay + ORB_BATCH_JITTER)
-            or (ORB_BATCH_INTERVAL + ORB_BATCH_JITTER)
+            and (nextDelay + LOOT_LIMITS.OrbBatchJitter)
+            or (LOOT_LIMITS.OrbBatchInterval + LOOT_LIMITS.OrbBatchJitter)
         self:ScheduleOrbFlush(carryDelay)
     end
     if #ids == 0 then
@@ -3927,7 +3929,7 @@ end
 
 function lootCollector:ScheduleOrbRetry(delaySeconds)
     if not self.WorkerActive or not config.Orbs or not next(self.OrbInFlight) then return end
-    local due = os.clock() + math.max(tonumber(delaySeconds) or ORB_ACK_TIMEOUT, 0)
+    local due = os.clock() + math.max(tonumber(delaySeconds) or LOOT_LIMITS.OrbAckTimeout, 0)
     if self.OrbRetryDue and self.OrbRetryDue <= due then return end
     self.OrbRetryDue = due
     self.OrbRetryToken = self.OrbRetryToken + 1
@@ -3950,14 +3952,14 @@ function lootCollector:ProcessOrbRetries()
     local nextDelay
     for orbId, state in pairs(self.OrbInFlight) do
         local elapsed = now - (state.SentAt or now)
-        if elapsed >= ORB_ACK_TIMEOUT then
+        if elapsed >= LOOT_LIMITS.OrbAckTimeout then
             if (state.Attempts or 1) < 2 then
                 retryIds[#retryIds + 1] = orbId
             else
                 expireIds[#expireIds + 1] = orbId
             end
         else
-            local waitFor = ORB_ACK_TIMEOUT - elapsed
+            local waitFor = LOOT_LIMITS.OrbAckTimeout - elapsed
             nextDelay = nextDelay and math.min(nextDelay, waitFor) or waitFor
         end
     end
@@ -3985,8 +3987,8 @@ function lootCollector:ProcessOrbRetries()
                 end
             end
             self.Stats.Orbs.Retried = self.Stats.Orbs.Retried + #retryIds
-            nextDelay = nextDelay and math.min(nextDelay, ORB_ACK_TIMEOUT)
-                or ORB_ACK_TIMEOUT
+            nextDelay = nextDelay and math.min(nextDelay, LOOT_LIMITS.OrbAckTimeout)
+                or LOOT_LIMITS.OrbAckTimeout
         else
             self.Stats.Orbs.Errors = self.Stats.Orbs.Errors + #retryIds
             for index = 1, #retryIds do
@@ -4001,7 +4003,9 @@ function lootCollector:ProcessOrbRetries()
         end
     end
 
-    if next(self.OrbInFlight) then self:ScheduleOrbRetry(nextDelay or ORB_ACK_TIMEOUT) end
+    if next(self.OrbInFlight) then
+        self:ScheduleOrbRetry(nextDelay or LOOT_LIMITS.OrbAckTimeout)
+    end
     self:MarkStatus()
 end
 
@@ -4118,7 +4122,7 @@ function lootCollector:TryCollectLootbag(record)
     record.State = "sent"
     setObjectBoolean(item, "Collected", true)
     pcall(function() item:Destroy() end)
-    self:ScheduleLootTimer(LOOTBAG_ACK_TIMEOUT)
+    self:ScheduleLootTimer(LOOT_LIMITS.LootbagAckTimeout)
     self:MarkStatus()
 end
 
@@ -4180,7 +4184,7 @@ function lootCollector:CreateLootbagRecord(lootbagId, item)
         return existing
     end
     if self.LootbagInFlight[lootbagId] then return nil end
-    if self.LootbagRecordCount + self.LootbagInFlightCount >= MAX_LOOTBAG_RECORDS then
+    if self.LootbagRecordCount + self.LootbagInFlightCount >= LOOT_LIMITS.LootbagRecords then
         self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
         self:MarkStatus()
         return nil
@@ -4227,7 +4231,7 @@ function lootCollector:InitialWorldScan()
         local orbs = things and things:FindFirstChild("Orbs")
         if orbs then
             local children = orbs:GetChildren()
-            for index = 1, math.min(#children, INITIAL_ORB_SCAN_LIMIT) do
+            for index = 1, math.min(#children, LOOT_LIMITS.InitialOrbScan) do
                 self:QueueOrb(children[index].Name)
                 orbCount = orbCount + 1
             end
@@ -4237,7 +4241,7 @@ function lootCollector:InitialWorldScan()
         local folder = self:RefreshLootbagFolder()
         if folder then
             local children = folder:GetChildren()
-            for index = 1, math.min(#children, INITIAL_LOOTBAG_SCAN_LIMIT) do
+            for index = 1, math.min(#children, LOOT_LIMITS.InitialLootbagScan) do
                 local item = children[index]
                 local allowed, resolved = localLootOwner(item)
                 if resolved and allowed then
@@ -4306,7 +4310,7 @@ function lootCollector:ProcessLootTimer()
                 if item then self:WatchLootbag(record, item) end
             end
             if self.LootbagRecords[record.Id] == record then
-                if now - record.CreatedAt >= LOOTBAG_RECORD_TIMEOUT then
+                if now - record.CreatedAt >= LOOT_LIMITS.LootbagRecordTimeout then
                     self:DropLootbagRecord(record, true)
                 elseif record.Instance and (not record.NextAttemptAt or now >= record.NextAttemptAt) then
                     record.NextAttemptAt = nil
@@ -4318,7 +4322,7 @@ function lootCollector:ProcessLootTimer()
 
     local inFlight = {}
     for lootbagId, state in pairs(self.LootbagInFlight) do
-        if now - (state.SentAt or now) >= LOOTBAG_ACK_TIMEOUT then
+        if now - (state.SentAt or now) >= LOOT_LIMITS.LootbagAckTimeout then
             inFlight[#inFlight + 1] = { Id = lootbagId, State = state }
         end
     end
@@ -5257,9 +5261,9 @@ end)
 pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
 lootCollector.StartupArmed = true
-task.delay(LOOT_REACTOR_START_DELAY, function()
+task.delay(LOOT_LIMITS.StartupDelay, function()
     if not running() or not lootCollector.StartupArmed then return end
-    trace("07A loot reactor starting", "deferred=" .. tostring(LOOT_REACTOR_START_DELAY) .. "s")
+    trace("07A loot reactor starting", "deferred=" .. tostring(LOOT_LIMITS.StartupDelay) .. "s")
     lootCollector:SyncWorker()
     trace("07B loot reactor ready", "bindings=" .. tostring(#lootCollector.Connections))
 end)
