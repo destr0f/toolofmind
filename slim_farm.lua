@@ -2269,6 +2269,7 @@ end
 local statusViews = {}
 local statusTabs = {}
 local statusSetters = {}
+local Window
 statusSetters.Pending = {}
 statusSetters.Published = {}
 local function interfaceIsVisible()
@@ -3399,7 +3400,7 @@ WindUI:AddTheme({
 })
 
 local UI = {}
-local Window = WindUI:CreateWindow({
+Window = WindUI:CreateWindow({
     Title = "PSX OG | Nova Develop",
     Icon = "sparkles",
     Author = "Reliable automation suite | v" .. VERSION,

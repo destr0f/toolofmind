@@ -160,6 +160,14 @@ for (const marker of [
 ]) {
     assert(farm.includes(marker), `missing bounded UI marker: ${marker}`);
 }
+const windowForwardDeclaration = farm.indexOf("local Window");
+const visibilityGuard = farm.indexOf("local function interfaceIsVisible()");
+const windowCreation = farm.indexOf("Window = WindUI:CreateWindow({");
+assert(windowForwardDeclaration >= 0
+    && windowForwardDeclaration < visibilityGuard
+    && visibilityGuard < windowCreation
+    && !farm.includes("local Window = WindUI:CreateWindow({"),
+    "interface visibility guard captures a late global/shadowed Window");
 assert(!farm.includes("nextZoneRefreshAt")
     && !farm.includes("nextEggRefreshAt"),
     "catalogs still have periodic refresh clocks");
