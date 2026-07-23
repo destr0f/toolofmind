@@ -2818,10 +2818,10 @@ local function runDiamondPackCheck()
     statusSetters.Diamond(status .. "\nNext local check in 3 minutes.")
 end
 
-local diamondWorkerGeneration = 0
-local diamondWorkerThread
-local runDiamondWorker
-local scheduleDiamondWorker
+local diamondWorker = {
+    Generation = 0,
+    Thread = nil,
+}
 
 local function cancelScheduledTask(thread)
     if thread and thread ~= coroutine.running() and type(task.cancel) == "function" then
@@ -2829,18 +2829,18 @@ local function cancelScheduledTask(thread)
     end
 end
 
-scheduleDiamondWorker = function(generation, delay)
-    cancelScheduledTask(diamondWorkerThread)
+diamondWorker.Schedule = function(generation, delay)
+    cancelScheduledTask(diamondWorker.Thread)
     local scheduled
     scheduled = task.delay(math.max(tonumber(delay) or 0, 0), function()
-        if diamondWorkerThread == scheduled then diamondWorkerThread = nil end
-        runDiamondWorker(generation)
+        if diamondWorker.Thread == scheduled then diamondWorker.Thread = nil end
+        diamondWorker.Run(generation)
     end)
-    diamondWorkerThread = scheduled
+    diamondWorker.Thread = scheduled
 end
 
-runDiamondWorker = function(generation)
-    if generation ~= diamondWorkerGeneration or not running()
+diamondWorker.Run = function(generation)
+    if generation ~= diamondWorker.Generation or not running()
         or not config.AutoTechDiamondPack then return end
     local now = os.clock()
     if not diamondPackBusy and now >= diamondPackNextCheck then
@@ -2854,36 +2854,36 @@ runDiamondWorker = function(generation)
         end
     end
     local remaining = math.max(diamondPackNextCheck - os.clock(), 0)
-    scheduleDiamondWorker(generation, math.max(remaining, 0.25))
+    diamondWorker.Schedule(generation, math.max(remaining, 0.25))
 end
 
 local function reconcileDiamondWorker()
-    diamondWorkerGeneration = diamondWorkerGeneration + 1
-    cancelScheduledTask(diamondWorkerThread)
-    diamondWorkerThread = nil
-    local generation = diamondWorkerGeneration
+    diamondWorker.Generation = diamondWorker.Generation + 1
+    cancelScheduledTask(diamondWorker.Thread)
+    diamondWorker.Thread = nil
+    local generation = diamondWorker.Generation
     diamondPackNextCheck = 0
     if not running() or not config.AutoTechDiamondPack then return end
-    scheduleDiamondWorker(generation, 0)
+    diamondWorker.Schedule(generation, 0)
 end
 
-local rewardWorkerGeneration = 0
-local rewardWorkerThread
-local runRewardWorker
-local scheduleRewardWorker
+local rewardWorker = {
+    Generation = 0,
+    Thread = nil,
+}
 
-scheduleRewardWorker = function(generation, delay)
-    cancelScheduledTask(rewardWorkerThread)
+rewardWorker.Schedule = function(generation, delay)
+    cancelScheduledTask(rewardWorker.Thread)
     local scheduled
     scheduled = task.delay(math.max(tonumber(delay) or 0, 0), function()
-        if rewardWorkerThread == scheduled then rewardWorkerThread = nil end
-        runRewardWorker(generation)
+        if rewardWorker.Thread == scheduled then rewardWorker.Thread = nil end
+        rewardWorker.Run(generation)
     end)
-    rewardWorkerThread = scheduled
+    rewardWorker.Thread = scheduled
 end
 
-runRewardWorker = function(generation)
-    if generation ~= rewardWorkerGeneration or not running()
+rewardWorker.Run = function(generation)
+    if generation ~= rewardWorker.Generation or not running()
         or not (config.AutoVIPRewards or config.AutoRankRewards) then return end
     local now = os.clock()
     local nextWake = 300
@@ -2923,16 +2923,16 @@ runRewardWorker = function(generation)
             end
         end
     end
-    scheduleRewardWorker(generation, math.clamp(nextWake, 0.25, 300))
+    rewardWorker.Schedule(generation, math.clamp(nextWake, 0.25, 300))
 end
 
 local function reconcileRewardWorker()
-    rewardWorkerGeneration = rewardWorkerGeneration + 1
-    cancelScheduledTask(rewardWorkerThread)
-    rewardWorkerThread = nil
-    local generation = rewardWorkerGeneration
+    rewardWorker.Generation = rewardWorker.Generation + 1
+    cancelScheduledTask(rewardWorker.Thread)
+    rewardWorker.Thread = nil
+    local generation = rewardWorker.Generation
     if not running() or not (config.AutoVIPRewards or config.AutoRankRewards) then return end
-    scheduleRewardWorker(generation, 0)
+    rewardWorker.Schedule(generation, 0)
 end
 
 function petFarm:RecordExternalPets(record, equipped, allExternal)
@@ -3132,19 +3132,21 @@ requestAllocatorPulse = function()
     petFarm:ScheduleAllocatorPass()
 end
 
-local petLifecycleSignals = {}
-local petLifecycleBindToken = 0
+local petLifecycle = {
+    Signals = {},
+    BindToken = 0,
+}
 
 local function disconnectPetLifecycleSignals()
-    for key, connection in pairs(petLifecycleSignals) do
+    for key, connection in pairs(petLifecycle.Signals) do
         pcall(function() connection:Disconnect() end)
-        petLifecycleSignals[key] = nil
+        petLifecycle.Signals[key] = nil
     end
-    table.clear(petLifecycleSignals)
+    table.clear(petLifecycle.Signals)
 end
 
 local function connectPetLifecycleSignal(name, removed)
-    if petLifecycleSignals[name] then return true end
+    if petLifecycle.Signals[name] then return true end
     local signal = Library and Library.Signal
     if not signal or type(signal.Fired) ~= "function" then return false end
 
@@ -3166,12 +3168,12 @@ local function connectPetLifecycleSignal(name, removed)
         end)
     end)
     if not connected or not connection then return false end
-    petLifecycleSignals[name] = connection
+    petLifecycle.Signals[name] = connection
     return true
 end
 
 local function bindPetLifecycleSignals(attempt, token)
-    if token ~= petLifecycleBindToken or not running() then return end
+    if token ~= petLifecycle.BindToken or not running() then return end
     local added = connectPetLifecycleSignal("Added Client Pet", false)
     local removed = connectPetLifecycleSignal("Removed Client Pet", true)
     if added and removed then return end
@@ -3183,36 +3185,38 @@ local function bindPetLifecycleSignals(attempt, token)
     end
 end
 
-petLifecycleBindToken = petLifecycleBindToken + 1
-task.defer(function() bindPetLifecycleSignals(0, petLifecycleBindToken) end)
+petLifecycle.BindToken = petLifecycle.BindToken + 1
+task.defer(function() bindPetLifecycleSignals(0, petLifecycle.BindToken) end)
 
-local farmRecoveryArmed = false
-local farmRecoveryToken = 0
-local farmZoneWatcherToken = 0
+local farmWatch = {
+    RecoveryArmed = false,
+    RecoveryToken = 0,
+    ZoneToken = 0,
+}
 
 armFarmRecovery = function()
-    if farmRecoveryArmed or not running() or not config.PetFarm then return end
-    farmRecoveryArmed = true
-    local token = farmRecoveryToken
+    if farmWatch.RecoveryArmed or not running() or not config.PetFarm then return end
+    farmWatch.RecoveryArmed = true
+    local token = farmWatch.RecoveryToken
     task.delay(0.15, function()
-        farmRecoveryArmed = false
-        if token ~= farmRecoveryToken or not running() or not config.PetFarm then return end
+        farmWatch.RecoveryArmed = false
+        if token ~= farmWatch.RecoveryToken or not running() or not config.PetFarm then return end
         local expected = tonumber(petFarm.EquippedCount) or 0
         if expected > 0 and assignmentCount() < expected then requestAllocatorPulse() end
     end)
 end
 
 local function restartFarmWatchers()
-    farmRecoveryToken = farmRecoveryToken + 1
-    farmRecoveryArmed = false
-    farmZoneWatcherToken = farmZoneWatcherToken + 1
-    local token = farmZoneWatcherToken
+    farmWatch.RecoveryToken = farmWatch.RecoveryToken + 1
+    farmWatch.RecoveryArmed = false
+    farmWatch.ZoneToken = farmWatch.ZoneToken + 1
+    local token = farmWatch.ZoneToken
     if not running() or not config.PetFarm then return end
     if assignmentCount() < (tonumber(petFarm.EquippedCount) or 0) then armFarmRecovery() end
     if config.Zone ~= "Player Zone" then return end
 
     local function checkZone()
-        if token ~= farmZoneWatcherToken or not running() or not config.PetFarm then return end
+        if token ~= farmWatch.ZoneToken or not running() or not config.PetFarm then return end
         local signature = currentFarmSignature()
         if signature ~= farmSelectionSignature then
             requestFarmReset("player zone changed")
@@ -3993,10 +3997,10 @@ end
 local function finishShutdown()
     local cleaned, problem = pcall(clearAssignments, true)
     if not cleaned then warn("[PSX SLIM] shutdown cleanup: " .. tostring(problem)) end
-    petLifecycleBindToken = petLifecycleBindToken + 1
-    farmRecoveryToken = farmRecoveryToken + 1
-    farmZoneWatcherToken = farmZoneWatcherToken + 1
-    farmRecoveryArmed = false
+    petLifecycle.BindToken = petLifecycle.BindToken + 1
+    farmWatch.RecoveryToken = farmWatch.RecoveryToken + 1
+    farmWatch.ZoneToken = farmWatch.ZoneToken + 1
+    farmWatch.RecoveryArmed = false
     allocatorRequested = false
     allocatorBusy = false
     petCacheValid = false

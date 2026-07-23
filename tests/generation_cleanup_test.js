@@ -91,15 +91,15 @@ for (const [index, machine] of machines.entries()) {
         `machine ${index + 1} can retain a duplicate worker`);
 }
 for (const marker of [
-    "diamondWorkerGeneration = diamondWorkerGeneration + 1",
-    "rewardWorkerGeneration = rewardWorkerGeneration + 1",
-    "cancelScheduledTask(diamondWorkerThread)",
-    "cancelScheduledTask(rewardWorkerThread)",
-    "petLifecycleBindToken = petLifecycleBindToken + 1",
-    "farmRecoveryToken = farmRecoveryToken + 1",
-    "farmZoneWatcherToken = farmZoneWatcherToken + 1",
+    "diamondWorker.Generation = diamondWorker.Generation + 1",
+    "rewardWorker.Generation = rewardWorker.Generation + 1",
+    "cancelScheduledTask(diamondWorker.Thread)",
+    "cancelScheduledTask(rewardWorker.Thread)",
+    "petLifecycle.BindToken = petLifecycle.BindToken + 1",
+    "farmWatch.RecoveryToken = farmWatch.RecoveryToken + 1",
+    "farmWatch.ZoneToken = farmWatch.ZoneToken + 1",
     "disconnectPetLifecycleSignals()",
-    "table.clear(petLifecycleSignals)",
+    "table.clear(petLifecycle.Signals)",
 ]) {
     assert(farm.includes(marker), `main STOP misses generation cleanup: ${marker}`);
 }
