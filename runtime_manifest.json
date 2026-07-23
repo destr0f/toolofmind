@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Develop",
-    "version": "1.4.1-dev.17",
+    "version": "1.4.1-dev.18",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-dev.17",
+    "compatibleSuite": "1.4.1-dev.18",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -44,7 +44,7 @@
       "version": "1.1.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -60,7 +60,7 @@
       "version": "1.2.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -76,7 +76,7 @@
       "version": "2.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": false,
       "load": "lazy",
       "role": "pet-dispatch-transport",
@@ -91,7 +91,7 @@
       "label": "Auto egg",
       "version": "1.3.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -107,7 +107,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -123,7 +123,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -139,7 +139,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -154,7 +154,7 @@
       "label": "Auto boost",
       "version": "1.0.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -169,7 +169,7 @@
       "label": "Graphics anti-lag",
       "version": "source@2b83dcae",
       "versionAuthority": "content-hash",
-      "compatibleSuite": "1.4.1-dev.17",
+      "compatibleSuite": "1.4.1-dev.18",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -249,31 +249,31 @@
   },
   "build": {
     "generatedFromCommit": "2b83dcaee8f8a616be6e492456b062af66b445ca",
-    "sourceTree": "clean",
+    "sourceTree": "dirty",
     "embeddedRuntimeFingerprint": {
       "bytes": 4820,
-      "sha256": "1d3ae77f4a48ea8595d9c472b58c4209b7f212f5ccb1823ce6f31383d39c70dd",
-      "djb2": "fa68a10a"
+      "sha256": "0dc9835322760e18f07ae7d99e0cab005edfacedf26ed21a9dc3aa6915b6fb3a",
+      "djb2": "246e5847"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-dev.17",
-      "bytes": 186538,
-      "sha256": "4320db5c263a56f20f1b646c73e58d055fa748fbb7935ed2e877b208d057e96c",
-      "djb2": "f898db07"
+      "version": "1.4.1-dev.18",
+      "bytes": 200494,
+      "sha256": "39738c8e01d4aab346d09a604d3585e1eeed174d490bd1766f8bdc264bd259ca",
+      "djb2": "5162390b"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 146099,
-        "sha256": "3f84d1233c9dc9ade45f54de16863c570f5559417c09c587713af4d9b1e0ba12",
-        "djb2": "c4dd41b9"
+        "bytes": 158014,
+        "sha256": "ae878026d05e29362169680402be71ec048da29311888f8194ac5ec1640c9b7f",
+        "djb2": "9c70639b"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 146099,
-        "sha256": "3f84d1233c9dc9ade45f54de16863c570f5559417c09c587713af4d9b1e0ba12",
-        "djb2": "c4dd41b9"
+        "bytes": 158014,
+        "sha256": "ae878026d05e29362169680402be71ec048da29311888f8194ac5ec1640c9b7f",
+        "djb2": "9c70639b"
       }
     }
   }

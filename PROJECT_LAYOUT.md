@@ -27,9 +27,10 @@ Lazy loading does not weaken identity checks.
 
 The active build has no global scheduler or retained per-event job registry.
 High-frequency game signals update bounded indexes and wake at most one
-feature-owned coalesced runner. Pet dispatch, loot and graphics queues have
-explicit capacities; disabling a feature stops its worker and clears its
-connections/state. STOP and reload invalidate every active worker token.
+feature-owned coalesced runner. Pet dispatch and graphics queues have explicit
+capacities; loot uses named game events, a bounded orb microbatch and
+ReadyForCollection signals instead of local physics. Disabling a feature clears
+its connections/state. STOP and reload invalidate every active worker token.
 
 ## Repository categories
 

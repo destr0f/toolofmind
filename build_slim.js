@@ -378,6 +378,6 @@ process.stdout.write(
     + `  source identity: ${sourceIdentity.bytes} bytes | sha256=${sourceIdentity.sha256} | djb2=${sourceIdentity.djb2}\n`
     + `  runtime manifest: sha256=${embeddedManifest.fingerprint.sha256} | djb2=${embeddedManifest.fingerprint.djb2}\n`
     + `  artifact: ${artifactIdentity.bytes} bytes | sha256=${artifactIdentity.sha256} | djb2=${artifactIdentity.djb2}\n`
-    + `  features: pet farm, coordinated auto egg, dynamic New Year gold/rainbow/dark matter machines, dark matter auto-claim, adaptive boosts and Boost Bundle fallback, live route health, active balance rates, loot magnet, anti-AFK, persistent profile, potato mode, FPS cap, timer-gated automation\n`
+    + `  features: pet farm, coordinated auto egg, dynamic New Year gold/rainbow/dark matter machines, dark matter auto-claim, adaptive boosts and Boost Bundle fallback, live route health, active balance rates, native zero-physics loot reactor, anti-AFK, persistent profile, potato mode, FPS cap, timer-gated automation\n`
     + `  dependencies: ${manifest.moduleOrder.length} pinned modules + WindUI ${manifest.windUI.version}\n`
 );

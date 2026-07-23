@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.17"
+local VERSION = "1.4.1-dev.18"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -3595,92 +3595,31 @@ local function reconcileFarmWatchdog()
     end)
 end
 
-local MAX_LOOT_ENTRIES = 8192
-local MAX_IMMEDIATE_LOOT_BATCH = 1024
-local IMMEDIATE_LOOT_BUDGET = 0.004
+local ORB_BATCH_INTERVAL = 0.25
+local ORB_BATCH_JITTER = ((tonumber(player.UserId) or 0) % 31) / 1000
+local ORB_BATCH_LIMIT = 768
+local MAX_ORB_QUEUE = 4096
+local MAX_ORB_IN_FLIGHT = 8192
+local ORB_ACK_TIMEOUT = 0.9
+local MAX_LOOTBAG_RECORDS = 1024
+local LOOTBAG_ACK_TIMEOUT = 1
+local LOOTBAG_RECORD_TIMEOUT = 12
 
-local lootCollector = {
-    Ready = { Items = {}, Head = 1 },
-    Retry = { Items = {}, Head = 1 },
-    Entries = {},
-    Ignored = setmetatable({}, { __mode = "k" }),
-    Bindings = {},
-    Enabled = {},
-    RescanRequested = {},
-    ScanCursor = {},
-    Pending = 0,
-    NextBindingAt = 0,
-    NextSweepAt = 0,
-    ScanWarmupUntil = 0,
-    NextStatusAt = 0,
-    ImmediateScheduled = false,
-    Stats = {
-        Seen = 0,
-        Touched = 0,
-        Retried = 0,
-        Expired = 0,
-        Foreign = 0,
-        Dropped = 0,
-        Errors = 0,
-        BulkPasses = 0,
-        LastBulkCount = 0,
-        LastBulkMs = 0,
-    },
-}
-
-function lootCollector:IsEnabled(kind)
-    return kind == "Orbs" and config.Orbs == true
-        or kind == "Lootbags" and config.Lootbags == true
+local function disconnectConnection(connection)
+    if connection then pcall(function() connection:Disconnect() end) end
 end
 
-function lootCollector:Push(channelName, entry)
-    if not entry or not entry.Active then return end
-    if entry.Channel then return end
-    entry.Channel = channelName
-    local channel = self[channelName]
-    channel.Items[#channel.Items + 1] = entry
-end
-
-function lootCollector:Pop(channelName)
-    local channel = self[channelName]
-    local items = channel.Items
-    local scanned = 0
-    while channel.Head <= #items and scanned < 128 do
-        scanned = scanned + 1
-        local entry = items[channel.Head]
-        items[channel.Head] = false
-        channel.Head = channel.Head + 1
-        if entry and entry.Active and entry.Channel == channelName then
-            entry.Channel = nil
-            return entry
-        end
+local function setObjectBoolean(object, name, value)
+    if not object then return end
+    local child = object:FindFirstChild(name .. "_Attr") or object:FindFirstChild(name)
+    if child and child:IsA("ValueBase") then
+        pcall(function() child.Value = value end)
+        return
     end
-    if channel.Head > #items then
-        channel.Items = {}
-        channel.Head = 1
-    elseif channel.Head > 128 and channel.Head > #items / 2 then
-        local compacted = {}
-        for index = channel.Head, #items do compacted[#compacted + 1] = items[index] end
-        channel.Items = compacted
-        channel.Head = 1
-    end
-    return nil
+    pcall(function() object:SetAttribute(name, value) end)
 end
 
-function lootCollector:QueueSpan(channelName)
-    local channel = self[channelName]
-    return math.max(#channel.Items - channel.Head + 1, 0)
-end
-
-function lootCollector:Forget(entry)
-    if not entry or not entry.Active then return end
-    entry.Active = false
-    entry.Channel = nil
-    if self.Entries[entry.Item] == entry then self.Entries[entry.Item] = nil end
-    self.Pending = math.max(self.Pending - 1, 0)
-end
-
-function lootCollector:OwnerAllowed(item)
+local function localLootOwner(item)
     for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
         local value = readObjectValue(item, key)
         if typeof(value) == "Instance" and value:IsA("Player") then
@@ -3692,385 +3631,822 @@ function lootCollector:OwnerAllowed(item)
         if type(value) == "string" and value ~= "" then
             local numeric = tonumber(value)
             if numeric and numeric > 0 then return numeric == player.UserId, true end
-            if string.lower(value) == string.lower(player.Name)
-                or string.lower(value) == string.lower(player.DisplayName) then
+            local lowered = string.lower(value)
+            if lowered == string.lower(player.Name)
+                or lowered == string.lower(player.DisplayName) then
                 return true, true
             end
             local ownerPlayer = Players:FindFirstChild(value)
             if ownerPlayer then return ownerPlayer == player, true end
         end
     end
-    -- Older drops expose no owner metadata. They are still safe to touch; the
-    -- server remains authoritative and simply ignores another player's drop.
-    return true, false
+    return false, false
 end
 
-local function suppressPickupPart(part)
-    if not part or not part:IsA("BasePart") then return nil end
-    part.CanCollide = false
-    part.CanQuery = false
-    part.Massless = true
-    part.CastShadow = false
-    part.Transparency = 1
-    for _, visual in ipairs(part:GetChildren()) do
-        if visual:IsA("ParticleEmitter") or visual:IsA("Trail")
-            or visual:IsA("Beam") then
-            visual.Enabled = false
-        end
+local lootCollector = {
+    WorkerActive = false,
+    Generation = 0,
+    WorldGeneration = 0,
+    Connections = {},
+    LootbagFolder = nil,
+    LootbagFolderConnection = nil,
+    RecordConnectionCount = 0,
+    OrbQueue = {},
+    OrbQueued = {},
+    OrbQueuedAt = {},
+    OrbAttempts = {},
+    OrbInFlight = {},
+    OrbInFlightSize = 0,
+    OrbFlushToken = 0,
+    OrbFlushDue = nil,
+    OrbRetryToken = 0,
+    OrbRetryDue = nil,
+    LootbagRecords = {},
+    LootbagRecordCount = 0,
+    LootbagWaitingReady = 0,
+    LootbagInFlight = {},
+    LootbagInFlightCount = 0,
+    LootTimerToken = 0,
+    LootTimerDue = nil,
+    StatusScheduled = false,
+    StatusDirty = true,
+    Route = {
+        ["Claim Orbs"] = "unavailable",
+        ["Collect Lootbag"] = "unavailable",
+    },
+    Stats = {
+        Orbs = {
+            LastBatch = 0,
+            Batches = 0,
+            Sent = 0,
+            Acknowledged = 0,
+            Retried = 0,
+            Expired = 0,
+            Errors = 0,
+        },
+        Lootbags = {
+            Sent = 0,
+            Acknowledged = 0,
+            Retried = 0,
+            Expired = 0,
+            Skipped = 0,
+            Errors = 0,
+        },
+    },
+}
+
+function lootCollector:IsEnabled()
+    return running() and (config.Orbs == true or config.Lootbags == true)
+end
+
+function lootCollector:AddConnection(connection)
+    if connection then self.Connections[#self.Connections + 1] = connection end
+    return connection
+end
+
+function lootCollector:DisconnectConnections()
+    for index = 1, #self.Connections do
+        disconnectConnection(self.Connections[index])
+        self.Connections[index] = nil
     end
-    return part
 end
 
-local function preparePickupPart(item, knownPart)
-    local part = knownPart and knownPart.Parent and knownPart or nil
-    if not part and item:IsA("BasePart") then part = item end
-    if not part then
-        for _, child in ipairs(item:GetChildren()) do
-            if child:IsA("BasePart") then part = child; break end
-        end
+function lootCollector:SetRoute(commandName, state)
+    state = tostring(state or "unavailable")
+    if self.Route[commandName] ~= state then
+        self.Route[commandName] = state
+        self:MarkStatus()
     end
-    if not part then part = item:FindFirstChildWhichIsA("BasePart", true) end
-    return suppressPickupPart(part)
 end
 
-function lootCollector:QueueItem(item, kind)
-    if not item or not item.Parent or not self:IsEnabled(kind)
-        or self.Entries[item] or self.Ignored[item] then return end
-    if self.Pending >= MAX_LOOT_ENTRIES then
-        self.Stats.Dropped = self.Stats.Dropped + 1
-        self.RescanRequested[kind] = true
+function lootCollector:ProbeRoute(commandName)
+    local remote = getFireRemote(commandName)
+    if remote then
+        self:SetRoute(commandName, "direct")
         return
     end
-    local createdAt = os.clock()
-    local entry = {
-        Item = item,
-        Kind = kind,
-        Active = true,
-        Attempts = 0,
-        CreatedAt = createdAt,
-        NextAt = 0,
-        OwnerChecked = false,
-        NextOwnerCheckAt = 0,
-    }
-    self.Entries[item] = entry
-    self.Pending = self.Pending + 1
-    self.Stats.Seen = self.Stats.Seen + 1
-    self:Push("Ready", entry)
-    self:ScheduleImmediateDrain()
+    local network = networkReady()
+    self:SetRoute(commandName,
+        network and type(network.Fire) == "function" and "fallback" or "unavailable")
 end
 
-function lootCollector:StripVisual(entry)
-    if entry.Stripped then return entry.Part end
-    entry.Stripped = true
-    local ok, part = pcall(preparePickupPart, entry.Item, entry.Part)
-    if not ok then self.Stats.Errors = self.Stats.Errors + 1 end
-    entry.Part = ok and part or nil
-    return entry.Part
-end
-
-function lootCollector:Touch(entry, root, now)
-    local item = entry.Item
-    if not item or not item.Parent then self:Forget(entry); return end
-    if not self:IsEnabled(entry.Kind) then self:Forget(entry); return end
-    if not entry.OwnerChecked and now >= (entry.NextOwnerCheckAt or 0) then
-        local allowed, resolved = self:OwnerAllowed(item)
-        entry.OwnerChecked = resolved or now - entry.CreatedAt >= 0.75
-        entry.NextOwnerCheckAt = now + 0.5
-        if resolved and not allowed then
-            self.Ignored[item] = true
-            self.Stats.Foreign = self.Stats.Foreign + 1
-            self:Forget(entry)
-            return
-        end
+function lootCollector:FireNative(commandName, ...)
+    local arguments = table.pack(...)
+    local fired, problem = fireCommand(commandName, table.unpack(arguments, 1, arguments.n))
+    if fired then
+        self:SetRoute(commandName, "direct")
+        return true, nil
     end
 
-    local part = self:StripVisual(entry)
-    if not part or not part.Parent then
-        entry.Stripped = false
-        entry.Part = nil
-        entry.Attempts = entry.Attempts + 1
-    else
-        local offset = ((entry.Attempts % 3) - 1) * 0.35
-        local destination = root.CFrame * CFrame.new(offset, -2.5, -offset)
-        local moved = pcall(function()
-            part.CanTouch = true
-            part.Anchored = false
-            part.CFrame = destination
-            part.CanCollide = false
-            if type(firetouchinterest) == "function" then
-                firetouchinterest(root, part, 0)
-                firetouchinterest(root, part, 1)
-            end
-            -- Keep an acknowledged-but-not-yet-removed drop out of the local
-            -- physics workload; retries temporarily re-arm it above.
-            part.CanTouch = false
-            part.Anchored = true
+    local network = networkReady()
+    if network and type(network.Fire) == "function" then
+        local fallbackOK, fallbackProblem = pcall(function()
+            network.Fire(commandName, table.unpack(arguments, 1, arguments.n))
         end)
-        if moved then
-            self.Stats.Touched = self.Stats.Touched + 1
-        else
-            self.Stats.Errors = self.Stats.Errors + 1
+        if fallbackOK then
+            self:SetRoute(commandName, "fallback")
+            return true, nil
         end
-        entry.Attempts = entry.Attempts + 1
+        problem = fallbackProblem
     end
-
-    if not entry.Active or not item.Parent then self:Forget(entry); return end
-    if entry.Attempts >= 8 or now - entry.CreatedAt >= 12 then
-        self.Ignored[item] = true
-        self.Stats.Expired = self.Stats.Expired + 1
-        self:Forget(entry)
-        return
-    end
-    -- A first touch normally takes one network RTT to disappear. Retrying at
-    -- 60 ms created several duplicate touches per drop and multiplied traffic
-    -- across crowded clients; first retry now waits for that acknowledgement.
-    local delaySeconds = entry.Attempts <= 1 and 0.3
-        or entry.Attempts == 2 and 0.7
-        or entry.Attempts <= 4 and 1.2 or 2
-    entry.NextAt = now + delaySeconds
-    self.Stats.Retried = self.Stats.Retried + 1
-    self:Push("Retry", entry)
-end
-
-function lootCollector:ScheduleImmediateDrain()
-    if self.ImmediateScheduled or not running() then return end
-    self.ImmediateScheduled = true
-    task.defer(function()
-        local startedAt = os.clock()
-        local character = player.Character
-        local root = character and character:FindFirstChild("HumanoidRootPart")
-        local processed = 0
-        if running() and root then
-            -- Fresh orbs are cheaper to consume in one shallow pass than to
-            -- leave hundreds of animated instances alive across many frames.
-            local deadline = startedAt + IMMEDIATE_LOOT_BUDGET
-            while processed < MAX_IMMEDIATE_LOOT_BATCH and os.clock() < deadline do
-                local entry = self:Pop("Ready")
-                if not entry then break end
-                self:Touch(entry, root, os.clock())
-                processed = processed + 1
-            end
-            if processed > 0 then
-                self.Stats.BulkPasses = self.Stats.BulkPasses + 1
-                self.Stats.LastBulkCount = processed
-                self.Stats.LastBulkMs = math.max(os.clock() - startedAt, 0) * 1000
-            end
-        end
-        self.ImmediateScheduled = false
-        if running() and root and self:QueueSpan("Ready") > 0 then
-            self:ScheduleImmediateDrain()
-        end
-    end)
-end
-
-function lootCollector:RebuildQueues()
-    self.Ready = { Items = {}, Head = 1 }
-    self.Retry = { Items = {}, Head = 1 }
-    local now = os.clock()
-    for _, entry in pairs(self.Entries) do
-        if entry.Active then
-            entry.Channel = nil
-            self:Push(now >= (entry.NextAt or 0) and "Ready" or "Retry", entry)
-        end
-    end
-end
-
-function lootCollector:Reset()
-    for _, binding in pairs(self.Bindings) do
-        for _, connection in ipairs(binding.Connections or {}) do
-            pcall(function() connection:Disconnect() end)
-        end
-    end
-    table.clear(self.Bindings)
-    table.clear(self.Enabled)
-    table.clear(self.RescanRequested)
-    table.clear(self.Entries)
-    self.Ready = { Items = {}, Head = 1 }
-    self.Retry = { Items = {}, Head = 1 }
-    self.Pending = 0
-    self.ImmediateScheduled = false
-end
-
-function lootCollector:StopWorker()
-    self.WorkerEpoch = (self.WorkerEpoch or 0) + 1
-    self.WorkerActive = false
-    self:Reset()
-end
-
-function lootCollector:Scan(kind)
-    local binding = self.Bindings[kind]
-    local folder = binding and binding.Folder
-    if not folder or not self:IsEnabled(kind) then return end
-    local children = folder:GetChildren()
-    local count = #children
-    if count == 0 then self.ScanCursor[kind] = 1; return end
-    local cursor = math.clamp(tonumber(self.ScanCursor[kind]) or 1, 1, count)
-    local scanLimit = kind == "Orbs" and count or math.min(count, 512)
-    for offset = 0, scanLimit - 1 do
-        local index = ((cursor + offset - 1) % count) + 1
-        self:QueueItem(children[index], kind)
-    end
-    self.ScanCursor[kind] = ((cursor + scanLimit - 1) % count) + 1
-end
-
-function lootCollector:Bind(kind, folder)
-    local previous = self.Bindings[kind]
-    if previous and previous.Folder == folder then return end
-    if previous then
-        for _, connection in ipairs(previous.Connections) do
-            pcall(function() connection:Disconnect() end)
-        end
-    end
-    self.Bindings[kind] = nil
-    self.ScanCursor[kind] = 1
-    self.Enabled[kind] = nil
-    if not folder then return end
-    self.ScanWarmupUntil = math.max(self.ScanWarmupUntil, os.clock() + 4)
-
-    local binding = { Folder = folder, Connections = {} }
-    binding.Connections[1] = track(folder.ChildAdded:Connect(function(item)
-        self:QueueItem(item, kind)
-    end))
-    binding.Connections[2] = track(folder.ChildRemoved:Connect(function(item)
-        self:Forget(self.Entries[item])
-    end))
-    self.Bindings[kind] = binding
-end
-
-function lootCollector:RefreshBindings(now)
-    local things = workspace:FindFirstChild("__THINGS")
-    for _, kind in ipairs({ "Orbs", "Lootbags" }) do
-        local folder = self:IsEnabled(kind) and things and things:FindFirstChild(kind) or nil
-        self:Bind(kind, folder)
-        local enabled = self:IsEnabled(kind)
-        if self.Enabled[kind] ~= enabled then
-            self.Enabled[kind] = enabled
-            if enabled then
-                self.ScanWarmupUntil = math.max(self.ScanWarmupUntil, now + 4)
-                self:Scan(kind)
-            else
-                local disabledEntries = {}
-                for _, entry in pairs(self.Entries) do
-                    if entry.Kind == kind then disabledEntries[#disabledEntries + 1] = entry end
-                end
-                for _, entry in ipairs(disabledEntries) do self:Forget(entry) end
-                self:RebuildQueues()
-            end
-        end
-        if self.RescanRequested[kind] and self.Pending <= math.floor(MAX_LOOT_ENTRIES / 2) then
-            self.RescanRequested[kind] = nil
-            self:Scan(kind)
-        end
-    end
-    if now >= self.NextSweepAt then
-        local interval = now < self.ScanWarmupUntil and 1.25 or 8
-        self.NextSweepAt = now + interval
-            + ((tonumber(player.UserId) or 0) % 11) * 0.015
-        if self.Pending < MAX_LOOT_ENTRIES then
-            if config.Orbs then self:Scan("Orbs") end
-            if config.Lootbags then self:Scan("Lootbags") end
-        end
-    end
-end
-
-function lootCollector:ProcessFrame(root, now)
-    local backlog = self.Pending
-    if backlog <= 0 then return end
-    local readyBacklog = self:QueueSpan("Ready")
-    local itemLimit = readyBacklog >= 512 and 512
-        or readyBacklog >= 128 and 256
-        or readyBacklog >= 32 and 128 or 64
-    local timeBudget = readyBacklog >= 512 and 0.006
-        or readyBacklog >= 128 and 0.0045
-        or readyBacklog >= 32 and 0.003 or 0.002
-    -- Start the budget after binding/scanning work. Using the Heartbeat's old
-    -- timestamp could consume the whole deadline before pickup began.
-    local deadline = os.clock() + timeBudget
-    local processed = 0
-
-    while processed < itemLimit and os.clock() < deadline do
-        local entry = self:Pop("Ready")
-        if not entry then break end
-        self:Touch(entry, root, os.clock())
-        processed = processed + 1
-    end
-
-    -- Never let retries delay a fresh drop. Once the first-touch lane is empty,
-    -- inspect only a small retry batch so ten clients cannot amplify stale
-    -- foreign/replicated drops into a touch storm.
-    if self:QueueSpan("Ready") > 0 then return end
-    local retryChecks = self:QueueSpan("Retry")
-    local retryLimit = math.min(32, math.max(itemLimit - processed, 0))
-    local retried = 0
-    while retried < retryLimit and retryChecks > 0 and os.clock() < deadline do
-        retryChecks = retryChecks - 1
-        local entry = self:Pop("Retry")
-        if not entry then break end
-        local current = os.clock()
-        if current >= (entry.NextAt or 0) then
-            self:Touch(entry, root, current)
-            retried = retried + 1
-        else
-            self:Push("Retry", entry)
-        end
-    end
+    self:SetRoute(commandName, "unavailable")
+    return false, tostring(problem or "no live route")
 end
 
 function lootCollector:Status()
+    local orbs = self.Stats.Orbs
+    local bags = self.Stats.Lootbags
+    local activeBindings = #self.Connections
+        + (self.LootbagFolderConnection and 1 or 0)
     return string.format(
-        "Instant bulk: %d passes | last: %d in %.1fms\nQueue: %d ready | %d retry | %d/%d pending\nTouched: %d | retries: %d | expired: %d | foreign: %d | dropped: %d | errors: %d",
-        self.Stats.BulkPasses,
-        self.Stats.LastBulkCount,
-        self.Stats.LastBulkMs,
-        self:QueueSpan("Ready"),
-        self:QueueSpan("Retry"),
-        self.Pending,
-        MAX_LOOT_ENTRIES,
-        self.Stats.Touched,
-        self.Stats.Retried,
-        self.Stats.Expired,
-        self.Stats.Foreign,
-        self.Stats.Dropped,
-        self.Stats.Errors
+        "Native routes: Claim Orbs %s | Collect Lootbag %s\n"
+        .. "Orbs: queued %d | last batch %d | batches/IDs %d/%d | in flight %d | ack/retry/expired/error %d/%d/%d/%d\n"
+        .. "Lootbags: tracked %d | waiting ready %d | in flight %d | sent/ack/retry/expired/skipped/error %d/%d/%d/%d/%d/%d\n"
+        .. "Connections: generation %d.%d | active bindings %d | per-item %d",
+        self.Route["Claim Orbs"],
+        self.Route["Collect Lootbag"],
+        #self.OrbQueue,
+        orbs.LastBatch,
+        orbs.Batches,
+        orbs.Sent,
+        self:OrbInFlightCount(),
+        orbs.Acknowledged,
+        orbs.Retried,
+        orbs.Expired,
+        orbs.Errors,
+        self.LootbagRecordCount,
+        self.LootbagWaitingReady,
+        self.LootbagInFlightCount,
+        bags.Sent,
+        bags.Acknowledged,
+        bags.Retried,
+        bags.Expired,
+        bags.Skipped,
+        bags.Errors,
+        self.Generation,
+        self.WorldGeneration,
+        activeBindings,
+        self.RecordConnectionCount
     )
 end
 
+function lootCollector:MarkStatus()
+    self.StatusDirty = true
+    if self.StatusScheduled or not self.WorkerActive then return end
+    self.StatusScheduled = true
+    local generation = self.Generation
+    task.delay(1, function()
+        if generation ~= self.Generation then return end
+        self.StatusScheduled = false
+        if not self.WorkerActive or not self.StatusDirty then return end
+        self.StatusDirty = false
+        statusSetters.Set("Loot", self:Status())
+    end)
+end
+
+function lootCollector:OrbInFlightCount()
+    return self.OrbInFlightSize
+end
+
+function lootCollector:QueueOrb(orbId, attempt)
+    if not self.WorkerActive or not config.Orbs then return end
+    orbId = tostring(orbId or "")
+    if orbId == "" or self.OrbQueued[orbId] or self.OrbInFlight[orbId] then return end
+    if #self.OrbQueue >= MAX_ORB_QUEUE
+        or self.OrbInFlightSize + #self.OrbQueue >= MAX_ORB_IN_FLIGHT then
+        self.Stats.Orbs.Expired = self.Stats.Orbs.Expired + 1
+        self:ScheduleOrbFlush(0)
+        self:MarkStatus()
+        return
+    end
+    self.OrbQueued[orbId] = true
+    self.OrbQueuedAt[orbId] = os.clock()
+    self.OrbAttempts[orbId] = tonumber(attempt) or self.OrbAttempts[orbId] or 0
+    self.OrbQueue[#self.OrbQueue + 1] = orbId
+    -- Orb visuals are parented by the game after a random delay of up to 0.25s.
+    -- Never claim a fresh ID before that native creation window has elapsed.
+    self:ScheduleOrbFlush(ORB_BATCH_INTERVAL + ORB_BATCH_JITTER)
+    self:MarkStatus()
+end
+
+function lootCollector:ScheduleOrbFlush(delaySeconds)
+    if not self.WorkerActive or not config.Orbs then return end
+    local due = os.clock() + math.max(tonumber(delaySeconds) or ORB_BATCH_INTERVAL, 0)
+    if self.OrbFlushDue and self.OrbFlushDue <= due then return end
+    self.OrbFlushDue = due
+    self.OrbFlushToken = self.OrbFlushToken + 1
+    local tokenValue = self.OrbFlushToken
+    local generation = self.Generation
+    local worldGeneration = self.WorldGeneration
+    task.delay(math.max(due - os.clock(), 0), function()
+        if tokenValue ~= self.OrbFlushToken or generation ~= self.Generation
+            or worldGeneration ~= self.WorldGeneration then return end
+        self.OrbFlushDue = nil
+        self:FlushOrbs()
+    end)
+end
+
+function lootCollector:FlushOrbs()
+    if not self.WorkerActive or not config.Orbs or #self.OrbQueue == 0 then return end
+    local queuedIds = self.OrbQueue
+    local queuedSet = self.OrbQueued
+    local now = os.clock()
+    local ids = {}
+    local carry = {}
+    local carrySet = {}
+    local nextDelay
+    for index = 1, #queuedIds do
+        local orbId = queuedIds[index]
+        if queuedSet[orbId] then
+            local age = now - (self.OrbQueuedAt[orbId] or now)
+            if age >= ORB_BATCH_INTERVAL and #ids < ORB_BATCH_LIMIT then
+                ids[#ids + 1] = orbId
+                self.OrbQueuedAt[orbId] = nil
+            else
+                carry[#carry + 1] = orbId
+                carrySet[orbId] = true
+                local waitFor = math.max(ORB_BATCH_INTERVAL - age, 0)
+                nextDelay = nextDelay and math.min(nextDelay, waitFor) or waitFor
+            end
+        end
+    end
+    self.OrbQueue = carry
+    self.OrbQueued = carrySet
+    if #carry > 0 then
+        self:ScheduleOrbFlush((nextDelay or 0) + (nextDelay and nextDelay > 0
+            and ORB_BATCH_JITTER or 0))
+    end
+    if #ids == 0 then
+        self:MarkStatus()
+        return
+    end
+    local attempts = {}
+    for index = 1, #ids do
+        local orbId = ids[index]
+        local attempt = (tonumber(self.OrbAttempts[orbId]) or 0) + 1
+        attempts[orbId] = attempt
+        if not self.OrbInFlight[orbId] then
+            self.OrbInFlight[orbId] = { SentAt = now, Attempts = attempt }
+            self.OrbInFlightSize = self.OrbInFlightSize + 1
+        end
+    end
+
+    local fired = self:FireNative("Claim Orbs", ids)
+    if fired then
+        local stats = self.Stats.Orbs
+        stats.LastBatch = #ids
+        stats.Batches = stats.Batches + 1
+        stats.Sent = stats.Sent + #ids
+        self:ScheduleOrbRetry()
+    else
+        local stats = self.Stats.Orbs
+        stats.Errors = stats.Errors + #ids
+        for index = 1, #ids do
+            local orbId = ids[index]
+            if self.OrbInFlight[orbId] then
+                self.OrbInFlight[orbId] = nil
+                self.OrbInFlightSize = math.max(self.OrbInFlightSize - 1, 0)
+            end
+            if attempts[orbId] < 2 then
+                stats.Retried = stats.Retried + 1
+                self:QueueOrb(orbId, attempts[orbId])
+            else
+                self.OrbAttempts[orbId] = nil
+                stats.Expired = stats.Expired + 1
+            end
+        end
+    end
+    self:MarkStatus()
+end
+
+function lootCollector:ScheduleOrbRetry(delaySeconds)
+    if not self.WorkerActive or not config.Orbs or not next(self.OrbInFlight) then return end
+    local due = os.clock() + math.max(tonumber(delaySeconds) or ORB_ACK_TIMEOUT, 0)
+    if self.OrbRetryDue and self.OrbRetryDue <= due then return end
+    self.OrbRetryDue = due
+    self.OrbRetryToken = self.OrbRetryToken + 1
+    local tokenValue = self.OrbRetryToken
+    local generation = self.Generation
+    local worldGeneration = self.WorldGeneration
+    task.delay(math.max(due - os.clock(), 0), function()
+        if tokenValue ~= self.OrbRetryToken or generation ~= self.Generation
+            or worldGeneration ~= self.WorldGeneration then return end
+        self.OrbRetryDue = nil
+        self:ProcessOrbRetries()
+    end)
+end
+
+function lootCollector:ProcessOrbRetries()
+    if not self.WorkerActive or not config.Orbs then return end
+    local now = os.clock()
+    local retryIds = {}
+    local expireIds = {}
+    local nextDelay
+    for orbId, state in pairs(self.OrbInFlight) do
+        local elapsed = now - (state.SentAt or now)
+        if elapsed >= ORB_ACK_TIMEOUT then
+            if (state.Attempts or 1) < 2 then
+                retryIds[#retryIds + 1] = orbId
+            else
+                expireIds[#expireIds + 1] = orbId
+            end
+        else
+            local waitFor = ORB_ACK_TIMEOUT - elapsed
+            nextDelay = nextDelay and math.min(nextDelay, waitFor) or waitFor
+        end
+    end
+
+    for index = 1, #expireIds do
+        local orbId = expireIds[index]
+        if self.OrbInFlight[orbId] then
+            self.OrbInFlight[orbId] = nil
+            self.OrbInFlightSize = math.max(self.OrbInFlightSize - 1, 0)
+        end
+        self.OrbAttempts[orbId] = nil
+        self.Stats.Orbs.Expired = self.Stats.Orbs.Expired + 1
+    end
+
+    if #retryIds > 0 then
+        local fired = self:FireNative("Claim Orbs", retryIds)
+        if fired then
+            for index = 1, #retryIds do
+                local orbId = retryIds[index]
+                local state = self.OrbInFlight[orbId]
+                if state then
+                    state.Attempts = 2
+                    state.SentAt = now
+                    self.OrbAttempts[orbId] = 2
+                end
+            end
+            self.Stats.Orbs.Retried = self.Stats.Orbs.Retried + #retryIds
+            nextDelay = nextDelay and math.min(nextDelay, ORB_ACK_TIMEOUT)
+                or ORB_ACK_TIMEOUT
+        else
+            self.Stats.Orbs.Errors = self.Stats.Orbs.Errors + #retryIds
+            for index = 1, #retryIds do
+                local orbId = retryIds[index]
+                if self.OrbInFlight[orbId] then
+                    self.OrbInFlight[orbId] = nil
+                    self.OrbInFlightSize = math.max(self.OrbInFlightSize - 1, 0)
+                end
+                self.OrbAttempts[orbId] = nil
+                self.Stats.Orbs.Expired = self.Stats.Orbs.Expired + 1
+            end
+        end
+    end
+
+    if next(self.OrbInFlight) then self:ScheduleOrbRetry(nextDelay or ORB_ACK_TIMEOUT) end
+    self:MarkStatus()
+end
+
+function lootCollector:OnOrbRemoved(orbId)
+    orbId = tostring(orbId or "")
+    if orbId == "" then return end
+    local known = self.OrbQueued[orbId] or self.OrbInFlight[orbId] ~= nil
+    self.OrbQueued[orbId] = nil
+    self.OrbQueuedAt[orbId] = nil
+    if self.OrbInFlight[orbId] then
+        self.OrbInFlight[orbId] = nil
+        self.OrbInFlightSize = math.max(self.OrbInFlightSize - 1, 0)
+    end
+    self.OrbAttempts[orbId] = nil
+    if known then
+        self.Stats.Orbs.Acknowledged = self.Stats.Orbs.Acknowledged + 1
+        self:MarkStatus()
+    end
+end
+
+function lootCollector:DisconnectRecord(record)
+    if not record then return end
+    local count = 0
+    for _, key in ipairs({ "ReadyConnection", "ReadyAttributeConnection",
+        "ReadyLegacyAttributeConnection", "RemovedConnection" }) do
+        if record[key] then
+            disconnectConnection(record[key])
+            record[key] = nil
+            count = count + 1
+        end
+    end
+    self.RecordConnectionCount = math.max(self.RecordConnectionCount - count, 0)
+end
+
+function lootCollector:DropLootbagRecord(record, expired)
+    if not record or self.LootbagRecords[record.Id] ~= record then return end
+    self:DisconnectRecord(record)
+    if record.State == "waiting-ready" then
+        self.LootbagWaitingReady = math.max(self.LootbagWaitingReady - 1, 0)
+    end
+    self.LootbagRecords[record.Id] = nil
+    self.LootbagRecordCount = math.max(self.LootbagRecordCount - 1, 0)
+    record.Instance = nil
+    record.State = "closed"
+    if expired then
+        self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
+    end
+end
+
+function lootCollector:AddRecordConnection(record, key, connection)
+    if not record or not connection then return end
+    disconnectConnection(record[key])
+    if not record[key] then self.RecordConnectionCount = self.RecordConnectionCount + 1 end
+    record[key] = connection
+end
+
+function lootCollector:TryCollectLootbag(record)
+    if not record or self.LootbagRecords[record.Id] ~= record
+        or record.Generation ~= self.WorldGeneration or record.State == "sending" then return end
+    if record.NextAttemptAt and os.clock() < record.NextAttemptAt then return end
+    local item = record.Instance
+    if not item or not item.Parent then
+        self:DropLootbagRecord(record, true)
+        self:MarkStatus()
+        return
+    end
+    if readObjectValue(item, "Collected") == true then
+        self:DropLootbagRecord(record, false)
+        self:MarkStatus()
+        return
+    end
+    if readObjectValue(item, "ReadyForCollection") ~= true then return end
+
+    local position = getInstancePosition(item)
+    if typeof(position) ~= "Vector3" then
+        self.Stats.Lootbags.Errors = self.Stats.Lootbags.Errors + 1
+        record.NextAttemptAt = os.clock() + 0.5
+        self:ScheduleLootTimer(0.5)
+        self:MarkStatus()
+        return
+    end
+
+    record.State = "sending"
+    record.Attempts = (record.Attempts or 0) + 1
+    local fired = self:FireNative("Collect Lootbag", record.Id, position)
+    if not fired then
+        self.Stats.Lootbags.Errors = self.Stats.Lootbags.Errors + 1
+        if record.Attempts < 2 then
+            record.State = "waiting-ready"
+            record.NextAttemptAt = os.clock() + 0.5
+            self.Stats.Lootbags.Retried = self.Stats.Lootbags.Retried + 1
+            self:ScheduleLootTimer(0.5)
+        else
+            self:DropLootbagRecord(record, true)
+        end
+        self:MarkStatus()
+        return
+    end
+
+    self.Stats.Lootbags.Sent = self.Stats.Lootbags.Sent + 1
+    self:DisconnectRecord(record)
+    if self.LootbagRecords[record.Id] == record then
+        self.LootbagRecords[record.Id] = nil
+        self.LootbagRecordCount = math.max(self.LootbagRecordCount - 1, 0)
+        self.LootbagWaitingReady = math.max(self.LootbagWaitingReady - 1, 0)
+    end
+    self.LootbagInFlight[record.Id] = {
+        SentAt = os.clock(),
+        Attempts = record.Attempts,
+        Position = position,
+    }
+    self.LootbagInFlightCount = self.LootbagInFlightCount + 1
+    record.Instance = nil
+    record.State = "sent"
+    setObjectBoolean(item, "Collected", true)
+    pcall(function() item:Destroy() end)
+    self:ScheduleLootTimer(LOOTBAG_ACK_TIMEOUT)
+    self:MarkStatus()
+end
+
+function lootCollector:WatchLootbag(record, item)
+    if not record or self.LootbagRecords[record.Id] ~= record
+        or record.Generation ~= self.WorldGeneration or not item or not item.Parent then return end
+    if record.Instance == item then
+        self:TryCollectLootbag(record)
+        return
+    end
+    if record.State == "waiting-ready" then
+        self.LootbagWaitingReady = math.max(self.LootbagWaitingReady - 1, 0)
+    end
+    self:DisconnectRecord(record)
+    record.Instance = item
+    record.State = "waiting-ready"
+    self.LootbagWaitingReady = self.LootbagWaitingReady + 1
+
+    local function readyChanged()
+        if record.Generation == self.WorldGeneration then self:TryCollectLootbag(record) end
+    end
+    local readyValue = item:FindFirstChild("ReadyForCollection_Attr")
+        or item:FindFirstChild("ReadyForCollection")
+    if readyValue and readyValue:IsA("ValueBase") then
+        local ok, connection = pcall(function() return readyValue.Changed:Connect(readyChanged) end)
+        if ok then self:AddRecordConnection(record, "ReadyConnection", connection) end
+    end
+    local okAttribute, attributeConnection = pcall(function()
+        return item:GetAttributeChangedSignal("ReadyForCollection"):Connect(readyChanged)
+    end)
+    if okAttribute then
+        self:AddRecordConnection(record, "ReadyAttributeConnection", attributeConnection)
+    end
+    local okLegacy, legacyConnection = pcall(function()
+        return item:GetAttributeChangedSignal("ReadyForCollection_Attr"):Connect(readyChanged)
+    end)
+    if okLegacy then
+        self:AddRecordConnection(record, "ReadyLegacyAttributeConnection", legacyConnection)
+    end
+    local okRemoved, removedConnection = pcall(function()
+        return item.AncestryChanged:Connect(function(_, parent)
+            if parent == nil and self.LootbagRecords[record.Id] == record then
+                self:DropLootbagRecord(record, true)
+                self:MarkStatus()
+            end
+        end)
+    end)
+    if okRemoved then self:AddRecordConnection(record, "RemovedConnection", removedConnection) end
+    self:TryCollectLootbag(record)
+end
+
+function lootCollector:CreateLootbagRecord(lootbagId, item)
+    if not self.WorkerActive or not config.Lootbags then return nil end
+    lootbagId = tostring(lootbagId or "")
+    if lootbagId == "" then return nil end
+    local existing = self.LootbagRecords[lootbagId]
+    if existing then
+        if item and not existing.Instance then self:WatchLootbag(existing, item) end
+        return existing
+    end
+    if self.LootbagInFlight[lootbagId] then return nil end
+    if self.LootbagRecordCount + self.LootbagInFlightCount >= MAX_LOOTBAG_RECORDS then
+        self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
+        self:MarkStatus()
+        return nil
+    end
+    local record = {
+        Id = lootbagId,
+        CreatedAt = os.clock(),
+        Attempts = 0,
+        Generation = self.WorldGeneration,
+        State = "waiting-instance",
+    }
+    self.LootbagRecords[lootbagId] = record
+    self.LootbagRecordCount = self.LootbagRecordCount + 1
+    if item then self:WatchLootbag(record, item) end
+    self:ScheduleLootTimer(1)
+    self:MarkStatus()
+    return record
+end
+
+function lootCollector:RefreshLootbagFolder()
+    local things = workspace:FindFirstChild("__THINGS")
+    local folder = config.Lootbags and things and things:FindFirstChild("Lootbags") or nil
+    if folder == self.LootbagFolder then return folder end
+    disconnectConnection(self.LootbagFolderConnection)
+    self.LootbagFolderConnection = nil
+    self.LootbagFolder = folder
+    if folder then
+        self.LootbagFolderConnection = folder.ChildAdded:Connect(function(item)
+            if not self.WorkerActive or not config.Lootbags then return end
+            local lootbagId = tostring(readObjectValue(item, "ID") or item.Name or "")
+            local record = self.LootbagRecords[lootbagId]
+            if record then self:WatchLootbag(record, item) end
+        end)
+    end
+    self:MarkStatus()
+    return folder
+end
+
+function lootCollector:InitialWorldScan()
+    local things = workspace:FindFirstChild("__THINGS")
+    if config.Orbs then
+        local orbs = things and things:FindFirstChild("Orbs")
+        if orbs then
+            local children = orbs:GetChildren()
+            for index = 1, math.min(#children, MAX_ORB_QUEUE) do
+                self:QueueOrb(children[index].Name)
+            end
+        end
+    end
+    if config.Lootbags then
+        local folder = self:RefreshLootbagFolder()
+        if folder then
+            for _, item in ipairs(folder:GetChildren()) do
+                local allowed, resolved = localLootOwner(item)
+                if resolved and allowed then
+                    local lootbagId = tostring(readObjectValue(item, "ID") or item.Name or "")
+                    self:CreateLootbagRecord(lootbagId, item)
+                else
+                    self.Stats.Lootbags.Skipped = self.Stats.Lootbags.Skipped + 1
+                end
+            end
+        end
+    end
+    self:MarkStatus()
+end
+
+function lootCollector:OnSpawnLootbag(lootbagId)
+    if not self.WorkerActive or not config.Lootbags then return end
+    local folder = self:RefreshLootbagFolder()
+    local item = folder and folder:FindFirstChild(tostring(lootbagId)) or nil
+    self:CreateLootbagRecord(lootbagId, item)
+end
+
+function lootCollector:OnRemoveLootbag(lootbagId)
+    lootbagId = tostring(lootbagId or "")
+    if lootbagId == "" then return end
+    local record = self.LootbagRecords[lootbagId]
+    if record then self:DropLootbagRecord(record, false) end
+    if self.LootbagInFlight[lootbagId] then
+        self.LootbagInFlight[lootbagId] = nil
+        self.LootbagInFlightCount = math.max(self.LootbagInFlightCount - 1, 0)
+        self.Stats.Lootbags.Acknowledged = self.Stats.Lootbags.Acknowledged + 1
+    end
+    self:MarkStatus()
+end
+
+function lootCollector:ScheduleLootTimer(delaySeconds)
+    if not self.WorkerActive or not config.Lootbags then return end
+    local due = os.clock() + math.max(tonumber(delaySeconds) or 1, 0)
+    if self.LootTimerDue and self.LootTimerDue <= due then return end
+    self.LootTimerDue = due
+    self.LootTimerToken = self.LootTimerToken + 1
+    local tokenValue = self.LootTimerToken
+    local generation = self.Generation
+    local worldGeneration = self.WorldGeneration
+    task.delay(math.max(due - os.clock(), 0), function()
+        if tokenValue ~= self.LootTimerToken or generation ~= self.Generation
+            or worldGeneration ~= self.WorldGeneration then return end
+        self.LootTimerDue = nil
+        self:ProcessLootTimer()
+    end)
+end
+
+function lootCollector:ProcessLootTimer()
+    if not self.WorkerActive or not config.Lootbags then return end
+    local now = os.clock()
+    local folder = self:RefreshLootbagFolder()
+    local records = {}
+    for _, record in pairs(self.LootbagRecords) do records[#records + 1] = record end
+    for index = 1, #records do
+        local record = records[index]
+        if self.LootbagRecords[record.Id] == record then
+            if not record.Instance and folder then
+                local item = folder:FindFirstChild(record.Id)
+                if item then self:WatchLootbag(record, item) end
+            end
+            if self.LootbagRecords[record.Id] == record then
+                if now - record.CreatedAt >= LOOTBAG_RECORD_TIMEOUT then
+                    self:DropLootbagRecord(record, true)
+                elseif record.Instance and (not record.NextAttemptAt or now >= record.NextAttemptAt) then
+                    record.NextAttemptAt = nil
+                    self:TryCollectLootbag(record)
+                end
+            end
+        end
+    end
+
+    local inFlight = {}
+    for lootbagId, state in pairs(self.LootbagInFlight) do
+        if now - (state.SentAt or now) >= LOOTBAG_ACK_TIMEOUT then
+            inFlight[#inFlight + 1] = { Id = lootbagId, State = state }
+        end
+    end
+    for index = 1, #inFlight do
+        local entry = inFlight[index]
+        local state = self.LootbagInFlight[entry.Id]
+        if state == entry.State then
+            if (state.Attempts or 1) < 2 then
+                local fired = self:FireNative("Collect Lootbag", entry.Id, state.Position)
+                if fired then
+                    state.Attempts = 2
+                    state.SentAt = now
+                    self.Stats.Lootbags.Retried = self.Stats.Lootbags.Retried + 1
+                else
+                    self.LootbagInFlight[entry.Id] = nil
+                    self.LootbagInFlightCount = math.max(self.LootbagInFlightCount - 1, 0)
+                    self.Stats.Lootbags.Errors = self.Stats.Lootbags.Errors + 1
+                    self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
+                end
+            else
+                self.LootbagInFlight[entry.Id] = nil
+                self.LootbagInFlightCount = math.max(self.LootbagInFlightCount - 1, 0)
+                self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
+            end
+        end
+    end
+
+    if next(self.LootbagRecords) or next(self.LootbagInFlight) then
+        self:ScheduleLootTimer(1)
+    end
+    self:MarkStatus()
+end
+
+function lootCollector:ClearWorldState()
+    disconnectConnection(self.LootbagFolderConnection)
+    self.LootbagFolderConnection = nil
+    self.LootbagFolder = nil
+    for _, record in pairs(self.LootbagRecords) do self:DisconnectRecord(record) end
+    table.clear(self.LootbagRecords)
+    table.clear(self.LootbagInFlight)
+    table.clear(self.OrbQueue)
+    table.clear(self.OrbQueued)
+    table.clear(self.OrbQueuedAt)
+    table.clear(self.OrbAttempts)
+    table.clear(self.OrbInFlight)
+    self.OrbInFlightSize = 0
+    self.LootbagRecordCount = 0
+    self.LootbagWaitingReady = 0
+    self.LootbagInFlightCount = 0
+    self.RecordConnectionCount = 0
+    self.OrbFlushToken = self.OrbFlushToken + 1
+    self.OrbFlushDue = nil
+    self.OrbRetryToken = self.OrbRetryToken + 1
+    self.OrbRetryDue = nil
+    self.LootTimerToken = self.LootTimerToken + 1
+    self.LootTimerDue = nil
+end
+
+function lootCollector:OnWorldChanged()
+    if not self.WorkerActive then return end
+    self.WorldGeneration = self.WorldGeneration + 1
+    self:ClearWorldState()
+    local generation = self.Generation
+    local worldGeneration = self.WorldGeneration
+    task.delay(0.25, function()
+        if generation ~= self.Generation or worldGeneration ~= self.WorldGeneration
+            or not self.WorkerActive then return end
+        self:InitialWorldScan()
+    end)
+    self:MarkStatus()
+end
+
+function lootCollector:ConnectNamedEvent(commandName, callback)
+    local network = networkReady()
+    if not network or type(network.Fired) ~= "function" then return false end
+    local ok, connection = pcall(function()
+        return network.Fired(commandName):Connect(callback)
+    end)
+    if ok and connection then
+        self:AddConnection(connection)
+        return true
+    end
+    return false
+end
+
+function lootCollector:StartWorker()
+    if self.WorkerActive or not self:IsEnabled() then return end
+    self.Generation = self.Generation + 1
+    self.WorldGeneration = self.WorldGeneration + 1
+    self.WorkerActive = true
+    self:ProbeRoute("Claim Orbs")
+    self:ProbeRoute("Collect Lootbag")
+    self:ConnectNamedEvent("Orb Added", function(orbId)
+        self:QueueOrb(orbId)
+    end)
+    self:ConnectNamedEvent("Orb Removed", function(orbId)
+        self:OnOrbRemoved(orbId)
+    end)
+    self:ConnectNamedEvent("Spawn Lootbag", function(lootbagId)
+        self:OnSpawnLootbag(lootbagId)
+    end)
+    self:ConnectNamedEvent("Remove Lootbag", function(lootbagId)
+        self:OnRemoveLootbag(lootbagId)
+    end)
+    if Library.Signal and type(Library.Signal.Fired) == "function" then
+        local ok, connection = pcall(function()
+            return Library.Signal.Fired("World Changed"):Connect(function()
+                self:OnWorldChanged()
+            end)
+        end)
+        if ok then self:AddConnection(connection) end
+    end
+    self:InitialWorldScan()
+    self:MarkStatus()
+end
+
+function lootCollector:StopWorker()
+    self.Generation = self.Generation + 1
+    self.WorldGeneration = self.WorldGeneration + 1
+    self.WorkerActive = false
+    self.StatusScheduled = false
+    self.StatusDirty = false
+    self:DisconnectConnections()
+    self:ClearWorldState()
+    for _, commandName in ipairs({ "Claim Orbs", "Collect Lootbag" }) do
+        local cached = fireRemoteCache[commandName]
+        if typeof(cached) ~= "Instance" or not cached:IsDescendantOf(ReplicatedStorage) then
+            fireRemoteCache[commandName] = nil
+        end
+    end
+    statusSetters.Set("Loot", "Native loot reactor disabled; no collection requests are being sent.")
+end
+
 function lootCollector:SyncWorker()
-    local enabled = running() and (config.Orbs or config.Lootbags)
-    if not enabled then
+    if not self:IsEnabled() then
         self:StopWorker()
         return
     end
-    self.NextBindingAt = 0
-    if self.WorkerActive then return end
-
-    self.WorkerEpoch = (self.WorkerEpoch or 0) + 1
-    local epoch = self.WorkerEpoch
-    self.WorkerActive = true
-    task.spawn(function()
-        while running() and epoch == self.WorkerEpoch and (config.Orbs or config.Lootbags) do
-            if self.Pending > 0 then
-                RunService.Heartbeat:Wait()
-            else
-                task.wait(0.25)
-            end
-            local now = os.clock()
-            if now >= self.NextBindingAt then
-                self.NextBindingAt = now + 0.5
-                self:RefreshBindings(now)
-            end
-            if self.Pending > 0 then
-                local character = player.Character
-                local root = character and character:FindFirstChild("HumanoidRootPart")
-                if root then self:ProcessFrame(root, now) end
-            end
-            if now >= self.NextStatusAt then
-                self.NextStatusAt = now + 1
-                statusSetters.Set("Loot", self:Status())
-            end
-        end
-        if epoch == self.WorkerEpoch then self.WorkerActive = false end
-    end)
+    if self.WorkerActive then
+        self:StopWorker()
+    end
+    self:StartWorker()
 end
 
 lootCollector:SyncWorker()
@@ -4398,37 +4774,36 @@ statusViews.Diamond = UI.DiamondSection:Paragraph({
 })
 uiStageYield("diamond controls")
 
-UI.LootHero = UI.LootTab:Section({ Title = "Local Pickup Layer", Box = true, Opened = true })
+UI.LootHero = UI.LootTab:Section({ Title = "Native Loot Reactor", Box = true, Opened = true })
 UI.LootHero:Paragraph({
-    Title = "FAST COLLECTION",
-    Desc = "Fresh orbs are hidden and touched in one deferred bulk pass; only bounded retries remain frame-budgeted.",
+    Title = "ZERO-PHYSICS COLLECTION",
+    Desc = "Orb IDs are claimed in native microbatches; ready lootbags use the game's named collection command.",
 })
 UI.LootHero:Toggle({
     Flag = "collect_orbs",
     Title = "Collect Orbs",
-    Desc = "Enabled by default: every visible orb is drained in one lightweight bulk pass",
+    Desc = "Enabled by default: Orb Added IDs are deduplicated and claimed every 0.25 seconds",
     Value = true,
     Callback = function(value)
         config.Orbs = value == true
-        lootCollector.NextBindingAt = 0
         lootCollector:SyncWorker()
     end,
 })
 UI.LootHero:Toggle({
     Flag = "collect_lootbags",
     Title = "Collect Lootbags",
-    Desc = "Enabled by default: new bags outrank retries and explicit foreign owners are skipped",
+    Desc = "Enabled by default: locally spawned bags are claimed once ReadyForCollection is true",
     Value = true,
     Callback = function(value)
         config.Lootbags = value == true
-        lootCollector.NextBindingAt = 0
         lootCollector:SyncWorker()
     end,
 })
 statusViews.Loot = UI.LootHero:Paragraph({
-    Title = "Pickup Queue Health",
-    Desc = "Collector starts enabled and is binding the live Orbs/Lootbags folders.",
+    Title = "Native Protocol Health",
+    Desc = "The reactor is binding named Orb/Lootbag events without touching local physics.",
 })
+statusSetters.Set("Loot", lootCollector:Status())
 uiStageYield("loot controls")
 
 UI.RewardsHero = UI.RewardsTab:Section({ Title = "Timer-Gated Rewards", Box = true, Opened = true })
