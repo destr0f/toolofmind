@@ -6,6 +6,9 @@ local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
 local state
+local profiler
+local MODULE_VERSION = "1.0.0"
+local PROFILE_MODULE = "graphics"
 
 local URGENT_OBJECT_LIMIT = 224
 local NORMAL_OBJECT_LIMIT = 56
@@ -20,6 +23,26 @@ local HIDDEN_THINGS = {
     orbs = true,
     lootbags = true,
 }
+
+local function profileBegin()
+    return profiler and profiler.Begin() or nil
+end
+
+local function profileFinish(operation, startedAt)
+    if profiler then profiler.Finish(PROFILE_MODULE, operation, startedAt) end
+end
+
+local function profileGauge(metric, value)
+    if profiler then profiler.Gauge(PROFILE_MODULE, metric, value) end
+end
+
+local function profileScanned(amount)
+    if profiler then profiler.Scanned(PROFILE_MODULE, amount) end
+end
+
+local function profileTemporary(amount)
+    if profiler then profiler.Temporary(PROFILE_MODULE, amount) end
+end
 
 local function disconnectConnection(connection)
     if connection then pcall(function() connection:Disconnect() end) end
@@ -275,6 +298,7 @@ local function processObject(active, object, urgent)
     local childUrgent = urgent or object == active.Things or object == active.Debris
     local childrenOk, children = pcall(function() return object:GetChildren() end)
     if childrenOk then
+        active.ProfileChildTables = (active.ProfileChildTables or 0) + 1
         for _, child in ipairs(children) do enqueue(active, child, childUrgent) end
     end
 end
@@ -317,7 +341,7 @@ end
 local function processPersistent(active, deadline)
     local processed = 0
     local highWater = active.PersistentHighWater
-    if highWater <= 0 then return end
+    if highWater <= 0 then return 0 end
 
     while processed < PERSISTENT_OBJECT_LIMIT and os.clock() < deadline do
         local slot = active.PersistentCursor
@@ -338,6 +362,7 @@ local function processPersistent(active, deadline)
         processed = processed + 1
         if active.PersistentCursor == 1 then highWater = active.PersistentHighWater end
     end
+    return processed
 end
 
 local function processQueue(active)
@@ -347,6 +372,7 @@ local function processQueue(active)
     local nextRenderRefresh = 0
 
     while active.Running and env.PSX_POTATO_STATE == active do
+        local profiledAt = profileBegin()
         local now = os.clock()
         if active.RootRefreshRequested or now >= nextRootRefresh then
             active.RootRefreshRequested = false
@@ -375,7 +401,14 @@ local function processQueue(active)
             normalProcessed = normalProcessed + 1
         end
 
-        processPersistent(active, deadline)
+        local persistentProcessed = processPersistent(active, deadline)
+        local scanned = urgentProcessed + normalProcessed + persistentProcessed
+        profileScanned(scanned)
+        profileTemporary(active.ProfileChildTables or 0)
+        active.ProfileChildTables = 0
+        profileGauge("graphics_queue", #active.UrgentQueue + #active.NormalQueue)
+        profileGauge("graphics_persistent", active.PersistentHighWater)
+        profileFinish("queue_frame", profiledAt)
 
         if #active.UrgentQueue == 0 and #active.NormalQueue == 0 and not active.InitialReported then
             active.InitialReported = true
@@ -412,6 +445,7 @@ local function startPotato()
         PersistentFree = {},
         PersistentHighWater = 0,
         PersistentCursor = 1,
+        ProfileChildTables = 0,
         Effects = 0,
         Hidden = 0,
         Disabled = 0,
@@ -466,6 +500,8 @@ local function setFPS(choice)
 end
 
 return function(action, value)
+    if action == "version" then return MODULE_VERSION end
+    if action == "set-profiler" then profiler = value; return true end
     if action == "potato" then
         if value == false then disconnect(state); return true end
         return startPotato()

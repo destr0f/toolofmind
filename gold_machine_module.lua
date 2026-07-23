@@ -2,9 +2,35 @@
 -- The parent supplies a live pet catalog and a shared inventory-operation gate.
 
 local activeState
+local MODULE_VERSION = "1.0.0"
+local PROFILE_MODULE = "goldMachine"
 
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
+
+local function profile(context)
+    return type(context) == "table" and context.Profiler or nil
+end
+
+local function profileBegin(context)
+    local profiler = profile(context)
+    return profiler and profiler.Begin() or nil
+end
+
+local function profileFinish(context, operation, startedAt)
+    local profiler = profile(context)
+    if profiler then profiler.Finish(PROFILE_MODULE, operation, startedAt) end
+end
+
+local function profileInventoryScan(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.InventoryScan(PROFILE_MODULE, amount) end
+end
+
+local function profileTemporary(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Temporary(PROFILE_MODULE, amount) end
+end
 
 local POWER_ABBREVIATIONS = {
     ["Agility"] = "AG",
@@ -111,7 +137,10 @@ local function refreshPending(state, context, save)
     if next(state.Pending) == nil then return 0 end
     local stillPresent = {}
     local count = 0
+    local scanned = 0
+    profileTemporary(context, 1)
     for _, pet in pairs((save and save.Pets) or {}) do
+        scanned = scanned + 1
         local uid = type(pet) == "table" and pet.uid or nil
         uid = uid ~= nil and tostring(uid) or nil
         if uid and state.Pending[uid] then
@@ -119,6 +148,7 @@ local function refreshPending(state, context, save)
             count = count + 1
         end
     end
+    profileInventoryScan(context, scanned)
     if count == 0 then
         if state.PendingAudit then
             state.LastConfirmedAudit = state.PendingAudit
@@ -144,7 +174,10 @@ local function collectCandidates(state, context, save)
         Found = 0, Eligible = 0, Locked = 0,
         Upgraded = 0, Pending = 0, Equipped = 0,
     }
+    local scanned = 0
+    profileTemporary(context, 3)
     for _, pet in pairs((save and save.Pets) or {}) do
+        scanned = scanned + 1
         if type(pet) == "table" then
             local definition = getDefinition(context, pet)
             local petId = tostring(pet.id or "")
@@ -177,6 +210,7 @@ local function collectCandidates(state, context, save)
             end
         end
     end
+    profileInventoryScan(context, scanned)
     local candidates, selectedId = {}, nil
     local groupCounts = {}
     for id, group in pairs(groups) do
@@ -207,9 +241,13 @@ local function validateSelection(context, selectedCandidates)
     if not save then return false, nil, nil, "fresh Save.Pets is unavailable" end
     local targetIds = targetCatalog(context)
     local byUID = {}
+    local scanned = 0
+    profileTemporary(context, 3)
     for _, pet in pairs(save.Pets or {}) do
+        scanned = scanned + 1
         if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
     end
+    profileInventoryScan(context, scanned)
     local selectedUIDs, auditLabels = {}, {}
     local expectedId
     for index, candidate in ipairs(selectedCandidates) do
@@ -246,7 +284,11 @@ local function resolveBatch(state, context)
         local remote, sourceName, sessionIndex, problem =
             context.GetCommandRemote("Get Golden Machine Info")
         if not remote then return nil, nil, nil, problem end
+        local networkAt = profileBegin(context)
+        local profiler = profile(context)
+        if profiler then profiler.NetworkCall(PROFILE_MODULE, "invoke_Get_Golden_Machine_Info", 1) end
         local ok, info = pcall(function() return remote:InvokeServer() end)
+        profileFinish(context, "network_invoke", networkAt)
         if not ok then
             context.InvalidateCommand("Get Golden Machine Info")
             return nil, nil, nil, "Get Golden Machine Info transport error: " .. tostring(info)
@@ -269,6 +311,10 @@ end
 local function runCheck(state, context)
     if state.Busy then return end
     state.Busy = true
+    local profiler = profile(context)
+    if profiler then
+        profiler.Gauge(PROFILE_MODULE, "inventory_queue", state.OperationOwned and 1 or 0)
+    end
     local function finish(nextDelay)
         state.NextCheck = os.clock() + (nextDelay or 0.5)
         state.Busy = false
@@ -282,6 +328,7 @@ local function runCheck(state, context)
     end
 
     local pendingCount = refreshPending(state, context, save)
+    if profiler then profiler.Gauge(PROFILE_MODULE, "machine_pending", pendingCount) end
     local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, save)
     reportInventory(state, context, stats)
     local batchSize, batchCost, tierChance, batchProblem = resolveBatch(state, context)
@@ -386,6 +433,7 @@ local function stop()
 end
 
 return function(action, context)
+    if action == "version" then return MODULE_VERSION end
     if action == "stop" then return stop() end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
@@ -417,7 +465,9 @@ return function(action, context)
     task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
             if not state.Busy and os.clock() >= state.NextCheck then
+                local profiledAt = profileBegin(context)
                 local ok, problem = pcall(runCheck, state, context)
+                profileFinish(context, "worker_check", profiledAt)
                 if not ok then
                     state.Busy = false
                     releaseOperation(state, context)

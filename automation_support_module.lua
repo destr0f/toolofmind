@@ -1,7 +1,42 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.1.0"
+local PROFILE_MODULE = "automationSupport"
+
+local function profile(context)
+    return type(context) == "table" and context.Profiler or nil
+end
+
+local function profileBegin(context)
+    local profiler = profile(context)
+    return profiler and profiler.Begin() or nil
+end
+
+local function profileFinish(context, operation, startedAt)
+    local profiler = profile(context)
+    if profiler then profiler.Finish(PROFILE_MODULE, operation, startedAt) end
+end
+
+local function profileCount(context, metric, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Count(PROFILE_MODULE, metric, amount or 1) end
+end
+
+local function profileGauge(context, metric, value)
+    local profiler = profile(context)
+    if profiler then profiler.Gauge(PROFILE_MODULE, metric, value) end
+end
+
+local function profileScanned(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Scanned(PROFILE_MODULE, amount) end
+end
+
+local function profileTemporary(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Temporary(PROFILE_MODULE, amount) end
+end
 
 local gate = {
     Owner = nil,
@@ -63,7 +98,10 @@ local function acquire(context, rawOwner)
     else
         waiter.SeenAt = now
     end
-    if gate.Owner then return false, gate.Owner end
+    if gate.Owner then
+        profileCount(context, "inventory_gate_waits", 1)
+        return false, gate.Owner
+    end
 
     local nextOwner, nextSequence
     for candidate, item in pairs(gate.Waiters) do
@@ -71,11 +109,15 @@ local function acquire(context, rawOwner)
             nextOwner, nextSequence = candidate, item.Sequence
         end
     end
-    if nextOwner ~= owner then return false, nextOwner end
+    if nextOwner ~= owner then
+        profileCount(context, "inventory_gate_waits", 1)
+        return false, nextOwner
+    end
 
     gate.Waiters[owner] = nil
     gate.Owner = owner
     gate.OwnerSince = now
+    profileCount(context, "inventory_gate_acquired", 1)
     return true, owner
 end
 
@@ -93,6 +135,8 @@ local function gateStatus(context)
     cleanGate(context)
     local waiting = 0
     for _ in pairs(gate.Waiters) do waiting = waiting + 1 end
+    profileGauge(context, "inventory_queue", waiting)
+    profileGauge(context, "inventory_gate_active", gate.Owner and 1 or 0)
     return gate.Owner or "idle", waiting
 end
 
@@ -110,14 +154,18 @@ end
 local function getCatalog(context, force)
     local now = os.clock()
     if not force and now < catalogCache.ExpiresAt then
+        profileCount(context, "catalog_cache_hits", 1)
         return catalogCache.Ids, catalogCache.Names, catalogCache.Summary
     end
+    local profiledAt = profileBegin(context)
 
     local library = type(context) == "table" and context.Library or nil
     local directory = library and library.Directory or {}
     local pets = type(directory.Pets) == "table" and directory.Pets or {}
     local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
     local ids, eventEggs = {}, {}
+    local scanned = 0
+    profileTemporary(context, 3)
 
     local function addPet(rawId)
         if rawId == nil then return end
@@ -147,6 +195,7 @@ local function getCatalog(context, force)
     end
 
     for eggId, entry in pairs(eggs) do
+        scanned = scanned + 1
         if type(entry) == "table" then
             local marker = normalize(table.concat({
                 tostring(eggId), tostring(entry.displayName or ""),
@@ -168,6 +217,7 @@ local function getCatalog(context, force)
     end
 
     for id, definition in pairs(pets) do
+        scanned = scanned + 1
         if type(definition) == "table" and FALLBACK_NAMES[tostring(definition.name)] then
             addPet(id)
         end
@@ -188,6 +238,8 @@ local function getCatalog(context, force)
         Names = names,
         Summary = summary,
     }
+    profileScanned(context, scanned)
+    profileFinish(context, "catalog_scan", profiledAt)
     return ids, names, summary
 end
 
@@ -200,11 +252,12 @@ local function routeState(resolver, command)
 end
 
 local function routeHealth(context)
+    local profiledAt = profileBegin(context)
     local invoke = function(command) return routeState(context.GetCommandRemote, command) end
     local fire = function(command) return routeState(context.GetFireRemote, command) end
     local _, _, catalogSummary = getCatalog(context, false)
     local owner, waiting = gateStatus(context)
-    return table.concat({
+    local result = table.concat({
         "Egg: Buy=" .. invoke("Buy Egg Yay") .. " | Open event resolves only when Auto Egg starts",
         "Gold: use=" .. invoke("Use Golden Machine") .. " | info=" .. invoke("Get Golden Machine Info"),
         "Rainbow: use=" .. invoke("Use Rainbow Machine") .. " | info=" .. invoke("Get Rainbow Machine Info"),
@@ -216,6 +269,8 @@ local function routeHealth(context)
         "Inventory gate: " .. tostring(owner) .. " | waiting workers: " .. tostring(waiting),
         "Manual local preflight only; no server request was sent.",
     }, "\n")
+    profileFinish(context, "route_health", profiledAt)
+    return result
 end
 
 local function reset()

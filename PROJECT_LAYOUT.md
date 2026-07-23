@@ -19,9 +19,26 @@ At startup the generated entry:
 4. asks modules that expose a read-only `version` action to confirm their exact
    version before caching the controller.
 
-WindUI and `automation_ui_module.lua` are startup dependencies. The remaining
-modules are declared at startup but downloaded only when their feature is used.
-Lazy loading does not weaken identity checks.
+WindUI, `profiler_module.lua` and `automation_ui_module.lua` are startup
+dependencies. The remaining modules are declared at startup but downloaded only
+when their feature is used. Lazy loading does not weaken identity checks.
+
+## Reproducible performance baseline
+
+The Profiler tab can preload every manifest module without starting its feature,
+then record one of eight exact configuration scenarios. A report includes:
+
+- module/operation time with calls/sec and p50/p95/max;
+- explicitly instrumented object scans and temporary hot-path tables;
+- network, loot and inventory queue depth;
+- inventory scans, UI updates and network calls;
+- FPS, frame-time distribution, Lua memory and measured observer overhead;
+- start/finish configuration, environment and manifest/module versions.
+
+Reports are retained in `getgenv().PSX_OG_PROFILER_REPORTS` and exported to
+`PSX_OG_Profiles/*.json` when the executor exposes `writefile`. This phase only
+observes existing work: scenario validation never toggles automation, changes
+intervals or applies Potato Mode.
 
 ## Repository categories
 
@@ -45,6 +62,7 @@ Run:
 ```powershell
 node build_slim.js
 node tests/runtime_manifest_test.js
+luau tests/profiler_baseline_test.lua
 ```
 
 The build fails if a tracked file is unclassified, a file appears in two

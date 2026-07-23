@@ -1,7 +1,8 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.2.0"
+local MODULE_VERSION = "1.3.0"
+local PROFILE_MODULE = "automationUI"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -21,6 +22,8 @@ local function build(context)
         "ReconcileBoost", "BoostEnabled", "StartBoost",
     })
     if not valid then return false, problem end
+    local profiler = context.Profiler
+    local profiledAt = profiler and profiler.Begin() or nil
 
     local UI = context.UI
     local config = context.Config
@@ -351,6 +354,10 @@ local function build(context)
     })
     yieldUI("boost bundle")
 
+    if profiler then
+        profiler.Count(PROFILE_MODULE, "ui_controls_built", 31)
+        profiler.Finish(PROFILE_MODULE, "build", profiledAt)
+    end
     return true, {
         AutoEggToggle = autoEggToggle,
         EggScopeDropdown = eggScope,

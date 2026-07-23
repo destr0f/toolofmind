@@ -2,7 +2,8 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.3.0"
+local MODULE_VERSION = "1.4.0"
+local PROFILE_MODULE = "autoEgg"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -22,6 +23,40 @@ local POST_PROCESS_TIMEOUT = 8
 local NATIVE_SKIP_ARM_TIMEOUT = 8
 local NATIVE_SKIP_CONNECTION_WINDOW = 0.35
 local physicalCache = { Root = nil, ById = {}, ScannedAt = 0 }
+
+local function profile(context)
+    return type(context) == "table" and context.Profiler or nil
+end
+
+local function profileBegin(context)
+    local profiler = profile(context)
+    return profiler and profiler.Begin() or nil
+end
+
+local function profileFinish(context, operation, startedAt)
+    local profiler = profile(context)
+    if profiler then profiler.Finish(PROFILE_MODULE, operation, startedAt) end
+end
+
+local function profileCount(context, metric, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Count(PROFILE_MODULE, metric, amount or 1) end
+end
+
+local function profileScanned(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Scanned(PROFILE_MODULE, amount) end
+end
+
+local function profileTemporary(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Temporary(PROFILE_MODULE, amount) end
+end
+
+local function profileInventoryScan(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.InventoryScan(PROFILE_MODULE, amount) end
+end
 
 local function lower(value)
     return string.lower(tostring(value or ""))
@@ -111,9 +146,13 @@ local function scanPhysical(context, force)
         return physicalCache.ById
     end
 
+    local profiledAt = profileBegin(context)
     local directory = directoryFor(context)
     local byId = {}
-    for _, object in ipairs(root:GetDescendants()) do
+    local descendants = root:GetDescendants()
+    local scanned = #descendants
+    profileTemporary(context, 2)
+    for _, object in ipairs(descendants) do
         if (object:IsA("Model") or object:IsA("Folder")) and object:FindFirstChild("Center") then
             local eggId = instanceEggId(object)
             if eggId and (not directory or directory[eggId]) then
@@ -123,6 +162,8 @@ local function scanPhysical(context, force)
         end
     end
     physicalCache.Root, physicalCache.ById, physicalCache.ScannedAt = root, byId, now
+    profileScanned(context, scanned)
+    profileFinish(context, "physical_egg_scan", profiledAt)
     return byId
 end
 
@@ -252,15 +293,20 @@ local function inspectEgg(context)
 end
 
 local function buildCatalog(context)
+    local profiledAt = profileBegin(context)
     local directory = directoryFor(context)
     if not directory then
+        profileFinish(context, "catalog_build", profiledAt)
         return { "Egg catalog is loading..." }, nil, nil,
             "Library.Directory.Eggs is loading...", {}
     end
     scanPhysical(context, false)
     local entries, nearest, nearestDistance = {}, nil, math.huge
     local loadedCount, nearbyCount = 0, 0
+    local scanned = 0
+    profileTemporary(context, 5)
     for rawId, entry in pairs(directory) do
+        scanned = scanned + 1
         if isHatchable(entry) then
             local eggId = tostring(rawId)
             local physical, distance = physicalEgg(context, eggId, false)
@@ -321,6 +367,8 @@ local function buildCatalog(context)
         "Hatchable: %d | loaded in world: %d | within 15 studs: %d\n%s",
         #entries, loadedCount, nearbyCount, selectedText
     )
+    profileScanned(context, scanned)
+    profileFinish(context, "catalog_build", profiledAt)
     return options, idToLabel[selected], selected, summary, labelToId
 end
 
@@ -378,13 +426,17 @@ local function ownedPetSnapshot(context)
     end
 
     local snapshot = {}
+    local scanned = 0
+    profileTemporary(context, 1)
     for key, pet in pairs(pets) do
+        scanned = scanned + 1
         if type(pet) == "table" then
             local uid = pet.uid or pet.UID
             if uid == nil and type(key) == "string" then uid = key end
             if uid ~= nil then snapshot[tostring(uid)] = true end
         end
     end
+    profileInventoryScan(context, scanned)
     return snapshot
 end
 
@@ -396,7 +448,10 @@ local function petsAddedSince(context, snapshot, expected)
     end
 
     local added = {}
+    local scanned = 0
+    profileTemporary(context, 1)
     for key, pet in pairs(pets) do
+        scanned = scanned + 1
         if type(pet) == "table" then
             local uid = pet.uid or pet.UID
             if uid == nil and type(key) == "string" then uid = key end
@@ -412,6 +467,7 @@ local function petsAddedSince(context, snapshot, expected)
             end
         end
     end
+    profileInventoryScan(context, scanned)
 
     if #added > expected then
         return nil, #added, string.format(
@@ -672,7 +728,9 @@ local function autoDeletePlan(context, pets)
 
     local candidates, seen, rarityCounts = {}, {}, {}
     local payloadCount = 0
+    profileTemporary(context, 3)
     for _, pet in pairs(pets) do
+        profileScanned(context, 1)
         if type(pet) == "table" and (pet.id ~= nil or pet.ID ~= nil) then
             payloadCount = payloadCount + 1
             local uid = pet.uid or pet.UID
@@ -1160,6 +1218,8 @@ local function beginRequest(state, context, options, inspection)
 end
 
 local function runCycle(state, context)
+    local profiler = profile(context)
+    if profiler then profiler.Gauge(PROFILE_MODULE, "network_queue", state.Pending and 1 or 0) end
     local now = os.clock()
     if handlePending(state, context, now) then return end
     releaseHeadlessGate(state, context)
@@ -1216,6 +1276,7 @@ local function stop()
 end
 
 return function(action, context)
+    if action == "version" then return MODULE_VERSION end
     if action == "stop" then return stop() end
     if action == "invalidate-catalog" then
         physicalCache.Root, physicalCache.ById, physicalCache.ScannedAt = nil, {}, 0
@@ -1306,8 +1367,10 @@ return function(action, context)
     local connected, connection = pcall(function()
         return signal:Connect(function(eggName, pets)
             if not state.Running or activeState ~= state then return end
+            local eventProfiledAt = profileBegin(context)
             local pending = state.Pending
             state.OpenEvents = state.OpenEvents + 1
+            profileCount(context, "open_egg_events", 1)
             if pending then pending.OpenEventsSeen = pending.OpenEventsSeen + 1 end
 
             local exactMatch = pending
@@ -1344,7 +1407,13 @@ return function(action, context)
                 cleanEventCache(state, now)
                 local signature = eventSignature(eggName, pets)
                 if not state.AcknowledgedEvents[signature] then
+                    local networkProfiledAt = profileBegin(context)
+                    local profiler = profile(context)
+                    if profiler then
+                        profiler.NetworkCall(PROFILE_MODULE, "fire_Opening_Egg", 1)
+                    end
                     local ackOk, ackProblem = pcall(network.Fire, "Opening Egg", eggName, pets)
+                    profileFinish(context, "network_fire", networkProfiledAt)
                     if ackOk then
                         state.AcknowledgedEvents[signature] = now
                         if matching then pending.Acknowledged = true end
@@ -1369,6 +1438,7 @@ return function(action, context)
                 context.Trace("auto egg", "acknowledged an unexpected Open Egg while the headless gate was owned: "
                     .. tostring(eggName))
             end
+            profileFinish(context, "open_egg_event", eventProfiledAt)
         end)
     end)
     if not connected or not connection then
@@ -1390,7 +1460,9 @@ return function(action, context)
 
     task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
+            local profiledAt = profileBegin(context)
             local ok, problem = pcall(runCycle, state, context)
+            profileFinish(context, "worker_cycle", profiledAt)
             if not ok then
                 releaseHeadlessGate(state, context)
                 releaseInventoryOperation(state, context)

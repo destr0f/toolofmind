@@ -2,8 +2,39 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
+local MODULE_VERSION = "1.0.0"
+local PROFILE_MODULE = "darkMatter"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
+
+local function profile(context)
+    return type(context) == "table" and context.Profiler or nil
+end
+
+local function profileBegin(context)
+    local profiler = profile(context)
+    return profiler and profiler.Begin() or nil
+end
+
+local function profileFinish(context, operation, startedAt)
+    local profiler = profile(context)
+    if profiler then profiler.Finish(PROFILE_MODULE, operation, startedAt) end
+end
+
+local function profileInventoryScan(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.InventoryScan(PROFILE_MODULE, amount) end
+end
+
+local function profileScanned(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Scanned(PROFILE_MODULE, amount) end
+end
+
+local function profileTemporary(context, amount)
+    local profiler = profile(context)
+    if profiler then profiler.Temporary(PROFILE_MODULE, amount) end
+end
 
 local ABBREVIATIONS = {
     ["Agility"] = "AG", ["Chest"] = "CH", ["Chests"] = "CH",
@@ -200,13 +231,17 @@ end
 local function refreshPendingCreate(state, context, save)
     if next(state.PendingCreate) == nil then return 0 end
     local stillPresent, count = {}, 0
+    local scanned = 0
+    profileTemporary(context, 1)
     for _, pet in pairs((save and save.Pets) or {}) do
+        scanned = scanned + 1
         local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
         if uid and state.PendingCreate[uid] then
             stillPresent[uid] = true
             count = count + 1
         end
     end
+    profileInventoryScan(context, scanned)
     if count == 0 then
         if state.PendingCreateAudit then
             state.LastQueuedAudit = state.PendingCreateAudit
@@ -225,12 +260,17 @@ local function refreshPendingCreate(state, context, save)
     return count
 end
 
-local function normalizedQueue(save)
+local function normalizedQueue(context, save)
     local result = {}
+    local scanned = 0
+    profileTemporary(context, 1)
     for slotId, entry in pairs(type(save and save.DarkMatterQueue) == "table"
         and save.DarkMatterQueue or {}) do
+        scanned = scanned + 1
         result[tostring(slotId)] = { Id = slotId, Entry = entry }
+        profileTemporary(context, 1)
     end
+    profileInventoryScan(context, scanned)
     return result
 end
 
@@ -265,7 +305,11 @@ local function getServerTime(state, context)
         state.ServerProblem = problem
         return nil, problem
     end
+    local networkAt = profileBegin(context)
+    local profiler = profile(context)
+    if profiler then profiler.NetworkCall(PROFILE_MODULE, "invoke_Get_OSTime", 1) end
     local ok, raw = pcall(function() return remote:InvokeServer() end)
+    profileFinish(context, "network_invoke", networkAt)
     local value = ok and tonumber(raw) or nil
     if value == nil then
         context.InvalidateCommand("Get OSTime")
@@ -288,7 +332,13 @@ local function resolveMachineInfo(state, context)
     local remote, sourceName, sessionIndex, problem =
         context.GetCommandRemote("Get Dark Matter Machine Info")
     if not remote then return nil, nil, problem end
+    local networkAt = profileBegin(context)
+    local profiler = profile(context)
+    if profiler then
+        profiler.NetworkCall(PROFILE_MODULE, "invoke_Get_Dark_Matter_Machine_Info", 1)
+    end
     local ok, info = pcall(function() return remote:InvokeServer() end)
+    profileFinish(context, "network_invoke", networkAt)
     if not ok then
         context.InvalidateCommand("Get Dark Matter Machine Info")
         return nil, nil, "Get Dark Matter Machine Info transport error: " .. tostring(info)
@@ -310,7 +360,10 @@ local function collectCandidates(state, context, save)
         All = 0, Rainbow = 0, Eligible = 0, Protected = 0,
         Equipped = 0, Locked = 0, Other = 0, Pending = 0,
     }
+    local scanned = 0
+    profileTemporary(context, 3)
     for _, pet in pairs((save and save.Pets) or {}) do
+        scanned = scanned + 1
         if type(pet) == "table" then
             local definition = definitionFor(context, pet)
             local petId = tostring(pet.id or "")
@@ -346,6 +399,7 @@ local function collectCandidates(state, context, save)
             end
         end
     end
+    profileInventoryScan(context, scanned)
     local selected, selectedId = {}, nil
     local groupCounts = {}
     for id, group in pairs(groups) do
@@ -366,9 +420,13 @@ local function validateSelection(context, candidates)
     if not save then return false, nil, nil, "fresh Save.Pets is unavailable" end
     local targetIds = targetCatalog(context)
     local byUID = {}
+    local scanned = 0
+    profileTemporary(context, 3)
     for _, pet in pairs(save.Pets or {}) do
+        scanned = scanned + 1
         if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
     end
+    profileInventoryScan(context, scanned)
     local selectedUIDs, labels, expectedId = {}, {}, nil
     for index, candidate in ipairs(candidates) do
         local uid = tostring(candidate.Uid)
@@ -403,9 +461,12 @@ local function validateSelection(context, candidates)
     return true, selectedUIDs, labels, nil
 end
 
-local function queueSnapshot(queue, serverTime)
+local function queueSnapshot(context, queue, serverTime)
     local ready, nearest = {}, nil
+    local scanned = 0
+    profileTemporary(context, 1)
     for key, item in pairs(queue) do
+        scanned = scanned + 1
         local entry = type(item.Entry) == "table" and item.Entry or {}
         local readyTime = tonumber(entry.readyTime or entry.ReadyTime)
         if serverTime ~= nil and readyTime ~= nil then
@@ -417,6 +478,7 @@ local function queueSnapshot(queue, serverTime)
             end
         end
     end
+    profileScanned(context, scanned)
     table.sort(ready, function(left, right) return left.Key < right.Key end)
     return ready, nearest
 end
@@ -424,6 +486,10 @@ end
 local function runCheck(state, context)
     if state.Busy then return end
     state.Busy = true
+    local profiler = profile(context)
+    if profiler then
+        profiler.Gauge(PROFILE_MODULE, "inventory_queue", state.OperationOwned and 1 or 0)
+    end
     local function finish(delay)
         state.NextCheck = os.clock() + (delay or 0.5)
         state.Busy = false
@@ -436,14 +502,16 @@ local function runCheck(state, context)
         return
     end
 
-    local queue = normalizedQueue(save)
+    local queue = normalizedQueue(context, save)
     local queueCount = dictionaryCount(queue)
+    if profiler then profiler.Gauge(PROFILE_MODULE, "machine_queue", queueCount) end
     local slots = slotLimit(save, queueCount)
     refreshPendingClaims(state, context, queue)
     local pendingCreate = refreshPendingCreate(state, context, save)
+    if profiler then profiler.Gauge(PROFILE_MODULE, "machine_pending", pendingCreate) end
     local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, save)
     local serverTime, clockProblem = getServerTime(state, context)
-    local ready, nearest = queueSnapshot(queue, serverTime)
+    local ready, nearest = queueSnapshot(context, queue, serverTime)
 
     if pendingCreate > 0 then
         setStatus(state, context, "Previous Dark Matter batch accepted; waiting for Save.Pets ("
@@ -643,6 +711,7 @@ local function stop()
 end
 
 return function(action, context)
+    if action == "version" then return MODULE_VERSION end
     if action == "select-tier" then
         context = type(context) == "table" and context or {}
         return selectMachineTier(context.Info, context.BatchSize, context.MaxWaitSeconds)
@@ -672,7 +741,9 @@ return function(action, context)
     task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
             if not state.Busy and os.clock() >= state.NextCheck then
+                local profiledAt = profileBegin(context)
                 local ok, problem = pcall(runCheck, state, context)
+                profileFinish(context, "worker_check", profiledAt)
                 if not ok then
                     state.Busy = false
                     releaseOperation(state, context)
