@@ -3,14 +3,17 @@
 
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
 local state
-local MODULE_VERSION = "1.0.0"
 
 local URGENT_OBJECT_LIMIT = 224
 local NORMAL_OBJECT_LIMIT = 56
 local FRAME_TIME_BUDGET = 0.002
 local PERSISTENT_OBJECT_LIMIT = 28
+local MAX_PERSISTENT_OBJECTS = 4096
+local MAX_URGENT_QUEUE = 4096
+local MAX_NORMAL_QUEUE = 8192
 local ROOT_REFRESH_INTERVAL = 0.75
 local RENDER_REFRESH_INTERVAL = 5
 
@@ -37,9 +40,6 @@ local function disconnect(target)
     target.PersistentSlots = {}
     target.PersistentKinds = {}
     target.PersistentFree = {}
-    if target.Context and target.Context.Kernel then
-        target.Context.Kernel:CancelOwner("graphics", "graphics disabled")
-    end
 end
 
 local function lowerName(object)
@@ -100,6 +100,10 @@ local function registerPersistent(active, object, kind)
     if not active or not active.Running or active.PersistentKinds[object] then return end
     local slot = table.remove(active.PersistentFree)
     if not slot then
+        if active.PersistentHighWater >= MAX_PERSISTENT_OBJECTS then
+            active.Dropped = active.Dropped + 1
+            return
+        end
         active.PersistentHighWater = active.PersistentHighWater + 1
         slot = active.PersistentHighWater
     end
@@ -263,9 +267,42 @@ end
 
 local function enqueue(active, object, urgent)
     if not active.Running or not object or active.Queued[object] then return end
-    active.Queued[object] = true
     local queue = urgent and active.UrgentQueue or active.NormalQueue
+    local limit = urgent and MAX_URGENT_QUEUE or MAX_NORMAL_QUEUE
+    if #queue >= limit then
+        active.Dropped = active.Dropped + 1
+        return
+    end
+    active.Queued[object] = true
     queue[#queue + 1] = object
+end
+
+local function suppressAddedEffect(active, object)
+    local kind
+    if object:IsA("ParticleEmitter") then
+        kind = "particle"
+    elseif object:IsA("Beam") or object:IsA("Trail") or object:IsA("Fire")
+        or object:IsA("Smoke") or object:IsA("Sparkles") or object:IsA("PostEffect")
+        or object:IsA("Highlight") or object:IsA("PointLight")
+        or object:IsA("SpotLight") or object:IsA("SurfaceLight")
+        or object:IsA("Clouds") then
+        kind = "effect"
+    end
+    if not kind then return false end
+    local ok = pcall(suppressPersistent, object, kind)
+    if ok then
+        registerPersistent(active, object, kind)
+        active.Effects = active.Effects + 1
+    else
+        active.Errors = active.Errors + 1
+    end
+    return true
+end
+
+local function queueAddedObject(active, object, urgent)
+    if not active.Running or not object then return end
+    if suppressAddedEffect(active, object) then return end
+    enqueue(active, object, urgent)
 end
 
 local function processObject(active, object, urgent)
@@ -290,11 +327,8 @@ local function popQueue(queue)
     return object
 end
 
-local function trackConnection(active, connection, key)
+local function trackConnection(active, connection)
     if connection then active.Connections[#active.Connections + 1] = connection end
-    if connection and key and active.Context and active.Context.Kernel then
-        active.Context.Kernel:TrackConnection("graphics.root:" .. tostring(key), connection, "graphics")
-    end
     return connection
 end
 
@@ -305,17 +339,11 @@ local function bindRoot(active, key, root, urgent)
     active[key] = root
     if not root then return end
 
-    local connection = active.Context.Kernel:Connect(
-        "graphics.root-added:" .. tostring(key),
-        root.DescendantAdded,
-        "P4",
-        function(object)
-            enqueue(active, object, urgent)
-        end,
-        { Owner = "graphics", Coalesce = false }
-    )
+    local connection = root.DescendantAdded:Connect(function(object)
+        queueAddedObject(active, object, urgent)
+    end)
     active.RootConnections[key] = connection
-    if connection then active.Connections[#active.Connections + 1] = connection end
+    trackConnection(active, connection)
     enqueue(active, root, urgent)
 end
 
@@ -352,56 +380,62 @@ local function processPersistent(active, deadline)
     end
 end
 
-local function processQueue(active, cancelToken)
-    if cancelToken:IsCancelled() or not active.Running or env.PSX_POTATO_STATE ~= active then
-        return false
-    end
-    local now = os.clock()
-    if active.RootRefreshRequested or now >= active.NextRootRefresh then
-        active.RootRefreshRequested = false
-        active.NextRootRefresh = now + ROOT_REFRESH_INTERVAL
-        refreshRoots(active)
-    end
-    if now >= active.NextRenderRefresh then
-        active.NextRenderRefresh = now + RENDER_REFRESH_INTERVAL
-        optimizeRendering()
-    end
+local function processQueue(active)
+    refreshRoots(active)
+    enqueue(active, Lighting, false)
+    local nextRootRefresh = 0
+    local nextRenderRefresh = 0
 
-    local deadline = now + FRAME_TIME_BUDGET
-    local urgentProcessed = 0
-    while urgentProcessed < URGENT_OBJECT_LIMIT and os.clock() < deadline do
-        local object = popQueue(active.UrgentQueue)
-        if not object then break end
-        processObject(active, object, true)
-        urgentProcessed = urgentProcessed + 1
-    end
+    while active.Running and env.PSX_POTATO_STATE == active do
+        local now = os.clock()
+        if active.RootRefreshRequested or now >= nextRootRefresh then
+            active.RootRefreshRequested = false
+            nextRootRefresh = now + ROOT_REFRESH_INTERVAL
+            refreshRoots(active)
+        end
+        if now >= nextRenderRefresh then
+            nextRenderRefresh = now + RENDER_REFRESH_INTERVAL
+            optimizeRendering()
+        end
 
-    local normalProcessed = 0
-    while normalProcessed < NORMAL_OBJECT_LIMIT and os.clock() < deadline do
-        local object = popQueue(active.NormalQueue)
-        if not object then break end
-        processObject(active, object, false)
-        normalProcessed = normalProcessed + 1
-    end
+        local deadline = now + FRAME_TIME_BUDGET
+        local urgentProcessed = 0
+        while urgentProcessed < URGENT_OBJECT_LIMIT and os.clock() < deadline do
+            local object = popQueue(active.UrgentQueue)
+            if not object then break end
+            processObject(active, object, true)
+            urgentProcessed = urgentProcessed + 1
+        end
 
-    processPersistent(active, deadline)
+        local normalProcessed = 0
+        while normalProcessed < NORMAL_OBJECT_LIMIT and os.clock() < deadline do
+            local object = popQueue(active.NormalQueue)
+            if not object then break end
+            processObject(active, object, false)
+            normalProcessed = normalProcessed + 1
+        end
 
-    if #active.UrgentQueue == 0 and #active.NormalQueue == 0 and not active.InitialReported then
-        active.InitialReported = true
-        print(string.format(
-            "[PSX SLIM] farm anti-lag | ready | effects=%d | hidden=%d | stripped=%d | destroyed=%d | protected=%d | errors=%d",
-            active.Effects, active.Hidden, active.Stripped, active.Destroyed,
-            active.Protected, active.Errors
-        ))
+        processPersistent(active, deadline)
+
+        if #active.UrgentQueue == 0 and #active.NormalQueue == 0 and not active.InitialReported then
+            active.InitialReported = true
+            print(string.format(
+                "[PSX SLIM] farm anti-lag | ready | effects=%d | hidden=%d | stripped=%d | destroyed=%d | protected=%d | dropped=%d | errors=%d",
+                active.Effects, active.Hidden, active.Stripped, active.Destroyed,
+                active.Protected, active.Dropped, active.Errors
+            ))
+        end
+
+        if #active.UrgentQueue == 0 and #active.NormalQueue == 0 then
+            task.wait(0.05)
+        else
+            RunService.Heartbeat:Wait()
+        end
     end
-    return (#active.UrgentQueue == 0 and #active.NormalQueue == 0) and 0.05 or 0
 end
 
-local function startPotato(context)
+local function startPotato()
     if state and state.Running then return true end
-    if type(context) ~= "table" or not context.Kernel then
-        return false, "RuntimeKernel context is missing"
-    end
     local previous = env.PSX_POTATO_STATE
     if previous then disconnect(previous) end
 
@@ -414,7 +448,7 @@ local function startPotato(context)
         Seen = setmetatable({}, { __mode = "k" }),
         Queued = setmetatable({}, { __mode = "k" }),
         PersistentKinds = setmetatable({}, { __mode = "k" }),
-        PersistentSlots = {},
+        PersistentSlots = setmetatable({}, { __mode = "v" }),
         PersistentFree = {},
         PersistentHighWater = 0,
         PersistentCursor = 1,
@@ -424,10 +458,8 @@ local function startPotato(context)
         Stripped = 0,
         Destroyed = 0,
         Protected = 0,
+        Dropped = 0,
         Errors = 0,
-        Context = context,
-        NextRootRefresh = 0,
-        NextRenderRefresh = 0,
     }
     state = active
     env.PSX_POTATO_STATE = active
@@ -435,44 +467,25 @@ local function startPotato(context)
 
     -- Only watch the game-owned visual roots. A global Workspace.DescendantAdded
     -- listener needlessly wakes for every character/accessory in crowded servers.
-    trackConnection(active, context.Kernel:Connect("graphics.workspace-added", workspace.ChildAdded, "P4", function(object)
+    trackConnection(active, workspace.ChildAdded:Connect(function(object)
         local name = object.Name
         if name == "__MAP" or name == "__THINGS" or name == "__DEBRIS" then
             active.RootRefreshRequested = true
         end
-    end, { Owner = "graphics", Coalesce = false }))
-    trackConnection(active, context.Kernel:Connect("graphics.workspace-removed", workspace.ChildRemoved, "P4", function(object)
+    end))
+    trackConnection(active, workspace.ChildRemoved:Connect(function(object)
         if object == active.Map or object == active.Things or object == active.Debris then
             active.RootRefreshRequested = true
         end
-    end, { Owner = "graphics", Coalesce = false }))
-    trackConnection(active, context.Kernel:Connect(
-        "graphics.camera",
-        workspace:GetPropertyChangedSignal("CurrentCamera"),
-        "P4",
-        function()
+    end))
+    trackConnection(active, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
         active.RootRefreshRequested = true
-        end,
-        { Owner = "graphics" }
-    ))
-    trackConnection(active, context.Kernel:Connect("graphics.lighting", Lighting.DescendantAdded, "P4", function(object)
-        enqueue(active, object, true)
-    end, { Owner = "graphics", Coalesce = false }))
+    end))
+    trackConnection(active, Lighting.DescendantAdded:Connect(function(object)
+        queueAddedObject(active, object, true)
+    end))
 
-    refreshRoots(active)
-    enqueue(active, Lighting, false)
-    local _, registered, registrationProblem = context.Kernel:Every(
-        "graphics.process",
-        0,
-        "P4",
-        function(cancelToken) return processQueue(active, cancelToken) end,
-        { Owner = "graphics" }
-    )
-    if registered == false then
-        disconnect(active)
-        state = nil
-        return false, "RuntimeKernel rejected graphics worker: " .. tostring(registrationProblem)
-    end
+    task.spawn(processQueue, active)
 
     env.StopPSXPotatoMode = function()
         if env.PSX_POTATO_STATE == active then disconnect(active) end
@@ -493,11 +506,10 @@ local function setFPS(choice)
     return ok, problem
 end
 
-return function(action, value, context)
-    if action == "version" then return MODULE_VERSION end
+return function(action, value)
     if action == "potato" then
         if value == false then disconnect(state); return true end
-        return startPotato(context)
+        return startPotato()
     end
     if action == "fps" then return setFPS(value) end
     if action == "stop" then disconnect(state); return true end

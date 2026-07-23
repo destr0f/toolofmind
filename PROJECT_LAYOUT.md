@@ -19,11 +19,9 @@ At startup the generated entry:
 4. asks modules that expose a read-only `version` action to confirm their exact
    version before caching the controller.
 
-`runtime_kernel_module.lua`, WindUI and `automation_ui_module.lua` are startup
-dependencies. RuntimeKernel owns the single heartbeat scheduler, priority event
-lanes, cancellation and reload/STOP cleanup before feature workers are allowed
-to start. The remaining modules are declared at startup but downloaded only
-when their feature is used. Lazy loading does not weaken identity checks.
+WindUI and `automation_ui_module.lua` are startup dependencies. The remaining
+modules are declared at startup but downloaded only when their feature is used.
+Lazy loading does not weaken identity checks.
 
 ## Repository categories
 
@@ -47,10 +45,8 @@ Run:
 ```powershell
 node build_slim.js
 node tests/runtime_manifest_test.js
-node tests/runtime_scheduler_migration_test.js
 ```
 
 The build fails if a tracked file is unclassified, a file appears in two
 categories, the suite version drifts, a pinned Git blob changes, a vendored
-dependency differs from its release identity, a generated artifact is stale, or
-an active module bypasses RuntimeKernel with an independent background worker.
+dependency differs from its release identity, or a generated artifact is stale.

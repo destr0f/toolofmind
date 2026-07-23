@@ -380,14 +380,10 @@ end
 
 local function stop()
     if activeState then
-        local state = activeState
         activeState.Running = false
         activeState.Busy = false
         clearPending(activeState, activeState.Context)
         pcall(activeState.Context.CancelOperation, activeState.Context.OperationOwner)
-        if state.Context.Kernel then
-            state.Context.Kernel:Unregister(state.JobKey, "gold machine disabled")
-        end
         activeState = nil
     end
     return true
@@ -401,7 +397,7 @@ return function(action, context)
     if type(context) ~= "table" then return false, "module context is missing" end
 
     local required = {
-        "Library", "Kernel", "Running", "Enabled", "GetSave", "GetCurrency", "FormatNumber",
+        "Library", "Running", "Enabled", "GetSave", "GetCurrency", "FormatNumber",
         "GetMachinePetCatalog", "BatchSize", "GetCommandRemote", "InvalidateCommand",
         "InvokeCommand", "RouteText", "AcquireOperation", "ReleaseOperation",
         "CancelOperation", "OperationOwner", "SetStatus", "Trace",
@@ -420,20 +416,12 @@ return function(action, context)
         PendingAt = 0,
         LastConfirmedAudit = "none",
         CompletedBatches = 0,
-        JobKey = "machine.gold",
     }
     activeState = state
     context.Trace("gold machine module", "lazy worker started")
-    local _, registered, registrationProblem = context.Kernel:Every(
-        state.JobKey,
-        0.5,
-        "P3",
-        function(cancelToken)
-            if cancelToken:IsCancelled() or not state.Running or activeState ~= state
-                or not context.Running() or not context.Enabled() then
-                if activeState == state then activeState = nil end
-                return false
-            end
+    local workerTask = context.Task or task
+    workerTask.spawn(function()
+        while state.Running and activeState == state and context.Running() and context.Enabled() do
             if not state.Busy and os.clock() >= state.NextCheck then
                 local ok, problem = pcall(runCheck, state, context)
                 if not ok then
@@ -445,12 +433,9 @@ return function(action, context)
                     context.SetStatus(status .. "\nNext retry in 10 seconds.")
                 end
             end
-        end,
-        { Owner = "machines" }
-    )
-    if registered == false then
-        activeState = nil
-        return false, "RuntimeKernel rejected gold worker: " .. tostring(registrationProblem)
-    end
+            workerTask.wait(0.5)
+        end
+        if activeState == state then activeState = nil end
+    end)
     return true
 end

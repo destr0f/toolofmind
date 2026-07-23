@@ -7,6 +7,12 @@ local DEFAULT_MIN_LANES = 4
 local DEFAULT_MAX_LANES = 16
 local DEFAULT_INITIAL_LANES = 12
 local MAX_JOIN_ATTEMPTS = 3
+local MAX_QUEUED_JOBS = 64
+local scheduler = task or {
+    spawn = function(callback) coroutine.wrap(callback)() end,
+    delay = function(_, callback) coroutine.wrap(callback)() end,
+}
+
 local run = {
     Context = nil,
     Epoch = 0,
@@ -28,7 +34,9 @@ local run = {
     AverageRTT = 0,
     LastRTT = 0,
     LastProblem = "none",
-    TaskSequence = 0,
+    PendingByPet = {},
+    PeakQueued = 0,
+    Dropped = 0,
 }
 
 local pump
@@ -53,44 +61,18 @@ local function compactQueue()
 end
 
 local function resetQueue()
-    local previousContext = run.Context
-    if previousContext and previousContext.Kernel then
-        previousContext.Kernel:CancelOwner("pet-engine", "pet engine reset")
-    end
     run.Epoch = run.Epoch + 1
     run.Queue = {}
     run.Head = 1
-    run.Active = 0
+    table.clear(run.PendingByPet)
 end
 
-local function nextTaskKey(label)
-    run.TaskSequence = run.TaskSequence + 1
-    return "pet-engine." .. tostring(label) .. "." .. tostring(run.TaskSequence)
-end
-
-local function scheduleNow(label, callback)
-    local context = run.Context
-    if not context or not context.Kernel then return false end
-    local _, registered = context.Kernel:Spawn(
-        nextTaskKey(label),
-        "P0",
-        callback,
-        { Owner = "pet-engine" }
-    )
-    return registered ~= false
-end
-
-local function scheduleAfter(label, delay, callback)
-    local context = run.Context
-    if not context or not context.Kernel then return false end
-    local _, registered = context.Kernel:After(
-        nextTaskKey(label),
-        delay,
-        "P0",
-        callback,
-        { Owner = "pet-engine" }
-    )
-    return registered ~= false
+local function clearPending(entries)
+    for _, entry in ipairs(entries or {}) do
+        if run.PendingByPet[entry.PetId] == entry.State then
+            run.PendingByPet[entry.PetId] = nil
+        end
+    end
 end
 
 local function normalizedPetId(value)
@@ -267,6 +249,7 @@ local function scheduleRetry(job, entries, reason)
                         entry.PetId, entry.State, job.Record, reason, job.Attempt)
                 end
             end
+            clearPending(entries)
             return
         end
     end
@@ -276,6 +259,7 @@ local function scheduleRetry(job, entries, reason)
                 pcall(context.OnFailed, entry.PetId, entry.State, job.Record, reason, job.Attempt)
             end
         end
+        clearPending(entries)
         return
     end
 
@@ -292,14 +276,28 @@ local function scheduleRetry(job, entries, reason)
         local jittered, value = pcall(context.RetryJitter, job.Record, job.Attempt)
         if jittered then jitter = math.clamp(tonumber(value) or 0, 0, 0.08) end
     end
-    scheduleAfter("retry", retryDelay(job.Attempt) + jitter, function(cancelToken)
-        if cancelToken:IsCancelled() then return end
+    scheduler.delay(retryDelay(job.Attempt) + jitter, function()
         if epoch ~= run.Epoch then return end
         local retryEntries = {}
         for _, entry in ipairs(entries) do
             if entryCurrent(entry) then retryEntries[#retryEntries + 1] = entry end
         end
-        if #retryEntries == 0 or not contextActive(job) then return end
+        if #retryEntries == 0 or not contextActive(job) then
+            clearPending(entries)
+            return
+        end
+        if queueSize() >= MAX_QUEUED_JOBS then
+            run.Dropped = run.Dropped + #retryEntries
+            run.LastProblem = "bounded retry queue is full"
+            clearPending(retryEntries)
+            for _, entry in ipairs(retryEntries) do
+                if entryCurrent(entry) and context and type(context.OnFailed) == "function" then
+                    pcall(context.OnFailed, entry.PetId, entry.State, job.Record,
+                        run.LastProblem, nextAttempt)
+                end
+            end
+            return
+        end
         run.Queue[#run.Queue + 1] = {
             Epoch = epoch,
             Record = job.Record,
@@ -308,13 +306,17 @@ local function scheduleRetry(job, entries, reason)
             Entries = retryEntries,
             Attempt = nextAttempt,
         }
+        run.PeakQueued = math.max(run.PeakQueued, queueSize())
         pump()
     end)
 end
 
 local function process(job)
     local entries, petIds = currentEntries(job)
-    if #entries == 0 then return end
+    if #entries == 0 then
+        clearPending(job.Entries)
+        return
+    end
 
     local startedAt = os.clock()
     local invoked, response, route = callNamedInvoke("Join Coin", job.CoinId, petIds)
@@ -350,6 +352,7 @@ local function process(job)
         local staleIds = {}
         for _, entry in ipairs(acceptedEntries) do staleIds[#staleIds + 1] = entry.PetId end
         leaveStale(job, staleIds)
+        clearPending(entries)
         return
     end
 
@@ -381,6 +384,7 @@ local function process(job)
             end
         end
     end
+    clearPending(acceptedEntries)
 
     if #rejectedEntries > 0 then
         run.LastProblem = "Join Coin rejected " .. tostring(#rejectedEntries) .. " pet(s)"
@@ -398,11 +402,7 @@ pump = function()
         run.Head = run.Head + 1
         if contextActive(job) then
             run.Active = run.Active + 1
-            local scheduled = scheduleNow("dispatch", function(cancelToken)
-                if cancelToken:IsCancelled() then
-                    run.Active = math.max(run.Active - 1, 0)
-                    return
-                end
+            scheduler.spawn(function()
                 local handled, problem = pcall(process, job)
                 if not handled then
                     run.Errors = run.Errors + 1
@@ -417,11 +417,8 @@ pump = function()
                 local context = run.Context
                 if context and type(context.Pulse) == "function" then pcall(context.Pulse) end
             end)
-            if not scheduled then
-                run.Active = math.max(run.Active - 1, 0)
-                run.Errors = run.Errors + 1
-                run.LastProblem = "RuntimeKernel rejected dispatch job"
-            end
+        else
+            clearPending(job.Entries)
         end
     end
     compactQueue()
@@ -429,7 +426,6 @@ end
 
 local function start(context)
     if type(context) ~= "table" then return false, "context table required" end
-    if type(context.Kernel) ~= "table" then return false, "RuntimeKernel context required" end
     resetQueue()
     run.Context = context
     run.MinLanes = math.max(1, tonumber(context.MinLanes) or DEFAULT_MIN_LANES)
@@ -451,13 +447,22 @@ local function dispatch(payload)
     local entries = {}
     for _, entry in ipairs(payload.Entries) do
         if type(entry) == "table" and entry.PetId ~= nil and entry.State ~= nil then
-            entries[#entries + 1] = {
-                PetId = tostring(entry.PetId),
-                State = entry.State,
-            }
+            local petId = tostring(entry.PetId)
+            if run.PendingByPet[petId] ~= entry.State then
+                entries[#entries + 1] = {
+                    PetId = petId,
+                    State = entry.State,
+                }
+                run.PendingByPet[petId] = entry.State
+            end
         end
     end
     if #entries == 0 then return false, "dispatch has no current pets" end
+    if queueSize() >= MAX_QUEUED_JOBS then
+        run.Dropped = run.Dropped + #entries
+        clearPending(entries)
+        return false, "bounded dispatch queue is full"
+    end
     run.Queue[#run.Queue + 1] = {
         Epoch = run.Epoch,
         Record = payload.Record,
@@ -466,6 +471,7 @@ local function dispatch(payload)
         Entries = entries,
         Attempt = math.max(1, tonumber(payload.Attempt) or 1),
     }
+    run.PeakQueued = math.max(run.PeakQueued, queueSize())
     pump()
     return true
 end
@@ -488,6 +494,9 @@ local function stats()
         AverageRTT = run.AverageRTT,
         LastRTT = run.LastRTT,
         LastProblem = run.LastProblem,
+        PeakQueued = run.PeakQueued,
+        Dropped = run.Dropped,
+        QueueCapacity = MAX_QUEUED_JOBS,
     }
 end
 

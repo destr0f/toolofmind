@@ -148,6 +148,23 @@ function luaString(value) {
         .replace(/\\u2029/g, "\\226\\128\\169");
 }
 
+function toLua(value, indent = "") {
+    if (value === null || value === undefined) return "nil";
+    if (typeof value === "string") return luaString(value);
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    const next = indent + "    ";
+    if (Array.isArray(value)) {
+        if (value.length === 0) return "{}";
+        return `{\n${value.map((item) => `${next}${toLua(item, next)},`).join("\n")}\n${indent}}`;
+    }
+    const entries = Object.entries(value);
+    if (entries.length === 0) return "{}";
+    return `{\n${entries.map(([key, item]) => {
+        const field = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? key : `[${luaString(key)}]`;
+        return `${next}${field} = ${toLua(item, next)},`;
+    }).join("\n")}\n${indent}}`;
+}
+
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8").replace(/^\uFEFF/, ""));
 validateManifest(manifest);
 
@@ -169,14 +186,9 @@ const sourceCodePaths = [
     manifest.windUI.vendorPath,
 ].filter((value, index, values) => values.indexOf(value) === index);
 const sourceCommit = git(["log", "-1", "--format=%H", "--", ...sourceCodePaths]).trim();
-const releaseInputPaths = [
-    ...sourceCodePaths,
-    "runtime_manifest.json",
-    ...(manifest.layout.tests.files || []),
-    ...(manifest.layout.documentation.files || []),
-].filter((value, index, values) => values.indexOf(value) === index);
 const sourceTree = git([
-    "status", "--porcelain", "--", ...releaseInputPaths,
+    "status", "--porcelain", "--",
+    ...sourceCodePaths,
 ]).trim() === "" ? "clean" : "dirty";
 
 const embeddedManifest = {
@@ -194,16 +206,7 @@ const embeddedManifest = {
 };
 const embeddedBytes = Buffer.from(JSON.stringify(embeddedManifest), "utf8");
 embeddedManifest.fingerprint = identity(embeddedBytes);
-// A deeply nested Luau table literal keeps hundreds of constructor
-// temporaries in the top-level chunk. Once RuntimeKernel became the tenth
-// pinned module that crossed Luau's 200-register ceiling even though the
-// readable source still compiled. One immutable JSON string plus the native
-// decoder keeps manifest verification identical without consuming registers.
-const embeddedManifestJson = JSON.stringify(embeddedManifest);
-const buildSource = rawSource.replace(
-    manifestMarker,
-    `game:GetService("HttpService"):JSONDecode(${luaString(embeddedManifestJson)})`,
-);
+const buildSource = rawSource.replace(manifestMarker, toLua(embeddedManifest));
 
 const operators = [
     "...", "..=", "//=", "<<=", ">>=", "==", "~=", "<=", ">=", "+=", "-=",

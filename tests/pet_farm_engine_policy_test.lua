@@ -35,17 +35,9 @@ assert(math.abs(engine("retry-delay", 2) - 0.12) < 0.0001)
 assert(math.abs(engine("retry-delay", 3) - 0.24) < 0.0001)
 assert(math.abs(engine("retry-delay", 9) - 0.24) < 0.0001)
 
-local kernelToken = { IsCancelled = function() return false end }
-local kernel = {
-    Spawn = function(_, _, _, callback)
-        callback(kernelToken)
-        return {}, true
-    end,
-    After = function(_, _, _, _, callback)
-        callback(kernelToken)
-        return {}, true
-    end,
-    CancelOwner = function() return 0, 0 end,
+task = {
+    spawn = function(callback) callback() end,
+    delay = function(_, callback) callback() end,
 }
 
 local states = {}
@@ -62,7 +54,6 @@ local network = {
 }
 
 local started, startProblem = engine("start", {
-    Kernel = kernel,
     Running = function() return true end,
     Enabled = function() return true end,
     Resetting = function() return false end,
@@ -109,7 +100,6 @@ local failedState = { Phase = "pending" }
 states["bounded-failure"] = failedState
 
 local restarted = engine("start", {
-    Kernel = kernel,
     Running = function() return true end,
     Enabled = function() return true end,
     Resetting = function() return false end,
@@ -142,7 +132,6 @@ local freshTargetFailures = 0
 local noRetryState = { Phase = "pending" }
 states["fresh-target"] = noRetryState
 assert(engine("start", {
-    Kernel = kernel,
     Running = function() return true end,
     Enabled = function() return true end,
     Resetting = function() return false end,
@@ -181,7 +170,6 @@ network.Invoke = function() error("transient transport failure") end
 local transportState = { Phase = "pending" }
 states["transport-failure"] = transportState
 assert(engine("start", {
-    Kernel = kernel,
     Running = function() return true end,
     Enabled = function() return true end,
     Resetting = function() return false end,

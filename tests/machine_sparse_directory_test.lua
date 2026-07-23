@@ -5,16 +5,11 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local callback
     local calls = {}
     local statuses = {}
-    local kernel = {}
-
-    function kernel:Every(_, _, _, worker)
-        callback = worker
-        return "test-job", true
-    end
-
-    function kernel:Unregister()
-        return true
-    end
+    local enabled = true
+    local workerTask = {
+        spawn = function(worker) callback = worker end,
+        wait = function() enabled = false end,
+    }
 
     local save = {
         Pets = { pet },
@@ -23,9 +18,9 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     }
     local context = {
         Library = { Directory = { Pets = {} } },
-        Kernel = kernel,
+        Task = workerTask,
         Running = function() return true end,
-        Enabled = function() return true end,
+        Enabled = function() return enabled end,
         CreateEnabled = function() return true end,
         ClaimEnabled = function() return false end,
         GetSave = function() return save end,
@@ -67,7 +62,7 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local started, problem = machine("start", context)
     assert(started == true, tostring(problem))
     assert(type(callback) == "function", "machine worker was not registered")
-    callback({ IsCancelled = function() return false end })
+    callback()
 
     assert(#calls == 1, table.concat(statuses, "\n"))
     assert(calls[1].Command == actionCommand,
