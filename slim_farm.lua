@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.1"
+local VERSION = "1.4.1-dev.2"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -151,46 +151,50 @@ trace("01 loading Library")
 local Library = require(ReplicatedStorage:WaitForChild("Framework"):WaitForChild("Library"))
 trace("02 Library required")
 
-trace("03 WindUI download")
-local windSource = game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua")
-trace("04 WindUI received", #windSource)
+local WindUI
+do
+    trace("03 WindUI download")
+    local windSource = game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua")
+    trace("04 WindUI received", #windSource)
 
-local function replacePlain(source, needle, replacement)
-    local startAt, replacements = 1, 0
-    while true do
-        local first, last = string.find(source, needle, startAt, true)
-        if not first then break end
-        source = string.sub(source, 1, first - 1) .. replacement .. string.sub(source, last + 1)
-        startAt = first + #replacement
-        replacements = replacements + 1
+    local function replacePlain(source, needle, replacement)
+        local startAt, replacements = 1, 0
+        while true do
+            local first, last = string.find(source, needle, startAt, true)
+            if not first then break end
+            source = string.sub(source, 1, first - 1) .. replacement .. string.sub(source, last + 1)
+            startAt = first + #replacement
+            replacements = replacements + 1
+        end
+        return source, replacements
     end
-    return source, replacements
+
+    local resizePatchCount = 0
+    local patchedCount
+    windSource, patchedCount = replacePlain(
+        windSource,
+        'an(ax.ImageLabel,0.1,{ImageTransparency=0.35}):Play()',
+        'do local resizeIcon=ax:FindFirstChildWhichIsA("ImageLabel");if resizeIcon then an(resizeIcon,0.1,{ImageTransparency=0.35}):Play()end end'
+    )
+    resizePatchCount = resizePatchCount + patchedCount
+    windSource, patchedCount = replacePlain(
+        windSource,
+        'an(ax.ImageLabel,0.17,{ImageTransparency=0.8}):Play()',
+        'do local resizeIcon=ax:FindFirstChildWhichIsA("ImageLabel");if resizeIcon then an(resizeIcon,0.17,{ImageTransparency=0.8}):Play()end end'
+    )
+    resizePatchCount = resizePatchCount + patchedCount
+    trace("04 WindUI resize guard", resizePatchCount)
+
+    local windChunk, windError = loadstring(windSource)
+    windSource = nil
+    if not windChunk then error("WindUI compile failed: " .. tostring(windError), 0) end
+    trace("05 WindUI compiled")
+    local initialized
+    initialized, WindUI = pcall(windChunk)
+    windChunk = nil
+    if not initialized then error("WindUI initialization failed: " .. tostring(WindUI), 0) end
+    trace("06 WindUI initialized")
 end
-
-local resizePatchCount = 0
-local patchedCount
-windSource, patchedCount = replacePlain(
-    windSource,
-    'an(ax.ImageLabel,0.1,{ImageTransparency=0.35}):Play()',
-    'do local resizeIcon=ax:FindFirstChildWhichIsA("ImageLabel");if resizeIcon then an(resizeIcon,0.1,{ImageTransparency=0.35}):Play()end end'
-)
-resizePatchCount = resizePatchCount + patchedCount
-windSource, patchedCount = replacePlain(
-    windSource,
-    'an(ax.ImageLabel,0.17,{ImageTransparency=0.8}):Play()',
-    'do local resizeIcon=ax:FindFirstChildWhichIsA("ImageLabel");if resizeIcon then an(resizeIcon,0.17,{ImageTransparency=0.8}):Play()end end'
-)
-resizePatchCount = resizePatchCount + patchedCount
-trace("04 WindUI resize guard", resizePatchCount)
-
-local windChunk, windError = loadstring(windSource)
-windSource = nil
-if not windChunk then error("WindUI compile failed: " .. tostring(windError), 0) end
-trace("05 WindUI compiled")
-local initialized, WindUI = pcall(windChunk)
-windChunk = nil
-if not initialized then error("WindUI initialization failed: " .. tostring(WindUI), 0) end
-trace("06 WindUI initialized")
 
 local function networkReady()
     local network = Library and Library.Network
@@ -2126,42 +2130,42 @@ local function runtimePetCounts(petIds)
 end
 
 local statusViews = {}
-local function setViewStatus(key, text)
+function statusViews.Set(key, text)
     local view = statusViews[key]
     if view then pcall(function() view:SetDesc(text) end) end
 end
-local function setStatus(text)
-    setViewStatus("Farm", text)
+function statusViews.Farm(text)
+    statusViews.Set("Farm", text)
 end
-local function setHealth(text)
-    setViewStatus("Health", text)
+function statusViews.HealthText(text)
+    statusViews.Set("Health", text)
 end
-local function setRate(text)
-    setViewStatus("Rate", text)
+function statusViews.RateText(text)
+    statusViews.Set("Rate", text)
 end
-local function setDiamondPackStatus(text)
-    setViewStatus("Diamond", text)
+function statusViews.Diamond(text)
+    statusViews.Set("Diamond", text)
 end
-local function setGoldMachineStatus(text)
-    setViewStatus("Gold", text)
+function statusViews.Gold(text)
+    statusViews.Set("Gold", text)
 end
-local function setRainbowMachineStatus(text)
-    setViewStatus("Rainbow", text)
+function statusViews.Rainbow(text)
+    statusViews.Set("Rainbow", text)
 end
-local function setDarkMatterStatus(text)
-    setViewStatus("DarkMatter", text)
+function statusViews.DarkMatter(text)
+    statusViews.Set("DarkMatter", text)
 end
-local function setEggStatus(text)
-    setViewStatus("Egg", text)
+function statusViews.Egg(text)
+    statusViews.Set("Egg", text)
 end
-local function setEggCatalogStatus(text)
-    setViewStatus("EggCatalog", text)
+function statusViews.EggCatalog(text)
+    statusViews.Set("EggCatalog", text)
 end
-local function setBoostStatus(text)
-    setViewStatus("Boost", text)
+function statusViews.Boost(text)
+    statusViews.Set("Boost", text)
 end
-local function setRouteStatus(text)
-    setViewStatus("Routes", text)
+function statusViews.Routes(text)
+    statusViews.Set("Routes", text)
 end
 local function getRewardSave()
     if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
@@ -2262,12 +2266,12 @@ local refreshEggDropdown
 
 local function stopAutoEggModule(statusText)
     if autoEggController then pcall(autoEggController, "stop") end
-    if statusText then setEggStatus(statusText) end
+    if statusText then statusViews.Egg(statusText) end
 end
 
 local function disableAutoEgg(reason)
     config.AutoEgg = false
-    setEggStatus(tostring(reason or "Auto hatch stopped by its safety controller"))
+    statusViews.Egg(tostring(reason or "Auto hatch stopped by its safety controller"))
     task.defer(function()
         if running() and autoEggToggleControl and type(autoEggToggleControl.Set) == "function" then
             pcall(function() autoEggToggleControl:Set(false) end)
@@ -2288,7 +2292,7 @@ local function ensureAutoEggModule()
     local controller, problem = loadRemoteController(
         AUTO_EGG_MODULE_URL,
         "auto egg module",
-        setEggStatus
+        statusViews.Egg
     )
     autoEggLoading = false
     if not controller then
@@ -2341,7 +2345,7 @@ local function startAutoEggModule()
         ReleaseOperation = releaseOperation,
         CancelOperation = cancelOperation,
         OperationOwner = "AutoEgg",
-        SetStatus = setEggStatus,
+        SetStatus = statusViews.Egg,
         Trace = trace,
         Disable = disableAutoEgg,
     }
@@ -2357,19 +2361,19 @@ local machineModules = {
         URL = RAW_MODULE_BASE .. "gold_machine_module.lua",
         ConfigKeys = { "AutoGoldenGalaxyFox" },
         Label = "gold machine",
-        SetStatus = setGoldMachineStatus,
+        SetStatus = statusViews.Gold,
     },
     Rainbow = {
         URL = RAW_MODULE_BASE .. "rainbow_machine_module.lua",
         ConfigKeys = { "AutoRainbowGalaxyFox" },
         Label = "rainbow machine",
-        SetStatus = setRainbowMachineStatus,
+        SetStatus = statusViews.Rainbow,
     },
     DarkMatter = {
         URL = RAW_MODULE_BASE .. "dark_matter_module.lua",
         ConfigKeys = { "AutoDarkMatterGalaxyFox", "AutoClaimDarkMatter" },
         Label = "dark matter machine",
-        SetStatus = setDarkMatterStatus,
+        SetStatus = statusViews.DarkMatter,
     },
 }
 
@@ -2456,7 +2460,7 @@ end
 
 local function stopBoostModule(statusText)
     if boostController then pcall(boostController, "stop") end
-    if statusText then setBoostStatus(statusText) end
+    if statusText then statusViews.Boost(statusText) end
 end
 
 local function startBoostModule()
@@ -2466,12 +2470,12 @@ local function startBoostModule()
         local controller, problem = loadRemoteController(
             BOOST_MODULE_URL,
             "auto boost module",
-            setBoostStatus
+            statusViews.Boost
         )
         if not controller then
             boostLoadProblem = tostring(problem)
             boostLoading = false
-            setBoostStatus("Boost module could not be loaded; no request was sent: " .. boostLoadProblem)
+            statusViews.Boost("Boost module could not be loaded; no request was sent: " .. boostLoadProblem)
             return
         end
         boostController = controller
@@ -2506,13 +2510,13 @@ local function startBoostModule()
         CancelOperation = cancelOperation,
         OperationStatus = operationGateStatus,
         OperationOwner = "Boosts",
-        SetStatus = setBoostStatus,
+        SetStatus = statusViews.Boost,
         Trace = trace,
     }
     local called, accepted, problem = pcall(boostController, "start", context)
     if not called or accepted == false then
         local reason = not called and accepted or problem
-        setBoostStatus("Boost worker failed to start; no request was sent: " .. tostring(reason))
+        statusViews.Boost("Boost worker failed to start; no request was sent: " .. tostring(reason))
         trace("auto boost module", "start failed: " .. tostring(reason))
     end
 end
@@ -2531,16 +2535,16 @@ local function refreshRouteHealth()
     if routeHealthBusy then return end
     routeHealthBusy = true
 
-    setRouteStatus("Loading the small diagnostics coordinator in the serial module lane...")
+    statusViews.Routes("Loading the small diagnostics coordinator in the serial module lane...")
     local controller, loadProblem = ensureSupportModule()
     local checked, result = false, loadProblem
     if controller then
         checked, result = pcall(controller, "route-health", supportContext)
     end
     if checked and type(result) == "string" then
-        setRouteStatus(result)
+        statusViews.Routes(result)
     else
-        setRouteStatus("Local route preflight recovered from an error: " .. tostring(result)
+        statusViews.Routes("Local route preflight recovered from an error: " .. tostring(result)
             .. "\nNo server request was sent. Press Refresh to retry.")
         trace("route preflight", tostring(result))
     end
@@ -2601,7 +2605,7 @@ local function runDiamondPackCheck()
     diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
     diamondPackBusy = false
     trace("diamond pack", status)
-    setDiamondPackStatus(status .. "\nNext local check in 3 minutes.")
+    statusViews.Diamond(status .. "\nNext local check in 3 minutes.")
 end
 
 local function allocatorPass()
@@ -2717,36 +2721,36 @@ requestAllocatorPulse = function()
     if not allocatorBusy and running() then task.defer(allocatorPass) end
 end
 
-local petLifecycleSignals = {}
-local function connectPetLifecycleSignal(name, removed)
-    if petLifecycleSignals[name] then return true end
-    local signal = Library and Library.Signal
-    if not signal or type(signal.Fired) ~= "function" then return false end
-
-    local eventOk, event = pcall(signal.Fired, name)
-    if not eventOk or not event or type(event.Connect) ~= "function" then return false end
-    local connected, connection = pcall(function()
-        return event:Connect(function(rawPetId)
-            local petId = rawPetId ~= nil and tostring(rawPetId) or nil
-            nextPetScanAt = 0
-            if removed and petId then
-                petStates[petId] = nil
-                releaseWait[petId] = nil
-            end
-            if config.PetFarm then
-                driverStatus = removed and "pet unequipped; assignments reconciled"
-                    or "equipped pet detected; assigning target"
-                requestAllocatorPulse()
-            end
-        end)
-    end)
-    if not connected or not connection then return false end
-    petLifecycleSignals[name] = connection
-    track(connection)
-    return true
-end
-
 task.spawn(function()
+    local petLifecycleSignals = {}
+    local function connectPetLifecycleSignal(name, removed)
+        if petLifecycleSignals[name] then return true end
+        local signal = Library and Library.Signal
+        if not signal or type(signal.Fired) ~= "function" then return false end
+
+        local eventOk, event = pcall(signal.Fired, name)
+        if not eventOk or not event or type(event.Connect) ~= "function" then return false end
+        local connected, connection = pcall(function()
+            return event:Connect(function(rawPetId)
+                local petId = rawPetId ~= nil and tostring(rawPetId) or nil
+                nextPetScanAt = 0
+                if removed and petId then
+                    petStates[petId] = nil
+                    releaseWait[petId] = nil
+                end
+                if config.PetFarm then
+                    driverStatus = removed and "pet unequipped; assignments reconciled"
+                        or "equipped pet detected; assigning target"
+                    requestAllocatorPulse()
+                end
+            end)
+        end)
+        if not connected or not connection then return false end
+        petLifecycleSignals[name] = connection
+        track(connection)
+        return true
+    end
+
     while running() do
         local added = connectPetLifecycleSignal("Added Client Pet", false)
         local removed = connectPetLifecycleSignal("Removed Client Pet", true)
@@ -2805,6 +2809,7 @@ track(player.Idled:Connect(function()
     end
 end))
 
+local function startInterfaceAndWorkers()
 WindUI:AddTheme({
     Name = "Nova Stable",
     Accent = Color3.fromRGB(56, 189, 248),
@@ -2867,7 +2872,7 @@ refreshEggDropdown = function(force)
     if not force and UI.LastEggRefreshAt and now - UI.LastEggRefreshAt < 0.6 then return end
     UI.LastEggRefreshAt = now
     if not autoEggController then
-        setEggCatalogStatus("Egg catalog worker is loading; no server request is involved.")
+        statusViews.EggCatalog("Egg catalog worker is loading; no server request is involved.")
         return
     end
     local called, options, selectedLabel, selectedId, summary, labelMap = pcall(autoEggController, "catalog", {
@@ -2880,7 +2885,7 @@ refreshEggDropdown = function(force)
         FormatNumber = formatRateNumber,
     })
     if not called or type(options) ~= "table" then
-        setEggCatalogStatus("Local egg catalog error: " .. tostring(called and summary or options))
+        statusViews.EggCatalog("Local egg catalog error: " .. tostring(called and summary or options))
         return
     end
     config.EggName = selectedId ~= "" and selectedId or nil
@@ -2889,7 +2894,7 @@ refreshEggDropdown = function(force)
     for label, eggId in pairs(eggLabelToId) do eggIdToLabel[eggId] = label end
     local signature = tostring(config.EggScope) .. "|" .. tostring(selectedLabel)
         .. "|" .. table.concat(options, "\0")
-    setEggCatalogStatus(summary)
+    statusViews.EggCatalog(summary)
     if not UI.EggDropdown or (not force and signature == UI.LastEggSignature) then return end
     UI.LastEggSignature = signature
     pcall(function() UI.EggDropdown:Refresh(options) end)
@@ -3010,7 +3015,7 @@ UI.PerformanceSection:Dropdown({
         if config.TrackedCurrency == value then return end
         config.TrackedCurrency = value
         currencyMonitor:Reset()
-        setRate("Reading exact balances; no orb or visual-event estimates are used...")
+        statusViews.RateText("Reading exact balances; no orb or visual-event estimates are used...")
     end,
 })
 statusViews.Rate = UI.PerformanceSection:Paragraph({
@@ -3018,52 +3023,57 @@ statusViews.Rate = UI.PerformanceSection:Paragraph({
     Desc = "Enable Pet Farm. Income is derived only from positive Library.Save balance changes.",
 })
 
-trace("06A automation UI loading")
-local automationUIController, automationUILoadProblem = loadRemoteController(
-    AUTOMATION_UI_MODULE_URL,
-    "automation UI module"
-)
-if not automationUIController then
-    error("Automation UI module could not be loaded: " .. tostring(automationUILoadProblem), 0)
+do
+    trace("06A automation UI loading")
+    local automationUIController, automationUILoadProblem = loadRemoteController(
+        AUTOMATION_UI_MODULE_URL,
+        "automation UI module"
+    )
+    if not automationUIController then
+        error("Automation UI module could not be loaded: " .. tostring(automationUILoadProblem), 0)
+    end
+    local automationUIBuilt, automationUIAccepted, automationUIControls = pcall(
+        automationUIController,
+        "build",
+        {
+            UI = UI,
+            Config = config,
+            StatusViews = statusViews,
+            RefreshEggs = function(force) refreshEggDropdown(force) end,
+            EnsureAutoEgg = ensureAutoEggModule,
+            InvalidateEggCatalog = function()
+                if autoEggController then pcall(autoEggController, "invalidate-catalog") end
+            end,
+            StartAutoEgg = startAutoEggModule,
+            StopAutoEgg = stopAutoEggModule,
+            EggIdForLabel = function(label) return eggLabelToId[label] end,
+            SetEggCatalogStatus = statusViews.EggCatalog,
+            RefreshRoutes = refreshRouteHealth,
+            SetRouteStatus = statusViews.Routes,
+            GetMachinePetCatalog = getMachinePetCatalog,
+            StartMachine = function(kind) machineModules:Start(kind) end,
+            StopMachine = function(kind) machineModules:Stop(kind) end,
+            SetGoldStatus = statusViews.Gold,
+            SetRainbowStatus = statusViews.Rainbow,
+            SetDarkMatterStatus = statusViews.DarkMatter,
+            ReconcileBoost = reconcileBoostModule,
+            BoostEnabled = boostAutomationEnabled,
+            StartBoost = startBoostModule,
+        }
+    )
+    if not automationUIBuilt or automationUIAccepted ~= true or type(automationUIControls) ~= "table" then
+        error(
+            "Automation UI module failed to build: "
+                .. tostring(not automationUIBuilt and automationUIAccepted or automationUIControls),
+            0
+        )
+    end
+    autoEggToggleControl = automationUIControls.AutoEggToggle
+    UI.EggScopeDropdown = automationUIControls.EggScopeDropdown
+    UI.EggDropdown = automationUIControls.EggDropdown
+    refreshEggDropdown(true)
+    trace("06B automation UI ready")
 end
-local automationUIBuilt, automationUIAccepted, automationUIControls = pcall(
-    automationUIController,
-    "build",
-    {
-        UI = UI,
-        Config = config,
-        StatusViews = statusViews,
-        RefreshEggs = function(force) refreshEggDropdown(force) end,
-        EnsureAutoEgg = ensureAutoEggModule,
-        InvalidateEggCatalog = function()
-            if autoEggController then pcall(autoEggController, "invalidate-catalog") end
-        end,
-        StartAutoEgg = startAutoEggModule,
-        StopAutoEgg = stopAutoEggModule,
-        EggIdForLabel = function(label) return eggLabelToId[label] end,
-        SetEggCatalogStatus = setEggCatalogStatus,
-        RefreshRoutes = refreshRouteHealth,
-        SetRouteStatus = setRouteStatus,
-        GetMachinePetCatalog = getMachinePetCatalog,
-        StartMachine = function(kind) machineModules:Start(kind) end,
-        StopMachine = function(kind) machineModules:Stop(kind) end,
-        SetGoldStatus = setGoldMachineStatus,
-        SetRainbowStatus = setRainbowMachineStatus,
-        SetDarkMatterStatus = setDarkMatterStatus,
-        ReconcileBoost = reconcileBoostModule,
-        BoostEnabled = boostAutomationEnabled,
-        StartBoost = startBoostModule,
-    }
-)
-if not automationUIBuilt or automationUIAccepted ~= true or type(automationUIControls) ~= "table" then
-    local reason = not automationUIBuilt and automationUIAccepted or automationUIControls
-    error("Automation UI module failed to build: " .. tostring(reason), 0)
-end
-autoEggToggleControl = automationUIControls.AutoEggToggle
-UI.EggScopeDropdown = automationUIControls.EggScopeDropdown
-UI.EggDropdown = automationUIControls.EggDropdown
-refreshEggDropdown(true)
-trace("06B automation UI ready")
 
 UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Box = true, Opened = true })
 UI.DiamondSection:Toggle({
@@ -3075,9 +3085,9 @@ UI.DiamondSection:Toggle({
         config.AutoTechDiamondPack = value == true
         diamondPackNextCheck = 0
         if config.AutoTechDiamondPack then
-            setDiamondPackStatus("Enabled. A local balance check will run now; below 1T no request is sent.")
+            statusViews.Diamond("Enabled. A local balance check will run now; below 1T no request is sent.")
         else
-            setDiamondPackStatus("Disabled. No purchase requests will be sent.")
+            statusViews.Diamond("Disabled. No purchase requests will be sent.")
         end
     end,
 })
@@ -3405,7 +3415,7 @@ task.spawn(function()
                 diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
                 local status = "Worker error: " .. tostring(problem)
                 trace("diamond pack", status)
-                setDiamondPackStatus(status .. "\nNext retry in 3 minutes.")
+                statusViews.Diamond(status .. "\nNext retry in 3 minutes.")
             end
         end
     end
@@ -3516,7 +3526,7 @@ task.spawn(function()
 
         if rateText ~= lastRateText then
             lastRateText = rateText
-            setRate(rateText)
+            statusViews.RateText(rateText)
         end
     end
 end)
@@ -3537,7 +3547,7 @@ task.spawn(function()
         local runtimeLine = runtimeActive ~= nil
             and string.format("Runtime: %d active | %d ready | %d unseen", runtimeActive, runtimeIdle, runtimeMissing)
             or "Runtime: discovering game pet state"
-        setStatus(string.format(
+        statusViews.Farm(string.format(
             "%s  >  %s\nTargets: %d | reserved: %d/%d | local idle: %d\n%s",
             tostring(world or "unknown"),
             tostring(zone or "unknown"),
@@ -3547,7 +3557,7 @@ task.spawn(function()
             math.max(equippedCount - assignedCount, 0),
             runtimeLine
         ))
-        setHealth(string.format(
+        statusViews.HealthText(string.format(
             "Network: %s | pet controller: %s | allocator: %s\nRecoveries: %d | last: %s\nDriver: %s",
             networkState,
             controllerState,
@@ -3561,3 +3571,6 @@ end)
 
 pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
+end
+
+startInterfaceAndWorkers()
