@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.9"
+local VERSION = "1.4.1-dev.10"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -269,7 +269,7 @@ local function normalize(value)
     return string.match(value, "^%s*(.-)%s*$") or value
 end
 
-local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/640ac3ed2edf68868b439b639bb31b3d617d5f43/graphics_module.lua"
+local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/5125e9b70ce70f1b082390f4dda4f8d9da36f7c0/graphics_module.lua"
 local graphicsController
 
 local function graphicsAction(action, value)
@@ -549,31 +549,89 @@ local function getBounds(area)
     return cf, size
 end
 
-local function areaForPosition(position)
-    if typeof(position) ~= "Vector3" then return nil end
+-- Area geometry is static for the lifetime of a world. Rebuilding every area
+-- list and repeating bounds lookups from each player's zone poll needlessly
+-- multiplies CPU cost in crowded servers, so keep one event-invalidated catalog.
+local areaCatalog = {
+    Folder = nil,
+    Dirty = true,
+    Entries = {},
+    Names = {},
+    Connections = {},
+}
+
+local function resetAreaCatalog()
+    for _, connection in ipairs(areaCatalog.Connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(areaCatalog.Connections)
+    areaCatalog.Folder = nil
+    areaCatalog.Dirty = true
+    table.clear(areaCatalog.Entries)
+    table.clear(areaCatalog.Names)
+end
+
+local function refreshAreaCatalog()
     local map = workspace:FindFirstChild("__MAP")
     local areas = map and map:FindFirstChild("Areas")
-    if not areas then return nil end
+    if areaCatalog.Folder ~= areas then
+        resetAreaCatalog()
+        areaCatalog.Folder = areas
+        if areas then
+            local function invalidate()
+                areaCatalog.Dirty = true
+            end
+            local added = areas.ChildAdded:Connect(invalidate)
+            local removed = areas.ChildRemoved:Connect(invalidate)
+            areaCatalog.Connections[1] = track(added)
+            areaCatalog.Connections[2] = track(removed)
+        end
+    end
+    if not areas or not areaCatalog.Dirty then
+        return areaCatalog.Entries, areaCatalog.Names
+    end
 
-    local insideName, insideVolume = nil, math.huge
-    local nearestName, nearestDistance = nil, math.huge
+    local entries, names = {}, {}
     for _, area in ipairs(areas:GetChildren()) do
         local cf, size = getBounds(area)
         if cf and size then
-            local point = cf:PointToObjectSpace(position)
-            local half = size / 2 + Vector3.new(8, 25, 8)
-            if math.abs(point.X) <= half.X
-                and math.abs(point.Y) <= half.Y
-                and math.abs(point.Z) <= half.Z then
-                local volume = math.max(size.X, 1) * math.max(size.Z, 1)
-                if volume < insideVolume then
-                    insideName, insideVolume = area.Name, volume
-                end
+            entries[#entries + 1] = {
+                Instance = area,
+                Name = area.Name,
+                CFrame = cf,
+                Size = size,
+                Volume = math.max(size.X, 1) * math.max(size.Z, 1),
+            }
+            names[#names + 1] = area.Name
+        end
+    end
+    table.sort(names)
+    areaCatalog.Entries = entries
+    areaCatalog.Names = names
+    areaCatalog.Dirty = false
+    return entries, names
+end
+
+local function areaForPosition(position)
+    if typeof(position) ~= "Vector3" then return nil end
+    local entries = refreshAreaCatalog()
+    if #entries == 0 then return nil end
+
+    local insideName, insideVolume = nil, math.huge
+    local nearestName, nearestDistance = nil, math.huge
+    for _, entry in ipairs(entries) do
+        local point = entry.CFrame:PointToObjectSpace(position)
+        local half = entry.Size / 2 + Vector3.new(8, 25, 8)
+        if math.abs(point.X) <= half.X
+            and math.abs(point.Y) <= half.Y
+            and math.abs(point.Z) <= half.Z then
+            if entry.Volume < insideVolume then
+                insideName, insideVolume = entry.Name, entry.Volume
             end
-            local distance = (cf.Position - position).Magnitude
-            if distance < nearestDistance then
-                nearestName, nearestDistance = area.Name, distance
-            end
+        end
+        local distance = (entry.CFrame.Position - position).Magnitude
+        if distance < nearestDistance then
+            nearestName, nearestDistance = entry.Name, distance
         end
     end
     return insideName or nearestName
@@ -588,7 +646,7 @@ local requestFarmReset
 
 local function getPlayerZone()
     if os.clock() < nextZoneCheck then return currentZone end
-    nextZoneCheck = os.clock() + 0.1
+    nextZoneCheck = os.clock() + 0.25
     local character = player.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
     currentZone = root and areaForPosition(root.Position) or nil
@@ -679,13 +737,7 @@ local function resolveWorldName(rawWorld)
 end
 
 local function getLiveAreaNames()
-    local names = {}
-    local map = workspace:FindFirstChild("__MAP")
-    local areas = map and map:FindFirstChild("Areas")
-    if areas then
-        for _, area in ipairs(areas:GetChildren()) do table.insert(names, area.Name) end
-        table.sort(names)
-    end
+    local _, names = refreshAreaCatalog()
     return names
 end
 
@@ -1005,6 +1057,7 @@ local function removeCoin(rawId, fromEvent)
 end
 
 local nextWorkspaceScanAt = 0
+local WORKSPACE_RECONCILE_INTERVAL = 7.5 + ((tonumber(player.UserId) or 0) % 19) * 0.13
 function coinIndex:DisconnectFolder()
     for _, connection in ipairs(self.Connections) do
         pcall(function() connection:Disconnect() end)
@@ -1075,10 +1128,10 @@ function coinIndex:IndexModel(model, refreshHealth)
 end
 
 function coinIndex:WatchFolder(folder)
-    if self.Folder == folder then return end
+    if self.Folder == folder then return false end
     self:DisconnectFolder()
     self.Folder = folder
-    if not folder then return end
+    if not folder then return true end
 
     self.Connections[#self.Connections + 1] = folder.ChildAdded:Connect(function(model)
         task.defer(function()
@@ -1100,17 +1153,19 @@ function coinIndex:WatchFolder(folder)
             if not record.FromServer then removeCoin(id, false) end
         end
     end)
+    return true
 end
 
 local function refreshWorkspaceCoins(force)
-    if not force and os.clock() < nextWorkspaceScanAt then return end
-    nextWorkspaceScanAt = os.clock() + 1.25
+    local now = os.clock()
     local things = workspace:FindFirstChild("__THINGS")
     local folder = things and things:FindFirstChild("Coins")
-    coinIndex:WatchFolder(folder)
+    local folderChanged = coinIndex:WatchFolder(folder)
+    if folderChanged then force = true end
+    if not force and now < nextWorkspaceScanAt then return end
+    nextWorkspaceScanAt = now + WORKSPACE_RECONCILE_INTERVAL
     if not folder then return end
 
-    local now = os.clock()
     for id, expiresAt in pairs(removedUntil) do
         if now >= expiresAt then removedUntil[id] = nil end
     end
@@ -1236,6 +1291,7 @@ local function connectCoinSignals()
                 table.clear(coinIndex.Models)
                 table.clear(coinIndex.IdByModel)
                 table.clear(boundsCache)
+                resetAreaCatalog()
                 coinIndex:DisconnectFolder()
                 coinIndex:Invalidate()
                 if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(nil) end
@@ -1298,14 +1354,10 @@ local function findZoneAnchor(zone)
             return record.Position
         end
     end
-    local map = workspace:FindFirstChild("__MAP")
-    local areas = map and map:FindFirstChild("Areas")
-    if areas then
-        for _, area in ipairs(areas:GetChildren()) do
-            if namesMatch(area.Name, zone) then
-                local cf = getBounds(area)
-                if cf then return cf.Position end
-            end
+    local entries = refreshAreaCatalog()
+    for _, entry in ipairs(entries) do
+        if namesMatch(entry.Name, zone) then
+            return entry.CFrame.Position
         end
     end
     return nil
@@ -4145,13 +4197,13 @@ uiStageYield("reward controls")
 
 UI.GraphicsHero = UI.GraphicsTab:Section({ Title = "Client Performance Profile", Box = true, Opened = true })
 UI.GraphicsHero:Paragraph({
-    Title = "VISIBLE WORLD / LOWER COST",
-    Desc = "Keeps navigation readable while simplifying the map and dense coin/chest visuals.",
+    Title = "CROWDED-ZONE RENDER FIREWALL",
+    Desc = "Keeps the map and egg stands readable while removing combat particles, health bars and farm-only models.",
 })
 UI.GraphicsHero:Toggle({
     Flag = "balanced_potato_mode",
-    Title = "Balanced Potato Mode",
-    Desc = "Stops future processing when disabled; rejoin to restore visuals already simplified",
+    Title = "Farm Anti-Lag",
+    Desc = "Continuously suppresses new effects from every player; rejoin to restore visuals already simplified",
     Value = false,
     Callback = function(value) setPotatoMode(value == true) end,
 })
@@ -4167,7 +4219,7 @@ UI.GraphicsHero:Dropdown({
 })
 UI.GraphicsHero:Paragraph({
     Title = "Preservation Boundary",
-    Desc = "Animations and geometry stay active. Dynamic eggs, pets, coins and chests are texture-locked while POS, _SELECTIONFX and Network workers remain untouched.",
+    Desc = "Map geometry, egg stands, POS, _SELECTIONFX and all Network state remain active. Coin/pet render parts and __DEBRIS are hidden locally only.",
 })
 uiStageYield("graphics controls")
 
