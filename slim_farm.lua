@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.19"
+local VERSION = "1.4.1-dev.20"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -3602,8 +3602,8 @@ local LOOT_LIMITS = {
     OrbQueue = 1024,
     OrbInFlight = 2048,
     OrbAckTimeout = 0.9,
-    InitialOrbScan = 128,
-    InitialLootbagScan = 128,
+    InitialOrbScan = 1024,
+    InitialLootbagScan = 512,
     LootbagRecords = 512,
     LootbagAckTimeout = 1,
     LootbagRecordTimeout = 12,
@@ -3654,6 +3654,9 @@ local lootCollector = {
     Generation = 0,
     WorldGeneration = 0,
     Connections = {},
+    OrbFolder = nil,
+    OrbFolderAddedConnection = nil,
+    OrbFolderRemovedConnection = nil,
     LootbagFolder = nil,
     LootbagFolderConnection = nil,
     RecordConnectionCount = 0,
@@ -3703,6 +3706,12 @@ local lootCollector = {
 
 function lootCollector:IsEnabled()
     return running() and (config.Orbs == true or config.Lootbags == true)
+end
+
+function lootCollector:GetThings()
+    local things = Library and Library.Things
+    if typeof(things) == "Instance" then return things end
+    return workspace:FindFirstChild("__THINGS")
 end
 
 function lootCollector:AddConnection(connection)
@@ -4205,7 +4214,7 @@ function lootCollector:CreateLootbagRecord(lootbagId, item)
 end
 
 function lootCollector:RefreshLootbagFolder()
-    local things = workspace:FindFirstChild("__THINGS")
+    local things = self:GetThings()
     local folder = config.Lootbags and things and things:FindFirstChild("Lootbags") or nil
     if folder == self.LootbagFolder then return folder end
     disconnectConnection(self.LootbagFolderConnection)
@@ -4215,7 +4224,14 @@ function lootCollector:RefreshLootbagFolder()
         self.LootbagFolderConnection = folder.ChildAdded:Connect(function(item)
             if not self.WorkerActive or not config.Lootbags then return end
             local lootbagId = tostring(readObjectValue(item, "ID") or item.Name or "")
+            local allowed, resolved = localLootOwner(item)
+            if resolved and not allowed then
+                self.Stats.Lootbags.Skipped = self.Stats.Lootbags.Skipped + 1
+                self:MarkStatus()
+                return
+            end
             local record = self.LootbagRecords[lootbagId]
+                or self:CreateLootbagRecord(lootbagId, item)
             if record then self:WatchLootbag(record, item) end
         end)
     end
@@ -4223,12 +4239,32 @@ function lootCollector:RefreshLootbagFolder()
     return folder
 end
 
+function lootCollector:RefreshOrbFolder()
+    local things = self:GetThings()
+    local folder = config.Orbs and things and things:FindFirstChild("Orbs") or nil
+    if folder == self.OrbFolder then return folder end
+    disconnectConnection(self.OrbFolderAddedConnection)
+    disconnectConnection(self.OrbFolderRemovedConnection)
+    self.OrbFolderAddedConnection = nil
+    self.OrbFolderRemovedConnection = nil
+    self.OrbFolder = folder
+    if folder then
+        self.OrbFolderAddedConnection = folder.ChildAdded:Connect(function(item)
+            if self.WorkerActive and config.Orbs then self:QueueOrb(item.Name) end
+        end)
+        self.OrbFolderRemovedConnection = folder.ChildRemoved:Connect(function(item)
+            if self.WorkerActive then self:OnOrbRemoved(item.Name) end
+        end)
+    end
+    self:MarkStatus()
+    return folder
+end
+
 function lootCollector:InitialWorldScan()
-    local things = workspace:FindFirstChild("__THINGS")
     local orbCount = 0
     local lootbagCount = 0
     if config.Orbs then
-        local orbs = things and things:FindFirstChild("Orbs")
+        local orbs = self:RefreshOrbFolder()
         if orbs then
             local children = orbs:GetChildren()
             for index = 1, math.min(#children, LOOT_LIMITS.InitialOrbScan) do
@@ -4244,7 +4280,7 @@ function lootCollector:InitialWorldScan()
             for index = 1, math.min(#children, LOOT_LIMITS.InitialLootbagScan) do
                 local item = children[index]
                 local allowed, resolved = localLootOwner(item)
-                if resolved and allowed then
+                if not resolved or allowed then
                     local lootbagId = tostring(readObjectValue(item, "ID") or item.Name or "")
                     self:CreateLootbagRecord(lootbagId, item)
                     lootbagCount = lootbagCount + 1
@@ -4357,6 +4393,11 @@ function lootCollector:ProcessLootTimer()
 end
 
 function lootCollector:ClearWorldState()
+    disconnectConnection(self.OrbFolderAddedConnection)
+    disconnectConnection(self.OrbFolderRemovedConnection)
+    self.OrbFolderAddedConnection = nil
+    self.OrbFolderRemovedConnection = nil
+    self.OrbFolder = nil
     disconnectConnection(self.LootbagFolderConnection)
     self.LootbagFolderConnection = nil
     self.LootbagFolder = nil

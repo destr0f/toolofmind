@@ -59,8 +59,8 @@ assert(farm.includes("if self.AllocatorScheduled or allocatorBusy"),
 assert(farm.includes("OrbBatchInterval = 0.25"),
     "native orb microbatch interval drifted from the game protocol");
 assert(farm.includes("OrbBatchSize = 256")
-    && farm.includes("InitialOrbScan = 128")
-    && farm.includes("InitialLootbagScan = 128"),
+    && farm.includes("InitialOrbScan = 1024")
+    && farm.includes("InitialLootbagScan = 512"),
     "loot reactor startup or batch bounds are unsafe");
 assert(farm.includes("OrbQueuedAt = {}")
     && farm.includes("age >= LOOT_LIMITS.OrbBatchInterval"),
@@ -75,6 +75,14 @@ assert(farm.includes('self:ConnectNamedEvent("Orb Added"'),
     "native Orb Added feed is not bound");
 assert(farm.includes('self:ConnectNamedEvent("Spawn Lootbag"'),
     "native Spawn Lootbag feed is not bound");
+assert(farm.includes("local things = Library and Library.Things")
+    && farm.includes('things:FindFirstChild("Orbs")')
+    && farm.includes("folder.ChildAdded:Connect"),
+    "native loot fallback is not bound to the live Library.Things folders");
+assert(farm.includes("or self:CreateLootbagRecord(lootbagId, item)"),
+    "lootbag ChildAdded fallback cannot recover a missed Spawn Lootbag event");
+assert(farm.includes("if not resolved or allowed then"),
+    "lootbags without an owner attribute are still rejected");
 assert(farm.includes('readObjectValue(item, "ReadyForCollection")'),
     "lootbag readiness is not checked before collection");
 assert(!farm.includes("firetouchinterest"),
