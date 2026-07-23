@@ -2,7 +2,7 @@
 -- The caller owns target selection and lock state. This module only schedules
 -- named Network calls, classifies Join Coin replies and reports outcomes.
 
-local MODULE_VERSION = "2.1.0"
+local MODULE_VERSION = "2.2.0"
 local DEFAULT_MIN_LANES = 4
 local DEFAULT_MAX_LANES = 16
 local DEFAULT_INITIAL_LANES = 12
@@ -29,6 +29,7 @@ local run = {
     Stale = 0,
     CompletedJobs = 0,
     CleanStreak = 0,
+    FailureStreak = 0,
     AverageRTT = 0,
     LastRTT = 0,
     LastProblem = "none",
@@ -199,19 +200,20 @@ end
 local function adjustLanes(acceptedCount, rejectedCount, invokeFailed, elapsed)
     if invokeFailed then
         run.CleanStreak = 0
-        run.Limit = math.max(run.MinLanes, math.floor(run.Limit / 2))
-    elseif tonumber(elapsed) and elapsed >= 0.9 then
-        run.CleanStreak = 0
-        run.Limit = math.max(run.MinLanes, run.Limit - 2)
-    elseif tonumber(elapsed) and elapsed >= 0.6 then
-        run.CleanStreak = 0
-        run.Limit = math.max(run.MinLanes, run.Limit - 1)
+        run.FailureStreak = run.FailureStreak + 1
+        -- One transient executor/transport failure must not turn 16 active
+        -- UID lanes into 8. Sustained RTT is handled by the caller's EWMA
+        -- policy; this local guard only trims repeated hard failures.
+        local penalty = math.min(run.FailureStreak, 3)
+        run.Limit = math.max(run.MinLanes, run.Limit - penalty)
     elseif rejectedCount > 0 then
         -- A false Join Coin result normally means that this particular coin was
         -- destroyed or won by another client. It is not transport congestion,
         -- so reducing every UID lane here creates the familiar 15 -> 8 collapse.
+        run.FailureStreak = 0
         run.CleanStreak = 0
     elseif acceptedCount > 0 then
+        run.FailureStreak = 0
         run.CleanStreak = run.CleanStreak + acceptedCount
         if run.CleanStreak >= math.max(run.Limit, 4) then
             run.CleanStreak = 0
@@ -393,6 +395,8 @@ local function start(context)
     run.PolicyMaxLanes = run.MaxLanes
     run.Limit = math.clamp(tonumber(context.InitialLanes) or DEFAULT_INITIAL_LANES,
         run.MinLanes, run.PolicyMaxLanes)
+    run.CleanStreak = 0
+    run.FailureStreak = 0
     run.LastProblem = "none"
     return true
 end
@@ -438,6 +442,7 @@ local function stats()
         Retries = run.Retries,
         Stale = run.Stale,
         CompletedJobs = run.CompletedJobs,
+        FailureStreak = run.FailureStreak,
         AverageRTT = run.AverageRTT,
         LastRTT = run.LastRTT,
         LastProblem = run.LastProblem,

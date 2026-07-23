@@ -166,6 +166,35 @@ assert(freshTargetFailures == 1 and states["fresh-target"] == nil)
 assert(afterFreshStats.Limit == 16,
     "application-level Join rejection must not collapse transport lanes")
 
+network.Invoke = function() error("transient transport failure") end
+local transportState = { Phase = "pending" }
+states["transport-failure"] = transportState
+assert(engine("start", {
+    Running = function() return true end,
+    Enabled = function() return true end,
+    Resetting = function() return false end,
+    NetworkReady = function() return network end,
+    RecordAlive = function(record) return record.Alive end,
+    StateCurrent = function(petId, state) return states[petId] == state end,
+    ShouldRetry = function() return false end,
+    OnFailed = function(petId, state)
+        assert(petId == "transport-failure" and state == transportState)
+        states[petId] = nil
+    end,
+    MinLanes = 4,
+    InitialLanes = 16,
+    MaxLanes = 16,
+}) == true)
+assert(engine("dispatch", {
+    CoinId = "transport-coin",
+    Record = { Alive = true },
+    Entries = { { PetId = "transport-failure", State = transportState } },
+}) == true)
+local transportStats = engine("stats")
+assert(transportStats.Limit == 15,
+    "one transient transport failure must trim one lane instead of halving all lanes")
+assert(transportStats.FailureStreak == 1)
+
 assert(engine("set-limit", 8) == true)
 local limitedStats = engine("stats")
 assert(limitedStats.PolicyMaxLanes == 8 and limitedStats.Limit == 8)
@@ -174,4 +203,4 @@ local recoveringStats = engine("stats")
 assert(recoveringStats.PolicyMaxLanes == 16 and recoveringStats.Limit == 9,
     "lifting backpressure should recover gradually instead of bursting")
 
-print("PASS pet farm engine fills 15 UID locks, avoids rejection lane collapse and bounds retries")
+print("PASS pet farm engine fills 15 UID locks and resists transient/rejection lane collapse")
