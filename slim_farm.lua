@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.18"
+local VERSION = "1.4.1-dev.19"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -3597,13 +3597,16 @@ end
 
 local ORB_BATCH_INTERVAL = 0.25
 local ORB_BATCH_JITTER = ((tonumber(player.UserId) or 0) % 31) / 1000
-local ORB_BATCH_LIMIT = 768
-local MAX_ORB_QUEUE = 4096
-local MAX_ORB_IN_FLIGHT = 8192
+local ORB_BATCH_LIMIT = 256
+local MAX_ORB_QUEUE = 1024
+local MAX_ORB_IN_FLIGHT = 2048
 local ORB_ACK_TIMEOUT = 0.9
-local MAX_LOOTBAG_RECORDS = 1024
+local INITIAL_ORB_SCAN_LIMIT = 128
+local INITIAL_LOOTBAG_SCAN_LIMIT = 128
+local MAX_LOOTBAG_RECORDS = 512
 local LOOTBAG_ACK_TIMEOUT = 1
 local LOOTBAG_RECORD_TIMEOUT = 12
+local LOOT_REACTOR_START_DELAY = 0.75
 
 local function disconnectConnection(connection)
     if connection then pcall(function() connection:Disconnect() end) end
@@ -3644,6 +3647,7 @@ local function localLootOwner(item)
 end
 
 local lootCollector = {
+    StartupArmed = false,
     WorkerActive = false,
     Generation = 0,
     WorldGeneration = 0,
@@ -3815,7 +3819,7 @@ function lootCollector:QueueOrb(orbId, attempt)
     if #self.OrbQueue >= MAX_ORB_QUEUE
         or self.OrbInFlightSize + #self.OrbQueue >= MAX_ORB_IN_FLIGHT then
         self.Stats.Orbs.Expired = self.Stats.Orbs.Expired + 1
-        self:ScheduleOrbFlush(0)
+        self:ScheduleOrbFlush(ORB_BATCH_INTERVAL + ORB_BATCH_JITTER)
         self:MarkStatus()
         return
     end
@@ -3873,8 +3877,10 @@ function lootCollector:FlushOrbs()
     self.OrbQueue = carry
     self.OrbQueued = carrySet
     if #carry > 0 then
-        self:ScheduleOrbFlush((nextDelay or 0) + (nextDelay and nextDelay > 0
-            and ORB_BATCH_JITTER or 0))
+        local carryDelay = nextDelay and nextDelay > 0
+            and (nextDelay + ORB_BATCH_JITTER)
+            or (ORB_BATCH_INTERVAL + ORB_BATCH_JITTER)
+        self:ScheduleOrbFlush(carryDelay)
     end
     if #ids == 0 then
         self:MarkStatus()
@@ -4215,29 +4221,37 @@ end
 
 function lootCollector:InitialWorldScan()
     local things = workspace:FindFirstChild("__THINGS")
+    local orbCount = 0
+    local lootbagCount = 0
     if config.Orbs then
         local orbs = things and things:FindFirstChild("Orbs")
         if orbs then
             local children = orbs:GetChildren()
-            for index = 1, math.min(#children, MAX_ORB_QUEUE) do
+            for index = 1, math.min(#children, INITIAL_ORB_SCAN_LIMIT) do
                 self:QueueOrb(children[index].Name)
+                orbCount = orbCount + 1
             end
         end
     end
     if config.Lootbags then
         local folder = self:RefreshLootbagFolder()
         if folder then
-            for _, item in ipairs(folder:GetChildren()) do
+            local children = folder:GetChildren()
+            for index = 1, math.min(#children, INITIAL_LOOTBAG_SCAN_LIMIT) do
+                local item = children[index]
                 local allowed, resolved = localLootOwner(item)
                 if resolved and allowed then
                     local lootbagId = tostring(readObjectValue(item, "ID") or item.Name or "")
                     self:CreateLootbagRecord(lootbagId, item)
+                    lootbagCount = lootbagCount + 1
                 else
                     self.Stats.Lootbags.Skipped = self.Stats.Lootbags.Skipped + 1
                 end
             end
         end
     end
+    trace("loot reactor initial scan",
+        "orbs=" .. tostring(orbCount) .. " | lootbags=" .. tostring(lootbagCount))
     self:MarkStatus()
 end
 
@@ -4439,17 +4453,19 @@ function lootCollector:StopWorker()
 end
 
 function lootCollector:SyncWorker()
+    if not self.StartupArmed then
+        return
+    end
     if not self:IsEnabled() then
-        self:StopWorker()
+        if self.WorkerActive then self:StopWorker() end
         return
     end
     if self.WorkerActive then
-        self:StopWorker()
+        self:MarkStatus()
+        return
     end
     self:StartWorker()
 end
-
-lootCollector:SyncWorker()
 
 track(player.Idled:Connect(function()
     if config.AntiAFK and running() then
@@ -5240,6 +5256,13 @@ end)
 
 pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
+lootCollector.StartupArmed = true
+task.delay(LOOT_REACTOR_START_DELAY, function()
+    if not running() or not lootCollector.StartupArmed then return end
+    trace("07A loot reactor starting", "deferred=" .. tostring(LOOT_REACTOR_START_DELAY) .. "s")
+    lootCollector:SyncWorker()
+    trace("07B loot reactor ready", "bindings=" .. tostring(#lootCollector.Connections))
+end)
 task.defer(function()
     local ready, problem = petFarm:EnsureEngine()
     if not ready and problem ~= "engine load already in progress" then

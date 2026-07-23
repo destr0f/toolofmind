@@ -31,9 +31,9 @@ assert(!/workspace\s*\.\s*DescendantAdded/.test(graphics),
 
 for (const marker of [
     "MAX_QUEUED_JOBS = 64",
-    "MAX_ORB_QUEUE = 4096",
-    "MAX_ORB_IN_FLIGHT = 8192",
-    "MAX_LOOTBAG_RECORDS = 1024",
+    "MAX_ORB_QUEUE = 1024",
+    "MAX_ORB_IN_FLIGHT = 2048",
+    "MAX_LOOTBAG_RECORDS = 512",
     "MAX_PERSISTENT_OBJECTS = 4096",
     "MAX_URGENT_QUEUE = 4096",
     "MAX_NORMAL_QUEUE = 8192",
@@ -58,6 +58,10 @@ assert(farm.includes("if self.AllocatorScheduled or allocatorBusy"),
     "allocator callbacks are not coalesced");
 assert(farm.includes("ORB_BATCH_INTERVAL = 0.25"),
     "native orb microbatch interval drifted from the game protocol");
+assert(farm.includes("ORB_BATCH_LIMIT = 256")
+    && farm.includes("INITIAL_ORB_SCAN_LIMIT = 128")
+    && farm.includes("INITIAL_LOOTBAG_SCAN_LIMIT = 128"),
+    "loot reactor startup or batch bounds are unsafe");
 assert(farm.includes("OrbQueuedAt = {}")
     && farm.includes("age >= ORB_BATCH_INTERVAL"),
     "fresh orb IDs can be claimed before the game's native creation window");
@@ -79,6 +83,18 @@ assert(!farm.includes("function lootCollector:Touch"),
     "the removed physical loot worker re-entered the active source");
 assert(!farm.includes("preparePickupPart"),
     "loot collection still mutates pickup parts");
+const earlyStartupEnd = farm.indexOf('trace("07 startup complete")');
+assert(earlyStartupEnd > 0
+    && !farm.slice(0, earlyStartupEnd).includes("lootCollector.StartupArmed = true"),
+    "loot reactor can arm before the interface is fully initialized");
+assert(farm.includes("lootCollector.StartupArmed = true")
+    && farm.includes("LOOT_REACTOR_START_DELAY = 0.75")
+    && farm.includes('trace("07A loot reactor starting"'),
+    "deferred loot reactor startup guard is missing");
+assert(!farm.includes("self:ScheduleOrbFlush(0)"),
+    "orb overflow can still create an immediate unthrottled flush chain");
+assert(farm.includes("if self.WorkerActive then\n        self:MarkStatus()\n        return"),
+    "repeated toggle/profile callbacks can restart the loot reactor and rescan the world");
 
 const uiLoop = farm.slice(farm.indexOf("local nextZoneRefreshAt"));
 assert(!uiLoop.includes("orderedTargets("),
