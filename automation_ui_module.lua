@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.1.0"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -150,8 +150,8 @@ local function build(context)
     })
     machines:Slider({
         Flag = "machine_batch_size",
-        Title = "Pets Per Machine Request",
-        Desc = "Choose 1-6 matching pets per request.",
+        Title = "Gold / Rainbow Pets Per Request",
+        Desc = "Choose 1-6 matching pets for Golden and Rainbow requests.",
         Step = 1,
         Value = { Min = 1, Max = 6, Default = 6 },
         Callback = function(value)
@@ -215,6 +215,36 @@ local function build(context)
     })
 
     local darkMatter = UI.MachinesTab:Section({ Title = "Dark Matter Machine / Stage 3", Box = true, Opened = true })
+    darkMatter:Slider({
+        Flag = "dark_matter_batch_size",
+        Title = "Dark Matter Pets Per Batch",
+        Desc = "Minimum number of matching rainbow pets. This is independent from Gold/Rainbow.",
+        Step = 1,
+        Value = { Min = 1, Max = 6, Default = 6 },
+        Callback = function(value)
+            config.DarkMatterBatchSize = math.clamp(math.floor(tonumber(value) or 6), 1, 6)
+            context.SetDarkMatterStatus(
+                "Dark Matter policy updated: at least " .. tostring(config.DarkMatterBatchSize)
+                    .. " pet(s) per batch. It applies to the next queue request."
+            )
+        end,
+    })
+    darkMatter:Slider({
+        Flag = "dark_matter_max_wait_hours",
+        Title = "Maximum Dark Matter Time (Hours)",
+        Desc = "0 uses the exact pet count. A positive limit may add pets until the live server tier fits the time.",
+        Step = 0.5,
+        Value = { Min = 0, Max = 120, Default = 0 },
+        Callback = function(value)
+            config.DarkMatterMaxWaitHours = math.clamp(tonumber(value) or 0, 0, 120)
+            local limit = config.DarkMatterMaxWaitHours
+            context.SetDarkMatterStatus(limit > 0
+                and ("Dark Matter policy updated: maximum " .. tostring(limit)
+                    .. " hour(s). The live machine tiers may increase the pet count.")
+                or ("Dark Matter policy updated: exact "
+                    .. tostring(config.DarkMatterBatchSize or 6) .. "-pet tier; no time ceiling."))
+        end,
+    })
     darkMatter:Toggle({
         Flag = "auto_dark_matter_galaxy_fox",
         Title = "Auto Dark Matter Target Pets",

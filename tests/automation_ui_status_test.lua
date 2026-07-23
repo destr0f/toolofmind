@@ -9,11 +9,13 @@ local function newControl()
     }
 end
 
+local controlsByFlag = {}
 local sectionMethods = {}
 for _, methodName in ipairs({ "Paragraph", "Dropdown", "Button", "Toggle", "Slider" }) do
     sectionMethods[methodName] = function(_, definition)
         local control = newControl()
         control.Definition = definition
+        if definition and definition.Flag then controlsByFlag[definition.Flag] = control end
         return control
     end
 end
@@ -28,6 +30,7 @@ end
 
 local statusViews = {}
 local statusSetters = {}
+local config = {}
 for _, key in ipairs({ "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMatter", "Boost" }) do
     statusSetters[key] = function(value)
         local view = statusViews[key]
@@ -44,7 +47,7 @@ local accepted, controls = automationUI("build", {
         MachinesTab = newTab(),
         BoostsTab = newTab(),
     },
-    Config = {},
+    Config = config,
     StatusViews = statusViews,
     RefreshEggs = noOp,
     EnsureAutoEgg = function() return true end,
@@ -68,6 +71,15 @@ local accepted, controls = automationUI("build", {
 
 assert(accepted == true, tostring(controls))
 assert(type(controls) == "table", "automation controls were not returned")
+
+local countSlider = controlsByFlag.dark_matter_batch_size
+local timeSlider = controlsByFlag.dark_matter_max_wait_hours
+assert(type(countSlider) == "table", "Dark Matter pet-count slider is missing")
+assert(type(timeSlider) == "table", "Dark Matter time slider is missing")
+countSlider.Definition.Callback(4)
+timeSlider.Definition.Callback(12.5)
+assert(config.DarkMatterBatchSize == 4, "Dark Matter pet-count slider did not update config")
+assert(config.DarkMatterMaxWaitHours == 12.5, "Dark Matter time slider did not update config")
 
 for key, setter in pairs(statusSetters) do
     assert(type(setter) == "function", key .. " setter was overwritten")

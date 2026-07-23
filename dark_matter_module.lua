@@ -119,6 +119,63 @@ local function formatDuration(seconds)
     return string.format("%dh %02dm", hours, minutes)
 end
 
+local function selectMachineTier(info, requestedCount, maxWaitSeconds)
+    if type(info) ~= "table" or #info < 1 then
+        return nil, nil, nil, "Dark Matter machine tiers are unavailable"
+    end
+
+    local maxBatch = #info
+    local requested = math.clamp(math.floor(tonumber(requestedCount) or 6), 1, maxBatch)
+    local target = tonumber(maxWaitSeconds)
+    if target ~= nil and target <= 0 then target = nil end
+
+    local selected = requested
+    local targetMet = target == nil
+    local fastestIndex, fastestWait = requested, nil
+    if target ~= nil then
+        for index = requested, maxBatch do
+            local tier = type(info[index]) == "table" and info[index] or {}
+            local waitTime = tonumber(tier.waitTime or tier.WaitTime)
+            if waitTime ~= nil and (fastestWait == nil or waitTime < fastestWait) then
+                fastestIndex, fastestWait = index, waitTime
+            end
+            if waitTime ~= nil and waitTime <= target then
+                selected = index
+                targetMet = true
+                break
+            end
+        end
+        if not targetMet then selected = fastestIndex end
+    end
+
+    local tier = type(info[selected]) == "table" and info[selected] or {}
+    local waitTime = tonumber(tier.waitTime or tier.WaitTime)
+    return selected, tier, {
+        Requested = requested,
+        Selected = selected,
+        AddedPets = math.max(0, selected - requested),
+        MaxWaitSeconds = target,
+        WaitTime = waitTime,
+        TargetMet = targetMet,
+    }, nil
+end
+
+local function tierPolicyText(policy)
+    if type(policy) ~= "table" then return "server tier unavailable" end
+    local text = "requested " .. tostring(policy.Requested) .. " pet(s)"
+    if policy.MaxWaitSeconds ~= nil then
+        text = text .. " | maximum " .. formatDuration(policy.MaxWaitSeconds)
+        if policy.AddedPets > 0 then
+            text = text .. " | server tier adds " .. tostring(policy.AddedPets) .. " pet(s)"
+        end
+        text = text .. (policy.TargetMet and " | limit satisfied" or " | fastest tier still exceeds limit")
+    else
+        text = text .. " | exact-count mode"
+    end
+    if policy.WaitTime ~= nil then text = text .. " | actual " .. formatDuration(policy.WaitTime) end
+    return text
+end
+
 local function statsText(stats)
     return string.format(
         "target pets: %d | rainbow: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
@@ -451,7 +508,7 @@ local function runCheck(state, context)
         return
     end
 
-    local info, maxBatch, infoProblem = resolveMachineInfo(state, context)
+    local info, _, infoProblem = resolveMachineInfo(state, context)
     if not info then
         setStatus(state, context, "Dark Matter route/info error; no pets were sent: "
             .. tostring(infoProblem) .. "\n" .. statsText(stats)
@@ -475,23 +532,37 @@ local function runCheck(state, context)
     end
 
     local requested = math.floor(tonumber(context.BatchSize()) or 6)
-    local batchSize = math.clamp(requested, 1, maxBatch)
+    local maxWaitSeconds
+    if type(context.MaxWaitSeconds) == "function" then
+        local readOk, rawLimit = pcall(context.MaxWaitSeconds)
+        if readOk then maxWaitSeconds = tonumber(rawLimit) end
+    end
+    local batchSize, tier, tierPolicy, tierProblem =
+        selectMachineTier(info, requested, maxWaitSeconds)
+    if not batchSize then
+        setStatus(state, context, "Dark Matter tier policy error; no pets were sent: "
+            .. tostring(tierProblem) .. "\n" .. statsText(stats))
+        finish(RETRY_DELAY)
+        return
+    end
+    local policySummary = tierPolicyText(tierPolicy)
     if #candidates < batchSize then
         setStatus(state, context, "Waiting for " .. tostring(batchSize)
             .. " matching rainbow pets; largest species group has " .. tostring(#candidates)
-            .. ". No request sent.\n" .. statsText(stats) .. "\nGroups: " .. groupSummary
+            .. ". No request sent.\nPolicy: " .. policySummary
+            .. "\n" .. statsText(stats) .. "\nGroups: " .. groupSummary
             .. "\nCatalog: " .. catalogSummary)
         finish(2)
         return
     end
-    local tier = type(info[batchSize]) == "table" and info[batchSize] or {}
     local batchCost = tonumber(tier.cost or tier.Cost)
-    local waitTime = tonumber(tier.waitTime or tier.WaitTime)
+    local waitTime = tierPolicy.WaitTime
     local diamonds = context.GetCurrency("Diamonds")
     if batchCost and diamonds ~= nil and diamonds < batchCost then
         setStatus(state, context, "Not enough Diamonds for a " .. tostring(batchSize)
             .. "-pet Dark Matter batch: " .. context.FormatNumber(diamonds)
-            .. "/" .. context.FormatNumber(batchCost) .. ". No request sent.\n" .. statsText(stats))
+            .. "/" .. context.FormatNumber(batchCost) .. ". No request sent.\nPolicy: "
+            .. policySummary .. "\n" .. statsText(stats))
         finish(RETRY_DELAY)
         return
     end
@@ -502,7 +573,8 @@ local function runCheck(state, context)
     if not acquired then
         setStatus(state, context, "A " .. tostring(batchSize)
             .. "-pet Dark Matter batch is ready, but pet inventory is reserved by "
-            .. tostring(owner) .. ". No request sent.\n" .. statsText(stats))
+            .. tostring(owner) .. ". No request sent.\nPolicy: " .. policySummary
+            .. "\n" .. statsText(stats))
         finish(0.2)
         return
     end
@@ -550,6 +622,7 @@ local function runCheck(state, context)
             .. tostring(batchSize) .. " | timer: " .. duration
             .. " | queued batches: " .. tostring(state.QueuedBatches)
         setStatus(state, context, status .. "\nAccepted pets: " .. audit
+            .. "\nPolicy: " .. policySummary
             .. "\nWaiting for Save.Pets and DarkMatterQueue confirmation.")
         context.Trace("dark matter accepted pets", audit)
         context.Trace("dark matter", status)
@@ -570,6 +643,10 @@ local function stop()
 end
 
 return function(action, context)
+    if action == "select-tier" then
+        context = type(context) == "table" and context or {}
+        return selectMachineTier(context.Info, context.BatchSize, context.MaxWaitSeconds)
+    end
     if action == "stop" then return stop() end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
