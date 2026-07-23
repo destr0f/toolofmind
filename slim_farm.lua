@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.8"
+local VERSION = "1.4.1-dev.9"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3349,7 +3349,18 @@ local lootCollector = {
     NextSweepAt = 0,
     ScanWarmupUntil = 0,
     NextStatusAt = 0,
-    Stats = { Seen = 0, Touched = 0, Retried = 0, Expired = 0, Foreign = 0, Errors = 0 },
+    ImmediateScheduled = false,
+    Stats = {
+        Seen = 0,
+        Touched = 0,
+        Retried = 0,
+        Expired = 0,
+        Foreign = 0,
+        Errors = 0,
+        BulkPasses = 0,
+        LastBulkCount = 0,
+        LastBulkMs = 0,
+    },
 }
 
 function lootCollector:IsEnabled(kind)
@@ -3429,6 +3440,34 @@ function lootCollector:OwnerAllowed(item)
     return true, false
 end
 
+local function suppressPickupPart(part)
+    if not part or not part:IsA("BasePart") then return nil end
+    part.CanCollide = false
+    part.CanQuery = false
+    part.Massless = true
+    part.CastShadow = false
+    part.Transparency = 1
+    for _, visual in ipairs(part:GetChildren()) do
+        if visual:IsA("ParticleEmitter") or visual:IsA("Trail")
+            or visual:IsA("Beam") then
+            visual.Enabled = false
+        end
+    end
+    return part
+end
+
+local function preparePickupPart(item, knownPart)
+    local part = knownPart and knownPart.Parent and knownPart or nil
+    if not part and item:IsA("BasePart") then part = item end
+    if not part then
+        for _, child in ipairs(item:GetChildren()) do
+            if child:IsA("BasePart") then part = child; break end
+        end
+    end
+    if not part then part = item:FindFirstChildWhichIsA("BasePart", true) end
+    return suppressPickupPart(part)
+end
+
 function lootCollector:QueueItem(item, kind)
     if not item or not item.Parent or not self:IsEnabled(kind)
         or self.Entries[item] or self.Ignored[item] then return end
@@ -3438,78 +3477,45 @@ function lootCollector:QueueItem(item, kind)
         self.Stats.Foreign = self.Stats.Foreign + 1
         return
     end
+    local createdAt = os.clock()
     local entry = {
         Item = item,
         Kind = kind,
         Active = true,
         Attempts = 0,
-        CreatedAt = os.clock(),
+        CreatedAt = createdAt,
         NextAt = 0,
         OwnerChecked = ownerResolved,
+        NextOwnerCheckAt = createdAt + 0.5,
     }
-    -- Hide the first physical primitive immediately in ChildAdded. Full visual
-    -- stripping and touch happen in the budgeted drain loop, but a large orb
-    -- burst no longer remains rendered while waiting behind the queue.
-    local primed, part = pcall(function()
-        local candidate = item:IsA("BasePart") and item
-            or item:FindFirstChildWhichIsA("BasePart", true)
-        if candidate then
-            candidate.CanCollide = false
-            candidate.Massless = true
-            candidate.Transparency = 1
-            for _, visual in ipairs(candidate:GetChildren()) do
-                if visual:IsA("ParticleEmitter") or visual:IsA("Trail")
-                    or visual:IsA("Beam") then
-                    visual.Enabled = false
-                end
-            end
-        end
-        return candidate
-    end)
+    -- New orb visuals disappear before the deferred bulk touch pass. This is a
+    -- shallow preparation path: no GetDescendants and no Model:PivotTo.
+    local primed, part = pcall(preparePickupPart, item)
     if primed then entry.Part = part else self.Stats.Errors = self.Stats.Errors + 1 end
     self.Entries[item] = entry
     self.Pending = self.Pending + 1
     self.Stats.Seen = self.Stats.Seen + 1
     self:Push("Ready", entry)
+    if kind == "Orbs" then self:ScheduleImmediateDrain() end
 end
 
 function lootCollector:StripVisual(entry)
     if entry.Stripped then return entry.Part end
     entry.Stripped = true
-    local item = entry.Item
-    local part = entry.Part
-        or (item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true))
-    entry.Part = part
-    local ok = pcall(function()
-        for _, descendant in ipairs(item:GetDescendants()) do
-            if descendant:IsA("BasePart") then
-                descendant.CanCollide = false
-                descendant.Massless = true
-                descendant.Transparency = 1
-                if not part then part = descendant end
-            elseif descendant:IsA("ParticleEmitter") or descendant:IsA("Trail")
-                or descendant:IsA("Beam") then
-                descendant.Enabled = false
-            end
-        end
-        if item:IsA("BasePart") then
-            item.CanCollide = false
-            item.Massless = true
-            item.Transparency = 1
-        end
-    end)
+    local ok, part = pcall(preparePickupPart, entry.Item, entry.Part)
     if not ok then self.Stats.Errors = self.Stats.Errors + 1 end
-    entry.Part = part
-    return part
+    entry.Part = ok and part or nil
+    return entry.Part
 end
 
 function lootCollector:Touch(entry, root, now)
     local item = entry.Item
     if not item or not item.Parent then self:Forget(entry); return end
     if not self:IsEnabled(entry.Kind) then self:Forget(entry); return end
-    if not entry.OwnerChecked then
+    if not entry.OwnerChecked and now >= (entry.NextOwnerCheckAt or 0) then
         local allowed, resolved = self:OwnerAllowed(item)
         entry.OwnerChecked = resolved or now - entry.CreatedAt >= 0.75
+        entry.NextOwnerCheckAt = now + 0.5
         if resolved and not allowed then
             self.Ignored[item] = true
             self.Stats.Foreign = self.Stats.Foreign + 1
@@ -3527,12 +3533,18 @@ function lootCollector:Touch(entry, root, now)
         local offset = ((entry.Attempts % 3) - 1) * 0.35
         local destination = root.CFrame * CFrame.new(offset, -2.5, -offset)
         local moved = pcall(function()
-            if item:IsA("Model") then item:PivotTo(destination) else part.CFrame = destination end
+            part.CanTouch = true
+            part.Anchored = false
+            part.CFrame = destination
             part.CanCollide = false
             if type(firetouchinterest) == "function" then
                 firetouchinterest(root, part, 0)
                 firetouchinterest(root, part, 1)
             end
+            -- Keep an acknowledged-but-not-yet-removed drop out of the local
+            -- physics workload; retries temporarily re-arm it above.
+            part.CanTouch = false
+            part.Anchored = true
         end)
         if moved then
             self.Stats.Touched = self.Stats.Touched + 1
@@ -3560,6 +3572,36 @@ function lootCollector:Touch(entry, root, now)
     self:Push("Retry", entry)
 end
 
+function lootCollector:ScheduleImmediateDrain()
+    if self.ImmediateScheduled or not running() then return end
+    self.ImmediateScheduled = true
+    task.defer(function()
+        local startedAt = os.clock()
+        local character = player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local processed = 0
+        if running() and root then
+            -- Fresh orbs are cheaper to consume in one shallow pass than to
+            -- leave hundreds of animated instances alive across many frames.
+            while processed < 8192 do
+                local entry = self:Pop("Ready")
+                if not entry then break end
+                self:Touch(entry, root, os.clock())
+                processed = processed + 1
+            end
+            if processed > 0 then
+                self.Stats.BulkPasses = self.Stats.BulkPasses + 1
+                self.Stats.LastBulkCount = processed
+                self.Stats.LastBulkMs = math.max(os.clock() - startedAt, 0) * 1000
+            end
+        end
+        self.ImmediateScheduled = false
+        if running() and root and self:QueueSpan("Ready") > 0 then
+            self:ScheduleImmediateDrain()
+        end
+    end)
+end
+
 function lootCollector:Scan(kind)
     local binding = self.Bindings[kind]
     local folder = binding and binding.Folder
@@ -3568,7 +3610,7 @@ function lootCollector:Scan(kind)
     local count = #children
     if count == 0 then self.ScanCursor[kind] = 1; return end
     local cursor = math.clamp(tonumber(self.ScanCursor[kind]) or 1, 1, count)
-    local scanLimit = math.min(count, 512)
+    local scanLimit = kind == "Orbs" and count or math.min(count, 512)
     for offset = 0, scanLimit - 1 do
         local index = ((cursor + offset - 1) % count) + 1
         self:QueueItem(children[index], kind)
@@ -3621,7 +3663,7 @@ function lootCollector:RefreshBindings(now)
         end
     end
     if now >= self.NextSweepAt then
-        local interval = now < self.ScanWarmupUntil and 0.65 or 3.5
+        local interval = now < self.ScanWarmupUntil and 1.25 or 8
         self.NextSweepAt = now + interval
             + ((tonumber(player.UserId) or 0) % 11) * 0.015
         if config.Orbs then self:Scan("Orbs") end
@@ -3674,7 +3716,10 @@ end
 
 function lootCollector:Status()
     return string.format(
-        "Aggressive drain: %d ready | %d retry | %d pending\nTouched: %d | retries: %d | expired: %d | foreign: %d | errors: %d",
+        "Instant bulk: %d passes | last: %d in %.1fms\nQueue: %d ready | %d retry | %d pending\nTouched: %d | retries: %d | expired: %d | foreign: %d | errors: %d",
+        self.Stats.BulkPasses,
+        self.Stats.LastBulkCount,
+        self.Stats.LastBulkMs,
         self:QueueSpan("Ready"),
         self:QueueSpan("Retry"),
         self.Pending,
@@ -4031,12 +4076,12 @@ uiStageYield("diamond controls")
 UI.LootHero = UI.LootTab:Section({ Title = "Local Pickup Layer", Box = true, Opened = true })
 UI.LootHero:Paragraph({
     Title = "FAST COLLECTION",
-    Desc = "Fresh drops are hidden immediately and drained before bounded retries, keeping crowded zones responsive.",
+    Desc = "Fresh orbs are hidden and touched in one deferred bulk pass; only bounded retries remain frame-budgeted.",
 })
 UI.LootHero:Toggle({
     Flag = "collect_orbs",
     Title = "Collect Orbs",
-    Desc = "Enabled by default: first-touch priority drains dense orb bursts with a frame budget",
+    Desc = "Enabled by default: every visible orb is drained in one lightweight bulk pass",
     Value = true,
     Callback = function(value)
         config.Orbs = value == true
@@ -4505,12 +4550,13 @@ task.spawn(function()
                 runtimeActive, runtimeIdle, runtimeMissing)
             or "Visual runtime: optional game-state mirror is still being discovered"
         statusSetters.Farm(string.format(
-            "%s  >  %s\nTargets: %d | locks: %d/%d | joining: %d | idle: %d\nContention: %d external pets on %d targets | window/shards: %d/%d\n%s",
+            "%s  >  %s\nTargets: %d | active intents: %d/%d | confirmed: %d | joining: %d | true idle: %d\nContention: %d external pets on %d targets | window/shards: %d/%d\n%s",
             tostring(world or "unknown"),
             tostring(zone or "unknown"),
             #targets,
-            lockedCount,
+            math.min(lockedCount + pendingCount, equippedCount),
             equippedCount,
+            lockedCount,
             pendingCount,
             math.max(equippedCount - assignedCount, 0),
             tonumber(petFarm.ExternalPetCount) or 0,
