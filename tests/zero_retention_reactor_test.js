@@ -119,9 +119,10 @@ assert(!graphics.includes("CurrentCamera")
 assert(count(graphics, /GetDescendants\s*\(/g) === 1,
     "graphics must have exactly one narrow initial-tree scan implementation");
 assert(graphics.includes("root.DescendantAdded:Connect")
+    && graphics.includes('workspace:FindFirstChild("__MAP")')
     && graphics.includes('workspace:FindFirstChild("__DEBRIS")')
     && graphics.includes('workspace:FindFirstChild("__THINGS")'),
-    "graphics is not bound to the narrow farm roots");
+    "graphics is not bound to the explicit visual roots");
 assert(!graphics.includes("Heartbeat")
     && !graphics.includes("RenderStepped")
     && !graphics.includes("task.wait"),
@@ -132,6 +133,11 @@ assert(graphics.includes("deferSuppression(active, root, object, kind)")
     && graphics.includes("object.Enabled = false")
     && graphics.includes("object.Visible = false"),
     "graphics does not safely defer and disable dynamic FX in place");
+assert(graphics.includes('object.TextureID = ""')
+    && graphics.includes('object.TextureId = ""')
+    && graphics.includes("stripSurfaceAppearance(active, object)")
+    && !graphics.includes("PlayerGui"),
+    "potato mode does not safely strip map/egg/machine textures");
 
 // Lifecycle and bounded telemetry.
 for (const marker of [

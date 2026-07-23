@@ -1,8 +1,8 @@
 -- Event-driven graphics reduction for crowded PSX OG farming zones.
--- Only farm-owned visual roots are observed. The map, camera, eggs, machines,
--- UI and network containers are deliberately left untouched.
+-- Farm visuals are hidden; map/egg/machine geometry is retained but stripped
+-- of expensive textures and materials. UI and network containers stay intact.
 
-local MODULE_VERSION = "2.0.1"
+local MODULE_VERSION = "2.1.0"
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
@@ -95,7 +95,6 @@ local function disableEffect(active, object, class)
     -- Game scripts retain and reuse these instances after parenting them. Removing
     -- one from DescendantAdded races the game's own parent assignment and also
     -- leaves scripts such as Coin Rewards HUD indexing a missing child.
-    if object:IsA("PostEffect") then return end
     if class == "Explosion" then
         object.Visible = false
         object.BlastPressure = 0
@@ -112,20 +111,58 @@ local function disableEffect(active, object, class)
     active.Disabled = active.Disabled + 1
 end
 
+local function stripSurfaceAppearance(active, object)
+    for _, property in ipairs({
+        "ColorMap",
+        "MetalnessMap",
+        "NormalMap",
+        "RoughnessMap",
+    }) do
+        pcall(function() object[property] = "" end)
+    end
+    active.Stripped = active.Stripped + 1
+end
+
 local function suppress(active, object, kind)
     if not active.Running or not object or protected(object) then
         active.Protected = active.Protected + 1
         return
     end
     local class = object.ClassName
+    local visual = kind == "farm" or kind == "effects" or kind == "world"
     local ok = pcall(function()
         if EFFECT_CLASSES[class] then
             disableEffect(active, object, class)
             return
         end
 
+        if object:IsA("Sky") then
+            object.SkyboxBk, object.SkyboxDn, object.SkyboxFt = "", "", ""
+            object.SkyboxLf, object.SkyboxRt, object.SkyboxUp = "", "", ""
+            object.SunTextureId, object.MoonTextureId = "", ""
+            object.StarCount = 0
+            object.CelestialBodiesShown = false
+            active.Stripped = active.Stripped + 1
+            return
+        end
+
+        if object:IsA("Atmosphere") then
+            object.Density = 0
+            object.Haze = 0
+            object.Glare = 0
+            active.Disabled = active.Disabled + 1
+            return
+        end
+
+        if object:IsA("Clouds") then
+            object.Cover = 0
+            object.Density = 0
+            active.Disabled = active.Disabled + 1
+            return
+        end
+
         if object:IsA("Sound") then
-            if kind == "farm" or kind == "effects" then
+            if visual then
                 object.Volume = 0
                 object.Playing = false
                 active.Disabled = active.Disabled + 1
@@ -137,18 +174,37 @@ local function suppress(active, object, kind)
             object.CastShadow = false
             object.Reflectance = 0
             object.Material = Enum.Material.Plastic
+            pcall(function() object.MaterialVariant = "" end)
             if (kind == "farm" or kind == "effects")
                 and string.lower(tostring(object.Name)) ~= "pos" then
                 object.Transparency = 1
                 active.Hidden = active.Hidden + 1
             end
-            if object:IsA("MeshPart") then object.TextureID = "" end
+            if object:IsA("MeshPart") then
+                object.TextureID = ""
+                active.Stripped = active.Stripped + 1
+            end
             return
         end
 
         if object:IsA("Decal") or object:IsA("Texture") then
-            if kind == "farm" or kind == "effects" then object.Transparency = 1 end
-            active.Hidden = active.Hidden + 1
+            if visual then
+                object.Transparency = 1
+                active.Hidden = active.Hidden + 1
+            end
+            return
+        end
+
+        if object:IsA("SurfaceAppearance") then
+            if visual then stripSurfaceAppearance(active, object) end
+            return
+        end
+
+        if object:IsA("SpecialMesh") then
+            if visual then
+                object.TextureId = ""
+                active.Stripped = active.Stripped + 1
+            end
             return
         end
 
@@ -254,8 +310,11 @@ end
 
 local function refreshRoots(active)
     if not active.Running then return end
+    local map = workspace:FindFirstChild("__MAP")
     local things = workspace:FindFirstChild("__THINGS")
     local debris = workspace:FindFirstChild("__DEBRIS")
+    bindDynamicRoot(active, "map", map, "world")
+    bindDynamicRoot(active, "lighting", Lighting, "world")
     bindDynamicRoot(active, "debris", debris, "effects")
     bindThings(active, things)
 end
@@ -279,6 +338,7 @@ local function startPotato()
         StopFunction = nil,
         Hidden = 0,
         Disabled = 0,
+        Stripped = 0,
         Destroyed = 0,
         Protected = 0,
         Errors = 0,
@@ -288,12 +348,14 @@ local function startPotato()
     optimizeRendering()
 
     active.Connections[#active.Connections + 1] = workspace.ChildAdded:Connect(function(object)
-        if object.Name == "__THINGS" or object.Name == "__DEBRIS" then
+        if object.Name == "__MAP" or object.Name == "__THINGS"
+            or object.Name == "__DEBRIS" then
             task.defer(function() refreshRoots(active) end)
         end
     end)
     active.Connections[#active.Connections + 1] = workspace.ChildRemoved:Connect(function(object)
-        if object == active.Things or object == active.Roots.debris then
+        if object == active.Roots.map or object == active.Things
+            or object == active.Roots.debris then
             task.defer(function() refreshRoots(active) end)
         end
     end)
@@ -303,7 +365,7 @@ local function startPotato()
         if env.PSX_POTATO_STATE == active then disconnectAll(active) end
     end
     env.StopPSXPotatoMode = active.StopFunction
-    print("[PSX SLIM] farm anti-lag | event-driven | no permanent rescan")
+    print("[PSX SLIM] potato | event-driven map/egg/machine texture strip | no permanent rescan")
     return true
 end
 

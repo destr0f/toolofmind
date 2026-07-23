@@ -39,8 +39,11 @@ indexes and wake at most one feature-owned coalesced runner.
   retries.
 - Orb IDs are deduplicated into one current set and sent in a shared 0.25-second
   native batch. Lootbags wait on readiness signals and have one bounded retry.
-- Farm FX observes only `__DEBRIS` and the Coins/Pets/Orbs/Lootbags roots. The
-  map, camera, eggs, machines, UI and Network containers are never traversed.
+- Farm FX observes `__DEBRIS` and the Coins/Pets/Orbs/Lootbags roots. Potato
+  mode additionally performs one bounded pass over `__MAP` and `Lighting`, then
+  follows only their `DescendantAdded` signals. Map, egg and machine geometry
+  remains intact while texture/material maps are stripped in place. Player UI,
+  camera and Network containers are never traversed.
 
 Disabling a feature clears its connections/state. STOP and reload invalidate
 every active generation, empty current registries, clear remote caches and
@@ -55,7 +58,7 @@ The source audit intentionally leaves only the following cases:
 - the player currency fallback scans only the local player's descendants;
 - area bounds scan only the current `__MAP.Areas` hierarchy when the world
   changes;
-- graphics calls `GetDescendants()` once when each narrow farm root is bound,
+- graphics calls `GetDescendants()` once when each explicit visual root is bound,
   then uses `DescendantAdded`; game-owned FX instances are deferred until their
   parent assignment completes and are disabled in place rather than destroyed;
 - bounded `while` loops drain fixed queues (16 assignment lanes or 256 initial
