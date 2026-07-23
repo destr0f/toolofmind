@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.6"
+local VERSION = "1.4.1-dev.7"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -101,7 +101,7 @@ local config = {
     EggAnimation = "Headless (No Animation)",
 }
 
-local MODULE_REVISION = "5f1e2bf832e8e2bc17fa1cb7cfa92768dc86e3d8"
+local MODULE_REVISION = "feeba784de44273d70418a0e4efc9a9f8297d303"
 local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
     .. MODULE_REVISION .. "/"
 local SUPPORT_MODULE_URL = RAW_MODULE_BASE .. "automation_support_module.lua"
@@ -1162,9 +1162,12 @@ local function refreshCoinSnapshot()
                 removeCoin(id, false)
             end
         end
-        nextSnapshotAt = os.clock() + 3
+        -- Reconciliation is a safety net; live coin events remain the primary
+        -- path. A stable per-player phase offset prevents ten clients in one
+        -- area from issuing Get Coins on the same tick.
+        nextSnapshotAt = os.clock() + 4.5 + ((tonumber(player.UserId) or 0) % 17) * 0.11
     else
-        nextSnapshotAt = os.clock() + 0.5
+        nextSnapshotAt = os.clock() + 0.55 + ((tonumber(player.UserId) or 0) % 7) * 0.04
     end
     snapshotBusy = false
 end
@@ -1209,7 +1212,10 @@ local function connectCoinSignals()
             coinEventRevision = coinEventRevision + 1
             record.Pets = normalizePetSet(pets)
             record.EventRevision = coinEventRevision
-            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+            -- Other clients can produce dozens of occupancy updates per frame.
+            -- They affect the next free-pet choice but do not invalidate any
+            -- current lock, so the event-driven remove/health paths and the
+            -- recovering watchdog are sufficient without an allocator storm.
         else
             nextSnapshotAt = 0
         end
@@ -1387,11 +1393,20 @@ local petFarm = {
     Problem = nil,
     AllocatorScheduled = false,
     RouteSummary = "resolving 0/4",
+    EquippedCount = 0,
+    ExternalPetCount = 0,
+    ContendedTargets = 0,
+    TargetWindow = 0,
+    TargetShards = 1,
+    PolicyLanes = 16,
+    NextFailureTraceAt = 0,
+    SuppressedFailures = 0,
     StatsCache = {
         Version = "loading",
         Active = 0,
         Queued = 0,
         Limit = 0,
+        PolicyMaxLanes = 16,
         Accepted = 0,
         Rejected = 0,
         Errors = 0,
@@ -1997,6 +2012,19 @@ function petFarm:EnsureEngine()
             return petStates[tostring(petId)] == state
         end,
         TargetContainsPet = function(record, petId) return self:TargetContainsPet(record, petId) end,
+        ShouldRetry = function(_, reason)
+            -- Different-target modes gain more from an immediate fresh coin
+            -- than from retrying a coin another client probably destroyed.
+            if string.find(tostring(reason), "rejected", 1, true)
+                and (config.Mode == "Different Strongest" or config.Mode == "Different Weakest") then
+                return false
+            end
+            return true
+        end,
+        RetryJitter = function(_, attempt)
+            local seed = (tonumber(player.UserId) or 0) + (tonumber(attempt) or 1) * 17
+            return (seed % 31) / 1000
+        end,
         OnAccepted = function(petId, state, record, model, attempt, route)
             petId = tostring(petId)
             if petStates[petId] ~= state or not recordAlive(record) then return false end
@@ -2038,13 +2066,23 @@ function petFarm:EnsureEngine()
         OnFailed = function(petId, state, record, reason)
             petId = tostring(petId)
             if petStates[petId] ~= state then return end
+            local now = os.clock()
             petStates[petId] = nil
             releaseWait[petId] = nil
-            if record then rejectedUntil[tostring(record.Id)] = os.clock() + 0.18 end
+            if record then
+                local spread = ((tonumber(player.UserId) or 0) % 19) / 1000
+                rejectedUntil[tostring(record.Id)] = now + 0.24 + spread
+            end
             idleRecoveryCount = idleRecoveryCount + 1
             lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
             driverStatus = "UID join exhausted; selecting a fresh target"
-            trace("pet dispatch exhausted", tostring(reason))
+            self.SuppressedFailures = self.SuppressedFailures + 1
+            if now >= self.NextFailureTraceAt then
+                trace("pet dispatch recovery", tostring(reason)
+                    .. " | coalesced=" .. tostring(self.SuppressedFailures))
+                self.SuppressedFailures = 0
+                self.NextFailureTraceAt = now + 2
+            end
             if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
         end,
         OnStaleAccepted = function(record, petIds)
@@ -2978,6 +3016,107 @@ local function runDiamondPackCheck()
     statusSetters.Diamond(status .. "\nNext local check in 3 minutes.")
 end
 
+function petFarm:RecordExternalPets(record, equipped, allExternal)
+    local seen, count = {}, 0
+    for _, petSet in ipairs({ record.Pets or {}, record.PetsFarming or {} }) do
+        for rawPetId in pairs(petSet) do
+            local petId = tostring(rawPetId)
+            if not equipped[petId] and not seen[petId] then
+                seen[petId] = true
+                allExternal[petId] = true
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+function petFarm:ContendedTargetOrder(usable, claimed, freeCount, equipped)
+    local candidates, allExternal = {}, {}
+    local contended = 0
+    for rank, record in ipairs(usable) do
+        local external = self:RecordExternalPets(record, equipped, allExternal)
+        if external > 0 then contended = contended + 1 end
+        if not claimed[tostring(record.Id)] then
+            candidates[#candidates + 1] = {
+                Record = record,
+                Rank = rank,
+                External = external,
+            }
+        end
+    end
+
+    local externalCount = 0
+    for _ in pairs(allExternal) do externalCount = externalCount + 1 end
+    self.ExternalPetCount = externalCount
+    self.ContendedTargets = contended
+
+    local equippedCount = math.max(self.EquippedCount or 0, freeCount, 1)
+    local nearbyPlayers = 1
+    local localCharacter = player.Character
+    local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
+    if localRoot then
+        nearbyPlayers = 0
+        for _, candidatePlayer in ipairs(Players:GetPlayers()) do
+            local candidateCharacter = candidatePlayer.Character
+            local candidateRoot = candidateCharacter
+                and candidateCharacter:FindFirstChild("HumanoidRootPart")
+            if candidateRoot and (candidateRoot.Position - localRoot.Position).Magnitude <= 450 then
+                nearbyPlayers = nearbyPlayers + 1
+            end
+        end
+        nearbyPlayers = math.max(nearbyPlayers, 1)
+    end
+    local shardCount = externalCount >= equippedCount * 6 and 8
+        or externalCount >= equippedCount * 2 and 6
+        or externalCount > 0 and 4
+        or math.min(nearbyPlayers, 4)
+    local window = math.min(#candidates,
+        math.max(equippedCount * shardCount, freeCount * 2, 24))
+    self.TargetWindow = window
+    self.TargetShards = shardCount
+    local userShard = (tonumber(player.UserId) or 0) % shardCount
+
+    local pool = {}
+    for index = 1, window do
+        local candidate = candidates[index]
+        candidate.ShardDistance = (candidate.Rank - 1 - userShard) % shardCount
+        pool[#pool + 1] = candidate
+    end
+    table.sort(pool, function(left, right)
+        if left.External ~= right.External then return left.External < right.External end
+        if left.ShardDistance ~= right.ShardDistance then
+            return left.ShardDistance < right.ShardDistance
+        end
+        if left.Rank ~= right.Rank then return left.Rank < right.Rank end
+        return tostring(left.Record.Id) < tostring(right.Record.Id)
+    end)
+
+    local ordered = {}
+    for _, candidate in ipairs(pool) do ordered[#ordered + 1] = candidate.Record end
+    return ordered
+end
+
+function petFarm:ApplyContentionBackpressure()
+    if not self.Engine then return end
+    local stats = self:RefreshStats()
+    local averageRTT = tonumber(stats.AverageRTT) or 0
+    local equippedCount = math.max(self.EquippedCount or 0, 1)
+    local external = tonumber(self.ExternalPetCount) or 0
+    local desired = 16
+    if averageRTT >= 0.9 or external >= equippedCount * 8 then
+        desired = 8
+    elseif averageRTT >= 0.6 or external >= equippedCount * 4 then
+        desired = 10
+    elseif averageRTT >= 0.35 or external >= equippedCount * 2 then
+        desired = 12
+    end
+    if desired ~= self.PolicyLanes then
+        local called, changed = pcall(self.Engine, "set-limit", desired)
+        if called and changed == true then self.PolicyLanes = desired end
+    end
+end
+
 local allocatorPass
 
 function petFarm:ScheduleAllocatorPass()
@@ -3024,6 +3163,7 @@ allocatorPass = function()
         end
 
         local petIds = getEquippedPetIds()
+        petFarm.EquippedCount = #petIds
         local equipped = {}
         for _, petId in ipairs(petIds) do equipped[petId] = true end
         if #petIds == 0 then return end
@@ -3039,6 +3179,7 @@ allocatorPass = function()
             end
         end
         if #freePets == 0 then
+            petFarm:ApplyContentionBackpressure()
             pcall(petFarm.Engine, "pump")
             return
         end
@@ -3064,6 +3205,8 @@ allocatorPass = function()
 
         local plans, plansById = {}, {}
         if config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only" then
+            petFarm.TargetWindow = math.min(#usable, 1)
+            petFarm.TargetShards = 1
             local groupTarget
             for _, state in pairs(petStates) do
                 local coinId = tostring(state.CoinId)
@@ -3076,6 +3219,10 @@ allocatorPass = function()
                 end
             end
             groupTarget = groupTarget or usable[1]
+            local external = {}
+            petFarm.ExternalPetCount = petFarm:RecordExternalPets(
+                groupTarget, equipped, external)
+            petFarm.ContendedTargets = petFarm.ExternalPetCount > 0 and 1 or 0
             plans[1] = { Record = groupTarget, Pets = freePets }
         else
             local claimed = {}
@@ -3083,10 +3230,9 @@ allocatorPass = function()
                 local coinId = tostring(state.CoinId)
                 if targetIds[coinId] and recordAlive(coinRecords[coinId]) then claimed[coinId] = true end
             end
-            local unique = {}
-            for _, record in ipairs(usable) do
-                if not claimed[tostring(record.Id)] then table.insert(unique, record) end
-            end
+            local unique = petFarm:ContendedTargetOrder(
+                usable, claimed, #freePets, equipped)
+            petFarm:ApplyContentionBackpressure()
             local uniqueIndex, sharedIndex = 1, 1
             for _, petId in ipairs(freePets) do
                 local record = unique[uniqueIndex]
@@ -3160,39 +3306,309 @@ end)
 task.spawn(function()
     while running() do
         requestAllocatorPulse()
-        task.wait(config.PetFarm and 0.08 or 0.4)
+        local expected = tonumber(petFarm.EquippedCount) or 0
+        local recovering = expected > 0 and assignmentCount() < expected
+        -- Coin/pet events do the immediate work. The watchdog runs quickly only
+        -- while a pet is missing a lock, then backs off to reduce steady CPU.
+        task.wait(config.PetFarm and (recovering and 0.045 or 0.2) or 0.4)
     end
 end)
 
-task.spawn(function()
-    while task.wait(0.15) do
-        if not running() then break end
-        if not config.Orbs and not config.Lootbags then continue end
-        local character = player.Character
-        local root = character and character:FindFirstChild("HumanoidRootPart")
-        local things = workspace:FindFirstChild("__THINGS")
-        if root and things then
-            local function collect(folderName, limit)
-                local folder = things:FindFirstChild(folderName)
-                if not folder then return end
-                local items = folder:GetChildren()
-                for index = 1, math.min(#items, limit) do
-                    local item = items[index]
-                    pcall(function()
-                        local part = item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true)
-                        if part then
-                            part.CanCollide = false
-                            part.CFrame = root.CFrame * CFrame.new(0, -3, 0)
-                            if type(firetouchinterest) == "function" then
-                                firetouchinterest(root, part, 0)
-                                firetouchinterest(root, part, 1)
-                            end
-                        end
-                    end)
-                end
+local lootCollector = {
+    Ready = { Items = {}, Head = 1 },
+    Retry = { Items = {}, Head = 1 },
+    Entries = {},
+    Bindings = {},
+    Enabled = {},
+    Pending = 0,
+    NextBindingAt = 0,
+    NextSweepAt = 0,
+    NextStatusAt = 0,
+    Stats = { Seen = 0, Touched = 0, Retried = 0, Expired = 0, Foreign = 0, Errors = 0 },
+}
+
+function lootCollector:IsEnabled(kind)
+    return kind == "Orbs" and config.Orbs == true
+        or kind == "Lootbags" and config.Lootbags == true
+end
+
+function lootCollector:Push(channelName, entry)
+    if not entry or not entry.Active then return end
+    if entry.Channel then return end
+    entry.Channel = channelName
+    local channel = self[channelName]
+    channel.Items[#channel.Items + 1] = entry
+end
+
+function lootCollector:Pop(channelName)
+    local channel = self[channelName]
+    local items = channel.Items
+    local scanned = 0
+    while channel.Head <= #items and scanned < 128 do
+        scanned = scanned + 1
+        local entry = items[channel.Head]
+        items[channel.Head] = false
+        channel.Head = channel.Head + 1
+        if entry and entry.Active and entry.Channel == channelName then
+            entry.Channel = nil
+            return entry
+        end
+    end
+    if channel.Head > #items then
+        channel.Items = {}
+        channel.Head = 1
+    elseif channel.Head > 128 and channel.Head > #items / 2 then
+        local compacted = {}
+        for index = channel.Head, #items do compacted[#compacted + 1] = items[index] end
+        channel.Items = compacted
+        channel.Head = 1
+    end
+    return nil
+end
+
+function lootCollector:QueueSpan(channelName)
+    local channel = self[channelName]
+    return math.max(#channel.Items - channel.Head + 1, 0)
+end
+
+function lootCollector:Forget(entry)
+    if not entry or not entry.Active then return end
+    entry.Active = false
+    entry.Channel = nil
+    if self.Entries[entry.Item] == entry then self.Entries[entry.Item] = nil end
+    self.Pending = math.max(self.Pending - 1, 0)
+end
+
+function lootCollector:OwnerAllowed(item)
+    for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
+        local value = readObjectValue(item, key)
+        if typeof(value) == "Instance" and value:IsA("Player") then return value == player end
+        if type(value) == "number" and value > 0 then return value == player.UserId end
+        if type(value) == "string" and value ~= "" then
+            local numeric = tonumber(value)
+            if numeric and numeric > 0 then return numeric == player.UserId end
+            if string.lower(value) == string.lower(player.Name)
+                or string.lower(value) == string.lower(player.DisplayName) then
+                return true
             end
-            if config.Orbs then collect("Orbs", 40) end
-            if config.Lootbags then collect("Lootbags", 20) end
+            local ownerPlayer = Players:FindFirstChild(value)
+            if ownerPlayer then return ownerPlayer == player end
+        end
+    end
+    -- Older drops expose no owner metadata. They are still safe to touch; the
+    -- server remains authoritative and simply ignores another player's drop.
+    return true
+end
+
+function lootCollector:QueueItem(item, kind)
+    if not item or not item.Parent or not self:IsEnabled(kind) or self.Entries[item] then return end
+    local entry = {
+        Item = item,
+        Kind = kind,
+        Active = true,
+        Attempts = 0,
+        CreatedAt = os.clock(),
+        NextAt = 0,
+    }
+    self.Entries[item] = entry
+    self.Pending = self.Pending + 1
+    self.Stats.Seen = self.Stats.Seen + 1
+    self:Push("Ready", entry)
+end
+
+function lootCollector:StripVisual(entry)
+    if entry.Stripped then return entry.Part end
+    entry.Stripped = true
+    local item = entry.Item
+    local part = item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true)
+    entry.Part = part
+    local ok = pcall(function()
+        for _, descendant in ipairs(item:GetDescendants()) do
+            if descendant:IsA("BasePart") then
+                descendant.CanCollide = false
+                descendant.Massless = true
+                descendant.Transparency = 1
+                if not part then part = descendant end
+            elseif descendant:IsA("ParticleEmitter") or descendant:IsA("Trail")
+                or descendant:IsA("Beam") then
+                descendant.Enabled = false
+            end
+        end
+        if item:IsA("BasePart") then
+            item.CanCollide = false
+            item.Massless = true
+            item.Transparency = 1
+        end
+    end)
+    if not ok then self.Stats.Errors = self.Stats.Errors + 1 end
+    entry.Part = part
+    return part
+end
+
+function lootCollector:Touch(entry, root, now)
+    local item = entry.Item
+    if not item or not item.Parent then self:Forget(entry); return end
+    if not self:IsEnabled(entry.Kind) then self:Forget(entry); return end
+    if not entry.OwnerChecked then
+        entry.OwnerChecked = true
+        if not self:OwnerAllowed(item) then
+            self.Stats.Foreign = self.Stats.Foreign + 1
+            self:Forget(entry)
+            return
+        end
+    end
+
+    local part = self:StripVisual(entry)
+    if not part or not part.Parent then
+        entry.Stripped = false
+        entry.Part = nil
+        entry.Attempts = entry.Attempts + 1
+    else
+        local offset = ((entry.Attempts % 3) - 1) * 0.35
+        local destination = root.CFrame * CFrame.new(offset, -2.5, -offset)
+        local moved = pcall(function()
+            if item:IsA("Model") then item:PivotTo(destination) else part.CFrame = destination end
+            part.CanCollide = false
+            if type(firetouchinterest) == "function" then
+                firetouchinterest(root, part, 0)
+                firetouchinterest(root, part, 1)
+            end
+        end)
+        if moved then
+            self.Stats.Touched = self.Stats.Touched + 1
+        else
+            self.Stats.Errors = self.Stats.Errors + 1
+        end
+        entry.Attempts = entry.Attempts + 1
+    end
+
+    if not entry.Active or not item.Parent then self:Forget(entry); return end
+    if entry.Attempts >= 14 or now - entry.CreatedAt >= 12 then
+        self.Stats.Expired = self.Stats.Expired + 1
+        self:Forget(entry)
+        return
+    end
+    local delaySeconds = entry.Attempts <= 1 and 0.06
+        or entry.Attempts == 2 and 0.12
+        or entry.Attempts <= 5 and 0.28 or 0.7
+    entry.NextAt = now + delaySeconds
+    self.Stats.Retried = self.Stats.Retried + 1
+    self:Push("Retry", entry)
+end
+
+function lootCollector:Scan(kind)
+    local binding = self.Bindings[kind]
+    local folder = binding and binding.Folder
+    if not folder or not self:IsEnabled(kind) then return end
+    for _, item in ipairs(folder:GetChildren()) do self:QueueItem(item, kind) end
+end
+
+function lootCollector:Bind(kind, folder)
+    local previous = self.Bindings[kind]
+    if previous and previous.Folder == folder then return end
+    if previous then
+        for _, connection in ipairs(previous.Connections) do
+            pcall(function() connection:Disconnect() end)
+        end
+    end
+    self.Bindings[kind] = nil
+    if not folder then return end
+
+    local binding = { Folder = folder, Connections = {} }
+    binding.Connections[1] = track(folder.ChildAdded:Connect(function(item)
+        self:QueueItem(item, kind)
+    end))
+    binding.Connections[2] = track(folder.ChildRemoved:Connect(function(item)
+        self:Forget(self.Entries[item])
+    end))
+    self.Bindings[kind] = binding
+    self:Scan(kind)
+end
+
+function lootCollector:RefreshBindings(now)
+    local things = workspace:FindFirstChild("__THINGS")
+    for _, kind in ipairs({ "Orbs", "Lootbags" }) do
+        local folder = things and things:FindFirstChild(kind)
+        self:Bind(kind, folder)
+        local enabled = self:IsEnabled(kind)
+        if self.Enabled[kind] ~= enabled then
+            self.Enabled[kind] = enabled
+            if enabled then
+                self:Scan(kind)
+            else
+                local disabledEntries = {}
+                for _, entry in pairs(self.Entries) do
+                    if entry.Kind == kind then disabledEntries[#disabledEntries + 1] = entry end
+                end
+                for _, entry in ipairs(disabledEntries) do self:Forget(entry) end
+            end
+        end
+    end
+    if now >= self.NextSweepAt then
+        self.NextSweepAt = now + 4 + ((tonumber(player.UserId) or 0) % 11) * 0.07
+        if config.Orbs then self:Scan("Orbs") end
+        if config.Lootbags then self:Scan("Lootbags") end
+    end
+end
+
+function lootCollector:ProcessFrame(root, now)
+    local backlog = self.Pending
+    if backlog <= 0 then return end
+    local itemLimit = backlog >= 512 and 160 or backlog >= 128 and 96 or 48
+    local timeBudget = backlog >= 512 and 0.0035 or backlog >= 128 and 0.0025 or 0.0015
+    local deadline = now + timeBudget
+    local processed = 0
+
+    while processed < itemLimit and os.clock() < deadline do
+        local entry = self:Pop("Ready")
+        if not entry then break end
+        self:Touch(entry, root, os.clock())
+        processed = processed + 1
+    end
+
+    local retryChecks = self:QueueSpan("Retry")
+    while processed < itemLimit and retryChecks > 0 and os.clock() < deadline do
+        retryChecks = retryChecks - 1
+        local entry = self:Pop("Retry")
+        if not entry then break end
+        local current = os.clock()
+        if current >= (entry.NextAt or 0) then
+            self:Touch(entry, root, current)
+            processed = processed + 1
+        else
+            self:Push("Retry", entry)
+        end
+    end
+end
+
+function lootCollector:Status()
+    return string.format(
+        "Event queue: %d pending | touched: %d | retries: %d\nExpired: %d | foreign skipped: %d | local errors: %d",
+        self.Pending,
+        self.Stats.Touched,
+        self.Stats.Retried,
+        self.Stats.Expired,
+        self.Stats.Foreign,
+        self.Stats.Errors
+    )
+end
+
+task.spawn(function()
+    while running() do
+        RunService.Heartbeat:Wait()
+        local now = os.clock()
+        if now >= lootCollector.NextBindingAt then
+            lootCollector.NextBindingAt = now + 0.5
+            lootCollector:RefreshBindings(now)
+        end
+        if lootCollector.Pending > 0 and (config.Orbs or config.Lootbags) then
+            local character = player.Character
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            if root then lootCollector:ProcessFrame(root, now) end
+        end
+        if now >= lootCollector.NextStatusAt then
+            lootCollector.NextStatusAt = now + 0.75
+            statusSetters.Set("Loot", lootCollector:Status())
         end
     end
 end)
@@ -3527,16 +3943,26 @@ UI.LootHero:Paragraph({
 UI.LootHero:Toggle({
     Flag = "collect_orbs",
     Title = "Collect Orbs",
-    Desc = "Pulls up to 40 live orbs per pass",
+    Desc = "Event-driven queue: every new orb gets a fair next-frame pickup attempt",
     Value = false,
-    Callback = function(value) config.Orbs = value == true end,
+    Callback = function(value)
+        config.Orbs = value == true
+        lootCollector.NextBindingAt = 0
+    end,
 })
 UI.LootHero:Toggle({
     Flag = "collect_lootbags",
     Title = "Collect Lootbags",
-    Desc = "Pulls up to 20 live lootbags per pass",
+    Desc = "Fair queue with bounded retries; persistent old bags cannot starve new drops",
     Value = false,
-    Callback = function(value) config.Lootbags = value == true end,
+    Callback = function(value)
+        config.Lootbags = value == true
+        lootCollector.NextBindingAt = 0
+    end,
+})
+statusViews.Loot = UI.LootHero:Paragraph({
+    Title = "Pickup Queue Health",
+    Desc = "Event collector is idle; enable Orbs or Lootbags to start it.",
 })
 uiStageYield("loot controls")
 
@@ -3986,7 +4412,7 @@ task.spawn(function()
                 runtimeActive, runtimeIdle, runtimeMissing)
             or "Visual runtime: optional game-state mirror is still being discovered"
         statusSetters.Farm(string.format(
-            "%s  >  %s\nTargets: %d | locks: %d/%d | joining: %d | idle: %d\n%s",
+            "%s  >  %s\nTargets: %d | locks: %d/%d | joining: %d | idle: %d\nContention: %d external pets on %d targets | window/shards: %d/%d\n%s",
             tostring(world or "unknown"),
             tostring(zone or "unknown"),
             #targets,
@@ -3994,15 +4420,20 @@ task.spawn(function()
             equippedCount,
             pendingCount,
             math.max(equippedCount - assignedCount, 0),
+            tonumber(petFarm.ExternalPetCount) or 0,
+            tonumber(petFarm.ContendedTargets) or 0,
+            tonumber(petFarm.TargetWindow) or 0,
+            tonumber(petFarm.TargetShards) or 1,
             runtimeLine
         ))
         statusSetters.Health(string.format(
-            "Network: %s | %s | runtime mirror: %s | allocator: %s\nUID lanes: %d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nRecoveries: %d | last: %s\nDriver: %s",
+            "Network: %s | %s | runtime mirror: %s | allocator: %s\nUID lanes: %d/%d policy | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nRecoveries: %d | last: %s\nDriver: %s",
             networkState,
             petFarm.RouteSummary,
             controllerState,
             farmResetRunning and "reconfiguring" or "stable",
             tonumber(dispatchStats.Limit) or 0,
+            tonumber(dispatchStats.PolicyMaxLanes) or tonumber(petFarm.PolicyLanes) or 16,
             tonumber(dispatchStats.Active) or 0,
             tonumber(dispatchStats.Queued) or 0,
             math.floor((tonumber(dispatchStats.AverageRTT) or 0) * 1000 + 0.5),
