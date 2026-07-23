@@ -2,7 +2,7 @@
 -- Only farm-owned visual roots are observed. The map, camera, eggs, machines,
 -- UI and network containers are deliberately left untouched.
 
-local MODULE_VERSION = "2.0.0"
+local MODULE_VERSION = "2.0.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
@@ -91,6 +91,27 @@ local function optimizeRendering()
     end
 end
 
+local function disableEffect(active, object, class)
+    -- Game scripts retain and reuse these instances after parenting them. Removing
+    -- one from DescendantAdded races the game's own parent assignment and also
+    -- leaves scripts such as Coin Rewards HUD indexing a missing child.
+    if object:IsA("PostEffect") then return end
+    if class == "Explosion" then
+        object.Visible = false
+        object.BlastPressure = 0
+        object.BlastRadius = 0
+    else
+        object.Enabled = false
+        if class == "ParticleEmitter" then
+            object.Rate = 0
+            pcall(function() object:Clear() end)
+        elseif class == "Trail" then
+            pcall(function() object:Clear() end)
+        end
+    end
+    active.Disabled = active.Disabled + 1
+end
+
 local function suppress(active, object, kind)
     if not active.Running or not object or protected(object) then
         active.Protected = active.Protected + 1
@@ -99,9 +120,7 @@ local function suppress(active, object, kind)
     local class = object.ClassName
     local ok = pcall(function()
         if EFFECT_CLASSES[class] then
-            if object:IsA("PostEffect") then return end
-            object:Destroy()
-            active.Destroyed = active.Destroyed + 1
+            disableEffect(active, object, class)
             return
         end
 
@@ -133,13 +152,6 @@ local function suppress(active, object, kind)
             return
         end
 
-        if object:IsA("SurfaceAppearance")
-            and (kind == "farm" or kind == "effects") then
-            object:Destroy()
-            active.Destroyed = active.Destroyed + 1
-            return
-        end
-
         if kind == "farm" and (object:IsA("BillboardGui")
             or object:IsA("SurfaceGui")) then
             object.Enabled = false
@@ -147,6 +159,16 @@ local function suppress(active, object, kind)
         end
     end)
     if not ok then active.Errors = active.Errors + 1 end
+end
+
+local function deferSuppression(active, root, object, kind)
+    local generation = active.Generation
+    task.defer(function()
+        if not active.Running or active.Generation ~= generation then return end
+        if not object or not object.Parent then return end
+        if root and not object:IsDescendantOf(root) then return end
+        suppress(active, object, kind)
+    end)
 end
 
 local function processInitial(active)
@@ -199,7 +221,7 @@ local function bindDynamicRoot(active, key, root, kind)
     queueTree(active, root, kind)
     active.RootConnections[key] =
         root.DescendantAdded:Connect(function(object)
-            suppress(active, object, kind)
+            deferSuppression(active, root, object, kind)
         end)
 end
 

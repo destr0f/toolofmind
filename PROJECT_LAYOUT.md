@@ -56,7 +56,8 @@ The source audit intentionally leaves only the following cases:
 - area bounds scan only the current `__MAP.Areas` hierarchy when the world
   changes;
 - graphics calls `GetDescendants()` once when each narrow farm root is bound,
-  then uses `DescendantAdded`;
+  then uses `DescendantAdded`; game-owned FX instances are deferred until their
+  parent assignment completes and are disabled in place rather than destroyed;
 - bounded `while` loops drain fixed queues (16 assignment lanes or 256 initial
   FX objects), never the whole world per frame;
 - one `Heartbeat:Wait()` yields between staged UI construction groups;

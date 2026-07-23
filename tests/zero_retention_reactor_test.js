@@ -126,6 +126,12 @@ assert(!graphics.includes("Heartbeat")
     && !graphics.includes("RenderStepped")
     && !graphics.includes("task.wait"),
     "graphics still has a permanent frame/polling worker");
+assert(!graphics.includes("object:Destroy()"),
+    "graphics destroys game-owned FX instances that live scripts still reference");
+assert(graphics.includes("deferSuppression(active, root, object, kind)")
+    && graphics.includes("object.Enabled = false")
+    && graphics.includes("object.Visible = false"),
+    "graphics does not safely defer and disable dynamic FX in place");
 
 // Lifecycle and bounded telemetry.
 for (const marker of [
