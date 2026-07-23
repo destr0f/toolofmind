@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.2.1"
+local MODULE_VERSION = "1.3.0"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -13,7 +13,7 @@ end
 
 local function build(context)
     local valid, problem = requireKeys(context, {
-        "UI", "Config", "StatusViews", "RefreshEggs", "EnsureAutoEgg",
+        "UI", "Config", "Kernel", "StatusViews", "RefreshEggs", "EnsureAutoEgg",
         "InvalidateEggCatalog", "StartAutoEgg", "StopAutoEgg", "EggIdForLabel",
         "SetEggCatalogStatus",
         "RefreshRoutes", "SetRouteStatus", "GetMachinePetCatalog", "StartMachine",
@@ -26,6 +26,11 @@ local function build(context)
     local config = context.Config
     local statusViews = context.StatusViews
     local yieldUI = type(context.YieldUI) == "function" and context.YieldUI or function() end
+    local function schedule(key, priority, callback)
+        context.Kernel:Spawn("ui-action." .. tostring(key), priority, function(cancelToken)
+            if not cancelToken:IsCancelled() then return callback() end
+        end, { Owner = "ui" })
+    end
 
     local eggCatalog = UI.EggTab:Section({ Title = "01 / Live Egg Catalog", Box = true, Opened = true })
     eggCatalog:Paragraph({
@@ -63,7 +68,7 @@ local function build(context)
         Desc = "Loads the egg worker and re-indexes local models; no server request.",
         Icon = "refresh-cw",
         Callback = function()
-            task.spawn(function()
+            schedule("egg-catalog", "P2", function()
                 local loaded, loadProblem = context.EnsureAutoEgg()
                 if not loaded then
                     context.SetEggCatalogStatus("Catalog module could not be loaded: " .. tostring(loadProblem))
@@ -118,7 +123,7 @@ local function build(context)
             if config.AutoEgg == enabled then return end
             config.AutoEgg = enabled
             if enabled then
-                task.spawn(context.StartAutoEgg)
+                schedule("auto-egg-start", "P2", context.StartAutoEgg)
             else
                 context.StopAutoEgg("Auto hatch disabled. No egg request is active.")
             end
@@ -139,7 +144,7 @@ local function build(context)
         Title = "REFRESH COMMAND STATUS",
         Desc = "Manual local lookup through Library.Network; never invokes the server.",
         Icon = "refresh-cw",
-        Callback = function() task.spawn(context.RefreshRoutes) end,
+        Callback = function() schedule("route-refresh", "P4", context.RefreshRoutes) end,
     })
     statusViews.Routes = routes:Paragraph({
         Title = "Command Status",
@@ -167,7 +172,7 @@ local function build(context)
         Desc = "Re-reads Directory.Eggs/Pets locally; no machine request.",
         Icon = "refresh-cw",
         Callback = function()
-            task.spawn(function()
+            schedule("machine-catalog", "P3", function()
                 local _, _, summary = context.GetMachinePetCatalog(true)
                 context.SetRouteStatus("Pet catalog refreshed locally: " .. tostring(summary))
             end)
@@ -185,7 +190,7 @@ local function build(context)
             config.AutoGoldenGalaxyFox = value == true
             if config.AutoGoldenGalaxyFox then
                 context.SetGoldStatus("Enabled. Loading the protected worker in the serial lane...")
-                task.spawn(function() context.StartMachine("Gold") end)
+                schedule("gold-start", "P3", function() context.StartMachine("Gold") end)
             else
                 context.StopMachine("Gold")
                 context.SetGoldStatus("Disabled. No pets will be sent to the Golden Machine.")
@@ -208,7 +213,7 @@ local function build(context)
             config.AutoRainbowGalaxyFox = value == true
             if config.AutoRainbowGalaxyFox then
                 context.SetRainbowStatus("Enabled. Loading the protected worker in the serial lane...")
-                task.spawn(function() context.StartMachine("Rainbow") end)
+                schedule("rainbow-start", "P3", function() context.StartMachine("Rainbow") end)
             else
                 context.StopMachine("Rainbow")
                 context.SetRainbowStatus("Disabled. No pets will be sent to the Rainbow Machine.")
@@ -261,7 +266,7 @@ local function build(context)
             config.AutoDarkMatterGalaxyFox = value == true
             if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then
                 context.SetDarkMatterStatus("Enabled. Loading the Dark Matter worker in the serial lane...")
-                task.spawn(function() context.StartMachine("DarkMatter") end)
+                schedule("dark-matter-start", "P3", function() context.StartMachine("DarkMatter") end)
             else
                 context.StopMachine("DarkMatter")
                 context.SetDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
@@ -277,7 +282,7 @@ local function build(context)
             config.AutoClaimDarkMatter = value == true
             if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then
                 context.SetDarkMatterStatus("Enabled. Reading DarkMatterQueue and server time...")
-                task.spawn(function() context.StartMachine("DarkMatter") end)
+                schedule("dark-matter-start", "P3", function() context.StartMachine("DarkMatter") end)
             else
                 context.StopMachine("DarkMatter")
                 context.SetDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
@@ -341,8 +346,8 @@ local function build(context)
         Desc = "Resolves boost routes locally without spending Diamonds.",
         Icon = "refresh-cw",
         Callback = function()
-            task.spawn(context.RefreshRoutes)
-            if context.BoostEnabled() then task.spawn(context.StartBoost) end
+            schedule("boost-routes", "P4", context.RefreshRoutes)
+            if context.BoostEnabled() then schedule("boost-start", "P3", context.StartBoost) end
         end,
     })
     statusViews.Boost = bundle:Paragraph({

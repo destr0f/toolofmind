@@ -40,6 +40,12 @@ for _, key in ipairs({ "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMa
 end
 
 local noOp = function() end
+local kernel = {
+    Spawn = function(_, _, _, callback)
+        callback({ IsCancelled = function() return false end })
+        return {}, true
+    end,
+}
 local uiYieldCount = 0
 local accepted, controls = automationUI("build", {
     UI = {
@@ -49,6 +55,7 @@ local accepted, controls = automationUI("build", {
         BoostsTab = newTab(),
     },
     Config = config,
+    Kernel = kernel,
     StatusViews = statusViews,
     RefreshEggs = noOp,
     EnsureAutoEgg = function() return true end,

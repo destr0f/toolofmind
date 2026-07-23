@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.3.0"
+local MODULE_VERSION = "1.4.0"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -22,6 +22,19 @@ local POST_PROCESS_TIMEOUT = 8
 local NATIVE_SKIP_ARM_TIMEOUT = 8
 local NATIVE_SKIP_CONNECTION_WINDOW = 0.35
 local physicalCache = { Root = nil, ById = {}, ScannedAt = 0 }
+
+local function requestJobKey(pending, suffix)
+    return "auto-egg.request." .. tostring(pending and pending.RequestId or "unknown")
+        .. "." .. tostring(suffix)
+end
+
+local function cancelRequestJobs(context, pending, reason)
+    local kernel = context and context.Kernel
+    if not kernel or not pending then return end
+    for _, suffix in ipairs({ "native-skip", "purchase", "reconcile", "post-process" }) do
+        kernel:Unregister(requestJobKey(pending, suffix), reason or "egg request completed")
+    end
+end
 
 local function lower(value)
     return string.lower(tostring(value or ""))
@@ -603,48 +616,51 @@ local function armNativeSkip(state, context, pending)
     pending.SkipScheduled = allowed
     if not allowed then return end
 
-    task.spawn(function()
-        local openingDeadline = pending.StartedAt + NATIVE_SKIP_ARM_TIMEOUT
-        while state.Running and state.Pending == pending and os.clock() < openingDeadline do
+    local openingDeadline = pending.StartedAt + NATIVE_SKIP_ARM_TIMEOUT
+    local connectionDeadline
+    local jobKey = requestJobKey(pending, "native-skip")
+    local _, created = context.Kernel:Every(jobKey, 0.01, "P2", function(token, now)
+        if token:IsCancelled() or not state.Running or state.Pending ~= pending then return false end
+
+        if not pending.NativeOpeningSeen then
             if openingFlag(context) then
                 pending.NativeOpeningSeen = true
-                pending.NativeOpeningAt = pending.NativeOpeningAt or os.clock()
-                break
+                pending.NativeOpeningAt = pending.NativeOpeningAt or now
+                connectionDeadline = now + NATIVE_SKIP_CONNECTION_WINDOW
+            elseif now >= openingDeadline then
+                pending.SkipResult = policy .. " | native OpeningEgg transition was not observed"
+                return false
+            else
+                return 0.01
             end
-            task.wait(0.01)
-        end
-
-        if not state.Running or state.Pending ~= pending then return end
-        if not pending.NativeOpeningSeen then
-            pending.SkipResult = policy .. " | native OpeningEgg transition was not observed"
-            return
         end
 
         local sent, method = false, nil
-        if type(pending.InputConnections) == "table" then
-            local connectionDeadline = os.clock() + NATIVE_SKIP_CONNECTION_WINDOW
-            repeat
-                if invokeNewEggSkipConnection(context, pending) then
-                    sent, method = true, "auto-detected native Egg Skip callback"
-                    break
-                end
-                task.wait(0.01)
-            until not state.Running or state.Pending ~= pending
-                or not openingFlag(context) or os.clock() >= connectionDeadline
+        if type(pending.InputConnections) == "table"
+            and now < (connectionDeadline or now)
+            and openingFlag(context) then
+            if invokeNewEggSkipConnection(context, pending) then
+                sent, method = true, "auto-detected native Egg Skip callback"
+            else
+                return 0.01
+            end
         end
 
-        if not sent and state.Running and state.Pending == pending and openingFlag(context) then
+        if not sent and openingFlag(context) then
             sent, method = emitLocalSkipInput(context, pending)
         end
         if sent then
             state.NativeSkips = state.NativeSkips + 1
             pending.SkipResult = policy .. " | sent via " .. tostring(method)
-            context.Trace("auto egg native skip", pending.SkipResult)
         else
             pending.SkipResult = policy .. " | local skip failed: " .. tostring(method)
-            context.Trace("auto egg native skip", pending.SkipResult)
         end
-    end)
+        context.Trace("auto egg native skip", pending.SkipResult)
+        return false
+    end, { Owner = "auto-egg" })
+    if not created then
+        pending.SkipResult = policy .. " | native skip worker was already registered"
+    end
 end
 
 local function autoDeletePlan(context, pets)
@@ -733,37 +749,7 @@ local function verifyOwnedPet(context, candidate)
     return true
 end
 
-local function waitForAutoDeleteOwnership(state, context, pending, candidates)
-    local deadline = os.clock() + AUTO_DELETE_SYNC_TIMEOUT
-    local lastProblem = "waiting for local pet replication"
-    repeat
-        if not state.Running or state.Pending ~= pending then
-            return false, "auto hatch stopped before Auto Delete"
-        end
-        local allReady = true
-        for _, candidate in ipairs(candidates) do
-            local ready, problem, permanent = verifyOwnedPet(context, candidate)
-            if not ready then
-                if permanent then return false, problem end
-                allReady, lastProblem = false, problem or lastProblem
-                break
-            end
-        end
-        if allReady then return true end
-        task.wait(AUTO_DELETE_POLL)
-    until os.clock() >= deadline
-    return false, tostring(lastProblem) .. " timed out after "
-        .. tostring(AUTO_DELETE_SYNC_TIMEOUT) .. "s"
-end
-
-local function runHeadlessAutoDelete(state, context, pending, pets)
-    local candidates, plan = autoDeletePlan(context, pets)
-    if not candidates then return false, plan end
-    if #candidates == 0 then return true, plan end
-
-    local ready, syncProblem = waitForAutoDeleteOwnership(state, context, pending, candidates)
-    if not ready then return false, "Game Auto Delete: " .. tostring(syncProblem) end
-
+local function runHeadlessAutoDelete(state, context, candidates, plan)
     local uids = {}
     for _, candidate in ipairs(candidates) do uids[#uids + 1] = candidate.Uid end
     local result = table.pack(context.InvokeCommand("Delete Several Pets", uids))
@@ -786,9 +772,47 @@ local function startHeadlessPostProcess(state, context, pending, pets)
     if pending.PostProcessStarted or not pending.Headless then return end
     pending.PostProcessStarted = true
     pending.PostProcessStartedAt = os.clock()
-    task.spawn(function()
-        local result = table.pack(pcall(runHeadlessAutoDelete, state, context, pending, pets))
-        if not state.Running or state.Pending ~= pending then return end
+    local candidates, plan = autoDeletePlan(context, pets)
+    if not candidates then
+        pending.PostProcessFailure = tostring(plan)
+        pending.PostProcessDone = true
+        return
+    end
+    if #candidates == 0 then
+        pending.PostProcessNote = tostring(plan)
+        pending.PostProcessDone = true
+        return
+    end
+
+    local deadline = os.clock() + AUTO_DELETE_SYNC_TIMEOUT
+    local lastProblem = "waiting for local pet replication"
+    local jobKey = requestJobKey(pending, "post-process")
+    local _, created = context.Kernel:Every(jobKey, AUTO_DELETE_POLL, "P2", function(token, now)
+        if token:IsCancelled() or not state.Running or state.Pending ~= pending then return false end
+
+        local allReady = true
+        for _, candidate in ipairs(candidates) do
+            local ready, problem, permanent = verifyOwnedPet(context, candidate)
+            if not ready then
+                if permanent then
+                    pending.PostProcessFailure = "Game Auto Delete: " .. tostring(problem)
+                    pending.PostProcessDone = true
+                    return false
+                end
+                allReady = false
+                lastProblem = problem or lastProblem
+                break
+            end
+        end
+        if not allReady then
+            if now < deadline then return AUTO_DELETE_POLL end
+            pending.PostProcessFailure = "Game Auto Delete: " .. tostring(lastProblem)
+                .. " timed out after " .. tostring(AUTO_DELETE_SYNC_TIMEOUT) .. "s"
+            pending.PostProcessDone = true
+            return false
+        end
+
+        local result = table.pack(pcall(runHeadlessAutoDelete, state, context, candidates, plan))
         if not result[1] then
             pending.PostProcessFailure = "Game Auto Delete bridge crashed locally: " .. tostring(result[2])
         elseif not result[2] then
@@ -797,7 +821,12 @@ local function startHeadlessPostProcess(state, context, pending, pets)
             pending.PostProcessNote = tostring(result[3])
         end
         pending.PostProcessDone = true
-    end)
+        return false
+    end, { Owner = "auto-egg" })
+    if not created then
+        pending.PostProcessFailure = "Game Auto Delete worker could not be registered"
+        pending.PostProcessDone = true
+    end
 end
 
 local function startHeadlessReconcile(state, context, pending)
@@ -805,13 +834,16 @@ local function startHeadlessReconcile(state, context, pending)
     pending.ReconcileStarted = true
     pending.ReconcileStartedAt = os.clock()
 
-    task.spawn(function()
-        local expected = pending.Triple and 3 or 1
-        local deadline = os.clock() + HEADLESS_REPLICATION_TIMEOUT
-        local lastObserved = 0
-
-        repeat
-            if not state.Running or state.Pending ~= pending or pending.EventReceived then return end
+    local expected = pending.Triple and 3 or 1
+    local deadline = os.clock() + HEADLESS_REPLICATION_TIMEOUT
+    local lastObserved = 0
+    local jobKey = requestJobKey(pending, "reconcile")
+    local _, created = context.Kernel:Every(jobKey, HEADLESS_REPLICATION_POLL, "P2",
+        function(token, now)
+            if token:IsCancelled() or not state.Running or state.Pending ~= pending
+                or pending.EventReceived then
+                return false
+            end
 
             local pets, observed, problem = petsAddedSince(context, pending.PetSnapshot, expected)
             lastObserved = tonumber(observed) or lastObserved
@@ -819,12 +851,12 @@ local function startHeadlessReconcile(state, context, pending)
             if problem then
                 pending.ReconcileFailure = problem
                 pending.ReconcileDone = true
-                return
+                return false
             end
             if pets then
                 pending.Pets = pets
                 pending.EventReceived = true
-                pending.EventAt = os.clock()
+                pending.EventAt = now
                 pending.MatchMode = "inventory delta auto-detection"
 
                 local network = context.Library and context.Library.Network
@@ -835,30 +867,34 @@ local function startHeadlessReconcile(state, context, pending)
                 if not acknowledged then
                     pending.AckFailure = tostring(ackProblem)
                     pending.ReconcileDone = true
-                    return
+                    return false
                 end
 
                 pending.Acknowledged = true
                 pending.ReconcileDone = true
-                state.AcknowledgedEvents[eventSignature(pending.Egg, pets)] = os.clock()
+                state.AcknowledgedEvents[eventSignature(pending.Egg, pets)] = now
                 context.Trace("auto egg headless reconcile", string.format(
                     "%s | observed %d/%d new pet(s) | Opening Egg acknowledged from inventory delta",
                     requestLabel(pending), lastObserved, expected
                 ))
                 startHeadlessPostProcess(state, context, pending, pets)
-                return
+                return false
             end
-            task.wait(HEADLESS_REPLICATION_POLL)
-        until os.clock() >= deadline
+            if now < deadline then return HEADLESS_REPLICATION_POLL end
 
-        if state.Running and state.Pending == pending and not pending.EventReceived then
             pending.ReconcileFailure = string.format(
                 "Server accepted %s, but only %d/%d new pet(s) appeared in the replicated inventory within %.1fs",
                 requestLabel(pending), lastObserved, expected, HEADLESS_REPLICATION_TIMEOUT
             )
             pending.ReconcileDone = true
-        end
-    end)
+            return false
+        end,
+        { Owner = "auto-egg" }
+    )
+    if not created then
+        pending.ReconcileFailure = "Headless reconciliation worker could not be registered"
+        pending.ReconcileDone = true
+    end
 end
 
 local function completionNote(pending)
@@ -878,6 +914,7 @@ end
 
 local function finishSuccess(state, context, pending, note)
     if state.Pending ~= pending then return end
+    cancelRequestJobs(context, pending, "egg request succeeded")
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     state.Pending = nil
@@ -900,6 +937,7 @@ end
 
 local function finishRejection(state, context, pending)
     if state.Pending ~= pending then return end
+    cancelRequestJobs(context, pending, "egg request rejected")
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     state.Pending = nil
@@ -921,6 +959,7 @@ end
 
 local function stopForSafety(state, context, pending, reason)
     if pending and state.Pending ~= pending then return end
+    cancelRequestJobs(context, pending, "egg safety stop")
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     state.Pending = nil
@@ -1110,6 +1149,7 @@ local function beginRequest(state, context, options, inspection)
     end
 
     local pending = {
+        RequestId = state.NextRequestId,
         Egg = options.Egg,
         Triple = options.Count == 3,
         Headless = headless,
@@ -1134,6 +1174,7 @@ local function beginRequest(state, context, options, inspection)
         InputConnections = not headless and inputConnectionSnapshot(context) or nil,
         Inspection = inspection,
     }
+    state.NextRequestId = state.NextRequestId + 1
     state.Pending = pending
     state.Requests = state.Requests + 1
     if not headless then armNativeSkip(state, context, pending) end
@@ -1144,9 +1185,10 @@ local function beginRequest(state, context, options, inspection)
             or tostring(pending.SkipPolicy or "Native skip watcher is preparing...")
     ))
 
-    task.spawn(function()
+    local _, created, problem = context.Kernel:Spawn(requestJobKey(pending, "purchase"), "P2", function(token)
+        if token:IsCancelled() or not state.Running or state.Pending ~= pending then return false end
         local result = table.pack(context.InvokeCommand("Buy Egg Yay", pending.Egg, pending.Triple))
-        if state.Pending ~= pending or not state.Running then return end
+        if token:IsCancelled() or state.Pending ~= pending or not state.Running then return false end
         pending.ResponseDone = true
         pending.TransportOk = result[1] == true
         pending.Accepted = pending.TransportOk and result[2] == true
@@ -1156,7 +1198,14 @@ local function beginRequest(state, context, options, inspection)
             pending.Accepted = false
             pending.Message = "transport error: " .. tostring(result[3])
         end
-    end)
+        return false
+    end, { Owner = "auto-egg" })
+    if not created then
+        pending.ResponseDone = true
+        pending.TransportOk = false
+        pending.Accepted = false
+        pending.Message = "purchase worker could not be registered: " .. tostring(problem)
+    end
 end
 
 local function runCycle(state, context)
@@ -1197,6 +1246,9 @@ end
 local function stopState(state, context)
     if not state then return true end
     state.Running = false
+    if context and context.Kernel then
+        context.Kernel:CancelOwner("auto-egg", "auto egg stopped")
+    end
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     pcall(context.CancelOperation, context.OperationOwner)
@@ -1216,6 +1268,7 @@ local function stop()
 end
 
 return function(action, context)
+    if action == "version" then return MODULE_VERSION end
     if action == "stop" then return stop() end
     if action == "invalidate-catalog" then
         physicalCache.Root, physicalCache.ById, physicalCache.ScannedAt = nil, {}, 0
@@ -1237,7 +1290,7 @@ return function(action, context)
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
-        "Library", "Running", "Enabled", "GetOptions", "InspectEgg", "InvokeCommand",
+        "Library", "Kernel", "Running", "Enabled", "GetOptions", "InspectEgg", "InvokeCommand",
         "RouteText", "AcquireOperation", "ReleaseOperation", "CancelOperation",
         "OperationOwner", "SetStatus", "Trace", "Disable",
     }) do
@@ -1245,12 +1298,6 @@ return function(action, context)
     end
 
     local network = context.Library and context.Library.Network
-    local networkDeadline = os.clock() + 10
-    while (not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function")
-        and context.Running() and context.Enabled() and os.clock() < networkDeadline do
-        task.wait(0.1)
-        network = context.Library and context.Library.Network
-    end
     if not context.Running() or not context.Enabled() then return true end
     if not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function" then
         return false, "Library.Network Fired/Fire is unavailable"
@@ -1300,11 +1347,15 @@ return function(action, context)
         ConsecutiveFailures = 0,
         EventRoute = eventRoute,
         EventIndex = eventIndex,
+        NextRequestId = 1,
     }
     activeState = state
 
-    local connected, connection = pcall(function()
-        return signal:Connect(function(eggName, pets)
+    local connection, connectionProblem = context.Kernel:Connect(
+        "auto-egg.open-event",
+        signal,
+        "P2",
+        function(eggName, pets)
             if not state.Running or activeState ~= state then return end
             local pending = state.Pending
             state.OpenEvents = state.OpenEvents + 1
@@ -1369,11 +1420,12 @@ return function(action, context)
                 context.Trace("auto egg", "acknowledged an unexpected Open Egg while the headless gate was owned: "
                     .. tostring(eggName))
             end
-        end)
-    end)
-    if not connected or not connection then
+        end,
+        { Owner = "auto-egg", Coalesce = false }
+    )
+    if not connection then
         activeState = nil
-        return false, "Open Egg listener failed: " .. tostring(connection)
+        return false, "Open Egg listener failed: " .. tostring(connectionProblem)
     end
     state.Connection = connection
 
@@ -1388,8 +1440,16 @@ return function(action, context)
         "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
         .. "Waiting for a valid egg within 15 studs...")
 
-    task.spawn(function()
-        while state.Running and activeState == state and context.Running() and context.Enabled() do
+    local _, workerCreated, workerProblem = context.Kernel:Every(
+        "auto-egg.worker",
+        0.05,
+        "P2",
+        function(token)
+            if token:IsCancelled() or not state.Running or activeState ~= state
+                or not context.Running() or not context.Enabled() then
+                stopState(state, context)
+                return false
+            end
             local ok, problem = pcall(runCycle, state, context)
             if not ok then
                 releaseHeadlessGate(state, context)
@@ -1400,9 +1460,13 @@ return function(action, context)
                 context.Trace("auto egg", status)
                 setStatus(state, context, status .. "\nNo immediate retry; waiting 2 seconds.")
             end
-            task.wait(0.05)
-        end
+            return 0.05
+        end,
+        { Owner = "auto-egg" }
+    )
+    if not workerCreated then
         stopState(state, context)
-    end)
+        return false, "Auto egg worker failed to register: " .. tostring(workerProblem)
+    end
     return true
 end

@@ -2,6 +2,7 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
+local MODULE_VERSION = "1.0.0"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 
@@ -632,17 +633,22 @@ end
 
 local function stop()
     if activeState then
+        local state = activeState
         activeState.Running = false
         activeState.Busy = false
         clearPendingCreate(activeState, activeState.Context)
         table.clear(activeState.PendingClaims)
         pcall(activeState.Context.CancelOperation, activeState.Context.OperationOwner)
+        if state.Context.Kernel then
+            state.Context.Kernel:Unregister(state.JobKey, "dark matter machine disabled")
+        end
         activeState = nil
     end
     return true
 end
 
 return function(action, context)
+    if action == "version" then return MODULE_VERSION end
     if action == "select-tier" then
         context = type(context) == "table" and context or {}
         return selectMachineTier(context.Info, context.BatchSize, context.MaxWaitSeconds)
@@ -652,7 +658,7 @@ return function(action, context)
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end
     local required = {
-        "Library", "Running", "Enabled", "CreateEnabled", "ClaimEnabled",
+        "Library", "Kernel", "Running", "Enabled", "CreateEnabled", "ClaimEnabled",
         "GetSave", "GetCurrency", "FormatNumber", "GetMachinePetCatalog", "BatchSize",
         "GetCommandRemote", "InvalidateCommand", "InvokeCommand", "RouteText",
         "AcquireOperation", "ReleaseOperation", "CancelOperation", "OperationOwner",
@@ -666,11 +672,20 @@ return function(action, context)
         PendingCreate = {}, PendingCreateAt = 0, PendingClaims = {},
         LastQueuedAudit = "none", QueuedBatches = 0, Claimed = 0,
         ServerRetryAt = 0,
+        JobKey = "machine.dark-matter",
     }
     activeState = state
     context.Trace("dark matter module", "lazy create/claim worker started")
-    task.spawn(function()
-        while state.Running and activeState == state and context.Running() and context.Enabled() do
+    local _, registered, registrationProblem = context.Kernel:Every(
+        state.JobKey,
+        0.5,
+        "P3",
+        function(cancelToken)
+            if cancelToken:IsCancelled() or not state.Running or activeState ~= state
+                or not context.Running() or not context.Enabled() then
+                if activeState == state then activeState = nil end
+                return false
+            end
             if not state.Busy and os.clock() >= state.NextCheck then
                 local ok, problem = pcall(runCheck, state, context)
                 if not ok then
@@ -682,9 +697,12 @@ return function(action, context)
                     context.SetStatus(status .. "\nNext retry in 10 seconds.")
                 end
             end
-            task.wait(0.5)
-        end
-        if activeState == state then activeState = nil end
-    end)
+        end,
+        { Owner = "machines" }
+    )
+    if registered == false then
+        activeState = nil
+        return false, "RuntimeKernel rejected dark matter worker: " .. tostring(registrationProblem)
+    end
     return true
 end

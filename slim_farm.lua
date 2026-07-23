@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.13"
+local VERSION = "1.4.1-dev.14"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -106,6 +106,11 @@ validateRuntimeManifest()
 if type(env.PSX_OG_SLIM_CLEANUP) == "function" then
     pcall(env.PSX_OG_SLIM_CLEANUP)
 end
+if type(env.PSX_OG_RUNTIME_KERNEL) == "table"
+    and type(env.PSX_OG_RUNTIME_KERNEL.Stop) == "function" then
+    pcall(function() env.PSX_OG_RUNTIME_KERNEL:Stop("superseded by reload") end)
+    env.PSX_OG_RUNTIME_KERNEL = nil
+end
 if type(env.PSX_OG_MENU_TEST_CLEANUP) == "function" then
     pcall(env.PSX_OG_MENU_TEST_CLEANUP)
     env.PSX_OG_MENU_TEST_CLEANUP = nil
@@ -160,6 +165,8 @@ local camera = workspace.CurrentCamera
 
 local token = {}
 local connections = {}
+local RuntimeKernel
+local trackedConnectionSequence = 0
 local config = {
     PetFarm = false,
     Mode = "Different Strongest",
@@ -224,8 +231,16 @@ local function running()
     return env.PSX_OG_SLIM_TOKEN == token
 end
 
-local function track(connection)
+local function track(connection, owner, key)
     table.insert(connections, connection)
+    if RuntimeKernel and connection and type(connection.Disconnect) == "function" then
+        trackedConnectionSequence = trackedConnectionSequence + 1
+        RuntimeKernel:TrackConnection(
+            key or ("main:" .. tostring(trackedConnectionSequence)),
+            connection,
+            owner or "main"
+        )
+    end
     return connection
 end
 
@@ -378,6 +393,29 @@ local function loadRemoteController(moduleKey, label, statusCallback)
     return controllerOrProblem, nil
 end
 
+do
+    local kernelController, kernelProblem = loadRemoteController(
+        "runtimeKernel",
+        "RuntimeKernel"
+    )
+    if not kernelController then error("RuntimeKernel could not be loaded: " .. tostring(kernelProblem), 0) end
+    local created, kernelOrProblem = pcall(kernelController, "create", {
+        Driver = RunService.Heartbeat,
+        Clock = os.clock,
+        Spawn = task.defer,
+        Cancel = task.cancel,
+        Trace = trace,
+        MaxLaunchesPerPulse = 64,
+        PulseBudget = 0.0025,
+    })
+    if not created or type(kernelOrProblem) ~= "table" then
+        error("RuntimeKernel initialization failed: " .. tostring(kernelOrProblem), 0)
+    end
+    RuntimeKernel = kernelOrProblem
+    env.PSX_OG_RUNTIME_KERNEL = RuntimeKernel
+    trace("runtime kernel", "single heartbeat scheduler ready")
+end
+
 local function normalize(value)
     value = string.lower(tostring(value or ""))
     value = string.gsub(value, "[%p_]+", " ")
@@ -394,7 +432,11 @@ local function graphicsAction(action, value)
         graphicsController = controller
     end
 
-    local called, accepted, problem = pcall(graphicsController, action, value)
+    local called, accepted, problem = pcall(graphicsController, action, value, {
+        Kernel = RuntimeKernel,
+        Running = running,
+        Trace = trace,
+    })
     if not called then warn("[PSX SLIM] graphics action: " .. tostring(accepted)); return false end
     if accepted == false then warn("[PSX SLIM] graphics action: " .. tostring(problem)); return false end
     return true
@@ -679,6 +721,10 @@ local function resetAreaCatalog()
     for _, connection in ipairs(areaCatalog.Connections) do
         pcall(function() connection:Disconnect() end)
     end
+    if RuntimeKernel then
+        RuntimeKernel:UnregisterConnection("signal:area-catalog-added")
+        RuntimeKernel:UnregisterConnection("signal:area-catalog-removed")
+    end
     table.clear(areaCatalog.Connections)
     areaCatalog.Folder = nil
     areaCatalog.Dirty = true
@@ -696,10 +742,20 @@ local function refreshAreaCatalog()
             local function invalidate()
                 areaCatalog.Dirty = true
             end
-            local added = areas.ChildAdded:Connect(invalidate)
-            local removed = areas.ChildRemoved:Connect(invalidate)
-            areaCatalog.Connections[1] = track(added)
-            areaCatalog.Connections[2] = track(removed)
+            areaCatalog.Connections[1] = RuntimeKernel:Connect(
+                "area-catalog-added",
+                areas.ChildAdded,
+                "P4",
+                invalidate,
+                { Owner = "zones" }
+            )
+            areaCatalog.Connections[2] = RuntimeKernel:Connect(
+                "area-catalog-removed",
+                areas.ChildRemoved,
+                "P4",
+                invalidate,
+                { Owner = "zones" }
+            )
         end
     end
     if not areas or not areaCatalog.Dirty then
@@ -1248,14 +1304,22 @@ function coinIndex:WatchFolder(folder)
     self.Folder = folder
     if not folder then return true end
 
-    self.Connections[#self.Connections + 1] = folder.ChildAdded:Connect(function(model)
-        task.defer(function()
+    self.Connections[#self.Connections + 1] = RuntimeKernel:Connect(
+        "coin-folder-added",
+        folder.ChildAdded,
+        "P0",
+        function(model)
             if not running() or model.Parent ~= folder then return end
             self:IndexModel(model, true)
             if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
-        end)
-    end)
-    self.Connections[#self.Connections + 1] = folder.ChildRemoved:Connect(function(model)
+        end,
+        { Owner = "pet-farm", Coalesce = false }
+    )
+    self.Connections[#self.Connections + 1] = RuntimeKernel:Connect(
+        "coin-folder-removed",
+        folder.ChildRemoved,
+        "P0",
+        function(model)
         local id = self.IdByModel[model]
         if not id then return end
         self.IdByModel[model] = nil
@@ -1267,7 +1331,9 @@ function coinIndex:WatchFolder(folder)
             record.NextModelLookupAt = nil
             if not record.FromServer then removeCoin(id, false) end
         end
-    end)
+        end,
+        { Owner = "pet-farm", Coalesce = false }
+    )
     return true
 end
 
@@ -1351,12 +1417,17 @@ local function connectCoinSignals()
         local ok, signal = pcall(network.Fired, name)
         if ok and signal and type(signal.Connect) == "function" then
             local connected, connection = pcall(function()
-                return signal:Connect(function(...)
+                return RuntimeKernel:Connect("coin-network:" .. name, signal, "P0", function(...)
                     local handled, problem = pcall(callback, ...)
                     if not handled then warn("[PSX SLIM] " .. name .. ": " .. tostring(problem)) end
-                end)
+                end, {
+                    Owner = "pet-farm",
+                    KeyBy = function(id) return tostring(id) end,
+                })
             end)
-            if connected and connection then track(connection) end
+            if not connected or not connection then
+                warn("[PSX SLIM] " .. name .. " connection: " .. tostring(connection))
+            end
         end
     end
 
@@ -1396,7 +1467,7 @@ local function connectCoinSignals()
     if signal and type(signal.Fired) == "function" then
         pcall(function()
             local worldChanged = signal.Fired("World Changed")
-            track(worldChanged:Connect(function()
+            RuntimeKernel:Connect("world-changed", worldChanged, "P0", function()
                 coinGeneration = coinGeneration + 1
                 coinEventRevision = 0
                 table.clear(coinRecords)
@@ -1420,7 +1491,7 @@ local function connectCoinSignals()
                 if config.PetFarm and type(requestFarmReset) == "function" then
                     requestFarmReset("world changed")
                 end
-            end))
+            end, { Owner = "pet-farm" })
         end)
     end
     coinSignalsReady = true
@@ -2168,6 +2239,7 @@ function petFarm:EnsureEngine()
     end
 
     local context = {
+        Kernel = RuntimeKernel,
         Running = running,
         Enabled = function() return config.PetFarm end,
         Resetting = function() return farmResetRunning or farmResetRequested end,
@@ -2514,37 +2586,37 @@ local function clearAssignments(sendBack)
     return true
 end
 
-requestFarmReset = function(reason)
-    farmResetReason = tostring(reason or "configuration changed")
-    farmSelectionSignature = currentFarmSignature()
-    farmResetRequested = true
-    if farmResetRunning or not running() then return end
+local scheduleFarmReset
+scheduleFarmReset = function(delay)
+    RuntimeKernel:After("farm.reset", delay or 0, "P0", function(cancelToken)
+        if cancelToken:IsCancelled() or not running() or not farmResetRequested then return false end
+        if farmResetRunning or allocatorBusy then
+            scheduleFarmReset(0.02)
+            return false
+        end
+        if config.PetFarm and not networkReady() then
+            driverStatus = "waiting for Network before reset"
+            scheduleFarmReset(0.05)
+            return false
+        end
 
-    farmResetRunning = true
-    task.spawn(function()
-        while running() and allocatorBusy do RunService.Heartbeat:Wait() end
-        if not running() then farmResetRunning = false; return end
-
-        repeat
-            farmResetRequested = false
-            driverStatus = "resetting: " .. farmResetReason
-            local networkCleaned = clearAssignments(true)
-            nextSnapshotAt = 0
-            if config.PetFarm and not networkCleaned then
-                driverStatus = "waiting for Network before reset"
-                while running() and config.PetFarm and not farmResetRequested and not networkReady() do
-                    RunService.Heartbeat:Wait()
-                end
-                if running() and config.PetFarm and networkReady() then farmResetRequested = true end
-            end
-            RunService.Heartbeat:Wait()
-        until not running() or not farmResetRequested
-
+        farmResetRunning = true
+        farmResetRequested = false
+        driverStatus = "resetting: " .. farmResetReason
+        local networkCleaned = clearAssignments(networkReady() ~= nil)
+        nextSnapshotAt = 0
         farmResetRunning = false
-        if not running() then return end
+
+        if cancelToken:IsCancelled() or not running() then return false end
+        if config.PetFarm and not networkCleaned then
+            farmResetRequested = true
+            driverStatus = "waiting for Network before reset"
+            scheduleFarmReset(0.05)
+            return false
+        end
         if farmResetRequested then
-            requestFarmReset(farmResetReason)
-            return
+            scheduleFarmReset(0)
+            return false
         end
 
         farmSelectionSignature = currentFarmSignature()
@@ -2552,7 +2624,18 @@ requestFarmReset = function(reason)
         if config.PetFarm and type(requestAllocatorPulse) == "function" then
             requestAllocatorPulse()
         end
-    end)
+        return false
+    end, {
+        Owner = "pet-farm",
+        Replace = true,
+    })
+end
+
+requestFarmReset = function(reason)
+    farmResetReason = tostring(reason or "configuration changed")
+    farmSelectionSignature = currentFarmSignature()
+    farmResetRequested = true
+    scheduleFarmReset(0)
 end
 
 local function dispatchPlan(record, petIds)
@@ -2847,20 +2930,18 @@ end
 local function disableAutoEgg(reason)
     config.AutoEgg = false
     statusSetters.Egg(tostring(reason or "Auto hatch stopped by its safety controller"))
-    task.defer(function()
+    RuntimeKernel:Emit("ui.auto-egg-toggle-off", "P4", function(cancelToken)
+        if cancelToken:IsCancelled() then return end
         if running() and autoEggToggleControl and type(autoEggToggleControl.Set) == "function" then
             pcall(function() autoEggToggleControl:Set(false) end)
         end
-    end)
+    end, nil, { Owner = "ui" })
 end
 
 local function ensureAutoEggModule()
     if autoEggController then return true end
     if autoEggLoading then
-        local deadline = os.clock() + 12
-        while autoEggLoading and running() and os.clock() < deadline do task.wait(0.05) end
-        if autoEggController then return true end
-        return false, autoEggLoadProblem or "auto egg module load timed out"
+        return false, "auto egg module load already in progress"
     end
     autoEggLoading = true
     autoEggLoadProblem = nil
@@ -2895,6 +2976,13 @@ local function startAutoEggModule()
     if not config.AutoEgg or not running() then return end
     local loaded, loadProblem = ensureAutoEggModule()
     if not loaded then
+        if loadProblem == "auto egg module load already in progress" then
+            statusSetters.Egg("Auto egg module is already loading; start is queued without a duplicate download.")
+            RuntimeKernel:After("auto-egg.load-retry", 0.05, "P2", function(cancelToken)
+                if not cancelToken:IsCancelled() and config.AutoEgg and running() then startAutoEggModule() end
+            end, { Owner = "auto-egg", Replace = true })
+            return
+        end
         disableAutoEgg("Auto egg module could not be loaded; no purchase was sent: " .. tostring(loadProblem))
         return
     end
@@ -2903,6 +2991,7 @@ local function startAutoEggModule()
     local context = {
         Library = Library,
         Player = player,
+        Kernel = RuntimeKernel,
         Running = running,
         Enabled = function() return config.AutoEgg end,
         GetOptions = function()
@@ -2994,6 +3083,7 @@ function machineModules:Start(kind)
     if not self:Enabled(entry) or not running() then return end
     local context = {
         Library = Library,
+        Kernel = RuntimeKernel,
         Running = running,
         Enabled = function() return machineModules:Enabled(entry) end,
         CreateEnabled = function() return config.AutoDarkMatterGalaxyFox end,
@@ -3066,6 +3156,7 @@ local function startBoostModule()
 
     local context = {
         Library = Library,
+        Kernel = RuntimeKernel,
         Running = running,
         Enabled = boostAutomationEnabled,
         GetOptions = function()
@@ -3104,7 +3195,9 @@ end
 
 local function reconcileBoostModule()
     if boostAutomationEnabled() then
-        task.spawn(startBoostModule)
+        RuntimeKernel:Spawn("boost.start", "P3", function(cancelToken)
+            if not cancelToken:IsCancelled() then startBoostModule() end
+        end, { Owner = "boost" })
     else
         stopBoostModule("Disabled. Boost timers and inventory remain untouched.")
     end
@@ -3309,13 +3402,10 @@ local allocatorPass
 function petFarm:ScheduleAllocatorPass()
     if self.AllocatorScheduled or allocatorBusy or not running() then return end
     self.AllocatorScheduled = true
-    task.defer(function()
-        -- task.defer coalesces a burst of coin/pet callbacks without forcing a
-        -- full render-frame gap. A destroyed target can therefore receive its
-        -- replacement assignment in the same scheduler turn.
+    RuntimeKernel:Emit("farm.allocator", "P0", function(cancelToken)
         self.AllocatorScheduled = false
-        if running() then allocatorPass() end
-    end)
+        if not cancelToken:IsCancelled() and running() then allocatorPass() end
+    end, nil, { Owner = "pet-farm" })
 end
 
 allocatorPass = function()
@@ -3326,17 +3416,22 @@ allocatorPass = function()
     allocatorBusy = true
     allocatorRequested = false
     local ok, problem = pcall(function()
-        if os.clock() >= nextSnapshotAt and not snapshotBusy then task.spawn(refreshCoinSnapshot) end
+        if os.clock() >= nextSnapshotAt and not snapshotBusy then
+            RuntimeKernel:Spawn("farm.coin-snapshot", "P0", function(cancelToken)
+                if not cancelToken:IsCancelled() then refreshCoinSnapshot() end
+            end, { Owner = "pet-farm" })
+        end
         connectCoinSignals()
 
         if not config.PetFarm or farmResetRunning or farmResetRequested then return end
 
         if not petFarm.Engine then
             if not petFarm.Loading then
-                task.spawn(function()
+                RuntimeKernel:Spawn("farm.engine-load", "P0", function(cancelToken)
+                    if cancelToken:IsCancelled() then return end
                     local ready, engineProblem = petFarm:EnsureEngine()
                     if not ready then trace("pet engine load", tostring(engineProblem)) end
-                end)
+                end, { Owner = "pet-farm" })
             end
             driverStatus = petFarm.Loading and "loading high-throughput UID engine"
                 or "waiting for high-throughput UID engine"
@@ -3452,54 +3547,62 @@ requestAllocatorPulse = function()
     petFarm:ScheduleAllocatorPass()
 end
 
-task.spawn(function()
-    local petLifecycleSignals = {}
-    local function connectPetLifecycleSignal(name, removed)
-        if petLifecycleSignals[name] then return true end
-        local signal = Library and Library.Signal
-        if not signal or type(signal.Fired) ~= "function" then return false end
+local petLifecycleSignals = {}
+local function connectPetLifecycleSignal(name, removed)
+    if petLifecycleSignals[name] then return true end
+    local signal = Library and Library.Signal
+    if not signal or type(signal.Fired) ~= "function" then return false end
 
-        local eventOk, event = pcall(signal.Fired, name)
-        if not eventOk or not event or type(event.Connect) ~= "function" then return false end
-        local connected, connection = pcall(function()
-            return event:Connect(function(rawPetId)
-                local petId = rawPetId ~= nil and tostring(rawPetId) or nil
-                nextPetScanAt = 0
-                if removed and petId then
-                    petStates[petId] = nil
-                    releaseWait[petId] = nil
-                end
-                if config.PetFarm then
-                    driverStatus = removed and "pet unequipped; assignments reconciled"
-                        or "equipped pet detected; assigning target"
-                    requestAllocatorPulse()
-                end
-            end)
-        end)
-        if not connected or not connection then return false end
-        petLifecycleSignals[name] = connection
-        track(connection)
-        return true
+    local eventOk, event = pcall(signal.Fired, name)
+    if not eventOk or not event or type(event.Connect) ~= "function" then return false end
+    local connected, connection = pcall(function()
+        return RuntimeKernel:Connect("pet-lifecycle:" .. name, event, "P0", function(rawPetId)
+            local petId = rawPetId ~= nil and tostring(rawPetId) or nil
+            nextPetScanAt = 0
+            if removed and petId then
+                petStates[petId] = nil
+                releaseWait[petId] = nil
+            end
+            if config.PetFarm then
+                driverStatus = removed and "pet unequipped; assignments reconciled"
+                    or "equipped pet detected; assigning target"
+                requestAllocatorPulse()
+            end
+        end, {
+            Owner = "pet-farm",
+            Coalesce = false,
+        })
+    end)
+    if not connected or not connection then return false end
+    petLifecycleSignals[name] = connection
+    return true
+end
+
+RuntimeKernel:Every("farm.pet-lifecycle-bind", 0.5, "P0", function(cancelToken)
+    if cancelToken:IsCancelled() or not running() then return false end
+    local added = connectPetLifecycleSignal("Added Client Pet", false)
+    local removed = connectPetLifecycleSignal("Removed Client Pet", true)
+    if added and removed then return false end
+end, {
+    Owner = "pet-farm",
+})
+
+local function syncFarmWatchdog()
+    if not config.PetFarm or not running() then
+        RuntimeKernel:Unregister("farm.assignment-watchdog", "pet farm disabled")
+        return
     end
-
-    while running() do
-        local added = connectPetLifecycleSignal("Added Client Pet", false)
-        local removed = connectPetLifecycleSignal("Removed Client Pet", true)
-        if added and removed then break end
-        task.wait(0.5)
-    end
-end)
-
-task.spawn(function()
-    while running() do
+    if RuntimeKernel:GetJob("farm.assignment-watchdog") then return end
+    RuntimeKernel:Every("farm.assignment-watchdog", 0.22, "P0", function(cancelToken)
+        if cancelToken:IsCancelled() or not running() or not config.PetFarm then return false end
         requestAllocatorPulse()
         local expected = tonumber(petFarm.EquippedCount) or 0
         local recovering = expected > 0 and assignmentCount() < expected
-        -- Coin/pet events do the immediate work. The watchdog runs quickly only
-        -- while a pet is missing a lock, then backs off to reduce steady CPU.
-        task.wait(config.PetFarm and (recovering and 0.03 or 0.22) or 0.4)
-    end
-end)
+        return recovering and 0.03 or 0.22
+    end, {
+        Owner = "pet-farm",
+    })
+end
 
 local lootCollector = {
     Ready = { Items = {}, Head = 1 },
@@ -3740,12 +3843,12 @@ end
 function lootCollector:ScheduleImmediateDrain()
     if self.ImmediateScheduled or not running() then return end
     self.ImmediateScheduled = true
-    task.defer(function()
+    RuntimeKernel:Emit("loot.immediate-drain", "P1", function(cancelToken)
         local startedAt = os.clock()
         local character = player.Character
         local root = character and character:FindFirstChild("HumanoidRootPart")
         local processed = 0
-        if running() and root then
+        if not cancelToken:IsCancelled() and running() and root then
             -- Fresh orbs are cheaper to consume in one shallow pass than to
             -- leave hundreds of animated instances alive across many frames.
             while processed < 8192 do
@@ -3764,7 +3867,7 @@ function lootCollector:ScheduleImmediateDrain()
         if running() and root and self:QueueSpan("Ready") > 0 then
             self:ScheduleImmediateDrain()
         end
-    end)
+    end, nil, { Owner = "loot" })
 end
 
 function lootCollector:Scan(kind)
@@ -3791,6 +3894,8 @@ function lootCollector:Bind(kind, folder)
             pcall(function() connection:Disconnect() end)
         end
     end
+    RuntimeKernel:UnregisterConnection("signal:loot:" .. kind .. ":added")
+    RuntimeKernel:UnregisterConnection("signal:loot:" .. kind .. ":removed")
     self.Bindings[kind] = nil
     self.ScanCursor[kind] = 1
     self.Enabled[kind] = nil
@@ -3798,21 +3903,29 @@ function lootCollector:Bind(kind, folder)
     self.ScanWarmupUntil = math.max(self.ScanWarmupUntil, os.clock() + 4)
 
     local binding = { Folder = folder, Connections = {} }
-    binding.Connections[1] = track(folder.ChildAdded:Connect(function(item)
-        self:QueueItem(item, kind)
-    end))
-    binding.Connections[2] = track(folder.ChildRemoved:Connect(function(item)
-        self:Forget(self.Entries[item])
-    end))
+    binding.Connections[1] = RuntimeKernel:Connect(
+        "loot:" .. kind .. ":added",
+        folder.ChildAdded,
+        "P1",
+        function(item) self:QueueItem(item, kind) end,
+        { Owner = "loot", Coalesce = false }
+    )
+    binding.Connections[2] = RuntimeKernel:Connect(
+        "loot:" .. kind .. ":removed",
+        folder.ChildRemoved,
+        "P1",
+        function(item) self:Forget(self.Entries[item]) end,
+        { Owner = "loot", Coalesce = false }
+    )
     self.Bindings[kind] = binding
 end
 
 function lootCollector:RefreshBindings(now)
     local things = workspace:FindFirstChild("__THINGS")
     for _, kind in ipairs({ "Orbs", "Lootbags" }) do
-        local folder = things and things:FindFirstChild(kind)
-        self:Bind(kind, folder)
         local enabled = self:IsEnabled(kind)
+        local folder = enabled and things and things:FindFirstChild(kind) or nil
+        self:Bind(kind, folder)
         if self.Enabled[kind] ~= enabled then
             self.Enabled[kind] = enabled
             if enabled then
@@ -3896,35 +4009,70 @@ function lootCollector:Status()
     )
 end
 
-task.spawn(function()
-    while running() do
-        RunService.Heartbeat:Wait()
-        local now = os.clock()
-        if now >= lootCollector.NextBindingAt then
-            lootCollector.NextBindingAt = now + 0.5
-            lootCollector:RefreshBindings(now)
-        end
-        if lootCollector.Pending > 0 and (config.Orbs or config.Lootbags) then
-            local character = player.Character
-            local root = character and character:FindFirstChild("HumanoidRootPart")
-            if root then lootCollector:ProcessFrame(root, now) end
-        end
-        if now >= lootCollector.NextStatusAt then
-            lootCollector.NextStatusAt = now + 0.75
-            statusSetters.Set("Loot", lootCollector:Status())
-        end
+local function syncLootWorkers()
+    if not running() or (not config.Orbs and not config.Lootbags) then
+        lootCollector:RefreshBindings(os.clock())
+        RuntimeKernel:CancelOwner("loot", "loot disabled")
+        statusSetters.Set("Loot", "Collector disabled; folder listeners and queued workers were removed.")
+        return
     end
-end)
 
-track(player.Idled:Connect(function()
-    if config.AntiAFK and running() then
+    if not RuntimeKernel:GetJob("loot.bindings") then
+        RuntimeKernel:Every("loot.bindings", 0.5, "P1", function(cancelToken, now)
+            if cancelToken:IsCancelled() or not running() or (not config.Orbs and not config.Lootbags) then
+                return false
+            end
+            lootCollector:RefreshBindings(now)
+        end, { Owner = "loot" })
+    end
+
+    if not RuntimeKernel:GetJob("loot.process") then
+        RuntimeKernel:Every("loot.process", 0.05, "P1", function(cancelToken, now)
+            if cancelToken:IsCancelled() or not running() or (not config.Orbs and not config.Lootbags) then
+                return false
+            end
+            if lootCollector.Pending > 0 then
+                local character = player.Character
+                local root = character and character:FindFirstChild("HumanoidRootPart")
+                if root then lootCollector:ProcessFrame(root, now) end
+                return 0
+            end
+            return 0.1
+        end, { Owner = "loot" })
+    end
+
+    if not RuntimeKernel:GetJob("loot.status") then
+        RuntimeKernel:Every("loot.status", 0.75, "P4", function(cancelToken)
+            if cancelToken:IsCancelled() or not running() or (not config.Orbs and not config.Lootbags) then
+                return false
+            end
+            statusSetters.Set("Loot", lootCollector:Status())
+        end, { Owner = "loot" })
+    end
+end
+
+syncLootWorkers()
+
+local workerSync = {}
+workerSync.AntiAFK = function()
+    if not config.AntiAFK or not running() then
+        RuntimeKernel:UnregisterConnection("signal:anti-afk")
+        RuntimeKernel:Unregister("anti-afk.release", "anti-AFK disabled")
+        return
+    end
+    if RuntimeKernel:GetConnection("signal:anti-afk") then return end
+    RuntimeKernel:Connect("anti-afk", player.Idled, "P3", function()
+        if not config.AntiAFK or not running() then return end
         local activeCamera = workspace.CurrentCamera or camera
         if not activeCamera then return end
         pcall(function() VirtualUser:Button2Down(Vector2.new(0, 0), activeCamera.CFrame) end)
-        task.wait(0.25)
-        pcall(function() VirtualUser:Button2Up(Vector2.new(0, 0), activeCamera.CFrame) end)
-    end
-end))
+        RuntimeKernel:After("anti-afk.release", 0.25, "P3", function(cancelToken)
+            if cancelToken:IsCancelled() then return end
+            pcall(function() VirtualUser:Button2Up(Vector2.new(0, 0), activeCamera.CFrame) end)
+        end, { Owner = "session", Replace = true })
+    end, { Owner = "session" })
+end
+workerSync.AntiAFK()
 
 local function startInterfaceAndWorkers()
 local function uiStageYield(stage)
@@ -4046,11 +4194,13 @@ UI.FarmHero:Toggle({
         if config.PetFarm == enabled then return end
         config.PetFarm = enabled
         if enabled and not petFarm.Engine and not petFarm.Loading then
-            task.spawn(function()
+            RuntimeKernel:Spawn("farm.engine-load", "P0", function(cancelToken)
+                if cancelToken:IsCancelled() then return end
                 local ready, problem = petFarm:EnsureEngine()
                 if not ready then trace("pet engine load", tostring(problem)) end
-            end)
+            end, { Owner = "pet-farm" })
         end
+        syncFarmWatchdog()
         requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
     end,
 })
@@ -4174,9 +4324,10 @@ do
     local automationUIBuilt, automationUIAccepted, automationUIControls = pcall(
         automationUIController,
         "build",
-        {
-            UI = UI,
-            Config = config,
+         {
+             UI = UI,
+             Config = config,
+             Kernel = RuntimeKernel,
             StatusViews = statusViews,
             RefreshEggs = function(force) refreshEggDropdown(force) end,
             EnsureAutoEgg = ensureAutoEggModule,
@@ -4225,6 +4376,7 @@ UI.DiamondSection:Toggle({
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
         diamondPackNextCheck = 0
+        if workerSync.Diamond then workerSync.Diamond() end
         if config.AutoTechDiamondPack then
             statusSetters.Diamond("Enabled. A local balance check will run now; below 1T no request is sent.")
         else
@@ -4251,6 +4403,7 @@ UI.LootHero:Toggle({
     Callback = function(value)
         config.Orbs = value == true
         lootCollector.NextBindingAt = 0
+        syncLootWorkers()
     end,
 })
 UI.LootHero:Toggle({
@@ -4261,6 +4414,7 @@ UI.LootHero:Toggle({
     Callback = function(value)
         config.Lootbags = value == true
         lootCollector.NextBindingAt = 0
+        syncLootWorkers()
     end,
 })
 statusViews.Loot = UI.LootHero:Paragraph({
@@ -4286,6 +4440,7 @@ UI.RewardsHero:Toggle({
         state.NextAttempt = 0
         state.LastTimingError = nil
         state.ArmedReported = false
+        if workerSync.Rewards then workerSync.Rewards() end
     end,
 })
 UI.RewardsHero:Toggle({
@@ -4300,6 +4455,7 @@ UI.RewardsHero:Toggle({
         state.NextAttempt = 0
         state.LastTimingError = nil
         state.ArmedReported = false
+        if workerSync.Rewards then workerSync.Rewards() end
     end,
 })
 UI.RewardsHero:Paragraph({
@@ -4346,7 +4502,10 @@ UI.SessionSection:Toggle({
     Title = "Anti-AFK",
     Desc = "Prevents the Roblox idle kick",
     Value = true,
-    Callback = function(value) config.AntiAFK = value == true end,
+    Callback = function(value)
+        config.AntiAFK = value == true
+        workerSync.AntiAFK()
+    end,
 })
 
 UI.ProfileSection = UI.SessionTab:Section({ Title = "Default Configuration", Box = true, Opened = true })
@@ -4393,8 +4552,8 @@ function UI.ReconcileProfile(label)
     if not worldValid then savedWorld = config.World end
     pcall(function() UI.WorldDropdown:Select(savedWorld) end)
 
-    task.delay(0.12, function()
-        if not running() then return end
+    RuntimeKernel:After("profile.reconcile", 0.12, "P4", function(cancelToken)
+        if cancelToken:IsCancelled() or not running() then return end
         refreshZoneDropdown(true)
         local options = getZoneOptions(config.World)
         local zoneValid = false
@@ -4403,6 +4562,11 @@ function UI.ReconcileProfile(label)
         end
         if not zoneValid then savedZone = config.Zone end
         pcall(function() UI.ZoneDropdown:Select(savedZone) end)
+        syncFarmWatchdog()
+        syncLootWorkers()
+        workerSync.AntiAFK()
+        if workerSync.Diamond then workerSync.Diamond() end
+        if workerSync.Rewards then workerSync.Rewards() end
         UI.SetProfileStatus(string.format(
             "%s\nWorld: %s | Zone: %s | Egg: %s | auto-load: enabled",
             tostring(label or "Profile synchronized"),
@@ -4410,7 +4574,7 @@ function UI.ReconcileProfile(label)
             tostring(config.Zone),
             tostring(config.EggName or "none")
         ))
-    end)
+    end, { Owner = "ui", Replace = true })
 end
 
 function UI.SaveProfile()
@@ -4455,7 +4619,9 @@ function UI.LoadProfile(label)
         return
     end
     UI.SetProfileStatus("Profile loaded. Synchronizing controls and target location...")
-    task.delay(0.3, function() UI.ReconcileProfile(label or "Manual load complete") end)
+    RuntimeKernel:After("profile.load-reconcile", 0.3, "P4", function(cancelToken)
+        if not cancelToken:IsCancelled() then UI.ReconcileProfile(label or "Manual load complete") end
+    end, { Owner = "ui", Replace = true })
 end
 
 UI.ProfileSection:Button({
@@ -4472,10 +4638,13 @@ UI.ProfileSection:Button({
 })
 
 if UI.Profile and UI.ProfileExists then
-    task.delay(0.8, function() UI.LoadProfile("Automatic load complete") end)
+    RuntimeKernel:After("profile.auto-load", 0.8, "P4", function(cancelToken)
+        if not cancelToken:IsCancelled() then UI.LoadProfile("Automatic load complete") end
+    end, { Owner = "ui" })
 end
 
 local shutdownStarted = false
+local shutdown
 
 local function hideInterface()
     for _, key in ipairs({ "ScreenGui", "NotificationGui", "DropdownGui", "TooltipGui" }) do
@@ -4485,16 +4654,31 @@ local function hideInterface()
 end
 
 local function finishShutdown()
-    local shutdownDeadline = os.clock() + 1
-    while (farmResetRunning or allocatorBusy) and os.clock() < shutdownDeadline do
-        RunService.Heartbeat:Wait()
+    if petFarm.Engine then pcall(petFarm.Engine, "stop") end
+    if RuntimeKernel then
+        pcall(function() RuntimeKernel:Stop("script shutdown") end)
     end
-
     local cleaned, problem = pcall(clearAssignments, true)
     if not cleaned then warn("[PSX SLIM] shutdown cleanup: " .. tostring(problem)) end
+
+    if env.PSX_OG_RUNTIME_KERNEL == RuntimeKernel then env.PSX_OG_RUNTIME_KERNEL = nil end
+    if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
+    disconnectAll()
+    if env.PSX_OG_SLIM_CLEANUP == shutdown then env.PSX_OG_SLIM_CLEANUP = nil end
+    if env.PSX_OG_UI_CLEANUP == shutdown then env.PSX_OG_UI_CLEANUP = nil end
+
+    local destroyed, destroyProblem = pcall(function() Window:Destroy() end)
+    if not destroyed then
+        warn("[PSX SLIM] window destroy: " .. tostring(destroyProblem))
+        pcall(function() WindUI:Destroy() end)
+    end
+    for _, key in ipairs({ "ScreenGui", "NotificationGui", "DropdownGui", "TooltipGui" }) do
+        local gui = WindUI and WindUI[key]
+        if gui then pcall(function() gui:Destroy() end) end
+    end
 end
 
-local function shutdown(reason)
+shutdown = function(reason)
     if shutdownStarted then return end
     shutdownStarted = true
     trace("stop requested", tostring(reason or "reload"))
@@ -4523,27 +4707,13 @@ local function shutdown(reason)
     config.PotatoMode = false
     stopGraphics()
     farmResetRequested = false
-    if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
-    disconnectAll()
-    if env.PSX_OG_SLIM_CLEANUP == shutdown then env.PSX_OG_SLIM_CLEANUP = nil end
-    if env.PSX_OG_UI_CLEANUP == shutdown then env.PSX_OG_UI_CLEANUP = nil end
 
     hideInterface()
-    local destroyed, problem = pcall(function() Window:Destroy() end)
-    if not destroyed then
-        warn("[PSX SLIM] window destroy: " .. tostring(problem))
-        pcall(function() WindUI:Destroy() end)
-    end
-
-    task.delay(0.6, function()
-        for _, key in ipairs({ "ScreenGui", "NotificationGui", "DropdownGui", "TooltipGui" }) do
-            local gui = WindUI and WindUI[key]
-            if gui then pcall(function() gui:Destroy() end) end
-        end
-    end)
-
     if reason == "button" then
-        task.spawn(finishShutdown)
+        RuntimeKernel:Spawn("session.shutdown", "P0", function()
+            finishShutdown()
+            return false
+        end, { Owner = "session" })
     else
         finishShutdown()
     end
@@ -4561,10 +4731,15 @@ UI.SessionSection:Button({
     end,
 })
 
-task.spawn(function()
-    while task.wait(1) do
-        if not running() then break end
-        if config.AutoTechDiamondPack and not diamondPackBusy and os.clock() >= diamondPackNextCheck then
+workerSync.Diamond = function()
+    if not config.AutoTechDiamondPack or not running() then
+        RuntimeKernel:Unregister("automation.diamond-pack", "diamond automation disabled")
+        return
+    end
+    if RuntimeKernel:GetJob("automation.diamond-pack") then return end
+    RuntimeKernel:Every("automation.diamond-pack", 1, "P3", function(cancelToken)
+        if cancelToken:IsCancelled() or not running() or not config.AutoTechDiamondPack then return false end
+        if not diamondPackBusy and os.clock() >= diamondPackNextCheck then
             local ok, problem = pcall(runDiamondPackCheck)
             if not ok then
                 diamondPackBusy = false
@@ -4574,16 +4749,23 @@ task.spawn(function()
                 statusSetters.Diamond(status .. "\nNext retry in 3 minutes.")
             end
         end
+    end, { Owner = "automation" })
+end
+
+local rewardOrder = { "VIP", "Rank" }
+workerSync.Rewards = function()
+    if not running() or (not config.AutoVIPRewards and not config.AutoRankRewards) then
+        RuntimeKernel:Unregister("automation.rewards", "reward automation disabled")
+        return
     end
-end)
+    if RuntimeKernel:GetJob("automation.rewards") then return end
+    RuntimeKernel:Every("automation.rewards", 1, "P3", function(cancelToken, now)
+        if cancelToken:IsCancelled() or not running()
+            or (not config.AutoVIPRewards and not config.AutoRankRewards) then
+            return false
+        end
 
-task.spawn(function()
-    local order = { "VIP", "Rank" }
-    while task.wait(1) do
-        if not running() then break end
-        local now = os.clock()
-
-        for _, kind in ipairs(order) do
+        for _, kind in ipairs(rewardOrder) do
             local state = rewardStates[kind]
             if config[state.ConfigKey] then
                 local remaining, cooldown, timingError = getRewardTiming(kind)
@@ -4614,18 +4796,20 @@ task.spawn(function()
                 end
             end
         end
-    end
-end)
+    end, { Owner = "automation" })
+end
 
-task.spawn(function()
-    local lastSelection, lastRateText = nil, nil
-    while task.wait(1) do
-        if not running() then break end
+workerSync.Diamond()
+workerSync.Rewards()
+
+local lastRateSelection, lastRateText = nil, nil
+RuntimeKernel:Every("ui.balance-rate", 1, "P4", function(cancelToken)
+        if cancelToken:IsCancelled() or not running() then return false end
 
         local selection = config.TrackedCurrency
         if selection == "Auto" then selection = selection .. "|" .. tostring(getTrackedCurrencyName()) end
-        if selection ~= lastSelection then
-            lastSelection = selection
+        if selection ~= lastRateSelection then
+            lastRateSelection = selection
             currencyMonitor:Reset()
         end
 
@@ -4684,13 +4868,11 @@ task.spawn(function()
             lastRateText = rateText
             statusSetters.Rate(rateText)
         end
-    end
-end)
+end, { Owner = "ui" })
 
-task.spawn(function()
-    local nextZoneRefreshAt, nextEggRefreshAt = 0, 0
-    while task.wait(0.75) do
-        if not running() then break end
+local nextZoneRefreshAt, nextEggRefreshAt = 0, 0
+RuntimeKernel:Every("ui.live-monitor", 0.75, "P4", function(cancelToken)
+        if cancelToken:IsCancelled() or not running() then return false end
         local now = os.clock()
         if now >= nextZoneRefreshAt then
             nextZoneRefreshAt = now + 1.5
@@ -4730,8 +4912,9 @@ task.spawn(function()
             tonumber(petFarm.TargetShards) or 1,
             runtimeLine
         ))
+        local kernelStats = RuntimeKernel:Stats()
         statusSetters.Health(string.format(
-            "Network: %s | %s | runtime mirror: %s | allocator: %s\nUID lanes: %d/%d policy | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nRecoveries: %d | last: %s\nDriver: %s",
+            "Network: %s | %s | runtime mirror: %s | allocator: %s\nUID lanes: %d/%d policy | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nKernel jobs/running/pending: %d/%d/%d | duplicate starts: %d | errors: %d\nRecoveries: %d | last: %s\nDriver: %s",
             networkState,
             petFarm.RouteSummary,
             controllerState,
@@ -4745,21 +4928,26 @@ task.spawn(function()
             tonumber(dispatchStats.Retries) or 0,
             tonumber(dispatchStats.Rejected) or 0,
             tonumber(dispatchStats.Errors) or 0,
+            kernelStats.Registered,
+            kernelStats.Running,
+            kernelStats.Pending,
+            kernelStats.DuplicateStarts,
+            kernelStats.Errors,
             idleRecoveryCount,
             lastRecovery,
             driverStatus
         ))
-    end
-end)
+end, { Owner = "ui" })
 
 pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
-task.defer(function()
+RuntimeKernel:Spawn("farm.engine-preload", "P0", function(cancelToken)
+    if cancelToken:IsCancelled() then return end
     local ready, problem = petFarm:EnsureEngine()
     if not ready and problem ~= "engine load already in progress" then
         trace("pet engine preload", tostring(problem))
     end
-end)
+end, { Owner = "pet-farm" })
 end
 
 startInterfaceAndWorkers()

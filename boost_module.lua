@@ -2,7 +2,7 @@
 -- Named Library.Network routes are resolved locally; no session index is hard-coded.
 
 local activeState
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.1.0"
 
 local BUNDLE_COST = 270000
 local CHECK_INTERVAL = 0.25
@@ -399,6 +399,9 @@ local function stopState(state, context)
     state.PendingBundle = nil
     releaseOperation(state, context)
     pcall(context.CancelOperation, context.OperationOwner)
+    if context.Kernel and state.JobKey then
+        context.Kernel:Unregister(state.JobKey, "boost automation disabled")
+    end
     if activeState == state then activeState = nil end
     return true
 end
@@ -409,12 +412,13 @@ local function stop()
 end
 
 return function(action, context)
+    if action == "version" then return MODULE_VERSION end
     if action == "stop" then return stop() end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
-        "Library", "Running", "Enabled", "GetOptions", "GetSave", "GetCurrency",
+        "Library", "Kernel", "Running", "Enabled", "GetOptions", "GetSave", "GetCurrency",
         "FormatNumber", "GetCommandRemote", "GetFireRemote", "InvokeCommand",
         "FireCommand", "RouteText", "AcquireOperation", "ReleaseOperation",
         "CancelOperation", "OperationStatus", "OperationOwner", "SetStatus", "Trace",
@@ -431,13 +435,22 @@ return function(action, context)
         NextAttempt = {},
         NextBundleAttempt = 0,
         NextRouteRefresh = 0,
+        JobKey = "automation.boosts",
     }
     activeState = state
     refreshRoutes(state, context, true)
     context.Trace("auto boost module", "v" .. MODULE_VERSION
         .. " | dynamic Activate Boost + Buy Boost Bundle routes")
-    task.spawn(function()
-        while state.Running and activeState == state and context.Running() and context.Enabled() do
+    local _, registered, registrationProblem = context.Kernel:Every(
+        state.JobKey,
+        CHECK_INTERVAL,
+        "P3",
+        function(cancelToken)
+            if cancelToken:IsCancelled() or not state.Running or activeState ~= state
+                or not context.Running() or not context.Enabled() then
+                stopState(state, context)
+                return false
+            end
             local ok, problem = pcall(runCycle, state, context)
             if not ok then
                 releaseOperation(state, context)
@@ -446,9 +459,12 @@ return function(action, context)
                 context.Trace("auto boost", status)
                 setStatus(state, context, status .. "\nNo immediate request; retry delayed.")
             end
-            task.wait(CHECK_INTERVAL)
-        end
-        stopState(state, context)
-    end)
+        end,
+        { Owner = "boost" }
+    )
+    if registered == false then
+        activeState = nil
+        return false, "RuntimeKernel rejected boost worker: " .. tostring(registrationProblem)
+    end
     return true
 end

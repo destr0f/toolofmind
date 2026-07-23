@@ -2,16 +2,11 @@
 -- The caller owns target selection and lock state. This module only schedules
 -- named Network calls, classifies Join Coin replies and reports outcomes.
 
-local MODULE_VERSION = "2.2.0"
+local MODULE_VERSION = "2.3.0"
 local DEFAULT_MIN_LANES = 4
 local DEFAULT_MAX_LANES = 16
 local DEFAULT_INITIAL_LANES = 12
 local MAX_JOIN_ATTEMPTS = 3
-local scheduler = task or {
-    spawn = function(callback) coroutine.wrap(callback)() end,
-    delay = function(_, callback) coroutine.wrap(callback)() end,
-}
-
 local run = {
     Context = nil,
     Epoch = 0,
@@ -33,6 +28,7 @@ local run = {
     AverageRTT = 0,
     LastRTT = 0,
     LastProblem = "none",
+    TaskSequence = 0,
 }
 
 local pump
@@ -57,9 +53,44 @@ local function compactQueue()
 end
 
 local function resetQueue()
+    local previousContext = run.Context
+    if previousContext and previousContext.Kernel then
+        previousContext.Kernel:CancelOwner("pet-engine", "pet engine reset")
+    end
     run.Epoch = run.Epoch + 1
     run.Queue = {}
     run.Head = 1
+    run.Active = 0
+end
+
+local function nextTaskKey(label)
+    run.TaskSequence = run.TaskSequence + 1
+    return "pet-engine." .. tostring(label) .. "." .. tostring(run.TaskSequence)
+end
+
+local function scheduleNow(label, callback)
+    local context = run.Context
+    if not context or not context.Kernel then return false end
+    local _, registered = context.Kernel:Spawn(
+        nextTaskKey(label),
+        "P0",
+        callback,
+        { Owner = "pet-engine" }
+    )
+    return registered ~= false
+end
+
+local function scheduleAfter(label, delay, callback)
+    local context = run.Context
+    if not context or not context.Kernel then return false end
+    local _, registered = context.Kernel:After(
+        nextTaskKey(label),
+        delay,
+        "P0",
+        callback,
+        { Owner = "pet-engine" }
+    )
+    return registered ~= false
 end
 
 local function normalizedPetId(value)
@@ -261,7 +292,8 @@ local function scheduleRetry(job, entries, reason)
         local jittered, value = pcall(context.RetryJitter, job.Record, job.Attempt)
         if jittered then jitter = math.clamp(tonumber(value) or 0, 0, 0.08) end
     end
-    scheduler.delay(retryDelay(job.Attempt) + jitter, function()
+    scheduleAfter("retry", retryDelay(job.Attempt) + jitter, function(cancelToken)
+        if cancelToken:IsCancelled() then return end
         if epoch ~= run.Epoch then return end
         local retryEntries = {}
         for _, entry in ipairs(entries) do
@@ -366,7 +398,11 @@ pump = function()
         run.Head = run.Head + 1
         if contextActive(job) then
             run.Active = run.Active + 1
-            scheduler.spawn(function()
+            local scheduled = scheduleNow("dispatch", function(cancelToken)
+                if cancelToken:IsCancelled() then
+                    run.Active = math.max(run.Active - 1, 0)
+                    return
+                end
                 local handled, problem = pcall(process, job)
                 if not handled then
                     run.Errors = run.Errors + 1
@@ -381,6 +417,11 @@ pump = function()
                 local context = run.Context
                 if context and type(context.Pulse) == "function" then pcall(context.Pulse) end
             end)
+            if not scheduled then
+                run.Active = math.max(run.Active - 1, 0)
+                run.Errors = run.Errors + 1
+                run.LastProblem = "RuntimeKernel rejected dispatch job"
+            end
         end
     end
     compactQueue()
@@ -388,6 +429,7 @@ end
 
 local function start(context)
     if type(context) ~= "table" then return false, "context table required" end
+    if type(context.Kernel) ~= "table" then return false, "RuntimeKernel context required" end
     resetQueue()
     run.Context = context
     run.MinLanes = math.max(1, tonumber(context.MinLanes) or DEFAULT_MIN_LANES)
