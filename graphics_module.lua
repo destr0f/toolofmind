@@ -1,84 +1,72 @@
--- Optional balanced potato controls for PSX OG Slim Farm.
--- Keeps the location and __THINGS visible while reducing expensive world visuals.
+-- Optional crowded-zone anti-lag controls for PSX OG Slim Farm.
+-- Keeps the map and egg stands readable while removing farm-only rendering cost.
 
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
 local state
-local FRAME_OBJECT_LIMIT = 72
-local FRAME_TIME_BUDGET = 0.0025
+
+local URGENT_OBJECT_LIMIT = 224
+local NORMAL_OBJECT_LIMIT = 56
+local FRAME_TIME_BUDGET = 0.002
+local PERSISTENT_OBJECT_LIMIT = 28
+local ROOT_REFRESH_INTERVAL = 0.75
+local RENDER_REFRESH_INTERVAL = 5
+
+local HIDDEN_THINGS = {
+    coins = true,
+    pets = true,
+    orbs = true,
+    lootbags = true,
+}
+
+local function disconnectConnection(connection)
+    if connection then pcall(function() connection:Disconnect() end) end
+end
 
 local function disconnect(target)
     if type(target) ~= "table" then return end
     target.Running = false
     for _, connection in ipairs(target.Connections or {}) do
-        pcall(function() connection:Disconnect() end)
+        disconnectConnection(connection)
     end
     target.Connections = {}
-    target.Queue = {}
+    target.UrgentQueue = {}
+    target.NormalQueue = {}
+    target.PersistentSlots = {}
+    target.PersistentKinds = {}
+    target.PersistentFree = {}
 end
 
-local function isProtectedTree(object)
-    local current = object
-    while current and current ~= workspace and current ~= Lighting do
-        if current.Name == "_SELECTIONFX" or current.Name == "POS" then return true end
-        current = current.Parent
-    end
-    return false
+local function lowerName(object)
+    return string.lower(tostring(object and object.Name or ""))
 end
 
-local function thingsPolicy(object)
-    local things = workspace:FindFirstChild("__THINGS")
-    if not things or (object ~= things and not object:IsDescendantOf(things)) then return false, false end
-    local coins = things:FindFirstChild("Coins")
-    local coinVisual = coins and (object == coins or object:IsDescendantOf(coins)) or false
-    return true, coinVisual
-end
-
-local function isDynamicVisual(object)
+local function inspectTree(object, active)
     local current = object
     local depth = 0
-    while current and current ~= workspace and depth < 12 do
-        local name = string.lower(tostring(current.Name or ""))
-        if string.find(name, "egg", 1, true)
-            or string.find(name, "pet", 1, true)
-            or string.find(name, "coin", 1, true)
-            or string.find(name, "chest", 1, true)
-            or string.find(name, "orb", 1, true)
-            or string.find(name, "lootbag", 1, true)
-        then
-            return true
-        end
+    local category
+    local inMap = false
+    local inDebris = false
+    local eggVisual = false
+    local protected = false
+
+    while current and current ~= workspace and current ~= Lighting and depth < 24 do
+        local name = lowerName(current)
+        -- Keep the target part itself alive, but still suppress emitters parented
+        -- under POS. _SELECTIONFX remains fully untouched because the game owns
+        -- and reparents that complete subtree.
+        if name == "_selectionfx" or (current == object and name == "pos") then protected = true end
+        if string.find(name, "egg", 1, true) then eggVisual = true end
+        if current == active.Map then inMap = true end
+        if current == active.Debris then inDebris = true end
+        if current.Parent == active.Things then category = name end
         current = current.Parent
         depth = depth + 1
     end
-    return false
-end
 
-local function guardBlankTexture(object, property, active)
-    if not active or not active.Running or active.Guarded[object]
-        or not isDynamicVisual(object)
-    then
-        return
-    end
-    active.Guarded[object] = true
-    local connected, connection = pcall(function()
-        return object:GetPropertyChangedSignal(property):Connect(function()
-            if not active.Running or env.PSX_POTATO_STATE ~= active then return end
-            local read, value = pcall(function() return object[property] end)
-            if read and value ~= "" then
-                local cleared = pcall(function() object[property] = "" end)
-                if cleared then active.Reasserted = active.Reasserted + 1 end
-            end
-        end)
-    end)
-    if connected and connection then
-        active.Connections[#active.Connections + 1] = connection
-        active.GuardCount = active.GuardCount + 1
-    else
-        active.Guarded[object] = nil
-    end
+    return protected, category, inMap, inDebris, eggVisual
 end
 
 local function optimizeRendering()
@@ -105,31 +93,66 @@ local function optimizeRendering()
     end
 end
 
+local function registerPersistent(active, object, kind)
+    if not active or not active.Running or active.PersistentKinds[object] then return end
+    local slot = table.remove(active.PersistentFree)
+    if not slot then
+        active.PersistentHighWater = active.PersistentHighWater + 1
+        slot = active.PersistentHighWater
+    end
+    active.PersistentSlots[slot] = object
+    active.PersistentKinds[object] = { Slot = slot, Kind = kind }
+end
+
+local function suppressParticle(object)
+    object.Enabled = false
+    object.Rate = 0
+    object.Lifetime = NumberRange.new(0)
+    object.Speed = NumberRange.new(0)
+    object.Size = NumberSequence.new(0)
+    object.Transparency = NumberSequence.new(1)
+    object.LightEmission = 0
+    object.LightInfluence = 0
+    pcall(function() object:Clear() end)
+end
+
+local function suppressPersistent(object, kind)
+    if kind == "particle" then
+        suppressParticle(object)
+    elseif kind == "effect" then
+        object.Enabled = false
+        if object:IsA("Trail") then pcall(function() object:Clear() end) end
+        if object:IsA("Light") then pcall(function() object.Shadows = false end) end
+    elseif kind == "gui" then
+        object.Enabled = false
+    end
+end
+
+local function hideVisualPart(object)
+    object.LocalTransparencyModifier = 1
+    object.CastShadow = false
+    object.Reflectance = 0
+    object.Material = Enum.Material.Plastic
+    object.MaterialVariant = ""
+end
+
 local function optimizeObject(object, active)
-    local insideThings, coinVisual = false, false
-    if object then insideThings, coinVisual = thingsPolicy(object) end
-    if not object or isProtectedTree(object) then
-        if active then active.Protected = active.Protected + 1 end
+    if not object then return end
+    local protected, category, inMap, inDebris, eggVisual = inspectTree(object, active)
+    if protected then
+        active.Protected = active.Protected + 1
         return
     end
 
+    local hidden = inDebris or HIDDEN_THINGS[category] == true
     local ok = pcall(function()
         if object:IsA("ParticleEmitter") then
-            object.Enabled = false
-            object.Rate = 0
-            pcall(function() object:Clear() end)
-            active.Disabled = active.Disabled + 1
+            suppressParticle(object)
+            registerPersistent(active, object, "particle")
+            active.Effects = active.Effects + 1
             return
         end
-        if object:IsA("BillboardGui") or object:IsA("SurfaceGui") then
-            if coinVisual then
-                active.Protected = active.Protected + 1
-            else
-                object.Enabled = false
-                active.Disabled = active.Disabled + 1
-            end
-            return
-        end
+
         if object:IsA("Beam") or object:IsA("Trail") or object:IsA("Fire")
             or object:IsA("Smoke") or object:IsA("Sparkles") or object:IsA("PostEffect")
             or object:IsA("Highlight") or object:IsA("PointLight")
@@ -139,14 +162,47 @@ local function optimizeObject(object, active)
             object.Enabled = false
             if object:IsA("Light") then pcall(function() object.Shadows = false end) end
             if object:IsA("Trail") then pcall(function() object:Clear() end) end
+            registerPersistent(active, object, "effect")
+            active.Effects = active.Effects + 1
+            return
+        end
+
+        if object:IsA("BillboardGui") or object:IsA("SurfaceGui") then
+            -- Coin health bars and pet labels are a major crowded-zone cost.
+            -- Keep map/egg interfaces readable, but never render farm-only GUIs.
+            if hidden then
+                object.Enabled = false
+                registerPersistent(active, object, "gui")
+                active.Disabled = active.Disabled + 1
+            end
+            return
+        end
+
+        if object:IsA("PVAdornment") then
+            object.Visible = false
             active.Disabled = active.Disabled + 1
             return
         end
-        if object:IsA("Decal") or object:IsA("Texture") or object:IsA("SurfaceAppearance") then
-            object:Destroy()
-            active.Destroyed = active.Destroyed + 1
+
+        if object:IsA("Decal") or object:IsA("Texture") then
+            if hidden then
+                object.Transparency = 1
+                active.Hidden = active.Hidden + 1
+            elseif not eggVisual then
+                object:Destroy()
+                active.Destroyed = active.Destroyed + 1
+            end
             return
         end
+
+        if object:IsA("SurfaceAppearance") then
+            if hidden or not eggVisual then
+                object:Destroy()
+                active.Destroyed = active.Destroyed + 1
+            end
+            return
+        end
+
         if object:IsA("Sky") then
             object.SkyboxBk, object.SkyboxDn, object.SkyboxFt = "", "", ""
             object.SkyboxLf, object.SkyboxRt, object.SkyboxUp = "", "", ""
@@ -156,82 +212,182 @@ local function optimizeObject(object, active)
             active.Disabled = active.Disabled + 1
             return
         end
+
         if object:IsA("Atmosphere") then
             object.Density, object.Haze, object.Glare = 0, 0, 0
             active.Disabled = active.Disabled + 1
             return
         end
+
         if object:IsA("SpecialMesh") then
-            object.TextureId = ""
-            guardBlankTexture(object, "TextureId", active)
+            if hidden or not eggVisual then object.TextureId = "" end
             active.Stripped = active.Stripped + 1
             return
         end
+
         if object:IsA("ForceField") then
             object.Visible = false
             active.Disabled = active.Disabled + 1
             return
         end
+
         if object:IsA("Explosion") then
             object.Visible = false
+            object.BlastPressure = 0
+            object.BlastRadius = 0
             active.Disabled = active.Disabled + 1
             return
         end
+
         if object:IsA("BasePart") then
-            object.Material = Enum.Material.Plastic
-            object.MaterialVariant = ""
-            object.Reflectance = 0
             object.CastShadow = false
-            if object:IsA("MeshPart") then
-                pcall(function() object.TextureID = "" end)
-                guardBlankTexture(object, "TextureID", active)
+            object.Reflectance = 0
+            if hidden then
+                hideVisualPart(object)
+                active.Hidden = active.Hidden + 1
+            else
+                object.Material = Enum.Material.Plastic
+                object.MaterialVariant = ""
+                if object:IsA("MeshPart") and not eggVisual then
+                    pcall(function() object.TextureID = "" end)
+                end
+                active.Stripped = active.Stripped + 1
             end
-            active.Stripped = active.Stripped + 1
         end
     end)
     if not ok then active.Errors = active.Errors + 1 end
 end
 
-local function enqueue(active, object)
-    if not active.Running or not object or active.Seen[object] or active.Queued[object] then return end
+local function enqueue(active, object, urgent)
+    if not active.Running or not object or active.Queued[object] then return end
     active.Queued[object] = true
-    active.Queue[#active.Queue + 1] = object
+    local queue = urgent and active.UrgentQueue or active.NormalQueue
+    queue[#queue + 1] = object
 end
 
-local function processObject(active, object)
+local function processObject(active, object, urgent)
     if not active.Running or not object then return end
     active.Queued[object] = nil
-    if not active.Seen[object] then
-        active.Seen[object] = true
-        if object ~= workspace and object ~= Lighting then optimizeObject(object, active) end
-    end
+    optimizeObject(object, active)
+
+    if active.Seen[object] then return end
+    active.Seen[object] = true
+    local childUrgent = urgent or object == active.Things or object == active.Debris
     local childrenOk, children = pcall(function() return object:GetChildren() end)
     if childrenOk then
-        for _, child in ipairs(children) do enqueue(active, child) end
+        for _, child in ipairs(children) do enqueue(active, child, childUrgent) end
+    end
+end
+
+local function popQueue(queue)
+    local count = #queue
+    if count == 0 then return nil end
+    local object = queue[count]
+    queue[count] = nil
+    return object
+end
+
+local function trackConnection(active, connection)
+    if connection then active.Connections[#active.Connections + 1] = connection end
+    return connection
+end
+
+local function bindRoot(active, key, root, urgent)
+    if active[key] == root then return end
+    disconnectConnection(active.RootConnections[key])
+    active.RootConnections[key] = nil
+    active[key] = root
+    if not root then return end
+
+    local connection = root.DescendantAdded:Connect(function(object)
+        enqueue(active, object, urgent)
+    end)
+    active.RootConnections[key] = connection
+    trackConnection(active, connection)
+    enqueue(active, root, urgent)
+end
+
+local function refreshRoots(active)
+    bindRoot(active, "Map", workspace:FindFirstChild("__MAP"), false)
+    bindRoot(active, "Things", workspace:FindFirstChild("__THINGS"), true)
+    bindRoot(active, "Debris", workspace:FindFirstChild("__DEBRIS"), true)
+    bindRoot(active, "Camera", workspace.CurrentCamera, true)
+end
+
+local function processPersistent(active, deadline)
+    local processed = 0
+    local highWater = active.PersistentHighWater
+    if highWater <= 0 then return end
+
+    while processed < PERSISTENT_OBJECT_LIMIT and os.clock() < deadline do
+        local slot = active.PersistentCursor
+        active.PersistentCursor = slot >= highWater and 1 or slot + 1
+        local object = active.PersistentSlots[slot]
+        if object then
+            local metadata = active.PersistentKinds[object]
+            local alive, parent = pcall(function() return object.Parent end)
+            if not alive or parent == nil or not metadata then
+                active.PersistentSlots[slot] = false
+                active.PersistentKinds[object] = nil
+                active.PersistentFree[#active.PersistentFree + 1] = slot
+            else
+                local ok = pcall(suppressPersistent, object, metadata.Kind)
+                if not ok then active.Errors = active.Errors + 1 end
+            end
+        end
+        processed = processed + 1
+        if active.PersistentCursor == 1 then highWater = active.PersistentHighWater end
     end
 end
 
 local function processQueue(active)
-    enqueue(active, workspace)
-    enqueue(active, Lighting)
+    refreshRoots(active)
+    enqueue(active, Lighting, false)
+    local nextRootRefresh = 0
+    local nextRenderRefresh = 0
+
     while active.Running and env.PSX_POTATO_STATE == active do
-        local processed = 0
-        local deadline = os.clock() + FRAME_TIME_BUDGET
-        while processed < FRAME_OBJECT_LIMIT and #active.Queue > 0 and os.clock() < deadline do
-            local object = table.remove(active.Queue)
-            processObject(active, object)
-            processed = processed + 1
+        local now = os.clock()
+        if active.RootRefreshRequested or now >= nextRootRefresh then
+            active.RootRefreshRequested = false
+            nextRootRefresh = now + ROOT_REFRESH_INTERVAL
+            refreshRoots(active)
         end
-        if #active.Queue == 0 then
-            if not active.InitialReported then
-                active.InitialReported = true
-                print(string.format(
-                    "[PSX SLIM] balanced potato | initial pass complete | disabled=%d | stripped=%d | destroyed=%d | protected=%d | texture-locks=%d | errors=%d",
-                    active.Disabled, active.Stripped, active.Destroyed, active.Protected,
-                    active.GuardCount, active.Errors
-                ))
-            end
-            task.wait(0.25)
+        if now >= nextRenderRefresh then
+            nextRenderRefresh = now + RENDER_REFRESH_INTERVAL
+            optimizeRendering()
+        end
+
+        local deadline = now + FRAME_TIME_BUDGET
+        local urgentProcessed = 0
+        while urgentProcessed < URGENT_OBJECT_LIMIT and os.clock() < deadline do
+            local object = popQueue(active.UrgentQueue)
+            if not object then break end
+            processObject(active, object, true)
+            urgentProcessed = urgentProcessed + 1
+        end
+
+        local normalProcessed = 0
+        while normalProcessed < NORMAL_OBJECT_LIMIT and os.clock() < deadline do
+            local object = popQueue(active.NormalQueue)
+            if not object then break end
+            processObject(active, object, false)
+            normalProcessed = normalProcessed + 1
+        end
+
+        processPersistent(active, deadline)
+
+        if #active.UrgentQueue == 0 and #active.NormalQueue == 0 and not active.InitialReported then
+            active.InitialReported = true
+            print(string.format(
+                "[PSX SLIM] farm anti-lag | ready | effects=%d | hidden=%d | stripped=%d | destroyed=%d | protected=%d | errors=%d",
+                active.Effects, active.Hidden, active.Stripped, active.Destroyed,
+                active.Protected, active.Errors
+            ))
+        end
+
+        if #active.UrgentQueue == 0 and #active.NormalQueue == 0 then
+            task.wait(0.05)
         else
             RunService.Heartbeat:Wait()
         end
@@ -246,44 +402,54 @@ local function startPotato()
     local active = {
         Running = true,
         Connections = {},
-        Queue = {},
+        RootConnections = {},
+        UrgentQueue = {},
+        NormalQueue = {},
         Seen = setmetatable({}, { __mode = "k" }),
         Queued = setmetatable({}, { __mode = "k" }),
-        Guarded = setmetatable({}, { __mode = "k" }),
+        PersistentKinds = setmetatable({}, { __mode = "k" }),
+        PersistentSlots = {},
+        PersistentFree = {},
+        PersistentHighWater = 0,
+        PersistentCursor = 1,
+        Effects = 0,
+        Hidden = 0,
         Disabled = 0,
         Stripped = 0,
         Destroyed = 0,
         Protected = 0,
-        GuardCount = 0,
-        Reasserted = 0,
         Errors = 0,
     }
     state = active
     env.PSX_POTATO_STATE = active
     optimizeRendering()
 
-    -- Replication can add hundreds of descendants in one frame. Never mutate
-    -- those instances synchronously inside the replication callback; enqueue
-    -- them for the same bounded worker used by the initial pass.
-    active.Connections[#active.Connections + 1] = workspace.DescendantAdded:Connect(function(object)
-        enqueue(active, object)
-    end)
-    active.Connections[#active.Connections + 1] = Lighting.DescendantAdded:Connect(function(object)
-        enqueue(active, object)
-    end)
+    -- Only watch the game-owned visual roots. A global Workspace.DescendantAdded
+    -- listener needlessly wakes for every character/accessory in crowded servers.
+    trackConnection(active, workspace.ChildAdded:Connect(function(object)
+        local name = object.Name
+        if name == "__MAP" or name == "__THINGS" or name == "__DEBRIS" then
+            active.RootRefreshRequested = true
+        end
+    end))
+    trackConnection(active, workspace.ChildRemoved:Connect(function(object)
+        if object == active.Map or object == active.Things or object == active.Debris then
+            active.RootRefreshRequested = true
+        end
+    end))
+    trackConnection(active, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        active.RootRefreshRequested = true
+    end))
+    trackConnection(active, Lighting.DescendantAdded:Connect(function(object)
+        enqueue(active, object, true)
+    end))
 
     task.spawn(processQueue, active)
-    task.spawn(function()
-        while active.Running and env.PSX_POTATO_STATE == active do
-            optimizeRendering()
-            task.wait(5)
-        end
-    end)
 
     env.StopPSXPotatoMode = function()
         if env.PSX_POTATO_STATE == active then disconnect(active) end
     end
-    print("[PSX SLIM] balanced potato | enabled | location, __THINGS and Network requests preserved")
+    print("[PSX SLIM] farm anti-lag | enabled | map/eggs/network state preserved; farm effects hidden")
     return true
 end
 
