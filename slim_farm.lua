@@ -1,7 +1,8 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.10"
+local VERSION = "1.4.1-dev.11"
+local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -9,6 +10,98 @@ local function trace(stage, detail)
 end
 
 trace("00 entered", "version=" .. VERSION)
+
+local function runtimeDjb2(source)
+    local hash = 5381
+    for index = 1, #source do
+        hash = (hash * 33 + string.byte(source, index)) % 4294967296
+    end
+    return string.format("%08x", hash)
+end
+
+local function verifyRuntimeSource(entry, source)
+    if type(entry) ~= "table" then return false, "manifest entry is missing" end
+    if type(source) ~= "string" or source == "" then return false, "download returned an empty payload" end
+    if #source ~= entry.bytes then
+        return false, "byte mismatch: received " .. tostring(#source)
+            .. ", expected " .. tostring(entry.bytes)
+    end
+    local checksum = runtimeDjb2(source)
+    if checksum ~= entry.djb2 then
+        return false, "DJB2 mismatch: received " .. tostring(checksum)
+            .. ", expected " .. tostring(entry.djb2)
+            .. " (sha256 " .. tostring(entry.sha256) .. ")"
+    end
+    return true
+end
+
+local function validateRuntimeManifest()
+    if type(RUNTIME_MANIFEST) ~= "table" then
+        error("Runtime manifest is absent. Run the generated toolofmind.lua/loader.lua artifact, not slim_farm.lua directly.", 0)
+    end
+    if RUNTIME_MANIFEST.schemaVersion ~= 1 then
+        error("Incompatible runtime manifest schema: " .. tostring(RUNTIME_MANIFEST.schemaVersion), 0)
+    end
+    local suite = RUNTIME_MANIFEST.suite
+    if type(suite) ~= "table" or suite.version ~= VERSION then
+        error("Incompatible runtime manifest suite: expected " .. VERSION
+            .. ", received " .. tostring(suite and suite.version), 0)
+    end
+    local wind = RUNTIME_MANIFEST.windUI
+    if type(wind) ~= "table" or wind.compatibleSuite ~= VERSION then
+        error("WindUI manifest compatibility mismatch", 0)
+    end
+    local order, modules = RUNTIME_MANIFEST.moduleOrder, RUNTIME_MANIFEST.modules
+    if type(order) ~= "table" or type(modules) ~= "table" then
+        error("Runtime module manifest is incomplete", 0)
+    end
+    local seen = {}
+    for _, key in ipairs(order) do
+        local entry = modules[key]
+        if seen[key] or type(entry) ~= "table" or entry.id ~= key
+            or entry.compatibleSuite ~= VERSION
+            or type(entry.version) ~= "string"
+            or type(entry.commit) ~= "string" or #entry.commit ~= 40
+            or type(entry.path) ~= "string"
+            or type(entry.bytes) ~= "number"
+            or type(entry.sha256) ~= "string" or #entry.sha256 ~= 64
+            or type(entry.djb2) ~= "string" or #entry.djb2 ~= 8 then
+            error("Incompatible runtime module manifest entry: " .. tostring(key), 0)
+        end
+        seen[key] = true
+    end
+    for key in pairs(modules) do
+        if not seen[key] then error("Unordered runtime module manifest entry: " .. tostring(key), 0) end
+    end
+
+    local build = RUNTIME_MANIFEST.build or {}
+    local source = build.source or {}
+    local fingerprint = RUNTIME_MANIFEST.fingerprint or {}
+    trace("00 runtime manifest", "schema=" .. tostring(RUNTIME_MANIFEST.schemaVersion)
+        .. " | fingerprint=" .. tostring(fingerprint.sha256)
+        .. " | sourceTree=" .. tostring(build.sourceTree))
+    trace("00 runtime component", "main | version=" .. VERSION
+        .. " | commit=" .. tostring(build.sourceCommit)
+        .. " | sha256=" .. tostring(source.sha256)
+        .. " | djb2=" .. tostring(source.djb2)
+        .. " | state=active")
+    trace("00 runtime component", tostring(wind.label) .. " | version=" .. tostring(wind.version)
+        .. " | release=" .. tostring(wind.version)
+        .. " | sha256=" .. tostring(wind.sha256)
+        .. " | djb2=" .. tostring(wind.djb2)
+        .. " | load=" .. tostring(wind.load))
+    for _, key in ipairs(order) do
+        local entry = modules[key]
+        trace("00 runtime component", tostring(entry.label)
+            .. " | version=" .. tostring(entry.version)
+            .. " | commit=" .. tostring(entry.commit)
+            .. " | sha256=" .. tostring(entry.sha256)
+            .. " | djb2=" .. tostring(entry.djb2)
+            .. " | load=" .. tostring(entry.load))
+    end
+end
+
+validateRuntimeManifest()
 
 if type(env.PSX_OG_SLIM_CLEANUP) == "function" then
     pcall(env.PSX_OG_SLIM_CLEANUP)
@@ -101,13 +194,6 @@ local config = {
     EggAnimation = "Headless (No Animation)",
 }
 
-local MODULE_REVISION = "7280f1f8f0544c7346b2c921f4ef79e32b7dd861"
-local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
-    .. MODULE_REVISION .. "/"
-local SUPPORT_MODULE_URL = RAW_MODULE_BASE .. "automation_support_module.lua"
-local AUTOMATION_UI_MODULE_URL = RAW_MODULE_BASE .. "automation_ui_module.lua"
-local PET_FARM_ENGINE_URL = RAW_MODULE_BASE .. "pet_farm_engine.lua"
-
 local DIAMOND_PACK_TIER = 4
 local DIAMOND_PACK_MINIMUM = 1e12
 local DIAMOND_PACK_INTERVAL = 180
@@ -157,8 +243,14 @@ trace("02 Library required")
 local WindUI
 do
     trace("03 WindUI download")
-    local windSource = game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/1.6.64-fix/main.lua")
+    local windEntry = RUNTIME_MANIFEST.windUI
+    local windSource = game:HttpGet(windEntry.url)
     trace("04 WindUI received", #windSource)
+    local windVerified, windVerifyProblem = verifyRuntimeSource(windEntry, windSource)
+    if not windVerified then error("WindUI identity rejected: " .. tostring(windVerifyProblem), 0) end
+    trace("04 WindUI verified", "version=" .. tostring(windEntry.version)
+        .. " | sha256=" .. tostring(windEntry.sha256)
+        .. " | djb2=" .. tostring(windEntry.djb2))
 
     local function replacePlain(source, needle, replacement)
         local startAt, replacements = 1, 0
@@ -212,8 +304,22 @@ end
 -- parallel during profile auto-load. Every optional module now uses this one lane.
 local moduleLoadState = { Busy = false, Owner = nil, NextAt = 0, Cache = {} }
 
-local function loadRemoteController(url, label, statusCallback)
-    local cached = moduleLoadState.Cache[url]
+local function runtimeModuleURL(entry)
+    local repository = RUNTIME_MANIFEST.repository
+    return tostring(repository.rawBase) .. "/" .. tostring(repository.owner)
+        .. "/" .. tostring(repository.name) .. "/" .. tostring(entry.commit)
+        .. "/" .. tostring(entry.path)
+end
+
+local function loadRemoteController(moduleKey, label, statusCallback)
+    local entry = RUNTIME_MANIFEST.modules[moduleKey]
+    if type(entry) ~= "table" then return nil, "module is absent from runtime manifest: " .. tostring(moduleKey) end
+    if entry.compatibleSuite ~= VERSION then
+        return nil, "module " .. tostring(moduleKey) .. " is incompatible with suite " .. VERSION
+    end
+    label = label or entry.label or moduleKey
+    local cacheKey = tostring(moduleKey) .. "@" .. tostring(entry.commit) .. ":" .. tostring(entry.djb2)
+    local cached = moduleLoadState.Cache[cacheKey]
     if type(cached) == "function" then return cached, nil end
 
     local deadline = os.clock() + 45
@@ -225,7 +331,7 @@ local function loadRemoteController(url, label, statusCallback)
     if moduleLoadState.Busy then
         return nil, "module loader timed out behind " .. tostring(moduleLoadState.Owner)
     end
-    cached = moduleLoadState.Cache[url]
+    cached = moduleLoadState.Cache[cacheKey]
     if type(cached) == "function" then return cached, nil end
 
     moduleLoadState.Busy = true
@@ -235,10 +341,9 @@ local function loadRemoteController(url, label, statusCallback)
     end
 
     local loaded, controllerOrProblem = pcall(function()
-        local source = game:HttpGet(url)
-        if type(source) ~= "string" or source == "" then
-            error("download returned an empty payload", 0)
-        end
+        local source = game:HttpGet(runtimeModuleURL(entry))
+        local verified, verifyProblem = verifyRuntimeSource(entry, source)
+        if not verified then error("identity rejected: " .. tostring(verifyProblem), 0) end
         local chunk, compileProblem = loadstring(source)
         source = nil
         if not chunk then error("compile failed: " .. tostring(compileProblem), 0) end
@@ -246,6 +351,14 @@ local function loadRemoteController(url, label, statusCallback)
         chunk = nil
         if type(controller) ~= "function" then
             error("module entrypoint is not a function", 0)
+        end
+        if entry.versionAction then
+            local versionRead, moduleVersion = pcall(controller, entry.versionAction)
+            if not versionRead then error("version action failed: " .. tostring(moduleVersion), 0) end
+            if tostring(moduleVersion) ~= tostring(entry.version) then
+                error("version mismatch: module reported " .. tostring(moduleVersion)
+                    .. ", manifest requires " .. tostring(entry.version), 0)
+            end
         end
         return controller
     end)
@@ -257,8 +370,11 @@ local function loadRemoteController(url, label, statusCallback)
         trace("module loader", tostring(label) .. " failed: " .. tostring(controllerOrProblem))
         return nil, tostring(controllerOrProblem)
     end
-    moduleLoadState.Cache[url] = controllerOrProblem
-    trace("module loader", tostring(label) .. " ready")
+    moduleLoadState.Cache[cacheKey] = controllerOrProblem
+    trace("module loader", tostring(label) .. " ready | version=" .. tostring(entry.version)
+        .. " | commit=" .. tostring(entry.commit)
+        .. " | sha256=" .. tostring(entry.sha256)
+        .. " | djb2=" .. tostring(entry.djb2))
     return controllerOrProblem, nil
 end
 
@@ -269,12 +385,11 @@ local function normalize(value)
     return string.match(value, "^%s*(.-)%s*$") or value
 end
 
-local GRAPHICS_MODULE_URL = "https://raw.githubusercontent.com/destr0f/toolofmind/5125e9b70ce70f1b082390f4dda4f8d9da36f7c0/graphics_module.lua"
 local graphicsController
 
 local function graphicsAction(action, value)
     if not graphicsController then
-        local controller, problem = loadRemoteController(GRAPHICS_MODULE_URL, "graphics module")
+        local controller, problem = loadRemoteController("graphics", "graphics module")
         if not controller then warn("[PSX SLIM] graphics load: " .. tostring(problem)); return false end
         graphicsController = controller
     end
@@ -1784,7 +1899,7 @@ local function ensureSupportModule()
     if os.clock() < supportRetryAt then return nil, supportLoadProblem end
 
     local controller, problem = loadRemoteController(
-        SUPPORT_MODULE_URL,
+        "automationSupport",
         "automation support coordinator"
     )
     if not controller then
@@ -2041,7 +2156,7 @@ function petFarm:EnsureEngine()
     driverStatus = "loading high-throughput UID engine"
 
     local controller, problem = loadRemoteController(
-        PET_FARM_ENGINE_URL,
+        "petFarmEngine",
         "pet farm engine",
         function(message) driverStatus = tostring(message) end
     )
@@ -2718,7 +2833,6 @@ local function formatDuration(seconds)
     return string.format("%dm %02ds", minutes, secs)
 end
 
-local AUTO_EGG_MODULE_URL = RAW_MODULE_BASE .. "auto_egg_module.lua"
 local autoEggController
 local autoEggLoading = false
 local autoEggLoadProblem
@@ -2751,7 +2865,7 @@ local function ensureAutoEggModule()
     autoEggLoading = true
     autoEggLoadProblem = nil
     local controller, problem = loadRemoteController(
-        AUTO_EGG_MODULE_URL,
+        "autoEgg",
         "auto egg module",
         statusSetters.Egg
     )
@@ -2819,19 +2933,19 @@ end
 
 local machineModules = {
     Gold = {
-        URL = RAW_MODULE_BASE .. "gold_machine_module.lua",
+        Module = "goldMachine",
         ConfigKeys = { "AutoGoldenGalaxyFox" },
         Label = "gold machine",
         SetStatus = statusSetters.Gold,
     },
     Rainbow = {
-        URL = RAW_MODULE_BASE .. "rainbow_machine_module.lua",
+        Module = "rainbowMachine",
         ConfigKeys = { "AutoRainbowGalaxyFox" },
         Label = "rainbow machine",
         SetStatus = statusSetters.Rainbow,
     },
     DarkMatter = {
-        URL = RAW_MODULE_BASE .. "dark_matter_module.lua",
+        Module = "darkMatter",
         ConfigKeys = { "AutoDarkMatterGalaxyFox", "AutoClaimDarkMatter" },
         Label = "dark matter machine",
         SetStatus = statusSetters.DarkMatter,
@@ -2866,7 +2980,7 @@ function machineModules:Start(kind)
     entry.Loading = true
 
     if not entry.Controller then
-        local controller, problem = loadRemoteController(entry.URL, entry.Label .. " module", entry.SetStatus)
+        local controller, problem = loadRemoteController(entry.Module, entry.Label .. " module", entry.SetStatus)
         if not controller then
             entry.Loading = false
             self:Disable(entry)
@@ -2916,7 +3030,6 @@ function machineModules:Start(kind)
     end
 end
 
-local BOOST_MODULE_URL = RAW_MODULE_BASE .. "boost_module.lua"
 local boostController
 local boostLoading = false
 local boostLoadProblem
@@ -2936,7 +3049,7 @@ local function startBoostModule()
     boostLoading = true
     if not boostController then
         local controller, problem = loadRemoteController(
-            BOOST_MODULE_URL,
+            "boost",
             "auto boost module",
             statusSetters.Boost
         )
@@ -4052,7 +4165,7 @@ uiStageYield("monitor controls")
 do
     trace("06A automation UI loading")
     local automationUIController, automationUILoadProblem = loadRemoteController(
-        AUTOMATION_UI_MODULE_URL,
+        "automationUI",
         "automation UI module"
     )
     if not automationUIController then
