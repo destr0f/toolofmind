@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.7"
+local VERSION = "1.4.1-dev.8"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -73,8 +73,8 @@ local config = {
     World = "Current World",
     Zone = "Player Zone",
     TrackedCurrency = "Active Balances",
-    Orbs = false,
-    Lootbags = false,
+    Orbs = true,
+    Lootbags = true,
     AntiAFK = true,
     PotatoMode = false,
     FPSLimit = "Unchanged",
@@ -101,7 +101,7 @@ local config = {
     EggAnimation = "Headless (No Animation)",
 }
 
-local MODULE_REVISION = "feeba784de44273d70418a0e4efc9a9f8297d303"
+local MODULE_REVISION = "7280f1f8f0544c7346b2c921f4ef79e32b7dd861"
 local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
     .. MODULE_REVISION .. "/"
 local SUPPORT_MODULE_URL = RAW_MODULE_BASE .. "automation_support_module.lua"
@@ -2100,7 +2100,15 @@ function petFarm:EnsureEngine()
             end
         end,
         Pulse = function()
-            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+            -- Accepted workers already own a pending/locked state. Wake the
+            -- allocator only when a UID is genuinely free; this avoids one
+            -- full allocator scan for every successful pet response.
+            local assigned = 0
+            for _ in pairs(petStates) do assigned = assigned + 1 end
+            if assigned < (tonumber(self.EquippedCount) or 0)
+                and type(requestAllocatorPulse) == "function" then
+                requestAllocatorPulse()
+            end
         end,
         Trace = trace,
         MinLanes = 4,
@@ -3053,29 +3061,42 @@ function petFarm:ContendedTargetOrder(usable, claimed, freeCount, equipped)
 
     local equippedCount = math.max(self.EquippedCount or 0, freeCount, 1)
     local nearbyPlayers = 1
+    local nearbyUserIds = { tonumber(player.UserId) or 0 }
     local localCharacter = player.Character
     local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
     if localRoot then
         nearbyPlayers = 0
+        nearbyUserIds = {}
         for _, candidatePlayer in ipairs(Players:GetPlayers()) do
             local candidateCharacter = candidatePlayer.Character
             local candidateRoot = candidateCharacter
                 and candidateCharacter:FindFirstChild("HumanoidRootPart")
             if candidateRoot and (candidateRoot.Position - localRoot.Position).Magnitude <= 450 then
                 nearbyPlayers = nearbyPlayers + 1
+                nearbyUserIds[#nearbyUserIds + 1] = tonumber(candidatePlayer.UserId) or 0
             end
         end
         nearbyPlayers = math.max(nearbyPlayers, 1)
     end
-    local shardCount = externalCount >= equippedCount * 6 and 8
+    table.sort(nearbyUserIds)
+    local externalShards = externalCount >= equippedCount * 6 and 8
         or externalCount >= equippedCount * 2 and 6
         or externalCount > 0 and 4
-        or math.min(nearbyPlayers, 4)
+        or 1
+    local shardCount = math.max(externalShards, math.min(nearbyPlayers, 8))
     local window = math.min(#candidates,
         math.max(equippedCount * shardCount, freeCount * 2, 24))
     self.TargetWindow = window
     self.TargetShards = shardCount
-    local userShard = (tonumber(player.UserId) or 0) % shardCount
+    local localUserId = tonumber(player.UserId) or 0
+    local localOrdinal = 0
+    for index, userId in ipairs(nearbyUserIds) do
+        if userId == localUserId then localOrdinal = index - 1; break end
+    end
+    -- Nearby clients derive different shards from the same sorted player list.
+    -- This works before occupancy replication arrives and prevents ten clients
+    -- from all racing for the same first fifteen coins on the opening frame.
+    local userShard = localOrdinal % shardCount
 
     local pool = {}
     for index = 1, window do
@@ -3101,15 +3122,16 @@ function petFarm:ApplyContentionBackpressure()
     if not self.Engine then return end
     local stats = self:RefreshStats()
     local averageRTT = tonumber(stats.AverageRTT) or 0
-    local equippedCount = math.max(self.EquippedCount or 0, 1)
-    local external = tonumber(self.ExternalPetCount) or 0
     local desired = 16
-    if averageRTT >= 0.9 or external >= equippedCount * 8 then
-        desired = 8
-    elseif averageRTT >= 0.6 or external >= equippedCount * 4 then
+    -- Other players change target sharding, not transport width. Cutting lanes
+    -- merely because external pets exist creates long idle cascades even when
+    -- Network RTT is healthy. Only sustained EWMA latency applies backpressure.
+    if averageRTT >= 1.1 then
         desired = 10
-    elseif averageRTT >= 0.35 or external >= equippedCount * 2 then
+    elseif averageRTT >= 0.75 then
         desired = 12
+    elseif averageRTT >= 0.45 then
+        desired = 14
     end
     if desired ~= self.PolicyLanes then
         local called, changed = pcall(self.Engine, "set-limit", desired)
@@ -3122,10 +3144,10 @@ local allocatorPass
 function petFarm:ScheduleAllocatorPass()
     if self.AllocatorScheduled or allocatorBusy or not running() then return end
     self.AllocatorScheduled = true
-    task.spawn(function()
-        -- Collapse every New/Remove/Update Coin and worker callback produced in
-        -- one render frame into one allocator pass on the following frame.
-        RunService.Heartbeat:Wait()
+    task.defer(function()
+        -- task.defer coalesces a burst of coin/pet callbacks without forcing a
+        -- full render-frame gap. A destroyed target can therefore receive its
+        -- replacement assignment in the same scheduler turn.
         self.AllocatorScheduled = false
         if running() then allocatorPass() end
     end)
@@ -3310,7 +3332,7 @@ task.spawn(function()
         local recovering = expected > 0 and assignmentCount() < expected
         -- Coin/pet events do the immediate work. The watchdog runs quickly only
         -- while a pet is missing a lock, then backs off to reduce steady CPU.
-        task.wait(config.PetFarm and (recovering and 0.045 or 0.2) or 0.4)
+        task.wait(config.PetFarm and (recovering and 0.03 or 0.22) or 0.4)
     end
 end)
 
@@ -3318,11 +3340,14 @@ local lootCollector = {
     Ready = { Items = {}, Head = 1 },
     Retry = { Items = {}, Head = 1 },
     Entries = {},
+    Ignored = setmetatable({}, { __mode = "k" }),
     Bindings = {},
     Enabled = {},
+    ScanCursor = {},
     Pending = 0,
     NextBindingAt = 0,
     NextSweepAt = 0,
+    ScanWarmupUntil = 0,
     NextStatusAt = 0,
     Stats = { Seen = 0, Touched = 0, Retried = 0, Expired = 0, Foreign = 0, Errors = 0 },
 }
@@ -3382,26 +3407,37 @@ end
 function lootCollector:OwnerAllowed(item)
     for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
         local value = readObjectValue(item, key)
-        if typeof(value) == "Instance" and value:IsA("Player") then return value == player end
-        if type(value) == "number" and value > 0 then return value == player.UserId end
+        if typeof(value) == "Instance" and value:IsA("Player") then
+            return value == player, true
+        end
+        if type(value) == "number" and value > 0 then
+            return value == player.UserId, true
+        end
         if type(value) == "string" and value ~= "" then
             local numeric = tonumber(value)
-            if numeric and numeric > 0 then return numeric == player.UserId end
+            if numeric and numeric > 0 then return numeric == player.UserId, true end
             if string.lower(value) == string.lower(player.Name)
                 or string.lower(value) == string.lower(player.DisplayName) then
-                return true
+                return true, true
             end
             local ownerPlayer = Players:FindFirstChild(value)
-            if ownerPlayer then return ownerPlayer == player end
+            if ownerPlayer then return ownerPlayer == player, true end
         end
     end
     -- Older drops expose no owner metadata. They are still safe to touch; the
     -- server remains authoritative and simply ignores another player's drop.
-    return true
+    return true, false
 end
 
 function lootCollector:QueueItem(item, kind)
-    if not item or not item.Parent or not self:IsEnabled(kind) or self.Entries[item] then return end
+    if not item or not item.Parent or not self:IsEnabled(kind)
+        or self.Entries[item] or self.Ignored[item] then return end
+    local ownerAllowed, ownerResolved = self:OwnerAllowed(item)
+    if ownerResolved and not ownerAllowed then
+        self.Ignored[item] = true
+        self.Stats.Foreign = self.Stats.Foreign + 1
+        return
+    end
     local entry = {
         Item = item,
         Kind = kind,
@@ -3409,7 +3445,28 @@ function lootCollector:QueueItem(item, kind)
         Attempts = 0,
         CreatedAt = os.clock(),
         NextAt = 0,
+        OwnerChecked = ownerResolved,
     }
+    -- Hide the first physical primitive immediately in ChildAdded. Full visual
+    -- stripping and touch happen in the budgeted drain loop, but a large orb
+    -- burst no longer remains rendered while waiting behind the queue.
+    local primed, part = pcall(function()
+        local candidate = item:IsA("BasePart") and item
+            or item:FindFirstChildWhichIsA("BasePart", true)
+        if candidate then
+            candidate.CanCollide = false
+            candidate.Massless = true
+            candidate.Transparency = 1
+            for _, visual in ipairs(candidate:GetChildren()) do
+                if visual:IsA("ParticleEmitter") or visual:IsA("Trail")
+                    or visual:IsA("Beam") then
+                    visual.Enabled = false
+                end
+            end
+        end
+        return candidate
+    end)
+    if primed then entry.Part = part else self.Stats.Errors = self.Stats.Errors + 1 end
     self.Entries[item] = entry
     self.Pending = self.Pending + 1
     self.Stats.Seen = self.Stats.Seen + 1
@@ -3420,7 +3477,8 @@ function lootCollector:StripVisual(entry)
     if entry.Stripped then return entry.Part end
     entry.Stripped = true
     local item = entry.Item
-    local part = item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true)
+    local part = entry.Part
+        or (item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true))
     entry.Part = part
     local ok = pcall(function()
         for _, descendant in ipairs(item:GetDescendants()) do
@@ -3450,8 +3508,10 @@ function lootCollector:Touch(entry, root, now)
     if not item or not item.Parent then self:Forget(entry); return end
     if not self:IsEnabled(entry.Kind) then self:Forget(entry); return end
     if not entry.OwnerChecked then
-        entry.OwnerChecked = true
-        if not self:OwnerAllowed(item) then
+        local allowed, resolved = self:OwnerAllowed(item)
+        entry.OwnerChecked = resolved or now - entry.CreatedAt >= 0.75
+        if resolved and not allowed then
+            self.Ignored[item] = true
             self.Stats.Foreign = self.Stats.Foreign + 1
             self:Forget(entry)
             return
@@ -3483,14 +3543,18 @@ function lootCollector:Touch(entry, root, now)
     end
 
     if not entry.Active or not item.Parent then self:Forget(entry); return end
-    if entry.Attempts >= 14 or now - entry.CreatedAt >= 12 then
+    if entry.Attempts >= 8 or now - entry.CreatedAt >= 12 then
+        self.Ignored[item] = true
         self.Stats.Expired = self.Stats.Expired + 1
         self:Forget(entry)
         return
     end
-    local delaySeconds = entry.Attempts <= 1 and 0.06
-        or entry.Attempts == 2 and 0.12
-        or entry.Attempts <= 5 and 0.28 or 0.7
+    -- A first touch normally takes one network RTT to disappear. Retrying at
+    -- 60 ms created several duplicate touches per drop and multiplied traffic
+    -- across crowded clients; first retry now waits for that acknowledgement.
+    local delaySeconds = entry.Attempts <= 1 and 0.3
+        or entry.Attempts == 2 and 0.7
+        or entry.Attempts <= 4 and 1.2 or 2
     entry.NextAt = now + delaySeconds
     self.Stats.Retried = self.Stats.Retried + 1
     self:Push("Retry", entry)
@@ -3500,7 +3564,16 @@ function lootCollector:Scan(kind)
     local binding = self.Bindings[kind]
     local folder = binding and binding.Folder
     if not folder or not self:IsEnabled(kind) then return end
-    for _, item in ipairs(folder:GetChildren()) do self:QueueItem(item, kind) end
+    local children = folder:GetChildren()
+    local count = #children
+    if count == 0 then self.ScanCursor[kind] = 1; return end
+    local cursor = math.clamp(tonumber(self.ScanCursor[kind]) or 1, 1, count)
+    local scanLimit = math.min(count, 512)
+    for offset = 0, scanLimit - 1 do
+        local index = ((cursor + offset - 1) % count) + 1
+        self:QueueItem(children[index], kind)
+    end
+    self.ScanCursor[kind] = ((cursor + scanLimit - 1) % count) + 1
 end
 
 function lootCollector:Bind(kind, folder)
@@ -3512,7 +3585,10 @@ function lootCollector:Bind(kind, folder)
         end
     end
     self.Bindings[kind] = nil
+    self.ScanCursor[kind] = 1
+    self.Enabled[kind] = nil
     if not folder then return end
+    self.ScanWarmupUntil = math.max(self.ScanWarmupUntil, os.clock() + 4)
 
     local binding = { Folder = folder, Connections = {} }
     binding.Connections[1] = track(folder.ChildAdded:Connect(function(item)
@@ -3522,7 +3598,6 @@ function lootCollector:Bind(kind, folder)
         self:Forget(self.Entries[item])
     end))
     self.Bindings[kind] = binding
-    self:Scan(kind)
 end
 
 function lootCollector:RefreshBindings(now)
@@ -3534,6 +3609,7 @@ function lootCollector:RefreshBindings(now)
         if self.Enabled[kind] ~= enabled then
             self.Enabled[kind] = enabled
             if enabled then
+                self.ScanWarmupUntil = math.max(self.ScanWarmupUntil, now + 4)
                 self:Scan(kind)
             else
                 local disabledEntries = {}
@@ -3545,7 +3621,9 @@ function lootCollector:RefreshBindings(now)
         end
     end
     if now >= self.NextSweepAt then
-        self.NextSweepAt = now + 4 + ((tonumber(player.UserId) or 0) % 11) * 0.07
+        local interval = now < self.ScanWarmupUntil and 0.65 or 3.5
+        self.NextSweepAt = now + interval
+            + ((tonumber(player.UserId) or 0) % 11) * 0.015
         if config.Orbs then self:Scan("Orbs") end
         if config.Lootbags then self:Scan("Lootbags") end
     end
@@ -3554,9 +3632,16 @@ end
 function lootCollector:ProcessFrame(root, now)
     local backlog = self.Pending
     if backlog <= 0 then return end
-    local itemLimit = backlog >= 512 and 160 or backlog >= 128 and 96 or 48
-    local timeBudget = backlog >= 512 and 0.0035 or backlog >= 128 and 0.0025 or 0.0015
-    local deadline = now + timeBudget
+    local readyBacklog = self:QueueSpan("Ready")
+    local itemLimit = readyBacklog >= 512 and 512
+        or readyBacklog >= 128 and 256
+        or readyBacklog >= 32 and 128 or 64
+    local timeBudget = readyBacklog >= 512 and 0.006
+        or readyBacklog >= 128 and 0.0045
+        or readyBacklog >= 32 and 0.003 or 0.002
+    -- Start the budget after binding/scanning work. Using the Heartbeat's old
+    -- timestamp could consume the whole deadline before pickup began.
+    local deadline = os.clock() + timeBudget
     local processed = 0
 
     while processed < itemLimit and os.clock() < deadline do
@@ -3566,15 +3651,21 @@ function lootCollector:ProcessFrame(root, now)
         processed = processed + 1
     end
 
+    -- Never let retries delay a fresh drop. Once the first-touch lane is empty,
+    -- inspect only a small retry batch so ten clients cannot amplify stale
+    -- foreign/replicated drops into a touch storm.
+    if self:QueueSpan("Ready") > 0 then return end
     local retryChecks = self:QueueSpan("Retry")
-    while processed < itemLimit and retryChecks > 0 and os.clock() < deadline do
+    local retryLimit = math.min(32, math.max(itemLimit - processed, 0))
+    local retried = 0
+    while retried < retryLimit and retryChecks > 0 and os.clock() < deadline do
         retryChecks = retryChecks - 1
         local entry = self:Pop("Retry")
         if not entry then break end
         local current = os.clock()
         if current >= (entry.NextAt or 0) then
             self:Touch(entry, root, current)
-            processed = processed + 1
+            retried = retried + 1
         else
             self:Push("Retry", entry)
         end
@@ -3583,7 +3674,9 @@ end
 
 function lootCollector:Status()
     return string.format(
-        "Event queue: %d pending | touched: %d | retries: %d\nExpired: %d | foreign skipped: %d | local errors: %d",
+        "Aggressive drain: %d ready | %d retry | %d pending\nTouched: %d | retries: %d | expired: %d | foreign: %d | errors: %d",
+        self:QueueSpan("Ready"),
+        self:QueueSpan("Retry"),
         self.Pending,
         self.Stats.Touched,
         self.Stats.Retried,
@@ -3938,13 +4031,13 @@ uiStageYield("diamond controls")
 UI.LootHero = UI.LootTab:Section({ Title = "Local Pickup Layer", Box = true, Opened = true })
 UI.LootHero:Paragraph({
     Title = "FAST COLLECTION",
-    Desc = "Moves local drops to the character while server-side pet assignments continue uninterrupted.",
+    Desc = "Fresh drops are hidden immediately and drained before bounded retries, keeping crowded zones responsive.",
 })
 UI.LootHero:Toggle({
     Flag = "collect_orbs",
     Title = "Collect Orbs",
-    Desc = "Event-driven queue: every new orb gets a fair next-frame pickup attempt",
-    Value = false,
+    Desc = "Enabled by default: first-touch priority drains dense orb bursts with a frame budget",
+    Value = true,
     Callback = function(value)
         config.Orbs = value == true
         lootCollector.NextBindingAt = 0
@@ -3953,8 +4046,8 @@ UI.LootHero:Toggle({
 UI.LootHero:Toggle({
     Flag = "collect_lootbags",
     Title = "Collect Lootbags",
-    Desc = "Fair queue with bounded retries; persistent old bags cannot starve new drops",
-    Value = false,
+    Desc = "Enabled by default: new bags outrank retries and explicit foreign owners are skipped",
+    Value = true,
     Callback = function(value)
         config.Lootbags = value == true
         lootCollector.NextBindingAt = 0
@@ -3962,7 +4055,7 @@ UI.LootHero:Toggle({
 })
 statusViews.Loot = UI.LootHero:Paragraph({
     Title = "Pickup Queue Health",
-    Desc = "Event collector is idle; enable Orbs or Lootbags to start it.",
+    Desc = "Collector starts enabled and is binding the live Orbs/Lootbags folders.",
 })
 uiStageYield("loot controls")
 
