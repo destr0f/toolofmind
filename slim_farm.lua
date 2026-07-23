@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.2"
+local VERSION = "1.4.1-dev.3"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2130,42 +2130,43 @@ local function runtimePetCounts(petIds)
 end
 
 local statusViews = {}
-function statusViews.Set(key, text)
+local statusSetters = {}
+function statusSetters.Set(key, text)
     local view = statusViews[key]
     if view then pcall(function() view:SetDesc(text) end) end
 end
-function statusViews.Farm(text)
-    statusViews.Set("Farm", text)
+function statusSetters.Farm(text)
+    statusSetters.Set("Farm", text)
 end
-function statusViews.HealthText(text)
-    statusViews.Set("Health", text)
+function statusSetters.Health(text)
+    statusSetters.Set("Health", text)
 end
-function statusViews.RateText(text)
-    statusViews.Set("Rate", text)
+function statusSetters.Rate(text)
+    statusSetters.Set("Rate", text)
 end
-function statusViews.Diamond(text)
-    statusViews.Set("Diamond", text)
+function statusSetters.Diamond(text)
+    statusSetters.Set("Diamond", text)
 end
-function statusViews.Gold(text)
-    statusViews.Set("Gold", text)
+function statusSetters.Gold(text)
+    statusSetters.Set("Gold", text)
 end
-function statusViews.Rainbow(text)
-    statusViews.Set("Rainbow", text)
+function statusSetters.Rainbow(text)
+    statusSetters.Set("Rainbow", text)
 end
-function statusViews.DarkMatter(text)
-    statusViews.Set("DarkMatter", text)
+function statusSetters.DarkMatter(text)
+    statusSetters.Set("DarkMatter", text)
 end
-function statusViews.Egg(text)
-    statusViews.Set("Egg", text)
+function statusSetters.Egg(text)
+    statusSetters.Set("Egg", text)
 end
-function statusViews.EggCatalog(text)
-    statusViews.Set("EggCatalog", text)
+function statusSetters.EggCatalog(text)
+    statusSetters.Set("EggCatalog", text)
 end
-function statusViews.Boost(text)
-    statusViews.Set("Boost", text)
+function statusSetters.Boost(text)
+    statusSetters.Set("Boost", text)
 end
-function statusViews.Routes(text)
-    statusViews.Set("Routes", text)
+function statusSetters.Routes(text)
+    statusSetters.Set("Routes", text)
 end
 local function getRewardSave()
     if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
@@ -2266,12 +2267,12 @@ local refreshEggDropdown
 
 local function stopAutoEggModule(statusText)
     if autoEggController then pcall(autoEggController, "stop") end
-    if statusText then statusViews.Egg(statusText) end
+    if statusText then statusSetters.Egg(statusText) end
 end
 
 local function disableAutoEgg(reason)
     config.AutoEgg = false
-    statusViews.Egg(tostring(reason or "Auto hatch stopped by its safety controller"))
+    statusSetters.Egg(tostring(reason or "Auto hatch stopped by its safety controller"))
     task.defer(function()
         if running() and autoEggToggleControl and type(autoEggToggleControl.Set) == "function" then
             pcall(function() autoEggToggleControl:Set(false) end)
@@ -2292,7 +2293,7 @@ local function ensureAutoEggModule()
     local controller, problem = loadRemoteController(
         AUTO_EGG_MODULE_URL,
         "auto egg module",
-        statusViews.Egg
+        statusSetters.Egg
     )
     autoEggLoading = false
     if not controller then
@@ -2345,7 +2346,7 @@ local function startAutoEggModule()
         ReleaseOperation = releaseOperation,
         CancelOperation = cancelOperation,
         OperationOwner = "AutoEgg",
-        SetStatus = statusViews.Egg,
+        SetStatus = statusSetters.Egg,
         Trace = trace,
         Disable = disableAutoEgg,
     }
@@ -2361,19 +2362,19 @@ local machineModules = {
         URL = RAW_MODULE_BASE .. "gold_machine_module.lua",
         ConfigKeys = { "AutoGoldenGalaxyFox" },
         Label = "gold machine",
-        SetStatus = statusViews.Gold,
+        SetStatus = statusSetters.Gold,
     },
     Rainbow = {
         URL = RAW_MODULE_BASE .. "rainbow_machine_module.lua",
         ConfigKeys = { "AutoRainbowGalaxyFox" },
         Label = "rainbow machine",
-        SetStatus = statusViews.Rainbow,
+        SetStatus = statusSetters.Rainbow,
     },
     DarkMatter = {
         URL = RAW_MODULE_BASE .. "dark_matter_module.lua",
         ConfigKeys = { "AutoDarkMatterGalaxyFox", "AutoClaimDarkMatter" },
         Label = "dark matter machine",
-        SetStatus = statusViews.DarkMatter,
+        SetStatus = statusSetters.DarkMatter,
     },
 }
 
@@ -2460,7 +2461,7 @@ end
 
 local function stopBoostModule(statusText)
     if boostController then pcall(boostController, "stop") end
-    if statusText then statusViews.Boost(statusText) end
+    if statusText then statusSetters.Boost(statusText) end
 end
 
 local function startBoostModule()
@@ -2470,12 +2471,12 @@ local function startBoostModule()
         local controller, problem = loadRemoteController(
             BOOST_MODULE_URL,
             "auto boost module",
-            statusViews.Boost
+            statusSetters.Boost
         )
         if not controller then
             boostLoadProblem = tostring(problem)
             boostLoading = false
-            statusViews.Boost("Boost module could not be loaded; no request was sent: " .. boostLoadProblem)
+            statusSetters.Boost("Boost module could not be loaded; no request was sent: " .. boostLoadProblem)
             return
         end
         boostController = controller
@@ -2510,13 +2511,13 @@ local function startBoostModule()
         CancelOperation = cancelOperation,
         OperationStatus = operationGateStatus,
         OperationOwner = "Boosts",
-        SetStatus = statusViews.Boost,
+        SetStatus = statusSetters.Boost,
         Trace = trace,
     }
     local called, accepted, problem = pcall(boostController, "start", context)
     if not called or accepted == false then
         local reason = not called and accepted or problem
-        statusViews.Boost("Boost worker failed to start; no request was sent: " .. tostring(reason))
+        statusSetters.Boost("Boost worker failed to start; no request was sent: " .. tostring(reason))
         trace("auto boost module", "start failed: " .. tostring(reason))
     end
 end
@@ -2535,16 +2536,16 @@ local function refreshRouteHealth()
     if routeHealthBusy then return end
     routeHealthBusy = true
 
-    statusViews.Routes("Loading the small diagnostics coordinator in the serial module lane...")
+    statusSetters.Routes("Loading the small diagnostics coordinator in the serial module lane...")
     local controller, loadProblem = ensureSupportModule()
     local checked, result = false, loadProblem
     if controller then
         checked, result = pcall(controller, "route-health", supportContext)
     end
     if checked and type(result) == "string" then
-        statusViews.Routes(result)
+        statusSetters.Routes(result)
     else
-        statusViews.Routes("Local route preflight recovered from an error: " .. tostring(result)
+        statusSetters.Routes("Local route preflight recovered from an error: " .. tostring(result)
             .. "\nNo server request was sent. Press Refresh to retry.")
         trace("route preflight", tostring(result))
     end
@@ -2605,7 +2606,7 @@ local function runDiamondPackCheck()
     diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
     diamondPackBusy = false
     trace("diamond pack", status)
-    statusViews.Diamond(status .. "\nNext local check in 3 minutes.")
+    statusSetters.Diamond(status .. "\nNext local check in 3 minutes.")
 end
 
 local function allocatorPass()
@@ -2872,7 +2873,7 @@ refreshEggDropdown = function(force)
     if not force and UI.LastEggRefreshAt and now - UI.LastEggRefreshAt < 0.6 then return end
     UI.LastEggRefreshAt = now
     if not autoEggController then
-        statusViews.EggCatalog("Egg catalog worker is loading; no server request is involved.")
+        statusSetters.EggCatalog("Egg catalog worker is loading; no server request is involved.")
         return
     end
     local called, options, selectedLabel, selectedId, summary, labelMap = pcall(autoEggController, "catalog", {
@@ -2885,7 +2886,7 @@ refreshEggDropdown = function(force)
         FormatNumber = formatRateNumber,
     })
     if not called or type(options) ~= "table" then
-        statusViews.EggCatalog("Local egg catalog error: " .. tostring(called and summary or options))
+        statusSetters.EggCatalog("Local egg catalog error: " .. tostring(called and summary or options))
         return
     end
     config.EggName = selectedId ~= "" and selectedId or nil
@@ -2894,7 +2895,7 @@ refreshEggDropdown = function(force)
     for label, eggId in pairs(eggLabelToId) do eggIdToLabel[eggId] = label end
     local signature = tostring(config.EggScope) .. "|" .. tostring(selectedLabel)
         .. "|" .. table.concat(options, "\0")
-    statusViews.EggCatalog(summary)
+    statusSetters.EggCatalog(summary)
     if not UI.EggDropdown or (not force and signature == UI.LastEggSignature) then return end
     UI.LastEggSignature = signature
     pcall(function() UI.EggDropdown:Refresh(options) end)
@@ -3015,7 +3016,7 @@ UI.PerformanceSection:Dropdown({
         if config.TrackedCurrency == value then return end
         config.TrackedCurrency = value
         currencyMonitor:Reset()
-        statusViews.RateText("Reading exact balances; no orb or visual-event estimates are used...")
+        statusSetters.Rate("Reading exact balances; no orb or visual-event estimates are used...")
     end,
 })
 statusViews.Rate = UI.PerformanceSection:Paragraph({
@@ -3047,15 +3048,15 @@ do
             StartAutoEgg = startAutoEggModule,
             StopAutoEgg = stopAutoEggModule,
             EggIdForLabel = function(label) return eggLabelToId[label] end,
-            SetEggCatalogStatus = statusViews.EggCatalog,
+            SetEggCatalogStatus = statusSetters.EggCatalog,
             RefreshRoutes = refreshRouteHealth,
-            SetRouteStatus = statusViews.Routes,
+            SetRouteStatus = statusSetters.Routes,
             GetMachinePetCatalog = getMachinePetCatalog,
             StartMachine = function(kind) machineModules:Start(kind) end,
             StopMachine = function(kind) machineModules:Stop(kind) end,
-            SetGoldStatus = statusViews.Gold,
-            SetRainbowStatus = statusViews.Rainbow,
-            SetDarkMatterStatus = statusViews.DarkMatter,
+            SetGoldStatus = statusSetters.Gold,
+            SetRainbowStatus = statusSetters.Rainbow,
+            SetDarkMatterStatus = statusSetters.DarkMatter,
             ReconcileBoost = reconcileBoostModule,
             BoostEnabled = boostAutomationEnabled,
             StartBoost = startBoostModule,
@@ -3085,9 +3086,9 @@ UI.DiamondSection:Toggle({
         config.AutoTechDiamondPack = value == true
         diamondPackNextCheck = 0
         if config.AutoTechDiamondPack then
-            statusViews.Diamond("Enabled. A local balance check will run now; below 1T no request is sent.")
+            statusSetters.Diamond("Enabled. A local balance check will run now; below 1T no request is sent.")
         else
-            statusViews.Diamond("Disabled. No purchase requests will be sent.")
+            statusSetters.Diamond("Disabled. No purchase requests will be sent.")
         end
     end,
 })
@@ -3415,7 +3416,7 @@ task.spawn(function()
                 diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
                 local status = "Worker error: " .. tostring(problem)
                 trace("diamond pack", status)
-                statusViews.Diamond(status .. "\nNext retry in 3 minutes.")
+                statusSetters.Diamond(status .. "\nNext retry in 3 minutes.")
             end
         end
     end
@@ -3526,7 +3527,7 @@ task.spawn(function()
 
         if rateText ~= lastRateText then
             lastRateText = rateText
-            statusViews.RateText(rateText)
+            statusSetters.Rate(rateText)
         end
     end
 end)
@@ -3547,7 +3548,7 @@ task.spawn(function()
         local runtimeLine = runtimeActive ~= nil
             and string.format("Runtime: %d active | %d ready | %d unseen", runtimeActive, runtimeIdle, runtimeMissing)
             or "Runtime: discovering game pet state"
-        statusViews.Farm(string.format(
+        statusSetters.Farm(string.format(
             "%s  >  %s\nTargets: %d | reserved: %d/%d | local idle: %d\n%s",
             tostring(world or "unknown"),
             tostring(zone or "unknown"),
@@ -3557,7 +3558,7 @@ task.spawn(function()
             math.max(equippedCount - assignedCount, 0),
             runtimeLine
         ))
-        statusViews.HealthText(string.format(
+        statusSetters.Health(string.format(
             "Network: %s | pet controller: %s | allocator: %s\nRecoveries: %d | last: %s\nDriver: %s",
             networkState,
             controllerState,
