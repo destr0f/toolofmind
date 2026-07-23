@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.20"
+local VERSION = "1.4.1-dev.21"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -961,7 +961,9 @@ function currencyMonitor:Update(currencyName, currentAmount, now)
             LastBalance = currentAmount,
             TotalEarned = 0,
             TotalSpent = 0,
-            History = { { Time = now, Earned = 0 } },
+            WindowStartedAt = now,
+            WindowEarned = 0,
+            WindowSeconds = 0,
         }
         self.Samples[currencyName] = sample
         return sample
@@ -970,6 +972,7 @@ function currencyMonitor:Update(currencyName, currentAmount, now)
     local delta = currentAmount - sample.LastBalance
     if delta > 0 then
         sample.TotalEarned = sample.TotalEarned + delta
+        sample.WindowEarned = (sample.WindowEarned or 0) + delta
         sample.LastGainAt = now
         sample.LastGain = delta
     elseif delta < 0 then
@@ -978,12 +981,13 @@ function currencyMonitor:Update(currencyName, currentAmount, now)
     end
     sample.LastBalance = currentAmount
 
-    local history = sample.History
-    history[#history + 1] = { Time = now, Earned = sample.TotalEarned }
-    while #history > 2 and history[2].Time <= now - 60 do table.remove(history, 1) end
-    local base = history[1]
-    sample.WindowSeconds = math.max(0, now - base.Time)
-    sample.WindowEarned = math.max(0, sample.TotalEarned - base.Earned)
+    local windowAge = math.max(0, now - (sample.WindowStartedAt or now))
+    if windowAge >= 60 then
+        sample.WindowStartedAt = now
+        sample.WindowEarned = math.max(delta, 0)
+        windowAge = 0
+    end
+    sample.WindowSeconds = windowAge
     sample.SessionSeconds = math.max(0, now - sample.StartedAt)
     sample.PerMinute = sample.SessionSeconds > 0
         and sample.TotalEarned * 60 / sample.SessionSeconds or 0
@@ -1033,19 +1037,17 @@ local function getZoneOptions(worldChoice)
     return options, resolvedWorld
 end
 
-local peakHealth = {}
 local snapshotBusy = false
-local nextSnapshotAt = 0
+local snapshotPrimed = false
 local coinSignalsReady = false
 local coinGeneration = 0
-local coinEventRevision = 0
-local removalRevisions = {}
-local removedUntil = {}
+local coinMutationSerial = 0
 local coinIndex = {
     Revision = 0,
     Models = {},
     IdByModel = setmetatable({}, { __mode = "k" }),
     Folder = nil,
+    ScannedFolder = nil,
     Connections = {},
     Cache = {
         Signature = nil,
@@ -1116,32 +1118,21 @@ local function applyCoinData(rawId, data, fromEvent)
         selectionChanged = true
     end
     if health ~= nil then record.Health = health end
-    if maxHealth ~= nil and tonumber(record.MaxHealth) ~= maxHealth then
-        record.MaxHealth = maxHealth
-        selectionChanged = true
-    end
+    local previousMax = tonumber(record.MaxHealth) or 0
+    record.MaxHealth = math.max(previousMax, maxHealth or 0, health or 0)
+    if record.MaxHealth ~= previousMax then selectionChanged = true end
     record.Health = tonumber(record.Health) or 0
     if previousHealth ~= nil and ((previousHealth > 0) ~= (record.Health > 0)) then
         selectionChanged = true
     end
-    local previousPeak = peakHealth[id] or 0
-    local previousMax = tonumber(record.MaxHealth) or 0
-    peakHealth[id] = math.max(peakHealth[id] or 0, record.Health, tonumber(record.MaxHealth) or 0)
-    record.MaxHealth = math.max(tonumber(record.MaxHealth) or 0, peakHealth[id], record.Health)
-    if peakHealth[id] ~= previousPeak or record.MaxHealth ~= previousMax then selectionChanged = true end
     record.Removed = false
     record.FromServer = true
-    if fromEvent then
-        coinEventRevision = coinEventRevision + 1
-        record.EventRevision = coinEventRevision
-        removalRevisions[id] = nil
-        removedUntil[id] = nil
-    end
 
     local pets = data.pets or data.Pets
     if pets ~= nil then record.Pets = normalizePetSet(pets) end
     local farmingPets = data.petsFarming or data.PetsFarming
     if farmingPets ~= nil then record.PetsFarming = normalizePetSet(farmingPets) end
+    if fromEvent then coinMutationSerial = coinMutationSerial + 1 end
     if selectionChanged then coinIndex:Invalidate() end
     if fromEvent and type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     return record
@@ -1149,10 +1140,7 @@ end
 
 local function removeCoin(rawId, fromEvent)
     local id = tostring(rawId)
-    if fromEvent then
-        coinEventRevision = coinEventRevision + 1
-        removalRevisions[id] = coinEventRevision
-    end
+    coinMutationSerial = coinMutationSerial + 1
     local record = coinRecords[id]
     if record then
         record.Health = 0
@@ -1161,30 +1149,26 @@ local function removeCoin(rawId, fromEvent)
         record.PetsFarming = {}
     end
     coinRecords[id] = nil
-    peakHealth[id] = nil
     local model = coinIndex.Models[id]
     if model then coinIndex.IdByModel[model] = nil end
     coinIndex.Models[id] = nil
-    removedUntil[id] = os.clock() + 0.75
     coinIndex:Invalidate()
     if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(id) end
     if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
 end
 
-local nextWorkspaceScanAt = 0
-local WORKSPACE_RECONCILE_INTERVAL = 7.5 + ((tonumber(player.UserId) or 0) % 19) * 0.13
 function coinIndex:DisconnectFolder()
     for _, connection in ipairs(self.Connections) do
         pcall(function() connection:Disconnect() end)
     end
     table.clear(self.Connections)
     self.Folder = nil
+    self.ScannedFolder = nil
 end
 
 function coinIndex:IndexModel(model, refreshHealth)
     if not model then return nil end
     local id = tostring(readObjectValue(model, "ID") or model.Name)
-    if removedUntil[id] ~= nil then return nil end
 
     local record = coinRecords[id] or { Id = id, Pets = {} }
     local created = coinRecords[id] == nil
@@ -1225,11 +1209,9 @@ function coinIndex:IndexModel(model, refreshHealth)
             else
                 record.Health = health
             end
-            local previousPeak = peakHealth[id] or 0
             local previousMax = tonumber(record.MaxHealth) or 0
-            peakHealth[id] = math.max(previousPeak, health)
-            record.MaxHealth = math.max(previousMax, peakHealth[id])
-            if peakHealth[id] ~= previousPeak or record.MaxHealth ~= previousMax then
+            record.MaxHealth = math.max(previousMax, health)
+            if record.MaxHealth ~= previousMax then
                 selectionChanged = true
             end
             if previousHealth ~= nil and ((previousHealth > 0) ~= (record.Health > 0)) then
@@ -1258,85 +1240,56 @@ function coinIndex:WatchFolder(folder)
         if not id then return end
         self.IdByModel[model] = nil
         if self.Models[id] == model then self.Models[id] = nil end
-        local record = coinRecords[id]
-        if record and record.Model == model then
-            record.Model = nil
-            record.WorkspaceIndexed = nil
-            record.NextModelLookupAt = nil
-            if not record.FromServer then removeCoin(id, false) end
-        end
+        removeCoin(id, false)
     end)
     return true
 end
 
-local function refreshWorkspaceCoins(force)
-    local now = os.clock()
+local function refreshWorkspaceCoins()
     local things = workspace:FindFirstChild("__THINGS")
     local folder = things and things:FindFirstChild("Coins")
     local folderChanged = coinIndex:WatchFolder(folder)
-    if folderChanged then force = true end
-    if not force and now < nextWorkspaceScanAt then return end
-    nextWorkspaceScanAt = now + WORKSPACE_RECONCILE_INTERVAL
     if not folder then return end
-
-    for id, expiresAt in pairs(removedUntil) do
-        if now >= expiresAt then removedUntil[id] = nil end
-    end
-    local seen = {}
+    if not folderChanged and coinIndex.ScannedFolder == folder then return end
+    coinIndex.ScannedFolder = folder
     for _, model in ipairs(folder:GetChildren()) do
-        local id = coinIndex:IndexModel(model, true)
-        if id then seen[id] = true end
+        coinIndex:IndexModel(model, true)
     end
-
-    local staleIds = {}
-    for id, record in pairs(coinRecords) do
-        if record.Model and not seen[id] and not record.FromServer then
-            table.insert(staleIds, id)
-        end
-    end
-    for _, id in ipairs(staleIds) do removeCoin(id) end
 end
 
 local function refreshCoinSnapshot()
-    if snapshotBusy then return end
+    if snapshotBusy or snapshotPrimed then return end
     local network = networkReady()
     if not network then return end
     snapshotBusy = true
     local generation = coinGeneration
-    local revisionAtStart = coinEventRevision
+    local serialAtStart = coinMutationSerial
     local ok, response = pcall(network.Invoke, "Get Coins")
     if generation ~= coinGeneration then
         snapshotBusy = false
-        nextSnapshotAt = 0
         return
     end
-    if ok and type(response) == "table" then
+    if ok and type(response) == "table"
+        and coinMutationSerial == serialAtStart then
         local seen = {}
         for id, data in pairs(response) do
             if type(data) == "table" then
                 id = tostring(id)
-                local removalRevision = removalRevisions[id] or 0
-                local record = coinRecords[id]
-                local recordRevision = record and (record.EventRevision or 0) or 0
-                if removalRevision <= revisionAtStart then
-                    seen[id] = true
-                    removalRevisions[id] = nil
-                    if recordRevision <= revisionAtStart then applyCoinData(id, data, false) end
-                end
+                seen[id] = true
+                applyCoinData(id, data, false)
             end
         end
+        local stale = {}
         for id, record in pairs(coinRecords) do
-            if record.FromServer and not seen[id] and (record.EventRevision or 0) <= revisionAtStart then
-                removeCoin(id, false)
-            end
+            if record.FromServer and not seen[id] then stale[#stale + 1] = id end
         end
-        -- Reconciliation is a safety net; live coin events remain the primary
-        -- path. A stable per-player phase offset prevents ten clients in one
-        -- area from issuing Get Coins on the same tick.
-        nextSnapshotAt = os.clock() + 4.5 + ((tonumber(player.UserId) or 0) % 17) * 0.11
-    else
-        nextSnapshotAt = os.clock() + 0.55 + ((tonumber(player.UserId) or 0) % 7) * 0.04
+        for _, id in ipairs(stale) do removeCoin(id, false) end
+        if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     end
+    -- This is an initial metadata snapshot, not a reconciliation loop. If a
+    -- live event raced the response, discard the stale snapshot and continue
+    -- from the workspace/event registry instead of invoking Get Coins again.
+    snapshotPrimed = true
     snapshotBusy = false
 end
 
@@ -1366,26 +1319,22 @@ local function connectCoinSignals()
             if (value or 0) <= 0 then
                 removeCoin(id, true)
             else
-                coinEventRevision = coinEventRevision + 1
                 record.Health = value
-                record.EventRevision = coinEventRevision
+                coinMutationSerial = coinMutationSerial + 1
             end
-        else
-            nextSnapshotAt = 0
+        elseif (tonumber(health) or 0) > 0 then
+            -- Absorb a missed creation event into the live registry. Repeating
+            -- Get Coins here would turn an event race into a reconciliation loop.
+            applyCoinData(id, { Health = health }, true)
         end
     end)
     connect("Update Coin Pets", function(id, pets)
         local record = coinRecords[tostring(id)]
         if record then
-            coinEventRevision = coinEventRevision + 1
             record.Pets = normalizePetSet(pets)
-            record.EventRevision = coinEventRevision
-            -- Other clients can produce dozens of occupancy updates per frame.
-            -- They affect the next free-pet choice but do not invalidate any
-            -- current lock, so the event-driven remove/health paths and the
-            -- recovering watchdog are sufficient without an allocator storm.
+            coinMutationSerial = coinMutationSerial + 1
         else
-            nextSnapshotAt = 0
+            applyCoinData(id, { Pets = pets }, true)
         end
     end)
     connect("Remove Coin", function(id) removeCoin(id, true) end)
@@ -1396,11 +1345,8 @@ local function connectCoinSignals()
             local worldChanged = signal.Fired("World Changed")
             track(worldChanged:Connect(function()
                 coinGeneration = coinGeneration + 1
-                coinEventRevision = 0
+                coinMutationSerial = coinMutationSerial + 1
                 table.clear(coinRecords)
-                table.clear(peakHealth)
-                table.clear(removalRevisions)
-                table.clear(removedUntil)
                 table.clear(coinIndex.Models)
                 table.clear(coinIndex.IdByModel)
                 table.clear(boundsCache)
@@ -1413,8 +1359,7 @@ local function connectCoinSignals()
                 nextZoneCheck = 0
                 cachedWorld = nil
                 nextWorldCheck = 0
-                nextWorkspaceScanAt = 0
-                nextSnapshotAt = 0
+                snapshotPrimed = false
                 if config.PetFarm and type(requestFarmReset) == "function" then
                     requestFarmReset("world changed")
                 end
@@ -1425,12 +1370,9 @@ local function connectCoinSignals()
 end
 
 local cachedPetIds = {}
-local nextPetScanAt = 0
+local petCacheValid = false
 local function getEquippedPetIds()
-    if os.clock() < nextPetScanAt then return cachedPetIds end
-    -- Equip/unequip signals invalidate this cache immediately. The one-second
-    -- fallback only covers game builds where either lifecycle signal is absent.
-    nextPetScanAt = os.clock() + 1
+    if petCacheValid then return cachedPetIds end
     local save
     if Library.Save and type(Library.Save.Get) == "function" then
         pcall(function() save = Library.Save.Get() end)
@@ -1443,12 +1385,12 @@ local function getEquippedPetIds()
     end
     table.sort(ids)
     cachedPetIds = ids
+    petCacheValid = true
     return cachedPetIds
 end
 
 local function recordAlive(record)
     if not record or record.Removed or (tonumber(record.Health) or 0) <= 0 then return false end
-    if os.clock() < (removedUntil[tostring(record.Id)] or 0) then return false end
     -- Animated/potato-mode models can be replaced locally while the server coin
     -- is still alive. Keep the authoritative record and reacquire its model.
     if record.Model and record.Model.Parent == nil then
@@ -1540,20 +1482,16 @@ end
 
 local petStates = {}
 local rejectedUntil = {}
-local releaseWait = {}
 local farmResetRunning = false
-local farmResetRequested = false
+local farmResetScheduled = false
 local farmResetReason = "startup"
 local farmSelectionSignature = nil
+local farmGeneration = 0
 local allocatorBusy = false
 local allocatorRequested = false
 local driverStatus = "waiting for first target"
 local idleRecoveryCount = 0
 local lastRecovery = "none"
-local controllerHandlers = {}
-local nextControllerLookup = {}
-local petRuntime = nil
-local runtimeDriverReady = false
 local petFarm = {
     Engine = nil,
     Loading = false,
@@ -1587,80 +1525,22 @@ local petFarm = {
     },
 }
 
-local function queuePetRelease(petId, now)
-    petStates[petId] = nil
-    releaseWait[petId] = {
-        ReadyAt = now,
-        ForceAt = now,
-    }
-end
-
 releaseAssignmentsForCoin = function(rawId)
     if rawId == nil then
+        farmGeneration = farmGeneration + 1
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
         table.clear(petStates)
         table.clear(rejectedUntil)
-        table.clear(releaseWait)
         return
     end
 
     local coinId = tostring(rawId)
-    local now = os.clock()
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId then
-            queuePetRelease(petId, now)
+            petStates[petId] = nil
         end
     end
     rejectedUntil[coinId] = nil
-end
-
-local function functionUpvalues(callback)
-    local values = {}
-    if type(callback) ~= "function" then return values end
-
-    local seenValues = {}
-    local seenReaders = {}
-    local bulkReaders = {
-        type(getupvalues) == "function" and getupvalues or nil,
-        debug and type(debug.getupvalues) == "function" and debug.getupvalues or nil,
-    }
-    for _, reader in next, bulkReaders do
-        if type(reader) == "function" and not seenReaders[reader] then
-            seenReaders[reader] = true
-            local ok, result = pcall(reader, callback)
-            if ok and type(result) == "table" then
-                for _, value in next, result do
-                    if value ~= nil and not seenValues[value] then
-                        seenValues[value] = true
-                        table.insert(values, value)
-                    end
-                end
-            end
-        end
-    end
-    if #values > 0 then return values end
-
-    local singleReaders = {
-        type(getupvalue) == "function" and getupvalue or nil,
-        debug and type(debug.getupvalue) == "function" and debug.getupvalue or nil,
-    }
-    table.clear(seenReaders)
-    for _, reader in next, singleReaders do
-        if type(reader) == "function" and not seenReaders[reader] then
-            seenReaders[reader] = true
-            for index = 1, 64 do
-                local ok, first, second = pcall(reader, callback, index)
-                if not ok or (first == nil and second == nil) then break end
-                local value
-                if second ~= nil then value = second else value = first end
-                if value ~= nil and not seenValues[value] then
-                    seenValues[value] = true
-                    table.insert(values, value)
-                end
-            end
-        end
-    end
-    return values
 end
 
 local function functionUpvalueAt(callback, index)
@@ -1710,19 +1590,20 @@ local function functionUpvalueAt(callback, index)
     return nil, "upvalue #" .. tostring(index) .. " is unavailable"
 end
 
-local commandRemoteCache = {}
-local commandRemoteSource = "Network.Invoke GetRemoteFunction upvalue #2"
-
 local function remoteSessionIndex(remote)
     if typeof(remote) ~= "Instance" then return nil end
     return table.find(ReplicatedStorage:GetChildren(), remote)
 end
 
+local commandRemoteCache = {}
+local commandRemoteSource = "Network.Invoke GetRemoteFunction upvalue #2"
+
 local function getCommandRemote(commandName)
     local cached = commandRemoteCache[commandName]
-    if typeof(cached) == "Instance" and cached:IsA("RemoteFunction")
-        and cached:IsDescendantOf(ReplicatedStorage) then
-        return cached, commandRemoteSource, remoteSessionIndex(cached), nil
+    local cachedRemote = type(cached) == "table" and cached.Remote or nil
+    if typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteFunction")
+        and cachedRemote:IsDescendantOf(ReplicatedStorage) then
+        return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
     commandRemoteCache[commandName] = nil
 
@@ -1748,9 +1629,14 @@ local function getCommandRemote(commandName)
         local remote = values[index]
         if typeof(remote) == "Instance" and remote:IsA("RemoteFunction")
             and remote:IsDescendantOf(ReplicatedStorage) then
-            commandRemoteCache[commandName] = remote
             local sourceName = commandRemoteSource .. " (" .. tostring(reader) .. ")"
-            return remote, sourceName, remoteSessionIndex(remote), nil
+            local sessionIndex = remoteSessionIndex(remote)
+            commandRemoteCache[commandName] = {
+                Remote = remote,
+                Source = sourceName,
+                SessionIndex = sessionIndex,
+            }
+            return remote, sourceName, sessionIndex, nil
         end
     end
 
@@ -1763,9 +1649,10 @@ local eventRemoteSource = "Network.Fired GetRemoteEvent upvalue"
 
 local function getEventRemote(commandName)
     local cached = eventRemoteCache[commandName]
-    if typeof(cached) == "Instance" and cached:IsA("RemoteEvent")
-        and cached:IsDescendantOf(ReplicatedStorage) then
-        return cached, eventRemoteSource, remoteSessionIndex(cached), nil
+    local cachedRemote = type(cached) == "table" and cached.Remote or nil
+    if typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
+        and cachedRemote:IsDescendantOf(ReplicatedStorage) then
+        return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
     eventRemoteCache[commandName] = nil
 
@@ -1779,20 +1666,30 @@ local function getEventRemote(commandName)
         local candidate, reader = functionUpvalueAt(network.Fired, index)
         if typeof(candidate) == "Instance" and candidate:IsA("RemoteEvent")
             and candidate:IsDescendantOf(ReplicatedStorage) then
-            eventRemoteCache[commandName] = candidate
-            eventRemoteSource = "Network.Fired direct RemoteEvent upvalue #" .. tostring(index)
+            local sourceName = "Network.Fired direct RemoteEvent upvalue #" .. tostring(index)
                 .. " (" .. tostring(reader) .. ")"
-            return candidate, eventRemoteSource, remoteSessionIndex(candidate), nil
+            local sessionIndex = remoteSessionIndex(candidate)
+            eventRemoteCache[commandName] = {
+                Remote = candidate,
+                Source = sourceName,
+                SessionIndex = sessionIndex,
+            }
+            return candidate, sourceName, sessionIndex, nil
         end
 
         if type(candidate) == "table" then
             local mapped = rawget(candidate, commandName)
             if typeof(mapped) == "Instance" and mapped:IsA("RemoteEvent")
                 and mapped:IsDescendantOf(ReplicatedStorage) then
-                eventRemoteCache[commandName] = mapped
-                eventRemoteSource = "Network.Fired RemoteEvent map upvalue #" .. tostring(index)
+                local sourceName = "Network.Fired RemoteEvent map upvalue #" .. tostring(index)
                     .. " (" .. tostring(reader) .. ")"
-                return mapped, eventRemoteSource, remoteSessionIndex(mapped), nil
+                local sessionIndex = remoteSessionIndex(mapped)
+                eventRemoteCache[commandName] = {
+                    Remote = mapped,
+                    Source = sourceName,
+                    SessionIndex = sessionIndex,
+                }
+                return mapped, sourceName, sessionIndex, nil
             end
         elseif type(candidate) == "function" then
             local called, first, second, third = pcall(candidate, commandName)
@@ -1802,10 +1699,15 @@ local function getEventRemote(commandName)
                     local remote = values[resultIndex]
                     if typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
                         and remote:IsDescendantOf(ReplicatedStorage) then
-                        eventRemoteCache[commandName] = remote
-                        eventRemoteSource = "Network.Fired GetRemoteEvent upvalue #" .. tostring(index)
+                        local sourceName = "Network.Fired GetRemoteEvent upvalue #" .. tostring(index)
                             .. " (" .. tostring(reader) .. ")"
-                        return remote, eventRemoteSource, remoteSessionIndex(remote), nil
+                        local sessionIndex = remoteSessionIndex(remote)
+                        eventRemoteCache[commandName] = {
+                            Remote = remote,
+                            Source = sourceName,
+                            SessionIndex = sessionIndex,
+                        }
+                        return remote, sourceName, sessionIndex, nil
                     end
                 end
             else
@@ -1822,9 +1724,10 @@ local fireRemoteSource = "Network.Fire GetRemoteEvent upvalue #2"
 
 local function getFireRemote(commandName)
     local cached = fireRemoteCache[commandName]
-    if typeof(cached) == "Instance" and cached:IsA("RemoteEvent")
-        and cached:IsDescendantOf(ReplicatedStorage) then
-        return cached, fireRemoteSource, remoteSessionIndex(cached), nil
+    local cachedRemote = type(cached) == "table" and cached.Remote or nil
+    if typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
+        and cachedRemote:IsDescendantOf(ReplicatedStorage) then
+        return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
     fireRemoteCache[commandName] = nil
 
@@ -1845,9 +1748,14 @@ local function getFireRemote(commandName)
     for _, remote in ipairs({ first, second, third }) do
         if typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
             and remote:IsDescendantOf(ReplicatedStorage) then
-            fireRemoteCache[commandName] = remote
             local sourceName = fireRemoteSource .. " (" .. tostring(reader) .. ")"
-            return remote, sourceName, remoteSessionIndex(remote), nil
+            local sessionIndex = remoteSessionIndex(remote)
+            fireRemoteCache[commandName] = {
+                Remote = remote,
+                Source = sourceName,
+                SessionIndex = sessionIndex,
+            }
+            return remote, sourceName, sessionIndex, nil
         end
     end
     return nil, fireRemoteSource, nil,
@@ -1956,193 +1864,11 @@ local function resetSupportCoordinator()
     if supportController then pcall(supportController, "reset", supportContext) end
 end
 
-local function runtimeTableScore(candidate)
-    if type(candidate) ~= "table" then return 0 end
-    local score, checked = 0, 0
-    for _, state in pairs(candidate) do
-        checked = checked + 1
-        if type(state) == "table" and state.uid ~= nil and state.physical ~= nil
-            and state.owner ~= nil and state.farming ~= nil then
-            score = score + 1
-        end
-        if checked >= 64 then break end
-    end
-    return score
-end
-
-local function inspectControllerHandler(handler)
-    if petRuntime then return end
-    local bestTable, bestScore = nil, 0
-    for _, value in ipairs(functionUpvalues(handler)) do
-        local functions = type(value) == "function" and { value } or {}
-        if type(value) == "table" then
-            local score = runtimeTableScore(value)
-            if score > bestScore then bestTable, bestScore = value, score end
-        end
-        for _, nested in ipairs(functions) do
-            for _, upvalue in ipairs(functionUpvalues(nested)) do
-                local score = runtimeTableScore(upvalue)
-                if score > bestScore then bestTable, bestScore = upvalue, score end
-            end
-        end
-    end
-    if bestScore > 0 then petRuntime = bestTable end
-end
-
-local function resolveControllerHandler(signalName)
-    local cached = controllerHandlers[signalName]
-    if type(cached) == "function" then return cached end
-    if os.clock() < (nextControllerLookup[signalName] or 0) then return nil end
-    nextControllerLookup[signalName] = os.clock() + 1
-
-    local getter = type(getconnections) == "function" and getconnections
-        or type(get_signal_cons) == "function" and get_signal_cons
-    local signal = Library and Library.Signal
-    if type(getter) ~= "function" or not signal or type(signal.Fired) ~= "function" then return nil end
-
-    local eventOk, event = pcall(signal.Fired, signalName)
-    if not eventOk or not event then return nil end
-    local listOk, list = pcall(getter, event)
-    if not listOk or type(list) ~= "table" then return nil end
-
-    local candidates, preferred = {}, nil
-    for _, connection in pairs(list) do
-        local functionOk, callback = pcall(function() return connection.Function end)
-        if functionOk and type(callback) == "function" then
-            table.insert(candidates, callback)
-            if debug and type(debug.info) == "function" then
-                local sourceOk, source = pcall(debug.info, callback, "s")
-                if sourceOk and string.find(string.lower(tostring(source)), "pets", 1, true) then
-                    preferred = callback
-                end
-            end
-        end
-    end
-
-    local handler = preferred or (#candidates == 1 and candidates[1] or nil)
-    if handler then
-        controllerHandlers[signalName] = handler
-        inspectControllerHandler(handler)
-        runtimeDriverReady = petRuntime ~= nil
-    end
-    return handler
-end
-
-local function getRecordModel(record)
-    if record and record.Model and record.Model.Parent then return record.Model end
-    if not record then return nil end
-    local id = tostring(record.Id)
-    local indexed = coinIndex.Models[id]
-    if indexed and indexed.Parent then
-        record.Model = indexed
-        record.NextModelLookupAt = nil
-        return indexed
-    end
-    local now = os.clock()
-    if now < (record.NextModelLookupAt or 0) then return nil end
-    record.NextModelLookupAt = now + 0.75
-    local things = workspace:FindFirstChild("__THINGS")
-    local folder = things and things:FindFirstChild("Coins")
-    if not folder then return nil end
-    local direct = folder:FindFirstChild(id)
-    if direct then
-        record.Model = direct
-        coinIndex.Models[id] = direct
-        coinIndex.IdByModel[direct] = id
-        record.NextModelLookupAt = nil
-        return direct
-    end
-    return nil
-end
-
-function petFarm:RuntimeStateForPet(petId)
-    if type(petRuntime) ~= "table" then return nil end
-    petId = tostring(petId)
-    self.RuntimeByUid = self.RuntimeByUid or {}
-    local indexed = self.RuntimeByUid[petId]
-    if type(indexed) == "table" and indexed.owner == player then return indexed end
-    local direct = rawget(petRuntime, petId)
-    if type(direct) == "table" and direct.owner == player then
-        self.RuntimeByUid[petId] = direct
-        return direct
-    end
-    for key, runtimeState in pairs(petRuntime) do
-        if type(runtimeState) == "table" and runtimeState.owner == player
-            and tostring(runtimeState.uid or key) == petId then
-            self.RuntimeByUid[petId] = runtimeState
-            return runtimeState
-        end
-    end
-    return nil
-end
-
-function petFarm:BindRuntimePet(petId, record, model)
-    local runtimeState = self:RuntimeStateForPet(petId)
-    model = model or getRecordModel(record)
-    local target = model and model:FindFirstChild("POS")
-    if not runtimeState or not target then return false end
-    if runtimeState.farming and runtimeState.target == target then return true end
-
-    if type(runtimeState.selectionFunc) == "function" then pcall(runtimeState.selectionFunc) end
-    runtimeState.selectionFunc = nil
-    runtimeState.farming = true
-    runtimeState.target = target
-    runtimeState.follower = nil
-    runtimeState.arrived = false
-    runtimeState.targetuid = (tonumber(runtimeState.targetuid) or 0) + 1
-    runtimeState.randomRotation = math.random() * 360
-    return true
-end
-
 function petFarm:TargetContainsPet(record, petId)
     if not record then return false end
     petId = tostring(petId)
     return (record.Pets and record.Pets[petId] == true)
         or (record.PetsFarming and record.PetsFarming[petId] == true)
-end
-
-function petFarm:FireNamed(command, ...)
-    local sent = fireCommand(command, ...)
-    if sent == true then return true end
-    local network = networkReady()
-    if not network then return false end
-    return pcall(network.Fire, command, ...)
-end
-
-function petFarm:MaintainLock(petId, state, record, now, source)
-    local health = tonumber(record and record.Health)
-    if health and (state.LastHealth == nil or health < state.LastHealth) then
-        state.LastProgressAt = now
-    end
-    state.LastHealth = health or state.LastHealth
-
-    if state.Phase ~= "locked" and now >= (state.DeadlineAt or math.huge) then
-        petStates[petId] = nil
-        releaseWait[petId] = nil
-        idleRecoveryCount = idleRecoveryCount + 1
-        lastRecovery = "expired " .. tostring(source or "UID") .. " request on "
-            .. string.sub(tostring(petId), 1, 8)
-        driverStatus = "expired UID request recovered"
-        if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
-        return false
-    end
-
-    local stalled = state.Phase == "locked" and state.FarmSent == true
-        and now - (state.LastProgressAt or now) >= 0.75
-        and (state.WireRepairs or 0) < 2
-    local signalMissing = state.Phase == "locked"
-        and (state.TargetSent == false or state.FarmSent == false)
-    if (stalled or signalMissing) and now >= (state.NextWireRepair or 0) then
-        local targetOk = self:FireNamed(
-            "Change Pet Target", petId, "Coin", tostring(record.Id))
-        local farmOk = self:FireNamed("Farm Coin", tostring(record.Id), petId)
-        state.TargetSent = targetOk == true or state.TargetSent
-        state.FarmSent = farmOk == true or state.FarmSent
-        state.WireRepairs = (state.WireRepairs or 0) + 1
-        state.NextWireRepair = now + 0.75
-        driverStatus = "repaired the same locked target signals"
-    end
-    return true
 end
 
 function petFarm:RefreshStats()
@@ -2174,64 +1900,44 @@ function petFarm:EnsureEngine()
     local context = {
         Running = running,
         Enabled = function() return config.PetFarm end,
-        Resetting = function() return farmResetRunning or farmResetRequested end,
+        Resetting = function() return farmResetRunning end,
         NetworkReady = networkReady,
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
+        InvalidateCommand = function(commandName, remote)
+            local cached = commandRemoteCache[commandName]
+            if not remote or (type(cached) == "table" and cached.Remote == remote) then
+                commandRemoteCache[commandName] = nil
+            end
+        end,
+        InvalidateFire = function(commandName, remote)
+            local cached = fireRemoteCache[commandName]
+            if not remote or (type(cached) == "table" and cached.Remote == remote) then
+                fireRemoteCache[commandName] = nil
+            end
+        end,
         RecordAlive = recordAlive,
         StateCurrent = function(petId, state)
             return petStates[tostring(petId)] == state
+                and state.Generation == farmGeneration
         end,
         TargetContainsPet = function(record, petId) return self:TargetContainsPet(record, petId) end,
-        ShouldRetry = function(_, reason)
-            -- Different-target modes gain more from an immediate fresh coin
-            -- than from retrying a coin another client probably destroyed.
-            if string.find(tostring(reason), "rejected", 1, true)
-                and (config.Mode == "Different Strongest" or config.Mode == "Different Weakest") then
-                return false
-            end
-            return true
-        end,
-        RetryJitter = function(_, attempt)
-            local seed = (tonumber(player.UserId) or 0) + (tonumber(attempt) or 1) * 17
-            return (seed % 31) / 1000
-        end,
-        OnAccepted = function(petId, state, record, model, attempt, route)
+        OnAccepted = function(petId, state, record, _, attempt, route)
             petId = tostring(petId)
-            if petStates[petId] ~= state or not recordAlive(record) then return false end
-            local now = os.clock()
-            state.Phase = "locked"
-            state.AcceptedAt = now
-            state.ConfirmedAt = now
-            state.JoinAttempts = attempt
-            state.Route = route
-            state.LastHealth = tonumber(record.Health)
-            state.LastProgressAt = now
-            state.Runtime = self:BindRuntimePet(petId, record, model)
-            state.NextRuntimeRepair = now + 0.2
-            state.WireRepairs = state.WireRepairs or 0
-            state.ArrivalFarmSent = false
-            state.DeadlineAt = nil
+            if petStates[petId] ~= state
+                or state.Generation ~= farmGeneration
+                or not recordAlive(record) then return false end
+            state.Phase = "working"
+            state.RetryCount = math.max((tonumber(attempt) or 1) - 1, 0)
             record.Pets = record.Pets or {}
             record.Pets[petId] = true
-            driverStatus = "UID-direct assignment accepted"
+            driverStatus = "UID-direct assignment accepted via " .. tostring(route)
             return true
-        end,
-        OnSignalsSent = function(petId, state, _, targetSent, farmSent, targetRoute, farmRoute)
-            if petStates[tostring(petId)] ~= state then return end
-            state.TargetSent = targetSent == true
-            state.FarmSent = farmSent == true
-            state.TargetRoute = targetRoute
-            state.FarmRoute = farmRoute
-            state.SignalsAt = os.clock()
-            state.NextWireRepair = os.clock() + 0.12
         end,
         OnRetry = function(petId, state, _, reason, nextAttempt)
             if petStates[tostring(petId)] ~= state then return end
-            state.Phase = "retry"
-            state.JoinAttempts = math.max(tonumber(nextAttempt) - 1, 1)
-            state.LastProblem = tostring(reason)
-            state.DeadlineAt = os.clock() + 3
+            state.Phase = "joining"
+            state.RetryCount = math.max((tonumber(nextAttempt) or 2) - 1, 1)
             driverStatus = "retrying the same pet target"
         end,
         OnFailed = function(petId, state, record, reason)
@@ -2239,10 +1945,8 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state then return end
             local now = os.clock()
             petStates[petId] = nil
-            releaseWait[petId] = nil
             if record then
-                local spread = ((tonumber(player.UserId) or 0) % 19) / 1000
-                rejectedUntil[tostring(record.Id)] = now + 0.24 + spread
+                rejectedUntil[tostring(record.Id)] = now + 0.2
             end
             idleRecoveryCount = idleRecoveryCount + 1
             lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
@@ -2260,15 +1964,6 @@ function petFarm:EnsureEngine()
             local network = networkReady()
             if not network or not record then return end
             pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
-            for _, petId in ipairs(petIds) do
-                petId = tostring(petId)
-                -- A destroyed coin can finish an old Invoke after this pet has
-                -- already received its next lock. Never let stale cleanup
-                -- overwrite that newer target with Player.
-                if not petStates[petId] then
-                    pcall(network.Fire, "Change Pet Target", petId, "Player")
-                end
-            end
         end,
         Pulse = function()
             -- Accepted workers already own a pending/locked state. Wake the
@@ -2282,9 +1977,7 @@ function petFarm:EnsureEngine()
             end
         end,
         Trace = trace,
-        MinLanes = 4,
-        InitialLanes = 16,
-        MaxLanes = 16,
+        DispatchWidth = 16,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
     self.Loading = false
@@ -2311,95 +2004,6 @@ function petFarm:EnsureEngine()
     return true
 end
 
-local function syncRuntimeAssignments(equipped)
-    if not runtimeDriverReady or type(petRuntime) ~= "table" then return false, nil end
-
-    local now = os.clock()
-    local observed, runtimeSeen = {}, {}
-    petFarm.RuntimeByUid = petFarm.RuntimeByUid or {}
-    table.clear(petFarm.RuntimeByUid)
-    for key, runtimeState in pairs(petRuntime) do
-        if type(runtimeState) == "table" and runtimeState.owner == player then
-            local petId = tostring(runtimeState.uid or key)
-            if equipped[petId] then
-                petFarm.RuntimeByUid[petId] = runtimeState
-                runtimeSeen[petId] = runtimeState
-                local target = runtimeState.target
-                local coinModel = runtimeState.farming and target and target.Parent or nil
-                if coinModel and coinModel.Parent then
-                    local coinId = readObjectValue(coinModel, "ID") or coinModel.Name
-                    local record = coinId ~= nil and coinRecords[tostring(coinId)] or nil
-                    if coinId ~= nil and recordAlive(record) then
-                        observed[petId] = tostring(coinId)
-                    end
-                end
-            end
-        end
-    end
-
-    -- Adopt a pre-existing game assignment only when this allocator has no
-    -- intent for the pet. A stale/conflicting runtime target never overwrites a
-    -- live UID lock created by this script.
-    for petId, coinId in pairs(observed) do
-        if not petStates[petId] then
-            petStates[petId] = {
-                CoinId = coinId,
-                Phase = "locked",
-                Runtime = true,
-                ConfirmedAt = now,
-                AcceptedAt = now,
-                External = true,
-            }
-        end
-    end
-
-    for petId, state in pairs(petStates) do
-        local record = coinRecords[tostring(state.CoinId)]
-        if not equipped[petId] then
-            petStates[petId] = nil
-            releaseWait[petId] = nil
-        elseif not recordAlive(record) then
-            queuePetRelease(petId, now)
-        else
-            local runtimeState = runtimeSeen[petId]
-            local intendedModel = getRecordModel(record)
-            local intendedTarget = intendedModel and intendedModel:FindFirstChild("POS")
-            local runtimeMatches = runtimeState and runtimeState.farming
-                and intendedTarget and runtimeState.target == intendedTarget
-
-            if runtimeMatches then
-                state.Runtime = true
-                state.RuntimeSeenAt = now
-                state.RuntimeMismatchSince = nil
-                if runtimeState.arrived == true and not state.ArrivalFarmSent then
-                    state.ArrivalFarmSent = true
-                    state.FarmSent = petFarm:FireNamed(
-                        "Farm Coin", tostring(record.Id), petId) or state.FarmSent
-                    driverStatus = "arrival-confirmed farm signal sent"
-                end
-            elseif state.Phase == "locked" then
-                state.Runtime = false
-                state.RuntimeMismatchSince = state.RuntimeMismatchSince or now
-                if now >= (state.NextRuntimeRepair or 0) then
-                    state.Runtime = petFarm:BindRuntimePet(petId, record, intendedModel)
-                    state.NextRuntimeRepair = now + 0.2
-                end
-            end
-
-            petFarm:MaintainLock(petId, state, record, now, "runtime")
-        end
-    end
-
-    for petId, releaseState in pairs(releaseWait) do
-        if not equipped[petId] then
-            releaseWait[petId] = nil
-        elseif now >= (releaseState.ReadyAt or now) then
-            releaseWait[petId] = nil
-        end
-    end
-    return true, runtimeSeen
-end
-
 local function currentFarmSignature()
     return table.concat({
         tostring(config.Mode),
@@ -2420,82 +2024,20 @@ local function addAssignedPet(groups, allPets, coinId, petId)
 end
 
 local function collectAssignmentsForReset()
-    resolveControllerHandler("Select Coin")
-
     local groups, allPets = {}, {}
-    local equipped = {}
-    for _, petId in ipairs(getEquippedPetIds()) do
-        equipped[tostring(petId)] = true
-        allPets[tostring(petId)] = true
-    end
-
     for petId, state in pairs(petStates) do
         addAssignedPet(groups, allPets, state.CoinId, petId)
     end
-
-    for _, record in pairs(coinRecords) do
-        if recordAlive(record) then
-            for _, petSet in ipairs({ record.Pets or {}, record.PetsFarming or {} }) do
-                for petId in pairs(petSet) do
-                    petId = tostring(petId)
-                    if equipped[petId] then addAssignedPet(groups, allPets, record.Id, petId) end
-                end
-            end
-        end
-    end
-
-    if type(petRuntime) == "table" then
-        for key, runtimeState in pairs(petRuntime) do
-            if type(runtimeState) == "table" and runtimeState.owner == player then
-                local petId = tostring(runtimeState.uid or key)
-                local target = runtimeState.target
-                local coinModel = runtimeState.farming and target and target.Parent or nil
-                local coinId = coinModel and (readObjectValue(coinModel, "ID") or coinModel.Name) or nil
-                if runtimeState.farming then addAssignedPet(groups, allPets, coinId, petId) end
-
-                if runtimeState.selectionFunc then pcall(runtimeState.selectionFunc) end
-                runtimeState.selectionFunc = nil
-                runtimeState.farming = false
-                runtimeState.target = nil
-                runtimeState.follower = nil
-                runtimeState.arrived = false
-                if type(runtimeState.targetuid) == "number" then
-                    runtimeState.targetuid = runtimeState.targetuid + 1
-                end
-            end
-        end
-    end
-
     return groups, allPets
 end
 
-local function clearAssignments(sendBack)
+local function clearAssignments(sendBack, callback)
+    farmGeneration = farmGeneration + 1
     if petFarm.Engine then pcall(petFarm.Engine, "reset") end
     local groups, allPets = collectAssignmentsForReset()
     local network = sendBack and networkReady() or nil
-    if network then
-        local ok, snapshot = pcall(network.Invoke, "Get Coins")
-        if ok and type(snapshot) == "table" then
-            for coinId, data in pairs(snapshot) do
-                if type(data) == "table" then
-                    local serverSets = {
-                        normalizePetSet(data.pets or data.Pets),
-                        normalizePetSet(data.petsFarming or data.PetsFarming),
-                    }
-                    for _, petSet in ipairs(serverSets) do
-                        for petId in pairs(petSet) do
-                            petId = tostring(petId)
-                            if allPets[petId] then addAssignedPet(groups, allPets, coinId, petId) end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
     table.clear(petStates)
     table.clear(rejectedUntil)
-    table.clear(releaseWait)
     for _, record in pairs(coinRecords) do
         for petId in pairs(allPets) do
             if record.Pets then record.Pets[petId] = nil end
@@ -2503,59 +2045,81 @@ local function clearAssignments(sendBack)
         end
     end
 
-    if not sendBack then return true end
-    if not network then return false end
+    if not sendBack or not network then
+        if type(callback) == "function" then callback(network ~= nil or not sendBack) end
+        return network ~= nil or not sendBack
+    end
 
+    local jobs = {}
     for coinId, petSet in pairs(groups) do
         local petIds = {}
         for petId in pairs(petSet) do table.insert(petIds, petId) end
         table.sort(petIds)
-        if #petIds > 0 then pcall(network.Invoke, "Leave Coin", coinId, petIds) end
+        if #petIds > 0 then
+            jobs[#jobs + 1] = { CoinId = coinId, PetIds = petIds }
+        end
     end
     for petId in pairs(allPets) do
         pcall(network.Fire, "Change Pet Target", petId, "Player")
     end
+
+    -- Reset traffic uses one tiny fixed-width drain instead of launching one
+    -- yielding request for every old target at once.
+    local head, active, finished = 1, 0, false
+    local pumpReset
+    local function finish()
+        if finished then return end
+        finished = true
+        jobs = {}
+        if type(callback) == "function" then callback(true) end
+    end
+    pumpReset = function()
+        if finished then return end
+        while active < 4 and head <= #jobs do
+            local job = jobs[head]
+            head = head + 1
+            active = active + 1
+            local thread = coroutine.create(function()
+                pcall(network.Invoke, "Leave Coin", job.CoinId, job.PetIds)
+                active = math.max(active - 1, 0)
+                if head > #jobs and active == 0 then finish() else pumpReset() end
+            end)
+            local resumed = coroutine.resume(thread)
+            if not resumed then
+                active = math.max(active - 1, 0)
+            end
+        end
+        if head > #jobs and active == 0 then finish() end
+    end
+    pumpReset()
+    task.delay(0.5, finish)
     return true
 end
 
 requestFarmReset = function(reason)
     farmResetReason = tostring(reason or "configuration changed")
     farmSelectionSignature = currentFarmSignature()
-    farmResetRequested = true
-    if farmResetRunning or not running() then return end
-
-    farmResetRunning = true
-    task.spawn(function()
-        while running() and allocatorBusy do RunService.Heartbeat:Wait() end
-        if not running() then farmResetRunning = false; return end
-
-        repeat
-            farmResetRequested = false
-            driverStatus = "resetting: " .. farmResetReason
-            local networkCleaned = clearAssignments(true)
-            nextSnapshotAt = 0
-            if config.PetFarm and not networkCleaned then
-                driverStatus = "waiting for Network before reset"
-                while running() and config.PetFarm and not farmResetRequested and not networkReady() do
-                    RunService.Heartbeat:Wait()
-                end
-                if running() and config.PetFarm and networkReady() then farmResetRequested = true end
-            end
-            RunService.Heartbeat:Wait()
-        until not running() or not farmResetRequested
-
-        farmResetRunning = false
+    if farmResetScheduled or farmResetRunning or not running() then return end
+    farmResetScheduled = true
+    task.defer(function()
+        farmResetScheduled = false
         if not running() then return end
-        if farmResetRequested then
-            requestFarmReset(farmResetReason)
+        if allocatorBusy then
+            task.delay(0.01, function() requestFarmReset(farmResetReason) end)
             return
         end
 
-        farmSelectionSignature = currentFarmSignature()
-        driverStatus = config.PetFarm and "reset complete" or "farm disabled"
-        if config.PetFarm and type(requestAllocatorPulse) == "function" then
-            requestAllocatorPulse()
-        end
+        farmResetRunning = true
+        driverStatus = "resetting: " .. farmResetReason
+        clearAssignments(true, function()
+            farmResetRunning = false
+            if not running() then return end
+            farmSelectionSignature = currentFarmSignature()
+            driverStatus = config.PetFarm and "reset complete" or "farm disabled"
+            if config.PetFarm and type(requestAllocatorPulse) == "function" then
+                requestAllocatorPulse()
+            end
+        end)
     end)
 end
 
@@ -2566,33 +2130,22 @@ local function dispatchPlan(record, petIds)
             or "high-throughput engine is unavailable"
         return
     end
-    local model = getRecordModel(record)
-    if model and not model:FindFirstChild("POS") then model = nil end
-
     local coinId = tostring(record.Id)
     local entries = {}
-    local startedAt = os.clock()
     for _, petId in ipairs(petIds) do
         petId = tostring(petId)
         local state = {
             CoinId = coinId,
-            Phase = "pending",
-            StartedAt = startedAt,
-            StartedHealth = tonumber(record.Health),
-            LastHealth = tonumber(record.Health),
-            LastProgressAt = startedAt,
-            JoinAttempts = 1,
-            DeadlineAt = startedAt + 3,
+            Phase = "joining",
+            Generation = farmGeneration,
+            RetryCount = 0,
         }
-        state.Runtime = petFarm:BindRuntimePet(petId, record, model)
-        state.NextRuntimeRepair = startedAt + 0.2
         petStates[petId] = state
         entries[#entries + 1] = { PetId = petId, State = state }
     end
 
     local called, accepted, problem = pcall(petFarm.Engine, "dispatch", {
         Record = record,
-        Model = model,
         CoinId = coinId,
         Entries = entries,
     })
@@ -2606,71 +2159,6 @@ local function dispatchPlan(record, petIds)
     end
 end
 
-local function syncServerAssignments(equipped)
-    local now = os.clock()
-    local observed = {}
-    for _, record in pairs(coinRecords) do
-        if recordAlive(record) then
-            for _, petSet in ipairs({ record.Pets or {}, record.PetsFarming or {} }) do
-                for petId in pairs(petSet) do
-                    petId = tostring(petId)
-                    if equipped[petId] then
-                        local choices = observed[petId]
-                        if not choices then choices = {}; observed[petId] = choices end
-                        choices[tostring(record.Id)] = record
-                    end
-                end
-            end
-        end
-    end
-
-    for petId, choices in pairs(observed) do
-        local state = petStates[petId]
-        if state and choices[tostring(state.CoinId)] then
-            state.ConfirmedAt = now
-            state.MembershipSeenAt = now
-        elseif not state then
-            local coinId
-            local bestRevision = -1
-            for candidateId, record in pairs(choices) do
-                local revision = tonumber(record.EventRevision) or 0
-                if revision > bestRevision
-                    or revision == bestRevision and (coinId == nil or candidateId < coinId) then
-                    coinId = candidateId
-                    bestRevision = revision
-                end
-            end
-            if coinId then
-                petStates[petId] = {
-                    CoinId = coinId,
-                    Phase = "locked",
-                    ConfirmedAt = now,
-                    AcceptedAt = now,
-                    External = true,
-                }
-            end
-        end
-    end
-
-    for petId, state in pairs(petStates) do
-        local record = coinRecords[tostring(state.CoinId)]
-        if not equipped[petId] then
-            petStates[petId] = nil
-            releaseWait[petId] = nil
-        elseif not recordAlive(record) then
-            queuePetRelease(petId, now)
-        else
-            petFarm:MaintainLock(petId, state, record, now, "server")
-        end
-    end
-
-    for petId, releaseState in pairs(releaseWait) do
-        if not equipped[petId] or now >= (releaseState.ReadyAt or now) then
-            releaseWait[petId] = nil
-        end
-    end
-end
-
 local function assignmentCount()
     local count = 0
     for _ in pairs(petStates) do count = count + 1 end
@@ -2678,29 +2166,11 @@ local function assignmentCount()
 end
 
 function petFarm:PhaseCounts()
-    local locked, pending = 0, 0
+    local working, joining = 0, 0
     for _, state in pairs(petStates) do
-        if state.Phase == "locked" then locked = locked + 1 else pending = pending + 1 end
+        if state.Phase == "working" then working = working + 1 else joining = joining + 1 end
     end
-    return locked, pending
-end
-
-local function runtimePetCounts(petIds)
-    if not runtimeDriverReady or type(petRuntime) ~= "table" then return nil end
-    local equipped = {}
-    for _, petId in ipairs(petIds) do equipped[tostring(petId)] = true end
-
-    local seen, active = 0, 0
-    for key, runtimeState in pairs(petRuntime) do
-        if type(runtimeState) == "table" and runtimeState.owner == player then
-            local petId = tostring(runtimeState.uid or key)
-            if equipped[petId] then
-                seen = seen + 1
-                if runtimeState.farming then active = active + 1 end
-            end
-        end
-    end
-    return active, math.max(seen - active, 0), math.max(#petIds - seen, 0)
+    return working, joining
 end
 
 local statusViews = {}
@@ -3108,7 +2578,7 @@ end
 
 local function reconcileBoostModule()
     if boostAutomationEnabled() then
-        task.spawn(startBoostModule)
+        task.defer(startBoostModule)
     else
         stopBoostModule("Disabled. Boost timers and inventory remain untouched.")
     end
@@ -3194,82 +2664,90 @@ local function runDiamondPackCheck()
 end
 
 local diamondWorkerGeneration = 0
+local runDiamondWorker
+
+runDiamondWorker = function(generation)
+    if generation ~= diamondWorkerGeneration or not running()
+        or not config.AutoTechDiamondPack then return end
+    local now = os.clock()
+    if not diamondPackBusy and now >= diamondPackNextCheck then
+        local ok, problem = pcall(runDiamondPackCheck)
+        if not ok then
+            diamondPackBusy = false
+            diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
+            local status = "Worker error: " .. tostring(problem)
+            trace("diamond pack", status)
+            statusSetters.Diamond(status .. "\nNext retry in 3 minutes.")
+        end
+    end
+    local remaining = math.max(diamondPackNextCheck - os.clock(), 0)
+    task.delay(math.clamp(remaining, 0.25, 5), function()
+        runDiamondWorker(generation)
+    end)
+end
 
 local function reconcileDiamondWorker()
     diamondWorkerGeneration = diamondWorkerGeneration + 1
     local generation = diamondWorkerGeneration
     diamondPackNextCheck = 0
     if not running() or not config.AutoTechDiamondPack then return end
-    task.spawn(function()
-        while running() and config.AutoTechDiamondPack and generation == diamondWorkerGeneration do
-            local now = os.clock()
-            if not diamondPackBusy and now >= diamondPackNextCheck then
-                local ok, problem = pcall(runDiamondPackCheck)
-                if not ok then
-                    diamondPackBusy = false
-                    diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
-                    local status = "Worker error: " .. tostring(problem)
-                    trace("diamond pack", status)
-                    statusSetters.Diamond(status .. "\nNext retry in 3 minutes.")
-                end
-            end
-            local remaining = math.max(diamondPackNextCheck - os.clock(), 0)
-            task.wait(math.clamp(remaining, 0.25, 5))
-        end
-    end)
+    task.defer(function() runDiamondWorker(generation) end)
 end
 
 local rewardWorkerGeneration = 0
+local runRewardWorker
+
+runRewardWorker = function(generation)
+    if generation ~= rewardWorkerGeneration or not running()
+        or not (config.AutoVIPRewards or config.AutoRankRewards) then return end
+    local now = os.clock()
+    local nextWake = 5
+    for _, kind in ipairs({ "VIP", "Rank" }) do
+        local state = rewardStates[kind]
+        if config[state.ConfigKey] then
+            local remaining, cooldown, timingError = getRewardTiming(kind)
+            if remaining == nil then
+                if timingError ~= state.LastTimingError then
+                    state.LastTimingError = timingError
+                    trace(string.lower(state.Label) .. " reward timer", timingError)
+                end
+                nextWake = math.min(nextWake, 1)
+            elseif remaining > 0 then
+                state.LastTimingError = nil
+                state.NextAttempt = 0
+                nextWake = math.min(nextWake, math.max(remaining, 0.25))
+                if not state.ArmedReported then
+                    local remote, sourceName, sessionIndex, routeProblem =
+                        getCommandRemote(state.Command)
+                    local route = remote and routeText(sourceName, sessionIndex)
+                        or ("route pending: " .. tostring(routeProblem))
+                    trace(string.lower(state.Label) .. " reward armed",
+                        "ready in " .. formatDuration(remaining) .. " | " .. route)
+                    state.ArmedReported = true
+                end
+            elseif now >= state.NextAttempt then
+                state.LastTimingError = nil
+                local succeeded = invokeReward(kind)
+                state.ArmedReported = false
+                state.NextAttempt = now
+                    + (succeeded and math.max(cooldown or 0, REWARD_RETRY_DELAY)
+                        or REWARD_RETRY_DELAY)
+                nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
+            else
+                nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
+            end
+        end
+    end
+    task.delay(math.clamp(nextWake, 0.25, 5), function()
+        runRewardWorker(generation)
+    end)
+end
 
 local function reconcileRewardWorker()
     rewardWorkerGeneration = rewardWorkerGeneration + 1
     local generation = rewardWorkerGeneration
     if not running() or not (config.AutoVIPRewards or config.AutoRankRewards) then return end
-    task.spawn(function()
-        local order = { "VIP", "Rank" }
-        while running() and generation == rewardWorkerGeneration
-            and (config.AutoVIPRewards or config.AutoRankRewards) do
-            local now = os.clock()
-            local nextWake = 5
-            for _, kind in ipairs(order) do
-                local state = rewardStates[kind]
-                if config[state.ConfigKey] then
-                    local remaining, cooldown, timingError = getRewardTiming(kind)
-                    if remaining == nil then
-                        if timingError ~= state.LastTimingError then
-                            state.LastTimingError = timingError
-                            trace(string.lower(state.Label) .. " reward timer", timingError)
-                        end
-                        nextWake = math.min(nextWake, 1)
-                    elseif remaining > 0 then
-                        state.LastTimingError = nil
-                        state.NextAttempt = 0
-                        nextWake = math.min(nextWake, math.max(remaining, 0.25))
-                        if not state.ArmedReported then
-                            local remote, sourceName, sessionIndex, routeProblem =
-                                getCommandRemote(state.Command)
-                            local route = remote and routeText(sourceName, sessionIndex)
-                                or ("route pending: " .. tostring(routeProblem))
-                            trace(string.lower(state.Label) .. " reward armed",
-                                "ready in " .. formatDuration(remaining) .. " | " .. route)
-                            state.ArmedReported = true
-                        end
-                    elseif now >= state.NextAttempt then
-                        state.LastTimingError = nil
-                        local succeeded = invokeReward(kind)
-                        state.ArmedReported = false
-                        state.NextAttempt = now
-                            + (succeeded and math.max(cooldown or 0, REWARD_RETRY_DELAY)
-                                or REWARD_RETRY_DELAY)
-                        nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
-                    else
-                        nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
-                    end
-                end
-            end
-            task.wait(math.clamp(nextWake, 0.25, 5))
-        end
-    end)
+    task.defer(function() runRewardWorker(generation) end)
 end
 
 function petFarm:RecordExternalPets(record, equipped, allExternal)
@@ -3288,17 +2766,14 @@ function petFarm:RecordExternalPets(record, equipped, allExternal)
 end
 
 function petFarm:ContendedTargetOrder(usable, claimed, freeCount, equipped)
-    local candidates, allExternal = {}, {}
+    local freeTargets, occupiedTargets, allExternal = {}, {}, {}
     local contended = 0
-    for rank, record in ipairs(usable) do
+    for _, record in ipairs(usable) do
         local external = self:RecordExternalPets(record, equipped, allExternal)
         if external > 0 then contended = contended + 1 end
         if not claimed[tostring(record.Id)] then
-            candidates[#candidates + 1] = {
-                Record = record,
-                Rank = rank,
-                External = external,
-            }
+            local destination = external == 0 and freeTargets or occupiedTargets
+            destination[#destination + 1] = record
         end
     end
 
@@ -3306,88 +2781,16 @@ function petFarm:ContendedTargetOrder(usable, claimed, freeCount, equipped)
     for _ in pairs(allExternal) do externalCount = externalCount + 1 end
     self.ExternalPetCount = externalCount
     self.ContendedTargets = contended
-
-    local equippedCount = math.max(self.EquippedCount or 0, freeCount, 1)
-    local nearbyPlayers = 1
-    local nearbyUserIds = { tonumber(player.UserId) or 0 }
-    local localCharacter = player.Character
-    local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
-    if localRoot then
-        nearbyPlayers = 0
-        nearbyUserIds = {}
-        for _, candidatePlayer in ipairs(Players:GetPlayers()) do
-            local candidateCharacter = candidatePlayer.Character
-            local candidateRoot = candidateCharacter
-                and candidateCharacter:FindFirstChild("HumanoidRootPart")
-            if candidateRoot and (candidateRoot.Position - localRoot.Position).Magnitude <= 450 then
-                nearbyPlayers = nearbyPlayers + 1
-                nearbyUserIds[#nearbyUserIds + 1] = tonumber(candidatePlayer.UserId) or 0
-            end
-        end
-        nearbyPlayers = math.max(nearbyPlayers, 1)
-    end
-    table.sort(nearbyUserIds)
-    local externalShards = externalCount >= equippedCount * 6 and 8
-        or externalCount >= equippedCount * 2 and 6
-        or externalCount > 0 and 4
-        or 1
-    local shardCount = math.max(externalShards, math.min(nearbyPlayers, 8))
-    local window = math.min(#candidates,
-        math.max(equippedCount * shardCount, freeCount * 2, 24))
-    self.TargetWindow = window
-    self.TargetShards = shardCount
-    local localUserId = tonumber(player.UserId) or 0
-    local localOrdinal = 0
-    for index, userId in ipairs(nearbyUserIds) do
-        if userId == localUserId then localOrdinal = index - 1; break end
-    end
-    -- Nearby clients derive different shards from the same sorted player list.
-    -- This works before occupancy replication arrives and prevents ten clients
-    -- from all racing for the same first fifteen coins on the opening frame.
-    local userShard = localOrdinal % shardCount
-
-    local pool = {}
-    for index = 1, window do
-        local candidate = candidates[index]
-        candidate.ShardDistance = (candidate.Rank - 1 - userShard) % shardCount
-        pool[#pool + 1] = candidate
-    end
-    table.sort(pool, function(left, right)
-        if left.External ~= right.External then return left.External < right.External end
-        if left.ShardDistance ~= right.ShardDistance then
-            return left.ShardDistance < right.ShardDistance
-        end
-        if left.Rank ~= right.Rank then return left.Rank < right.Rank end
-        return tostring(left.Record.Id) < tostring(right.Record.Id)
-    end)
-
     local ordered = {}
-    for _, candidate in ipairs(pool) do ordered[#ordered + 1] = candidate.Record end
+    for _, record in ipairs(freeTargets) do ordered[#ordered + 1] = record end
+    for _, record in ipairs(occupiedTargets) do ordered[#ordered + 1] = record end
+    self.TargetWindow = math.min(#ordered, math.max(freeCount, 1))
+    self.TargetShards = 1
     return ordered
 end
 
-function petFarm:ApplyContentionBackpressure()
-    if not self.Engine then return end
-    local stats = self:RefreshStats()
-    local averageRTT = tonumber(stats.AverageRTT) or 0
-    local desired = 16
-    -- Other players change target sharding, not transport width. Cutting lanes
-    -- merely because external pets exist creates long idle cascades even when
-    -- Network RTT is healthy. Only sustained EWMA latency applies backpressure.
-    if averageRTT >= 1.1 then
-        desired = 10
-    elseif averageRTT >= 0.75 then
-        desired = 12
-    elseif averageRTT >= 0.45 then
-        desired = 14
-    end
-    if desired ~= self.PolicyLanes then
-        local called, changed = pcall(self.Engine, "set-limit", desired)
-        if called and changed == true then self.PolicyLanes = desired end
-    end
-end
-
 local allocatorPass
+local armFarmRecovery
 
 function petFarm:ScheduleAllocatorPass()
     if self.AllocatorScheduled or allocatorBusy or not running() then return end
@@ -3409,14 +2812,15 @@ allocatorPass = function()
     allocatorBusy = true
     allocatorRequested = false
     local ok, problem = pcall(function()
-        if os.clock() >= nextSnapshotAt and not snapshotBusy then task.spawn(refreshCoinSnapshot) end
         connectCoinSignals()
+        refreshWorkspaceCoins()
+        if not snapshotPrimed and not snapshotBusy then task.defer(refreshCoinSnapshot) end
 
-        if not config.PetFarm or farmResetRunning or farmResetRequested then return end
+        if not config.PetFarm or farmResetRunning then return end
 
         if not petFarm.Engine then
             if not petFarm.Loading then
-                task.spawn(function()
+                task.defer(function()
                     local ready, engineProblem = petFarm:EnsureEngine()
                     if not ready then trace("pet engine load", tostring(engineProblem)) end
                 end)
@@ -3439,18 +2843,20 @@ allocatorPass = function()
         for _, petId in ipairs(petIds) do equipped[petId] = true end
         if #petIds == 0 then return end
 
-        if not runtimeDriverReady then resolveControllerHandler("Select Coin") end
-        local usingRuntime = syncRuntimeAssignments(equipped)
-        if not usingRuntime then syncServerAssignments(equipped) end
+        for petId, state in pairs(petStates) do
+            if not equipped[petId] or state.Generation ~= farmGeneration
+                or not recordAlive(coinRecords[tostring(state.CoinId)]) then
+                petStates[petId] = nil
+            end
+        end
 
         local freePets = {}
         for _, petId in ipairs(petIds) do
-            if not petStates[petId] and not releaseWait[petId] then
+            if not petStates[petId] then
                 table.insert(freePets, petId)
             end
         end
         if #freePets == 0 then
-            petFarm:ApplyContentionBackpressure()
             pcall(petFarm.Engine, "pump")
             return
         end
@@ -3506,7 +2912,6 @@ allocatorPass = function()
             end
             local unique = petFarm:ContendedTargetOrder(
                 usable, claimed, #freePets, equipped)
-            petFarm:ApplyContentionBackpressure()
             local uniqueIndex, sharedIndex = 1, 1
             for _, petId in ipairs(freePets) do
                 local record = unique[uniqueIndex]
@@ -3527,6 +2932,9 @@ allocatorPass = function()
             end
         end
         for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
+        if assignmentCount() < #petIds and type(armFarmRecovery) == "function" then
+            armFarmRecovery()
+        end
     end)
     if not ok then driverStatus = "allocator error: " .. tostring(problem) end
 
@@ -3539,90 +2947,89 @@ requestAllocatorPulse = function()
     petFarm:ScheduleAllocatorPass()
 end
 
-task.spawn(function()
-    local petLifecycleSignals = {}
-    local function connectPetLifecycleSignal(name, removed)
-        if petLifecycleSignals[name] then return true end
-        local signal = Library and Library.Signal
-        if not signal or type(signal.Fired) ~= "function" then return false end
+local petLifecycleSignals = {}
+local petLifecycleBindToken = 0
 
-        local eventOk, event = pcall(signal.Fired, name)
-        if not eventOk or not event or type(event.Connect) ~= "function" then return false end
-        local connected, connection = pcall(function()
-            return event:Connect(function(rawPetId)
-                local petId = rawPetId ~= nil and tostring(rawPetId) or nil
-                nextPetScanAt = 0
-                if removed and petId then
-                    petStates[petId] = nil
-                    releaseWait[petId] = nil
-                end
-                if config.PetFarm then
-                    driverStatus = removed and "pet unequipped; assignments reconciled"
-                        or "equipped pet detected; assigning target"
-                    requestAllocatorPulse()
-                end
-            end)
+local function connectPetLifecycleSignal(name, removed)
+    if petLifecycleSignals[name] then return true end
+    local signal = Library and Library.Signal
+    if not signal or type(signal.Fired) ~= "function" then return false end
+
+    local eventOk, event = pcall(signal.Fired, name)
+    if not eventOk or not event or type(event.Connect) ~= "function" then return false end
+    local connected, connection = pcall(function()
+        return event:Connect(function(rawPetId)
+            local petId = rawPetId ~= nil and tostring(rawPetId) or nil
+            petCacheValid = false
+            if removed and petId then petStates[petId] = nil end
+            if config.PetFarm then
+                driverStatus = removed and "pet unequipped; assignments reconciled"
+                    or "equipped pet detected; assigning target"
+                requestAllocatorPulse()
+            end
         end)
-        if not connected or not connection then return false end
-        petLifecycleSignals[name] = connection
-        track(connection)
-        return true
+    end)
+    if not connected or not connection then return false end
+    petLifecycleSignals[name] = connection
+    track(connection)
+    return true
+end
+
+local function bindPetLifecycleSignals(attempt, token)
+    if token ~= petLifecycleBindToken or not running() then return end
+    local added = connectPetLifecycleSignal("Added Client Pet", false)
+    local removed = connectPetLifecycleSignal("Removed Client Pet", true)
+    if added and removed then return end
+    attempt = (tonumber(attempt) or 0) + 1
+    if attempt < 20 then
+        task.delay(0.5, function()
+            bindPetLifecycleSignals(attempt, token)
+        end)
     end
+end
 
-    while running() do
-        local added = connectPetLifecycleSignal("Added Client Pet", false)
-        local removed = connectPetLifecycleSignal("Removed Client Pet", true)
-        if added and removed then break end
-        task.wait(0.5)
-    end
-end)
+petLifecycleBindToken = petLifecycleBindToken + 1
+task.defer(function() bindPetLifecycleSignals(0, petLifecycleBindToken) end)
 
-local farmWatchdogGeneration = 0
+local farmRecoveryArmed = false
+local farmRecoveryToken = 0
+local farmZoneWatcherToken = 0
 
-local function reconcileFarmWatchdog()
-    farmWatchdogGeneration = farmWatchdogGeneration + 1
-    local generation = farmWatchdogGeneration
-    if not running() or not config.PetFarm then return end
-    task.spawn(function()
-        while running() and config.PetFarm and generation == farmWatchdogGeneration do
-            requestAllocatorPulse()
-            local expected = tonumber(petFarm.EquippedCount) or 0
-            local recovering = expected > 0 and assignmentCount() < expected
-            -- Coin/pet events do the immediate work. The watchdog runs quickly
-            -- only while a pet is missing a lock, then backs off in steady state.
-            task.wait(recovering and 0.08 or 0.5)
-        end
+armFarmRecovery = function()
+    if farmRecoveryArmed or not running() or not config.PetFarm then return end
+    farmRecoveryArmed = true
+    local token = farmRecoveryToken
+    task.delay(0.15, function()
+        farmRecoveryArmed = false
+        if token ~= farmRecoveryToken or not running() or not config.PetFarm then return end
+        local expected = tonumber(petFarm.EquippedCount) or 0
+        if expected > 0 and assignmentCount() < expected then requestAllocatorPulse() end
     end)
 end
 
+local function restartFarmWatchers()
+    farmRecoveryToken = farmRecoveryToken + 1
+    farmRecoveryArmed = false
+    farmZoneWatcherToken = farmZoneWatcherToken + 1
+    local token = farmZoneWatcherToken
+    if not running() or not config.PetFarm then return end
+    if assignmentCount() < (tonumber(petFarm.EquippedCount) or 0) then armFarmRecovery() end
+    if config.Zone ~= "Player Zone" then return end
+
+    local function checkZone()
+        if token ~= farmZoneWatcherToken or not running() or not config.PetFarm then return end
+        local signature = currentFarmSignature()
+        if signature ~= farmSelectionSignature then
+            requestFarmReset("player zone changed")
+        end
+        task.delay(0.3, checkZone)
+    end
+    task.delay(0.3, checkZone)
+end
+
 local LOOT_LIMITS = {
-    OrbBatchInterval = 0.25,
-    OrbBatchJitter = ((tonumber(player.UserId) or 0) % 31) / 1000,
-    OrbBatchSize = 256,
-    OrbQueue = 1024,
-    OrbInFlight = 2048,
-    OrbAckTimeout = 0.9,
-    InitialOrbScan = 1024,
-    InitialLootbagScan = 512,
-    LootbagRecords = 512,
-    LootbagAckTimeout = 1,
-    LootbagRecordTimeout = 12,
     StartupDelay = 0.75,
 }
-
-local function disconnectConnection(connection)
-    if connection then pcall(function() connection:Disconnect() end) end
-end
-
-local function setObjectBoolean(object, name, value)
-    if not object then return end
-    local child = object:FindFirstChild(name .. "_Attr") or object:FindFirstChild(name)
-    if child and child:IsA("ValueBase") then
-        pcall(function() child.Value = value end)
-        return
-    end
-    pcall(function() object:SetAttribute(name, value) end)
-end
 
 local function localLootOwner(item)
     for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
@@ -3651,865 +3058,122 @@ end
 local lootCollector = {
     StartupArmed = false,
     WorkerActive = false,
-    Generation = 0,
-    WorldGeneration = 0,
-    Connections = {},
-    OrbFolder = nil,
-    OrbFolderAddedConnection = nil,
-    OrbFolderRemovedConnection = nil,
-    LootbagFolder = nil,
-    LootbagFolderConnection = nil,
-    RecordConnectionCount = 0,
-    OrbQueue = {},
-    OrbQueued = {},
-    OrbQueuedAt = {},
-    OrbAttempts = {},
-    OrbInFlight = {},
-    OrbInFlightSize = 0,
-    OrbFlushToken = 0,
-    OrbFlushDue = nil,
-    OrbRetryToken = 0,
-    OrbRetryDue = nil,
-    LootbagRecords = {},
-    LootbagRecordCount = 0,
-    LootbagWaitingReady = 0,
-    LootbagInFlight = {},
-    LootbagInFlightCount = 0,
-    LootTimerToken = 0,
-    LootTimerDue = nil,
-    StatusScheduled = false,
-    StatusDirty = true,
-    Route = {
-        ["Claim Orbs"] = "unavailable",
-        ["Collect Lootbag"] = "unavailable",
-    },
-    Stats = {
-        Orbs = {
-            LastBatch = 0,
-            Batches = 0,
-            Sent = 0,
-            Acknowledged = 0,
-            Retried = 0,
-            Expired = 0,
-            Errors = 0,
-        },
-        Lootbags = {
-            Sent = 0,
-            Acknowledged = 0,
-            Retried = 0,
-            Expired = 0,
-            Skipped = 0,
-            Errors = 0,
-        },
-    },
+    Controller = nil,
+    Loading = false,
+    Problem = nil,
+}
+
+local lootContext = {
+    Library = Library,
+    Running = running,
+    EnabledOrbs = function() return config.Orbs == true end,
+    EnabledLootbags = function() return config.Lootbags == true end,
+    GetThings = function()
+        local things = Library and Library.Things
+        if typeof(things) == "Instance" then return things end
+        return workspace:FindFirstChild("__THINGS")
+    end,
+    LocalLootOwner = localLootOwner,
+    Fire = function(commandName, ...)
+        local arguments = table.pack(...)
+        local fired, problem, sourceName, sessionIndex =
+            fireCommand(commandName, table.unpack(arguments, 1, arguments.n))
+        if fired then
+            return true, nil, routeText(sourceName, sessionIndex)
+        end
+        local network = networkReady()
+        if network and type(network.Fire) == "function" then
+            local fallback, fallbackProblem = pcall(
+                network.Fire,
+                commandName,
+                table.unpack(arguments, 1, arguments.n)
+            )
+            if fallback then return true, nil, "Library.Network.Fire" end
+            problem = fallbackProblem
+        end
+        return false, tostring(problem or "no live route"), "unavailable"
+    end,
+    Status = function(text) statusSetters.Set("Loot", text) end,
+    Trace = trace,
 }
 
 function lootCollector:IsEnabled()
     return running() and (config.Orbs == true or config.Lootbags == true)
 end
 
-function lootCollector:GetThings()
-    local things = Library and Library.Things
-    if typeof(things) == "Instance" then return things end
-    return workspace:FindFirstChild("__THINGS")
-end
-
-function lootCollector:AddConnection(connection)
-    if connection then self.Connections[#self.Connections + 1] = connection end
-    return connection
-end
-
-function lootCollector:DisconnectConnections()
-    for index = 1, #self.Connections do
-        disconnectConnection(self.Connections[index])
-        self.Connections[index] = nil
+function lootCollector:Ensure()
+    if self.Controller then return true end
+    if self.Loading then return false, "loot reactor is loading" end
+    self.Loading = true
+    local controller, problem = loadRemoteController("lootReactor", "loot reactor")
+    self.Loading = false
+    if not controller then
+        self.Problem = tostring(problem)
+        return false, self.Problem
     end
-end
-
-function lootCollector:SetRoute(commandName, state)
-    state = tostring(state or "unavailable")
-    if self.Route[commandName] ~= state then
-        self.Route[commandName] = state
-        self:MarkStatus()
-    end
-end
-
-function lootCollector:ProbeRoute(commandName)
-    local remote = getFireRemote(commandName)
-    if remote then
-        self:SetRoute(commandName, "direct")
-        return
-    end
-    local network = networkReady()
-    self:SetRoute(commandName,
-        network and type(network.Fire) == "function" and "fallback" or "unavailable")
-end
-
-function lootCollector:FireNative(commandName, ...)
-    local arguments = table.pack(...)
-    local fired, problem = fireCommand(commandName, table.unpack(arguments, 1, arguments.n))
-    if fired then
-        self:SetRoute(commandName, "direct")
-        return true, nil
-    end
-
-    local network = networkReady()
-    if network and type(network.Fire) == "function" then
-        local fallbackOK, fallbackProblem = pcall(function()
-            network.Fire(commandName, table.unpack(arguments, 1, arguments.n))
-        end)
-        if fallbackOK then
-            self:SetRoute(commandName, "fallback")
-            return true, nil
-        end
-        problem = fallbackProblem
-    end
-    self:SetRoute(commandName, "unavailable")
-    return false, tostring(problem or "no live route")
+    self.Controller = controller
+    self.Problem = nil
+    return true
 end
 
 function lootCollector:Status()
-    local orbs = self.Stats.Orbs
-    local bags = self.Stats.Lootbags
-    local activeBindings = #self.Connections
-        + (self.LootbagFolderConnection and 1 or 0)
+    if not self.Controller then
+        return self.Problem and ("Loot reactor unavailable: " .. self.Problem)
+            or "Native loot reactor is ready on demand."
+    end
+    local called, stats = pcall(self.Controller, "stats")
+    if not called or type(stats) ~= "table" then
+        return "Native loot reactor loaded; scalar status is pending."
+    end
     return string.format(
-        "Native routes: Claim Orbs %s | Collect Lootbag %s\n"
-        .. "Orbs: queued %d | last batch %d | batches/IDs %d/%d | in flight %d | ack/retry/expired/error %d/%d/%d/%d\n"
-        .. "Lootbags: tracked %d | waiting ready %d | in flight %d | sent/ack/retry/expired/skipped/error %d/%d/%d/%d/%d/%d\n"
-        .. "Connections: generation %d.%d | active bindings %d | per-item %d",
-        self.Route["Claim Orbs"],
-        self.Route["Collect Lootbag"],
-        #self.OrbQueue,
-        orbs.LastBatch,
-        orbs.Batches,
-        orbs.Sent,
-        self:OrbInFlightCount(),
-        orbs.Acknowledged,
-        orbs.Retried,
-        orbs.Expired,
-        orbs.Errors,
-        self.LootbagRecordCount,
-        self.LootbagWaitingReady,
-        self.LootbagInFlightCount,
-        bags.Sent,
-        bags.Acknowledged,
-        bags.Retried,
-        bags.Expired,
-        bags.Skipped,
-        bags.Errors,
-        self.Generation,
-        self.WorldGeneration,
-        activeBindings,
-        self.RecordConnectionCount
+        "Orbs pending/sent/errors: %d/%d/%d\nLootbags waiting/sent/retried/errors: %d/%d/%d/%d",
+        tonumber(stats.PendingOrbs) or 0,
+        tonumber(stats.OrbIdsSent) or 0,
+        tonumber(stats.OrbErrors) or 0,
+        tonumber(stats.WaitingBags) or 0,
+        tonumber(stats.BagSent) or 0,
+        tonumber(stats.BagRetried) or 0,
+        tonumber(stats.BagErrors) or 0
     )
-end
-
-function lootCollector:MarkStatus()
-    self.StatusDirty = true
-    if self.StatusScheduled or not self.WorkerActive then return end
-    self.StatusScheduled = true
-    local generation = self.Generation
-    task.delay(1, function()
-        if generation ~= self.Generation then return end
-        self.StatusScheduled = false
-        if not self.WorkerActive or not self.StatusDirty then return end
-        self.StatusDirty = false
-        statusSetters.Set("Loot", self:Status())
-    end)
-end
-
-function lootCollector:OrbInFlightCount()
-    return self.OrbInFlightSize
-end
-
-function lootCollector:QueueOrb(orbId, attempt)
-    if not self.WorkerActive or not config.Orbs then return end
-    orbId = tostring(orbId or "")
-    if orbId == "" or self.OrbQueued[orbId] or self.OrbInFlight[orbId] then return end
-    if #self.OrbQueue >= LOOT_LIMITS.OrbQueue
-        or self.OrbInFlightSize + #self.OrbQueue >= LOOT_LIMITS.OrbInFlight then
-        self.Stats.Orbs.Expired = self.Stats.Orbs.Expired + 1
-        self:ScheduleOrbFlush(LOOT_LIMITS.OrbBatchInterval + LOOT_LIMITS.OrbBatchJitter)
-        self:MarkStatus()
-        return
-    end
-    self.OrbQueued[orbId] = true
-    self.OrbQueuedAt[orbId] = os.clock()
-    self.OrbAttempts[orbId] = tonumber(attempt) or self.OrbAttempts[orbId] or 0
-    self.OrbQueue[#self.OrbQueue + 1] = orbId
-    -- Orb visuals are parented by the game after a random delay of up to 0.25s.
-    -- Never claim a fresh ID before that native creation window has elapsed.
-    self:ScheduleOrbFlush(LOOT_LIMITS.OrbBatchInterval + LOOT_LIMITS.OrbBatchJitter)
-    self:MarkStatus()
-end
-
-function lootCollector:ScheduleOrbFlush(delaySeconds)
-    if not self.WorkerActive or not config.Orbs then return end
-    local due = os.clock() + math.max(tonumber(delaySeconds) or LOOT_LIMITS.OrbBatchInterval, 0)
-    if self.OrbFlushDue and self.OrbFlushDue <= due then return end
-    self.OrbFlushDue = due
-    self.OrbFlushToken = self.OrbFlushToken + 1
-    local tokenValue = self.OrbFlushToken
-    local generation = self.Generation
-    local worldGeneration = self.WorldGeneration
-    task.delay(math.max(due - os.clock(), 0), function()
-        if tokenValue ~= self.OrbFlushToken or generation ~= self.Generation
-            or worldGeneration ~= self.WorldGeneration then return end
-        self.OrbFlushDue = nil
-        self:FlushOrbs()
-    end)
-end
-
-function lootCollector:FlushOrbs()
-    if not self.WorkerActive or not config.Orbs or #self.OrbQueue == 0 then return end
-    local queuedIds = self.OrbQueue
-    local queuedSet = self.OrbQueued
-    local now = os.clock()
-    local ids = {}
-    local carry = {}
-    local carrySet = {}
-    local nextDelay
-    for index = 1, #queuedIds do
-        local orbId = queuedIds[index]
-        if queuedSet[orbId] then
-            local age = now - (self.OrbQueuedAt[orbId] or now)
-            if age >= LOOT_LIMITS.OrbBatchInterval and #ids < LOOT_LIMITS.OrbBatchSize then
-                ids[#ids + 1] = orbId
-                self.OrbQueuedAt[orbId] = nil
-            else
-                carry[#carry + 1] = orbId
-                carrySet[orbId] = true
-                local waitFor = math.max(LOOT_LIMITS.OrbBatchInterval - age, 0)
-                nextDelay = nextDelay and math.min(nextDelay, waitFor) or waitFor
-            end
-        end
-    end
-    self.OrbQueue = carry
-    self.OrbQueued = carrySet
-    if #carry > 0 then
-        local carryDelay = nextDelay and nextDelay > 0
-            and (nextDelay + LOOT_LIMITS.OrbBatchJitter)
-            or (LOOT_LIMITS.OrbBatchInterval + LOOT_LIMITS.OrbBatchJitter)
-        self:ScheduleOrbFlush(carryDelay)
-    end
-    if #ids == 0 then
-        self:MarkStatus()
-        return
-    end
-    local attempts = {}
-    for index = 1, #ids do
-        local orbId = ids[index]
-        local attempt = (tonumber(self.OrbAttempts[orbId]) or 0) + 1
-        attempts[orbId] = attempt
-        if not self.OrbInFlight[orbId] then
-            self.OrbInFlight[orbId] = { SentAt = now, Attempts = attempt }
-            self.OrbInFlightSize = self.OrbInFlightSize + 1
-        end
-    end
-
-    local fired = self:FireNative("Claim Orbs", ids)
-    if fired then
-        local stats = self.Stats.Orbs
-        stats.LastBatch = #ids
-        stats.Batches = stats.Batches + 1
-        stats.Sent = stats.Sent + #ids
-        self:ScheduleOrbRetry()
-    else
-        local stats = self.Stats.Orbs
-        stats.Errors = stats.Errors + #ids
-        for index = 1, #ids do
-            local orbId = ids[index]
-            if self.OrbInFlight[orbId] then
-                self.OrbInFlight[orbId] = nil
-                self.OrbInFlightSize = math.max(self.OrbInFlightSize - 1, 0)
-            end
-            if attempts[orbId] < 2 then
-                stats.Retried = stats.Retried + 1
-                self:QueueOrb(orbId, attempts[orbId])
-            else
-                self.OrbAttempts[orbId] = nil
-                stats.Expired = stats.Expired + 1
-            end
-        end
-    end
-    self:MarkStatus()
-end
-
-function lootCollector:ScheduleOrbRetry(delaySeconds)
-    if not self.WorkerActive or not config.Orbs or not next(self.OrbInFlight) then return end
-    local due = os.clock() + math.max(tonumber(delaySeconds) or LOOT_LIMITS.OrbAckTimeout, 0)
-    if self.OrbRetryDue and self.OrbRetryDue <= due then return end
-    self.OrbRetryDue = due
-    self.OrbRetryToken = self.OrbRetryToken + 1
-    local tokenValue = self.OrbRetryToken
-    local generation = self.Generation
-    local worldGeneration = self.WorldGeneration
-    task.delay(math.max(due - os.clock(), 0), function()
-        if tokenValue ~= self.OrbRetryToken or generation ~= self.Generation
-            or worldGeneration ~= self.WorldGeneration then return end
-        self.OrbRetryDue = nil
-        self:ProcessOrbRetries()
-    end)
-end
-
-function lootCollector:ProcessOrbRetries()
-    if not self.WorkerActive or not config.Orbs then return end
-    local now = os.clock()
-    local retryIds = {}
-    local expireIds = {}
-    local nextDelay
-    for orbId, state in pairs(self.OrbInFlight) do
-        local elapsed = now - (state.SentAt or now)
-        if elapsed >= LOOT_LIMITS.OrbAckTimeout then
-            if (state.Attempts or 1) < 2 then
-                retryIds[#retryIds + 1] = orbId
-            else
-                expireIds[#expireIds + 1] = orbId
-            end
-        else
-            local waitFor = LOOT_LIMITS.OrbAckTimeout - elapsed
-            nextDelay = nextDelay and math.min(nextDelay, waitFor) or waitFor
-        end
-    end
-
-    for index = 1, #expireIds do
-        local orbId = expireIds[index]
-        if self.OrbInFlight[orbId] then
-            self.OrbInFlight[orbId] = nil
-            self.OrbInFlightSize = math.max(self.OrbInFlightSize - 1, 0)
-        end
-        self.OrbAttempts[orbId] = nil
-        self.Stats.Orbs.Expired = self.Stats.Orbs.Expired + 1
-    end
-
-    if #retryIds > 0 then
-        local fired = self:FireNative("Claim Orbs", retryIds)
-        if fired then
-            for index = 1, #retryIds do
-                local orbId = retryIds[index]
-                local state = self.OrbInFlight[orbId]
-                if state then
-                    state.Attempts = 2
-                    state.SentAt = now
-                    self.OrbAttempts[orbId] = 2
-                end
-            end
-            self.Stats.Orbs.Retried = self.Stats.Orbs.Retried + #retryIds
-            nextDelay = nextDelay and math.min(nextDelay, LOOT_LIMITS.OrbAckTimeout)
-                or LOOT_LIMITS.OrbAckTimeout
-        else
-            self.Stats.Orbs.Errors = self.Stats.Orbs.Errors + #retryIds
-            for index = 1, #retryIds do
-                local orbId = retryIds[index]
-                if self.OrbInFlight[orbId] then
-                    self.OrbInFlight[orbId] = nil
-                    self.OrbInFlightSize = math.max(self.OrbInFlightSize - 1, 0)
-                end
-                self.OrbAttempts[orbId] = nil
-                self.Stats.Orbs.Expired = self.Stats.Orbs.Expired + 1
-            end
-        end
-    end
-
-    if next(self.OrbInFlight) then
-        self:ScheduleOrbRetry(nextDelay or LOOT_LIMITS.OrbAckTimeout)
-    end
-    self:MarkStatus()
-end
-
-function lootCollector:OnOrbRemoved(orbId)
-    orbId = tostring(orbId or "")
-    if orbId == "" then return end
-    local known = self.OrbQueued[orbId] or self.OrbInFlight[orbId] ~= nil
-    self.OrbQueued[orbId] = nil
-    self.OrbQueuedAt[orbId] = nil
-    if self.OrbInFlight[orbId] then
-        self.OrbInFlight[orbId] = nil
-        self.OrbInFlightSize = math.max(self.OrbInFlightSize - 1, 0)
-    end
-    self.OrbAttempts[orbId] = nil
-    if known then
-        self.Stats.Orbs.Acknowledged = self.Stats.Orbs.Acknowledged + 1
-        self:MarkStatus()
-    end
-end
-
-function lootCollector:DisconnectRecord(record)
-    if not record then return end
-    local count = 0
-    for _, key in ipairs({ "ReadyConnection", "ReadyAttributeConnection",
-        "ReadyLegacyAttributeConnection", "RemovedConnection" }) do
-        if record[key] then
-            disconnectConnection(record[key])
-            record[key] = nil
-            count = count + 1
-        end
-    end
-    self.RecordConnectionCount = math.max(self.RecordConnectionCount - count, 0)
-end
-
-function lootCollector:DropLootbagRecord(record, expired)
-    if not record or self.LootbagRecords[record.Id] ~= record then return end
-    self:DisconnectRecord(record)
-    if record.State == "waiting-ready" then
-        self.LootbagWaitingReady = math.max(self.LootbagWaitingReady - 1, 0)
-    end
-    self.LootbagRecords[record.Id] = nil
-    self.LootbagRecordCount = math.max(self.LootbagRecordCount - 1, 0)
-    record.Instance = nil
-    record.State = "closed"
-    if expired then
-        self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
-    end
-end
-
-function lootCollector:AddRecordConnection(record, key, connection)
-    if not record or not connection then return end
-    disconnectConnection(record[key])
-    if not record[key] then self.RecordConnectionCount = self.RecordConnectionCount + 1 end
-    record[key] = connection
-end
-
-function lootCollector:TryCollectLootbag(record)
-    if not record or self.LootbagRecords[record.Id] ~= record
-        or record.Generation ~= self.WorldGeneration or record.State == "sending" then return end
-    if record.NextAttemptAt and os.clock() < record.NextAttemptAt then return end
-    local item = record.Instance
-    if not item or not item.Parent then
-        self:DropLootbagRecord(record, true)
-        self:MarkStatus()
-        return
-    end
-    if readObjectValue(item, "Collected") == true then
-        self:DropLootbagRecord(record, false)
-        self:MarkStatus()
-        return
-    end
-    if readObjectValue(item, "ReadyForCollection") ~= true then return end
-
-    local position = getInstancePosition(item)
-    if typeof(position) ~= "Vector3" then
-        self.Stats.Lootbags.Errors = self.Stats.Lootbags.Errors + 1
-        record.NextAttemptAt = os.clock() + 0.5
-        self:ScheduleLootTimer(0.5)
-        self:MarkStatus()
-        return
-    end
-
-    record.State = "sending"
-    record.Attempts = (record.Attempts or 0) + 1
-    local fired = self:FireNative("Collect Lootbag", record.Id, position)
-    if not fired then
-        self.Stats.Lootbags.Errors = self.Stats.Lootbags.Errors + 1
-        if record.Attempts < 2 then
-            record.State = "waiting-ready"
-            record.NextAttemptAt = os.clock() + 0.5
-            self.Stats.Lootbags.Retried = self.Stats.Lootbags.Retried + 1
-            self:ScheduleLootTimer(0.5)
-        else
-            self:DropLootbagRecord(record, true)
-        end
-        self:MarkStatus()
-        return
-    end
-
-    self.Stats.Lootbags.Sent = self.Stats.Lootbags.Sent + 1
-    self:DisconnectRecord(record)
-    if self.LootbagRecords[record.Id] == record then
-        self.LootbagRecords[record.Id] = nil
-        self.LootbagRecordCount = math.max(self.LootbagRecordCount - 1, 0)
-        self.LootbagWaitingReady = math.max(self.LootbagWaitingReady - 1, 0)
-    end
-    self.LootbagInFlight[record.Id] = {
-        SentAt = os.clock(),
-        Attempts = record.Attempts,
-        Position = position,
-    }
-    self.LootbagInFlightCount = self.LootbagInFlightCount + 1
-    record.Instance = nil
-    record.State = "sent"
-    setObjectBoolean(item, "Collected", true)
-    pcall(function() item:Destroy() end)
-    self:ScheduleLootTimer(LOOT_LIMITS.LootbagAckTimeout)
-    self:MarkStatus()
-end
-
-function lootCollector:WatchLootbag(record, item)
-    if not record or self.LootbagRecords[record.Id] ~= record
-        or record.Generation ~= self.WorldGeneration or not item or not item.Parent then return end
-    if record.Instance == item then
-        self:TryCollectLootbag(record)
-        return
-    end
-    if record.State == "waiting-ready" then
-        self.LootbagWaitingReady = math.max(self.LootbagWaitingReady - 1, 0)
-    end
-    self:DisconnectRecord(record)
-    record.Instance = item
-    record.State = "waiting-ready"
-    self.LootbagWaitingReady = self.LootbagWaitingReady + 1
-
-    local function readyChanged()
-        if record.Generation == self.WorldGeneration then self:TryCollectLootbag(record) end
-    end
-    local readyValue = item:FindFirstChild("ReadyForCollection_Attr")
-        or item:FindFirstChild("ReadyForCollection")
-    if readyValue and readyValue:IsA("ValueBase") then
-        local ok, connection = pcall(function() return readyValue.Changed:Connect(readyChanged) end)
-        if ok then self:AddRecordConnection(record, "ReadyConnection", connection) end
-    end
-    local okAttribute, attributeConnection = pcall(function()
-        return item:GetAttributeChangedSignal("ReadyForCollection"):Connect(readyChanged)
-    end)
-    if okAttribute then
-        self:AddRecordConnection(record, "ReadyAttributeConnection", attributeConnection)
-    end
-    local okLegacy, legacyConnection = pcall(function()
-        return item:GetAttributeChangedSignal("ReadyForCollection_Attr"):Connect(readyChanged)
-    end)
-    if okLegacy then
-        self:AddRecordConnection(record, "ReadyLegacyAttributeConnection", legacyConnection)
-    end
-    local okRemoved, removedConnection = pcall(function()
-        return item.AncestryChanged:Connect(function(_, parent)
-            if parent == nil and self.LootbagRecords[record.Id] == record then
-                self:DropLootbagRecord(record, true)
-                self:MarkStatus()
-            end
-        end)
-    end)
-    if okRemoved then self:AddRecordConnection(record, "RemovedConnection", removedConnection) end
-    self:TryCollectLootbag(record)
-end
-
-function lootCollector:CreateLootbagRecord(lootbagId, item)
-    if not self.WorkerActive or not config.Lootbags then return nil end
-    lootbagId = tostring(lootbagId or "")
-    if lootbagId == "" then return nil end
-    local existing = self.LootbagRecords[lootbagId]
-    if existing then
-        if item and not existing.Instance then self:WatchLootbag(existing, item) end
-        return existing
-    end
-    if self.LootbagInFlight[lootbagId] then return nil end
-    if self.LootbagRecordCount + self.LootbagInFlightCount >= LOOT_LIMITS.LootbagRecords then
-        self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
-        self:MarkStatus()
-        return nil
-    end
-    local record = {
-        Id = lootbagId,
-        CreatedAt = os.clock(),
-        Attempts = 0,
-        Generation = self.WorldGeneration,
-        State = "waiting-instance",
-    }
-    self.LootbagRecords[lootbagId] = record
-    self.LootbagRecordCount = self.LootbagRecordCount + 1
-    if item then self:WatchLootbag(record, item) end
-    self:ScheduleLootTimer(1)
-    self:MarkStatus()
-    return record
-end
-
-function lootCollector:RefreshLootbagFolder()
-    local things = self:GetThings()
-    local folder = config.Lootbags and things and things:FindFirstChild("Lootbags") or nil
-    if folder == self.LootbagFolder then return folder end
-    disconnectConnection(self.LootbagFolderConnection)
-    self.LootbagFolderConnection = nil
-    self.LootbagFolder = folder
-    if folder then
-        self.LootbagFolderConnection = folder.ChildAdded:Connect(function(item)
-            if not self.WorkerActive or not config.Lootbags then return end
-            local lootbagId = tostring(readObjectValue(item, "ID") or item.Name or "")
-            local allowed, resolved = localLootOwner(item)
-            if resolved and not allowed then
-                self.Stats.Lootbags.Skipped = self.Stats.Lootbags.Skipped + 1
-                self:MarkStatus()
-                return
-            end
-            local record = self.LootbagRecords[lootbagId]
-                or self:CreateLootbagRecord(lootbagId, item)
-            if record then self:WatchLootbag(record, item) end
-        end)
-    end
-    self:MarkStatus()
-    return folder
-end
-
-function lootCollector:RefreshOrbFolder()
-    local things = self:GetThings()
-    local folder = config.Orbs and things and things:FindFirstChild("Orbs") or nil
-    if folder == self.OrbFolder then return folder end
-    disconnectConnection(self.OrbFolderAddedConnection)
-    disconnectConnection(self.OrbFolderRemovedConnection)
-    self.OrbFolderAddedConnection = nil
-    self.OrbFolderRemovedConnection = nil
-    self.OrbFolder = folder
-    if folder then
-        self.OrbFolderAddedConnection = folder.ChildAdded:Connect(function(item)
-            if self.WorkerActive and config.Orbs then self:QueueOrb(item.Name) end
-        end)
-        self.OrbFolderRemovedConnection = folder.ChildRemoved:Connect(function(item)
-            if self.WorkerActive then self:OnOrbRemoved(item.Name) end
-        end)
-    end
-    self:MarkStatus()
-    return folder
-end
-
-function lootCollector:InitialWorldScan()
-    local orbCount = 0
-    local lootbagCount = 0
-    if config.Orbs then
-        local orbs = self:RefreshOrbFolder()
-        if orbs then
-            local children = orbs:GetChildren()
-            for index = 1, math.min(#children, LOOT_LIMITS.InitialOrbScan) do
-                self:QueueOrb(children[index].Name)
-                orbCount = orbCount + 1
-            end
-        end
-    end
-    if config.Lootbags then
-        local folder = self:RefreshLootbagFolder()
-        if folder then
-            local children = folder:GetChildren()
-            for index = 1, math.min(#children, LOOT_LIMITS.InitialLootbagScan) do
-                local item = children[index]
-                local allowed, resolved = localLootOwner(item)
-                if not resolved or allowed then
-                    local lootbagId = tostring(readObjectValue(item, "ID") or item.Name or "")
-                    self:CreateLootbagRecord(lootbagId, item)
-                    lootbagCount = lootbagCount + 1
-                else
-                    self.Stats.Lootbags.Skipped = self.Stats.Lootbags.Skipped + 1
-                end
-            end
-        end
-    end
-    trace("loot reactor initial scan",
-        "orbs=" .. tostring(orbCount) .. " | lootbags=" .. tostring(lootbagCount))
-    self:MarkStatus()
-end
-
-function lootCollector:OnSpawnLootbag(lootbagId)
-    if not self.WorkerActive or not config.Lootbags then return end
-    local folder = self:RefreshLootbagFolder()
-    local item = folder and folder:FindFirstChild(tostring(lootbagId)) or nil
-    self:CreateLootbagRecord(lootbagId, item)
-end
-
-function lootCollector:OnRemoveLootbag(lootbagId)
-    lootbagId = tostring(lootbagId or "")
-    if lootbagId == "" then return end
-    local record = self.LootbagRecords[lootbagId]
-    if record then self:DropLootbagRecord(record, false) end
-    if self.LootbagInFlight[lootbagId] then
-        self.LootbagInFlight[lootbagId] = nil
-        self.LootbagInFlightCount = math.max(self.LootbagInFlightCount - 1, 0)
-        self.Stats.Lootbags.Acknowledged = self.Stats.Lootbags.Acknowledged + 1
-    end
-    self:MarkStatus()
-end
-
-function lootCollector:ScheduleLootTimer(delaySeconds)
-    if not self.WorkerActive or not config.Lootbags then return end
-    local due = os.clock() + math.max(tonumber(delaySeconds) or 1, 0)
-    if self.LootTimerDue and self.LootTimerDue <= due then return end
-    self.LootTimerDue = due
-    self.LootTimerToken = self.LootTimerToken + 1
-    local tokenValue = self.LootTimerToken
-    local generation = self.Generation
-    local worldGeneration = self.WorldGeneration
-    task.delay(math.max(due - os.clock(), 0), function()
-        if tokenValue ~= self.LootTimerToken or generation ~= self.Generation
-            or worldGeneration ~= self.WorldGeneration then return end
-        self.LootTimerDue = nil
-        self:ProcessLootTimer()
-    end)
-end
-
-function lootCollector:ProcessLootTimer()
-    if not self.WorkerActive or not config.Lootbags then return end
-    local now = os.clock()
-    local folder = self:RefreshLootbagFolder()
-    local records = {}
-    for _, record in pairs(self.LootbagRecords) do records[#records + 1] = record end
-    for index = 1, #records do
-        local record = records[index]
-        if self.LootbagRecords[record.Id] == record then
-            if not record.Instance and folder then
-                local item = folder:FindFirstChild(record.Id)
-                if item then self:WatchLootbag(record, item) end
-            end
-            if self.LootbagRecords[record.Id] == record then
-                if now - record.CreatedAt >= LOOT_LIMITS.LootbagRecordTimeout then
-                    self:DropLootbagRecord(record, true)
-                elseif record.Instance and (not record.NextAttemptAt or now >= record.NextAttemptAt) then
-                    record.NextAttemptAt = nil
-                    self:TryCollectLootbag(record)
-                end
-            end
-        end
-    end
-
-    local inFlight = {}
-    for lootbagId, state in pairs(self.LootbagInFlight) do
-        if now - (state.SentAt or now) >= LOOT_LIMITS.LootbagAckTimeout then
-            inFlight[#inFlight + 1] = { Id = lootbagId, State = state }
-        end
-    end
-    for index = 1, #inFlight do
-        local entry = inFlight[index]
-        local state = self.LootbagInFlight[entry.Id]
-        if state == entry.State then
-            if (state.Attempts or 1) < 2 then
-                local fired = self:FireNative("Collect Lootbag", entry.Id, state.Position)
-                if fired then
-                    state.Attempts = 2
-                    state.SentAt = now
-                    self.Stats.Lootbags.Retried = self.Stats.Lootbags.Retried + 1
-                else
-                    self.LootbagInFlight[entry.Id] = nil
-                    self.LootbagInFlightCount = math.max(self.LootbagInFlightCount - 1, 0)
-                    self.Stats.Lootbags.Errors = self.Stats.Lootbags.Errors + 1
-                    self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
-                end
-            else
-                self.LootbagInFlight[entry.Id] = nil
-                self.LootbagInFlightCount = math.max(self.LootbagInFlightCount - 1, 0)
-                self.Stats.Lootbags.Expired = self.Stats.Lootbags.Expired + 1
-            end
-        end
-    end
-
-    if next(self.LootbagRecords) or next(self.LootbagInFlight) then
-        self:ScheduleLootTimer(1)
-    end
-    self:MarkStatus()
-end
-
-function lootCollector:ClearWorldState()
-    disconnectConnection(self.OrbFolderAddedConnection)
-    disconnectConnection(self.OrbFolderRemovedConnection)
-    self.OrbFolderAddedConnection = nil
-    self.OrbFolderRemovedConnection = nil
-    self.OrbFolder = nil
-    disconnectConnection(self.LootbagFolderConnection)
-    self.LootbagFolderConnection = nil
-    self.LootbagFolder = nil
-    for _, record in pairs(self.LootbagRecords) do self:DisconnectRecord(record) end
-    table.clear(self.LootbagRecords)
-    table.clear(self.LootbagInFlight)
-    table.clear(self.OrbQueue)
-    table.clear(self.OrbQueued)
-    table.clear(self.OrbQueuedAt)
-    table.clear(self.OrbAttempts)
-    table.clear(self.OrbInFlight)
-    self.OrbInFlightSize = 0
-    self.LootbagRecordCount = 0
-    self.LootbagWaitingReady = 0
-    self.LootbagInFlightCount = 0
-    self.RecordConnectionCount = 0
-    self.OrbFlushToken = self.OrbFlushToken + 1
-    self.OrbFlushDue = nil
-    self.OrbRetryToken = self.OrbRetryToken + 1
-    self.OrbRetryDue = nil
-    self.LootTimerToken = self.LootTimerToken + 1
-    self.LootTimerDue = nil
-end
-
-function lootCollector:OnWorldChanged()
-    if not self.WorkerActive then return end
-    self.WorldGeneration = self.WorldGeneration + 1
-    self:ClearWorldState()
-    local generation = self.Generation
-    local worldGeneration = self.WorldGeneration
-    task.delay(0.25, function()
-        if generation ~= self.Generation or worldGeneration ~= self.WorldGeneration
-            or not self.WorkerActive then return end
-        self:InitialWorldScan()
-    end)
-    self:MarkStatus()
-end
-
-function lootCollector:ConnectNamedEvent(commandName, callback)
-    local network = networkReady()
-    if not network or type(network.Fired) ~= "function" then return false end
-    local ok, connection = pcall(function()
-        return network.Fired(commandName):Connect(callback)
-    end)
-    if ok and connection then
-        self:AddConnection(connection)
-        return true
-    end
-    return false
 end
 
 function lootCollector:StartWorker()
     if self.WorkerActive or not self:IsEnabled() then return end
-    self.Generation = self.Generation + 1
-    self.WorldGeneration = self.WorldGeneration + 1
-    self.WorkerActive = true
-    self:ProbeRoute("Claim Orbs")
-    self:ProbeRoute("Collect Lootbag")
-    self:ConnectNamedEvent("Orb Added", function(orbId)
-        self:QueueOrb(orbId)
-    end)
-    self:ConnectNamedEvent("Orb Removed", function(orbId)
-        self:OnOrbRemoved(orbId)
-    end)
-    self:ConnectNamedEvent("Spawn Lootbag", function(lootbagId)
-        self:OnSpawnLootbag(lootbagId)
-    end)
-    self:ConnectNamedEvent("Remove Lootbag", function(lootbagId)
-        self:OnRemoveLootbag(lootbagId)
-    end)
-    if Library.Signal and type(Library.Signal.Fired) == "function" then
-        local ok, connection = pcall(function()
-            return Library.Signal.Fired("World Changed"):Connect(function()
-                self:OnWorldChanged()
-            end)
-        end)
-        if ok then self:AddConnection(connection) end
+    local ready, problem = self:Ensure()
+    if not ready then
+        statusSetters.Set("Loot", "Loot reactor unavailable: " .. tostring(problem))
+        return
     end
-    self:InitialWorldScan()
-    self:MarkStatus()
+    local called, accepted, startProblem = pcall(self.Controller, "start", lootContext)
+    if called and accepted == true then
+        self.WorkerActive = true
+    else
+        self.Problem = tostring(called and startProblem or accepted)
+        statusSetters.Set("Loot", "Loot reactor start failed: " .. self.Problem)
+    end
 end
 
 function lootCollector:StopWorker()
-    self.Generation = self.Generation + 1
-    self.WorldGeneration = self.WorldGeneration + 1
+    if self.Controller then pcall(self.Controller, "stop") end
     self.WorkerActive = false
-    self.StatusScheduled = false
-    self.StatusDirty = false
-    self:DisconnectConnections()
-    self:ClearWorldState()
-    for _, commandName in ipairs({ "Claim Orbs", "Collect Lootbag" }) do
-        local cached = fireRemoteCache[commandName]
-        if typeof(cached) ~= "Instance" or not cached:IsDescendantOf(ReplicatedStorage) then
-            fireRemoteCache[commandName] = nil
-        end
-    end
     statusSetters.Set("Loot", "Native loot reactor disabled; no collection requests are being sent.")
 end
 
 function lootCollector:SyncWorker()
-    if not self.StartupArmed then
-        return
-    end
+    if not self.StartupArmed then return end
     if not self:IsEnabled() then
         if self.WorkerActive then self:StopWorker() end
         return
     end
-    if self.WorkerActive then
-        self:MarkStatus()
+    if not self.WorkerActive then
+        self:StartWorker()
         return
     end
-    self:StartWorker()
+    local called, accepted = pcall(self.Controller, "sync")
+    if not called or accepted ~= true then
+        self.WorkerActive = false
+        self:StartWorker()
+    end
 end
 
 track(player.Idled:Connect(function()
@@ -4630,7 +3294,7 @@ end
 UI.FarmHero = UI.FarmTab:Section({ Title = "01 / Adaptive Routing", Box = true, Opened = true })
 UI.FarmHero:Paragraph({
     Title = "RESERVE > JOIN > FARM > BREAK",
-    Desc = "Explicit UID routing fills up to 16 transport lanes while every accepted pet stays locked to one live target.",
+    Desc = "One bounded 16-lane pump assigns every free UID while accepted pets remain locked to one live target.",
 })
 UI.FarmHero:Toggle({
     Flag = "pet_farm",
@@ -4642,13 +3306,13 @@ UI.FarmHero:Toggle({
         if config.PetFarm == enabled then return end
         config.PetFarm = enabled
         if enabled and not petFarm.Engine and not petFarm.Loading then
-            task.spawn(function()
+            task.defer(function()
                 local ready, problem = petFarm:EnsureEngine()
                 if not ready then trace("pet engine load", tostring(problem)) end
             end)
         end
-        reconcileFarmWatchdog()
         requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
+        restartFarmWatchers()
     end,
 })
 UI.FarmHero:Dropdown({
@@ -4701,7 +3365,10 @@ UI.WorldDropdown = UI.TargetSection:Dropdown({
         local changed = config.World ~= value
         config.World = value
         refreshZoneDropdown(true)
-        if changed and config.PetFarm then requestFarmReset("world selection changed") end
+        if changed and config.PetFarm then
+            requestFarmReset("world selection changed")
+            restartFarmWatchers()
+        end
     end,
 })
 
@@ -4717,7 +3384,10 @@ UI.ZoneDropdown = UI.TargetSection:Dropdown({
     Callback = function(value)
         if config.Zone == value then return end
         config.Zone = value
-        if config.PetFarm then requestFarmReset("zone selection changed") end
+        if config.PetFarm then
+            requestFarmReset("zone selection changed")
+            restartFarmWatchers()
+        end
     end,
 })
 UI.LastZoneSignature = "Current World|" .. tostring(getCurrentWorld()) .. "|" .. table.concat(UI.InitialZones, "\0")
@@ -4911,12 +3581,12 @@ uiStageYield("reward controls")
 UI.GraphicsHero = UI.GraphicsTab:Section({ Title = "Client Performance Profile", Box = true, Opened = true })
 UI.GraphicsHero:Paragraph({
     Title = "CROWDED-ZONE RENDER FIREWALL",
-    Desc = "Keeps the map and egg stands readable while removing combat particles, health bars and farm-only models.",
+    Desc = "Only farm roots and __DEBRIS are reduced; the map, camera, eggs, machines and UI are never traversed.",
 })
 UI.GraphicsHero:Toggle({
     Flag = "balanced_potato_mode",
     Title = "Farm Anti-Lag",
-    Desc = "Continuously suppresses new effects from every player; rejoin to restore visuals already simplified",
+    Desc = "Processes each new farm effect once; rejoin to restore visuals already simplified",
     Value = false,
     Callback = function(value) setPotatoMode(value == true) end,
 })
@@ -5085,19 +3755,42 @@ local function hideInterface()
 end
 
 local function finishShutdown()
-    local shutdownDeadline = os.clock() + 1
-    while (farmResetRunning or allocatorBusy) and os.clock() < shutdownDeadline do
-        RunService.Heartbeat:Wait()
-    end
-
     local cleaned, problem = pcall(clearAssignments, true)
     if not cleaned then warn("[PSX SLIM] shutdown cleanup: " .. tostring(problem)) end
+    petLifecycleBindToken = petLifecycleBindToken + 1
+    farmRecoveryToken = farmRecoveryToken + 1
+    farmZoneWatcherToken = farmZoneWatcherToken + 1
+    farmRecoveryArmed = false
+    allocatorRequested = false
+    allocatorBusy = false
+    petCacheValid = false
+    cachedPetIds = {}
+
+    coinGeneration = coinGeneration + 1
+    snapshotBusy = false
+    snapshotPrimed = false
+    coinIndex:DisconnectFolder()
+    table.clear(coinRecords)
+    table.clear(coinIndex.Models)
+    table.clear(coinIndex.IdByModel)
+    coinIndex.Cache.Signature = nil
+    coinIndex.Cache.Revision = -1
+    coinIndex.Cache.Targets = {}
+    coinIndex.Cache.World = nil
+    coinIndex.Cache.Zone = nil
+    table.clear(rejectedUntil)
+    table.clear(boundsCache)
+    resetAreaCatalog()
+    table.clear(commandRemoteCache)
+    table.clear(eventRemoteCache)
+    table.clear(fireRemoteCache)
 end
 
 local function shutdown(reason)
     if shutdownStarted then return end
     shutdownStarted = true
     trace("stop requested", tostring(reason or "reload"))
+    if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
     config.PetFarm = false
     config.AutoTechDiamondPack = false
     config.AutoVIPRewards = false
@@ -5112,23 +3805,35 @@ local function shutdown(reason)
     config.AutoSuperLucky = false
     config.AutoUltraLucky = false
     config.AutoEgg = false
-    reconcileFarmWatchdog()
+    disconnectAll()
+    restartFarmWatchers()
     reconcileDiamondWorker()
     reconcileRewardWorker()
-    if petFarm.Engine then pcall(petFarm.Engine, "reset") end
+    finishShutdown()
+    if petFarm.Engine then
+        pcall(petFarm.Engine, "stop")
+        petFarm.Engine = nil
+    end
     stopAutoEggModule()
     machineModules:StopAll()
     stopBoostModule()
     resetSupportCoordinator()
+    autoEggController = nil
+    boostController = nil
+    supportController = nil
+    for _, entry in pairs(machineModules) do
+        if type(entry) == "table" then entry.Controller = nil end
+    end
     moduleLoadState.Busy = false
     moduleLoadState.Owner = nil
     moduleLoadState.NextAt = 0
+    table.clear(moduleLoadState.Cache)
     config.PotatoMode = false
     stopGraphics()
     lootCollector:StopWorker()
-    farmResetRequested = false
-    if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
-    disconnectAll()
+    lootCollector.Controller = nil
+    farmResetScheduled = false
+    farmResetRunning = false
     if env.PSX_OG_SLIM_CLEANUP == shutdown then env.PSX_OG_SLIM_CLEANUP = nil end
     if env.PSX_OG_UI_CLEANUP == shutdown then env.PSX_OG_UI_CLEANUP = nil end
 
@@ -5146,11 +3851,6 @@ local function shutdown(reason)
         end
     end)
 
-    if reason == "button" then
-        task.spawn(finishShutdown)
-    else
-        finishShutdown()
-    end
 end
 
 env.PSX_OG_SLIM_CLEANUP = shutdown
@@ -5232,72 +3932,68 @@ local function updateCurrencyMonitorStatus()
     end
 end
 
-task.spawn(function()
+local function updateRuntimeTelemetry()
+    if not running() then return end
     local nextZoneRefreshAt, nextEggRefreshAt = 0, 0
-    while task.wait(1) do
-        if not running() then break end
+    local function tick()
+        if not running() then return end
         local screenGui = WindUI and WindUI.ScreenGui
-        if screenGui and screenGui.Enabled == false then continue end
-        local now = os.clock()
-        updateCurrencyMonitorStatus()
-        if now >= nextZoneRefreshAt then
-            nextZoneRefreshAt = now + 1.5
-            refreshZoneDropdown(false)
+        if not screenGui or screenGui.Enabled ~= false then
+            local now = os.clock()
+            updateCurrencyMonitorStatus()
+            if now >= nextZoneRefreshAt then
+                nextZoneRefreshAt = now + 1.5
+                refreshZoneDropdown(false)
+            end
+            if now >= nextEggRefreshAt then
+                nextEggRefreshAt = now + 2
+                refreshEggDropdown(false)
+            end
+            local equippedIds = petFarm.LastEquippedIds or {}
+            local equippedCount = tonumber(petFarm.EquippedCount) or #equippedIds
+            local assignedCount = assignmentCount()
+            local workingCount, joiningCount = petFarm:PhaseCounts()
+            local dispatchStats = petFarm:RefreshStats()
+            local networkState = networkReady() and "ready" or "waiting"
+            statusSetters.Farm(string.format(
+                "%s  >  %s\nTargets: %d | active intents: %d/%d | working: %d | joining: %d | true idle: %d\nContention: %d external pets on %d targets | target window: %d",
+                tostring(petFarm.LastWorld or "unknown"),
+                tostring(petFarm.LastZone or "unknown"),
+                tonumber(petFarm.LastTargetCount) or 0,
+                math.min(workingCount + joiningCount, equippedCount),
+                equippedCount,
+                workingCount,
+                joiningCount,
+                math.max(equippedCount - assignedCount, 0),
+                tonumber(petFarm.ExternalPetCount) or 0,
+                tonumber(petFarm.ContendedTargets) or 0,
+                tonumber(petFarm.TargetWindow) or 0
+            ))
+            statusSetters.Health(string.format(
+                "Network: %s | %s | allocator: %s\nBounded pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nRecoveries: %d | last: %s\nDriver: %s",
+                networkState,
+                petFarm.RouteSummary,
+                farmResetRunning and "reconfiguring" or "stable",
+                tonumber(dispatchStats.Limit) or 0,
+                tonumber(dispatchStats.PolicyMaxLanes) or tonumber(petFarm.PolicyLanes) or 16,
+                tonumber(dispatchStats.Active) or 0,
+                tonumber(dispatchStats.Queued) or 0,
+                math.floor((tonumber(dispatchStats.AverageRTT) or 0) * 1000 + 0.5),
+                tonumber(dispatchStats.Accepted) or 0,
+                tonumber(dispatchStats.Retries) or 0,
+                tonumber(dispatchStats.Rejected) or 0,
+                tonumber(dispatchStats.Errors) or 0,
+                idleRecoveryCount,
+                lastRecovery,
+                driverStatus
+            ))
         end
-        if now >= nextEggRefreshAt then
-            nextEggRefreshAt = now + 2
-            refreshEggDropdown(false)
-        end
-        local equippedIds = petFarm.LastEquippedIds or {}
-        local equippedCount = tonumber(petFarm.EquippedCount) or #equippedIds
-        local assignedCount = assignmentCount()
-        local lockedCount, pendingCount = petFarm:PhaseCounts()
-        local dispatchStats = petFarm:RefreshStats()
-        local networkState = networkReady() and "ready" or "waiting"
-        local signalState = Library.Signal and type(Library.Signal.Fire) == "function" and "ready" or "waiting"
-        local controllerState = runtimeDriverReady and "linked" or signalState
-        local runtimeActive, runtimeIdle, runtimeMissing = runtimePetCounts(equippedIds)
-        local runtimeLine = runtimeActive ~= nil
-            and string.format("Visual runtime: %d moving/farming | %d ready | %d unseen",
-                runtimeActive, runtimeIdle, runtimeMissing)
-            or "Visual runtime: optional game-state mirror is still being discovered"
-        statusSetters.Farm(string.format(
-            "%s  >  %s\nTargets: %d | active intents: %d/%d | confirmed: %d | joining: %d | true idle: %d\nContention: %d external pets on %d targets | window/shards: %d/%d\n%s",
-            tostring(petFarm.LastWorld or "unknown"),
-            tostring(petFarm.LastZone or "unknown"),
-            tonumber(petFarm.LastTargetCount) or 0,
-            math.min(lockedCount + pendingCount, equippedCount),
-            equippedCount,
-            lockedCount,
-            pendingCount,
-            math.max(equippedCount - assignedCount, 0),
-            tonumber(petFarm.ExternalPetCount) or 0,
-            tonumber(petFarm.ContendedTargets) or 0,
-            tonumber(petFarm.TargetWindow) or 0,
-            tonumber(petFarm.TargetShards) or 1,
-            runtimeLine
-        ))
-        statusSetters.Health(string.format(
-            "Network: %s | %s | runtime mirror: %s | allocator: %s\nUID lanes: %d/%d policy | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nRecoveries: %d | last: %s\nDriver: %s",
-            networkState,
-            petFarm.RouteSummary,
-            controllerState,
-            farmResetRunning and "reconfiguring" or "stable",
-            tonumber(dispatchStats.Limit) or 0,
-            tonumber(dispatchStats.PolicyMaxLanes) or tonumber(petFarm.PolicyLanes) or 16,
-            tonumber(dispatchStats.Active) or 0,
-            tonumber(dispatchStats.Queued) or 0,
-            math.floor((tonumber(dispatchStats.AverageRTT) or 0) * 1000 + 0.5),
-            tonumber(dispatchStats.Accepted) or 0,
-            tonumber(dispatchStats.Retries) or 0,
-            tonumber(dispatchStats.Rejected) or 0,
-            tonumber(dispatchStats.Errors) or 0,
-            idleRecoveryCount,
-            lastRecovery,
-            driverStatus
-        ))
+        task.delay(1, tick)
     end
-end)
+    task.delay(1, tick)
+end
+
+updateRuntimeTelemetry()
 
 pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
@@ -5306,7 +4002,7 @@ task.delay(LOOT_LIMITS.StartupDelay, function()
     if not running() or not lootCollector.StartupArmed then return end
     trace("07A loot reactor starting", "deferred=" .. tostring(LOOT_LIMITS.StartupDelay) .. "s")
     lootCollector:SyncWorker()
-    trace("07B loot reactor ready", "bindings=" .. tostring(#lootCollector.Connections))
+    trace("07B loot reactor ready", "active=" .. tostring(lootCollector.WorkerActive))
 end)
 task.defer(function()
     local ready, problem = petFarm:EnsureEngine()

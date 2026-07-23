@@ -24,21 +24,9 @@ local nested = engine("classify", {
 assert(nested["pet-a"] == true and nested["pet-c"] == true)
 assert(nested["pet-b"] == nil)
 
-local all = engine("classify", true, pets)
-assert(all["pet-a"] and all["pet-b"] and all["pet-c"])
-
-local none = engine("classify", false, pets)
-assert(next(none) == nil)
-
-assert(math.abs(engine("retry-delay", 1) - 0.06) < 0.0001)
-assert(math.abs(engine("retry-delay", 2) - 0.12) < 0.0001)
-assert(math.abs(engine("retry-delay", 3) - 0.24) < 0.0001)
-assert(math.abs(engine("retry-delay", 9) - 0.24) < 0.0001)
-
-task = {
-    spawn = function(callback) callback() end,
-    delay = function(_, callback) callback() end,
-}
+assert(math.abs(engine("retry-delay", 1) - 0.05) < 0.0001)
+assert(math.abs(engine("retry-delay", 2) - 0.15) < 0.0001)
+assert(math.abs(engine("retry-delay", 9) - 0.15) < 0.0001)
 
 local states = {}
 local fireCalls = 0
@@ -53,154 +41,109 @@ local network = {
     end,
 }
 
-local started, startProblem = engine("start", {
-    Running = function() return true end,
-    Enabled = function() return true end,
-    Resetting = function() return false end,
-    NetworkReady = function() return network end,
-    RecordAlive = function(record) return record.Alive end,
-    StateCurrent = function(petId, state) return states[petId] == state end,
-    TargetContainsPet = function() return false end,
-    OnAccepted = function(petId, state)
-        assert(states[petId] == state, "accepted callback received a stale lock")
-        state.Phase = "locked"
-        return true
-    end,
-    OnFailed = function() error("15-pet acceptance test must not fail") end,
-    MinLanes = 4,
-    InitialLanes = 16,
-    MaxLanes = 16,
-})
-assert(started == true, tostring(startProblem))
+local function context(overrides)
+    local value = {
+        Running = function() return true end,
+        Enabled = function() return true end,
+        Resetting = function() return false end,
+        NetworkReady = function() return network end,
+        RecordAlive = function(record) return record.Alive end,
+        StateCurrent = function(petId, state) return states[petId] == state end,
+        TargetContainsPet = function() return false end,
+        OnAccepted = function(petId, state)
+            assert(states[petId] == state, "accepted callback received a stale lock")
+            state.Phase = "working"
+            return true
+        end,
+        OnFailed = function() error("acceptance test must not fail") end,
+    }
+    for key, item in pairs(overrides or {}) do value[key] = item end
+    return value
+end
 
+assert(engine("start", context()) == true)
 for index = 1, 15 do
     local petId = "bulk-" .. tostring(index)
-    local state = { Phase = "pending" }
+    local state = { Phase = "joining" }
     states[petId] = state
-    local queued, queueProblem = engine("dispatch", {
+    local queued, problem = engine("dispatch", {
         CoinId = "coin-" .. tostring(index),
         Record = { Alive = true },
         Entries = { { PetId = petId, State = state } },
     })
-    assert(queued == true, tostring(queueProblem))
+    assert(queued == true, tostring(problem))
 end
 
 local dispatchStats = engine("stats")
 assert(dispatchStats.Accepted == 15, "all 15 explicit UIDs should be accepted")
 assert(dispatchStats.Rejected == 0 and dispatchStats.Errors == 0)
 assert(dispatchStats.Queued == 0 and dispatchStats.Active == 0)
-assert(fireCalls == 30, "each accepted lock needs exactly target + farm signals")
-for _, state in pairs(states) do assert(state.Phase == "locked") end
+assert(dispatchStats.Limit == 16 and dispatchStats.QueueCapacity == 64)
+assert(fireCalls == 30, "each accepted lock needs target + farm signals")
+for _, state in pairs(states) do assert(state.Phase == "working") end
 
-local beforeRejects = dispatchStats.Rejected
-local beforeRetries = dispatchStats.Retries
+-- A live target-pet set is authoritative and prevents a duplicate Join Coin.
+local joinCalls = 0
+network.Invoke = function()
+    joinCalls = joinCalls + 1
+    return false
+end
+local preflightState = { Phase = "joining" }
+states.preflight = preflightState
+assert(engine("start", context({
+    TargetContainsPet = function(_, petId) return petId == "preflight" end,
+})) == true)
+assert(engine("dispatch", {
+    CoinId = "already-attached",
+    Record = { Alive = true },
+    Entries = { { PetId = "preflight", State = preflightState } },
+}) == true)
+assert(joinCalls == 0, "live target preflight must suppress duplicate Join Coin")
+assert(preflightState.Phase == "working")
+
+-- Callers may stop a rejected target immediately; retry timing/caps are also
+-- asserted above and by the static zero-retention policy test.
 local failedCount = 0
 network.Invoke = function() return false end
-local failedState = { Phase = "pending" }
-states["bounded-failure"] = failedState
-
-local restarted = engine("start", {
-    Running = function() return true end,
-    Enabled = function() return true end,
-    Resetting = function() return false end,
-    NetworkReady = function() return network end,
-    RecordAlive = function(record) return record.Alive end,
-    StateCurrent = function(petId, state) return states[petId] == state end,
-    TargetContainsPet = function() return false end,
-    OnRetry = function(_, state) state.Phase = "retry" end,
+local failedState = { Phase = "joining" }
+states.failure = failedState
+assert(engine("start", context({
+    ShouldRetry = function() return false end,
     OnFailed = function(petId, state)
-        assert(states[petId] == state)
+        assert(petId == "failure" and states[petId] == state)
         states[petId] = nil
         failedCount = failedCount + 1
     end,
-})
-assert(restarted == true)
+})) == true)
 assert(engine("dispatch", {
     CoinId = "rejected-coin",
     Record = { Alive = true },
-    Entries = { { PetId = "bounded-failure", State = failedState } },
+    Entries = { { PetId = "failure", State = failedState } },
 }) == true)
+local rejected = engine("stats")
+assert(rejected.Rejected == 1,
+    "caller-stopped rejection must make one attempt; got " .. tostring(rejected.Rejected))
+assert(rejected.Retries == 0, "caller-stopped rejection must not enter retry state")
+assert(rejected.Queued == 0 and failedCount == 1 and states.failure == nil)
 
-local rejectedStats = engine("stats")
-assert(rejectedStats.Rejected - beforeRejects == 3,
-    "a rejected UID must stop after exactly three Join Coin attempts")
-assert(rejectedStats.Retries - beforeRetries == 2,
-    "three attempts require exactly two retries")
-assert(failedCount == 1 and states["bounded-failure"] == nil)
-
-local freshTargetFailures = 0
-local noRetryState = { Phase = "pending" }
-states["fresh-target"] = noRetryState
-assert(engine("start", {
-    Running = function() return true end,
-    Enabled = function() return true end,
-    Resetting = function() return false end,
-    NetworkReady = function() return network end,
-    RecordAlive = function(record) return record.Alive end,
-    StateCurrent = function(petId, state) return states[petId] == state end,
-    TargetContainsPet = function() return false end,
-    ShouldRetry = function(_, reason)
-        assert(string.find(reason, "rejected", 1, true))
-        return false
-    end,
-    OnFailed = function(petId, state)
-        assert(petId == "fresh-target" and state == noRetryState)
-        states[petId] = nil
-        freshTargetFailures = freshTargetFailures + 1
-    end,
-    MinLanes = 4,
-    InitialLanes = 16,
-    MaxLanes = 16,
-}) == true)
-local beforeFreshStats = engine("stats")
-assert(engine("dispatch", {
-    CoinId = "contended-coin",
-    Record = { Alive = true },
-    Entries = { { PetId = "fresh-target", State = noRetryState } },
-}) == true)
-local afterFreshStats = engine("stats")
-assert(afterFreshStats.Rejected - beforeFreshStats.Rejected == 1)
-assert(afterFreshStats.Retries == beforeFreshStats.Retries,
-    "a contended different-target coin must immediately select a fresh target")
-assert(freshTargetFailures == 1 and states["fresh-target"] == nil)
-assert(afterFreshStats.Limit == 16,
-    "application-level Join rejection must not collapse transport lanes")
-
+-- Transport errors do not collapse the fixed writer width.
 network.Invoke = function() error("transient transport failure") end
-local transportState = { Phase = "pending" }
-states["transport-failure"] = transportState
-assert(engine("start", {
-    Running = function() return true end,
-    Enabled = function() return true end,
-    Resetting = function() return false end,
-    NetworkReady = function() return network end,
-    RecordAlive = function(record) return record.Alive end,
-    StateCurrent = function(petId, state) return states[petId] == state end,
+local transportState = { Phase = "joining" }
+states.transport = transportState
+assert(engine("start", context({
     ShouldRetry = function() return false end,
-    OnFailed = function(petId, state)
-        assert(petId == "transport-failure" and state == transportState)
+    OnFailed = function(petId)
         states[petId] = nil
     end,
-    MinLanes = 4,
-    InitialLanes = 16,
-    MaxLanes = 16,
-}) == true)
+})) == true)
 assert(engine("dispatch", {
     CoinId = "transport-coin",
     Record = { Alive = true },
-    Entries = { { PetId = "transport-failure", State = transportState } },
+    Entries = { { PetId = "transport", State = transportState } },
 }) == true)
-local transportStats = engine("stats")
-assert(transportStats.Limit == 15,
-    "one transient transport failure must trim one lane instead of halving all lanes")
-assert(transportStats.FailureStreak == 1)
+local transport = engine("stats")
+assert(transport.Errors == 1 and transport.Retries == 0)
+assert(transport.Limit == 16 and transport.PolicyMaxLanes == 16,
+    "transport failure must not collapse the fixed 16-lane writer")
 
-assert(engine("set-limit", 8) == true)
-local limitedStats = engine("stats")
-assert(limitedStats.PolicyMaxLanes == 8 and limitedStats.Limit == 8)
-assert(engine("set-limit", 16) == true)
-local recoveringStats = engine("stats")
-assert(recoveringStats.PolicyMaxLanes == 16 and recoveringStats.Limit == 9,
-    "lifting backpressure should recover gradually instead of bursting")
-
-print("PASS pet farm engine fills 15 UID locks and resists transient/rejection lane collapse")
+print("PASS fixed 16-lane pet writer, live preflight and bounded retries")

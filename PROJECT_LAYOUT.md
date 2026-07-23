@@ -21,16 +21,50 @@ At startup the generated entry:
 
 WindUI and `automation_ui_module.lua` are startup dependencies. The remaining
 modules are declared at startup but downloaded only when their feature is used.
-Lazy loading does not weaken identity checks.
+`pet_farm_engine.lua` owns the fixed-width assignment writer and
+`loot_reactor.lua` owns the only orb/lootbag subscriptions. Lazy loading does
+not weaken identity checks.
 
 ## Runtime execution policy
 
-The active build has no global scheduler or retained per-event job registry.
-High-frequency game signals update bounded indexes and wake at most one
-feature-owned coalesced runner. Pet dispatch and graphics queues have explicit
-capacities; loot uses named game events, a bounded orb microbatch and
-ReadyForCollection signals instead of local physics. Disabling a feature clears
-its connections/state. STOP and reload invalidate every active worker token.
+The active build has no global scheduler, profiler, timer heap or retained
+per-event job registry. High-frequency game signals update bounded current-state
+indexes and wake at most one feature-owned coalesced runner.
+
+- Coins receive one initial folder scan and one initial `Get Coins` snapshot per
+  world. `ChildAdded`, `ChildRemoved` and named coin deltas maintain the live
+  registry afterwards.
+- Pet allocation is event-driven. Accepted pets stay locked until their target
+  disappears; one 16-wide writer owns Join/Target/Farm traffic and two bounded
+  retries.
+- Orb IDs are deduplicated into one current set and sent in a shared 0.25-second
+  native batch. Lootbags wait on readiness signals and have one bounded retry.
+- Farm FX observes only `__DEBRIS` and the Coins/Pets/Orbs/Lootbags roots. The
+  map, camera, eggs, machines, UI and Network containers are never traversed.
+
+Disabling a feature clears its connections/state. STOP and reload invalidate
+every active generation, empty current registries, clear remote caches and
+disconnect the graphics/loot roots.
+
+## Intentional bounded scans and waits
+
+The source audit intentionally leaves only the following cases:
+
+- the module-loader wait is an on-demand serialization gate with a 45-second
+  deadline; it is not a background worker;
+- the player currency fallback scans only the local player's descendants;
+- area bounds scan only the current `__MAP.Areas` hierarchy when the world
+  changes;
+- graphics calls `GetDescendants()` once when each narrow farm root is bound,
+  then uses `DescendantAdded`;
+- bounded `while` loops drain fixed queues (16 assignment lanes or 256 initial
+  FX objects), never the whole world per frame;
+- one `Heartbeat:Wait()` yields between staged UI construction groups;
+- anti-AFK's short wait runs only when Roblox emits `Player.Idled`.
+
+Diamond/reward/UI scheduling is implemented with one generation-safe delayed
+callback per feature. There are no active `task.spawn` workers in the main,
+farm, loot or graphics hot paths.
 
 ## Repository categories
 
@@ -61,4 +95,5 @@ The build fails if a tracked file is unclassified, a file appears in two
 categories, the suite version drifts, a pinned Git blob changes, a vendored
 dependency differs from its release identity, or a generated artifact is stale.
 The zero-retention test also checks the removed scheduler cannot re-enter the
-active graph and models a 100,000-event burst with no retained backlog.
+active graph, validates the native loot/pet boundaries and models a
+100,000-event burst with no retained backlog.

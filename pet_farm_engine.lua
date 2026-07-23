@@ -1,15 +1,13 @@
--- High-throughput explicit-UID transport for PSX OG pet farming.
--- The caller owns target selection and lock state. This module only schedules
--- named Network calls, classifies Join Coin replies and reports outcomes.
+-- Event-driven bounded transport for PSX OG pet farming.
+-- The caller owns target selection and lock state. This module owns one queue,
+-- one retry timer and a fixed number of concurrent yielding Network invokes.
 
-local MODULE_VERSION = "2.3.0"
-local DEFAULT_MIN_LANES = 4
-local DEFAULT_MAX_LANES = 16
-local DEFAULT_INITIAL_LANES = 12
-local MAX_JOIN_ATTEMPTS = 3
+local MODULE_VERSION = "3.0.0"
+local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 64
+local MAX_JOIN_ATTEMPTS = 3
+local RETRY_DELAYS = { 0.05, 0.15 }
 local scheduler = task or {
-    spawn = function(callback) coroutine.wrap(callback)() end,
     delay = function(_, callback) coroutine.wrap(callback)() end,
 }
 
@@ -18,25 +16,21 @@ local run = {
     Epoch = 0,
     Queue = {},
     Head = 1,
+    Delayed = {},
+    RetryToken = 0,
+    RetryDue = nil,
+    PendingByPet = {},
     Active = 0,
-    Limit = DEFAULT_INITIAL_LANES,
-    MinLanes = DEFAULT_MIN_LANES,
-    MaxLanes = DEFAULT_MAX_LANES,
-    PolicyMaxLanes = DEFAULT_MAX_LANES,
+    Limit = DEFAULT_DISPATCH_WIDTH,
     Accepted = 0,
     Rejected = 0,
     Errors = 0,
     Retries = 0,
     Stale = 0,
-    CompletedJobs = 0,
-    CleanStreak = 0,
-    FailureStreak = 0,
+    Dropped = 0,
     AverageRTT = 0,
     LastRTT = 0,
     LastProblem = "none",
-    PendingByPet = {},
-    PeakQueued = 0,
-    Dropped = 0,
 }
 
 local pump
@@ -53,9 +47,12 @@ local function queueSize()
 end
 
 local function compactQueue()
-    if run.Head <= 64 or run.Head <= #run.Queue / 2 then return end
+    if run.Head <= 32 or run.Head <= #run.Queue / 2 then return end
     local compacted = {}
-    for index = run.Head, #run.Queue do compacted[#compacted + 1] = run.Queue[index] end
+    for index = run.Head, #run.Queue do
+        local job = run.Queue[index]
+        if job then compacted[#compacted + 1] = job end
+    end
     run.Queue = compacted
     run.Head = 1
 end
@@ -64,7 +61,22 @@ local function resetQueue()
     run.Epoch = run.Epoch + 1
     run.Queue = {}
     run.Head = 1
+    run.Delayed = {}
+    run.RetryToken = run.RetryToken + 1
+    run.RetryDue = nil
     table.clear(run.PendingByPet)
+end
+
+local function resetStats()
+    run.Accepted = 0
+    run.Rejected = 0
+    run.Errors = 0
+    run.Retries = 0
+    run.Stale = 0
+    run.Dropped = 0
+    run.AverageRTT = 0
+    run.LastRTT = 0
+    run.LastProblem = "none"
 end
 
 local function clearPending(entries)
@@ -125,7 +137,7 @@ end
 
 local function retryDelay(attempt)
     attempt = math.max(1, tonumber(attempt) or 1)
-    return math.min(0.06 * (2 ^ (attempt - 1)), 0.24)
+    return RETRY_DELAYS[attempt] or RETRY_DELAYS[#RETRY_DELAYS]
 end
 
 local function contextActive(job)
@@ -147,7 +159,7 @@ end
 local function currentEntries(job)
     local entries, ids = {}, {}
     if not contextActive(job) then return entries, ids end
-    for _, entry in ipairs(job.Entries) do
+    for _, entry in ipairs(job.Entries or {}) do
         if entryCurrent(entry) then
             entries[#entries + 1] = entry
             ids[#ids + 1] = entry.PetId
@@ -166,14 +178,19 @@ local function callNamedInvoke(command, ...)
                 return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
             end))
             if result[1] then return true, result[2], "direct named remote" end
+            if type(context.InvalidateCommand) == "function" then
+                pcall(context.InvalidateCommand, command, remote)
+            end
         end
     end
 
-    local network = context and type(context.NetworkReady) == "function" and context.NetworkReady() or nil
+    local network = context and type(context.NetworkReady) == "function"
+        and context.NetworkReady() or nil
     if not network or type(network.Invoke) ~= "function" then
         return false, "Library.Network.Invoke unavailable", "none"
     end
-    local result = table.pack(pcall(network.Invoke, command, table.unpack(arguments, 1, arguments.n)))
+    local result = table.pack(pcall(network.Invoke, command,
+        table.unpack(arguments, 1, arguments.n)))
     if not result[1] then return false, result[2], "Library.Network.Invoke" end
     return true, result[2], "Library.Network.Invoke"
 end
@@ -188,14 +205,19 @@ local function callNamedFire(command, ...)
                 remote:FireServer(table.unpack(arguments, 1, arguments.n))
             end)
             if fired then return true, "direct named remote" end
+            if type(context.InvalidateFire) == "function" then
+                pcall(context.InvalidateFire, command, remote)
+            end
         end
     end
 
-    local network = context and type(context.NetworkReady) == "function" and context.NetworkReady() or nil
+    local network = context and type(context.NetworkReady) == "function"
+        and context.NetworkReady() or nil
     if not network or type(network.Fire) ~= "function" then
         return false, "Library.Network.Fire unavailable"
     end
-    local fired, problem = pcall(network.Fire, command, table.unpack(arguments, 1, arguments.n))
+    local fired, problem = pcall(network.Fire, command,
+        table.unpack(arguments, 1, arguments.n))
     return fired, fired and "Library.Network.Fire" or tostring(problem)
 end
 
@@ -205,61 +227,92 @@ local function leaveStale(job, petIds)
     local context = run.Context
     if context and type(context.OnStaleAccepted) == "function" then
         pcall(context.OnStaleAccepted, job.Record, petIds)
-        return
+    else
+        callNamedInvoke("Leave Coin", job.CoinId, petIds)
     end
-    callNamedInvoke("Leave Coin", job.CoinId, petIds)
 end
 
-local function adjustLanes(acceptedCount, rejectedCount, invokeFailed, elapsed)
-    if invokeFailed then
-        run.CleanStreak = 0
-        run.FailureStreak = run.FailureStreak + 1
-        -- One transient executor/transport failure must not turn 16 active
-        -- UID lanes into 8. Sustained RTT is handled by the caller's EWMA
-        -- policy; this local guard only trims repeated hard failures.
-        local penalty = math.min(run.FailureStreak, 3)
-        run.Limit = math.max(run.MinLanes, run.Limit - penalty)
-    elseif rejectedCount > 0 then
-        -- A false Join Coin result normally means that this particular coin was
-        -- destroyed or won by another client. It is not transport congestion,
-        -- so reducing every UID lane here creates the familiar 15 -> 8 collapse.
-        run.FailureStreak = 0
-        run.CleanStreak = 0
-    elseif acceptedCount > 0 then
-        run.FailureStreak = 0
-        run.CleanStreak = run.CleanStreak + acceptedCount
-        if run.CleanStreak >= math.max(run.Limit, 4) then
-            run.CleanStreak = 0
-            run.Limit = math.min(run.PolicyMaxLanes, run.Limit + 1)
+local function failEntries(job, entries, reason)
+    local context = run.Context
+    for _, entry in ipairs(entries) do
+        if entryCurrent(entry) and context and type(context.OnFailed) == "function" then
+            pcall(context.OnFailed, entry.PetId, entry.State, job.Record,
+                reason, job.Attempt)
         end
     end
-    run.Limit = math.min(run.Limit, run.PolicyMaxLanes)
+    clearPending(entries)
+end
+
+local function scheduleRetryTimer()
+    if #run.Delayed == 0 then
+        run.RetryDue = nil
+        return
+    end
+    local earliest = math.huge
+    for _, job in ipairs(run.Delayed) do
+        earliest = math.min(earliest, job.Due)
+    end
+    if run.RetryDue and run.RetryDue <= earliest then return end
+
+    run.RetryDue = earliest
+    run.RetryToken = run.RetryToken + 1
+    local token = run.RetryToken
+    local epoch = run.Epoch
+    scheduler.delay(math.max(earliest - os.clock(), 0), function()
+        if token ~= run.RetryToken or epoch ~= run.Epoch then return end
+        run.RetryDue = nil
+        local now = os.clock()
+        local waiting = {}
+        for _, job in ipairs(run.Delayed) do
+            if job.Epoch == run.Epoch and job.Due <= now then
+                job.Due = nil
+                run.Queue[#run.Queue + 1] = job
+            elseif job.Epoch == run.Epoch then
+                waiting[#waiting + 1] = job
+            else
+                clearPending(job.Entries)
+            end
+        end
+        run.Delayed = waiting
+        pump()
+        scheduleRetryTimer()
+    end)
 end
 
 local function scheduleRetry(job, entries, reason)
     if #entries == 0 then return end
     local context = run.Context
+    if not contextActive(job) then
+        clearPending(entries)
+        return
+    end
+
+    local current = {}
+    for _, entry in ipairs(entries) do
+        if entryCurrent(entry) then
+            current[#current + 1] = entry
+        else
+            clearPending({ entry })
+        end
+    end
+    entries = current
+    if #entries == 0 then return end
+
     if context and type(context.ShouldRetry) == "function" then
         local checked, shouldRetry = pcall(context.ShouldRetry,
             job.Record, reason, job.Attempt, entries)
         if checked and shouldRetry == false then
-            for _, entry in ipairs(entries) do
-                if entryCurrent(entry) and type(context.OnFailed) == "function" then
-                    pcall(context.OnFailed,
-                        entry.PetId, entry.State, job.Record, reason, job.Attempt)
-                end
-            end
-            clearPending(entries)
+            failEntries(job, entries, reason)
             return
         end
     end
     if job.Attempt >= MAX_JOIN_ATTEMPTS then
-        for _, entry in ipairs(entries) do
-            if entryCurrent(entry) and context and type(context.OnFailed) == "function" then
-                pcall(context.OnFailed, entry.PetId, entry.State, job.Record, reason, job.Attempt)
-            end
-        end
-        clearPending(entries)
+        failEntries(job, entries, reason)
+        return
+    end
+    if queueSize() + #run.Delayed >= MAX_QUEUED_JOBS then
+        run.Dropped = run.Dropped + #entries
+        failEntries(job, entries, "bounded retry queue is full")
         return
     end
 
@@ -267,80 +320,114 @@ local function scheduleRetry(job, entries, reason)
     run.Retries = run.Retries + #entries
     for _, entry in ipairs(entries) do
         if entryCurrent(entry) and context and type(context.OnRetry) == "function" then
-            pcall(context.OnRetry, entry.PetId, entry.State, job.Record, reason, nextAttempt)
+            pcall(context.OnRetry, entry.PetId, entry.State,
+                job.Record, reason, nextAttempt)
         end
     end
-    local epoch = job.Epoch
-    local jitter = 0
-    if context and type(context.RetryJitter) == "function" then
-        local jittered, value = pcall(context.RetryJitter, job.Record, job.Attempt)
-        if jittered then jitter = math.clamp(tonumber(value) or 0, 0, 0.08) end
-    end
-    scheduler.delay(retryDelay(job.Attempt) + jitter, function()
-        if epoch ~= run.Epoch then return end
-        local retryEntries = {}
-        for _, entry in ipairs(entries) do
-            if entryCurrent(entry) then retryEntries[#retryEntries + 1] = entry end
-        end
-        if #retryEntries == 0 or not contextActive(job) then
-            clearPending(entries)
-            return
-        end
-        if queueSize() >= MAX_QUEUED_JOBS then
-            run.Dropped = run.Dropped + #retryEntries
-            run.LastProblem = "bounded retry queue is full"
-            clearPending(retryEntries)
-            for _, entry in ipairs(retryEntries) do
-                if entryCurrent(entry) and context and type(context.OnFailed) == "function" then
-                    pcall(context.OnFailed, entry.PetId, entry.State, job.Record,
-                        run.LastProblem, nextAttempt)
-                end
+    run.Delayed[#run.Delayed + 1] = {
+        Epoch = job.Epoch,
+        Record = job.Record,
+        CoinId = job.CoinId,
+        Entries = entries,
+        Attempt = nextAttempt,
+        Due = os.clock() + retryDelay(job.Attempt),
+    }
+    scheduleRetryTimer()
+end
+
+local function targetContains(job, entry)
+    local context = run.Context
+    if not context or type(context.TargetContainsPet) ~= "function" then return false end
+    local checked, present = pcall(context.TargetContainsPet,
+        job.Record, entry.PetId)
+    return checked and present == true
+end
+
+local function signalAccepted(job, entries, route)
+    local failures = {}
+    local context = run.Context
+    for _, entry in ipairs(entries) do
+        if entryCurrent(entry) then
+            local targetSent, targetRoute = callNamedFire(
+                "Change Pet Target", entry.PetId, "Coin", job.CoinId)
+            local farmSent, farmRoute = callNamedFire(
+                "Farm Coin", job.CoinId, entry.PetId)
+            if context and type(context.OnSignalsSent) == "function" then
+                pcall(context.OnSignalsSent, entry.PetId, entry.State, job.Record,
+                    targetSent, farmSent, targetRoute, farmRoute)
             end
-            return
+
+            local accepted = targetSent and farmSent
+            if accepted and context and type(context.OnAccepted) == "function" then
+                local called, result = pcall(context.OnAccepted,
+                    entry.PetId, entry.State, job.Record, nil,
+                    job.Attempt, route)
+                accepted = called and result ~= false
+            end
+            if accepted then
+                run.Accepted = run.Accepted + 1
+                if run.PendingByPet[entry.PetId] == entry.State then
+                    run.PendingByPet[entry.PetId] = nil
+                end
+            else
+                failures[#failures + 1] = entry
+            end
+        else
+            clearPending({ entry })
         end
-        run.Queue[#run.Queue + 1] = {
-            Epoch = epoch,
-            Record = job.Record,
-            Model = job.Model,
-            CoinId = job.CoinId,
-            Entries = retryEntries,
-            Attempt = nextAttempt,
-        }
-        run.PeakQueued = math.max(run.PeakQueued, queueSize())
-        pump()
-    end)
+    end
+    return failures
 end
 
 local function process(job)
-    local entries, petIds = currentEntries(job)
+    local entries = currentEntries(job)
     if #entries == 0 then
         clearPending(job.Entries)
         return
     end
 
+    -- A yielded InvokeServer can return no useful payload even though the game
+    -- has already attached the pet. On retry, trust the live coin pet set
+    -- before issuing another Join Coin request.
+    local alreadyPresent, joinEntries, petIds = {}, {}, {}
+    for _, entry in ipairs(entries) do
+        if targetContains(job, entry) then
+            alreadyPresent[#alreadyPresent + 1] = entry
+        else
+            joinEntries[#joinEntries + 1] = entry
+            petIds[#petIds + 1] = entry.PetId
+        end
+    end
+
+    if #alreadyPresent > 0 then
+        local failures = signalAccepted(job, alreadyPresent, "live target state")
+        if #failures > 0 then
+            run.Errors = run.Errors + #failures
+            run.LastProblem = "existing-target signal failure"
+            scheduleRetry(job, failures, run.LastProblem)
+        end
+    end
+    if #joinEntries == 0 then return end
+
     local startedAt = os.clock()
     local invoked, response, route = callNamedInvoke("Join Coin", job.CoinId, petIds)
     local elapsed = math.max(os.clock() - startedAt, 0)
     run.LastRTT = elapsed
-    run.AverageRTT = run.AverageRTT == 0 and elapsed or run.AverageRTT * 0.8 + elapsed * 0.2
+    run.AverageRTT = run.AverageRTT == 0 and elapsed
+        or run.AverageRTT * 0.85 + elapsed * 0.15
 
     if not invoked then
-        run.Errors = run.Errors + #entries
-        run.LastProblem = tostring(response)
-        adjustLanes(0, 0, true, elapsed)
-        scheduleRetry(job, entries, "Join Coin transport error: " .. tostring(response))
+        run.Errors = run.Errors + #joinEntries
+        run.LastProblem = "Join Coin transport error: " .. tostring(response)
+        scheduleRetry(job, joinEntries, run.LastProblem)
         return
     end
 
     local acceptedMap = classifyResponse(response, petIds)
     local acceptedEntries, rejectedEntries = {}, {}
-    local context = run.Context
-    for _, entry in ipairs(entries) do
+    for _, entry in ipairs(joinEntries) do
         local accepted = acceptedMap[entry.PetId] == true
-        if not accepted and context and type(context.TargetContainsPet) == "function" then
-            local checked, present = pcall(context.TargetContainsPet, job.Record, entry.PetId)
-            accepted = checked and present == true
-        end
+            or targetContains(job, entry)
         if accepted then
             acceptedEntries[#acceptedEntries + 1] = entry
         else
@@ -348,77 +435,74 @@ local function process(job)
         end
     end
 
-    if job.Epoch ~= run.Epoch or not contextActive(job) then
+    if not contextActive(job) then
         local staleIds = {}
-        for _, entry in ipairs(acceptedEntries) do staleIds[#staleIds + 1] = entry.PetId end
+        for _, entry in ipairs(acceptedEntries) do
+            staleIds[#staleIds + 1] = entry.PetId
+        end
         leaveStale(job, staleIds)
-        clearPending(entries)
+        clearPending(joinEntries)
         return
     end
 
-    run.Accepted = run.Accepted + #acceptedEntries
+    local signalFailures = signalAccepted(job, acceptedEntries, route)
+
     run.Rejected = run.Rejected + #rejectedEntries
-    run.CompletedJobs = run.CompletedJobs + 1
-    adjustLanes(#acceptedEntries, #rejectedEntries, false, elapsed)
-
-    for _, entry in ipairs(acceptedEntries) do
-        if entryCurrent(entry) then
-            local accepted = true
-            if context and type(context.OnAccepted) == "function" then
-                local called, result = pcall(context.OnAccepted,
-                    entry.PetId, entry.State, job.Record, job.Model, job.Attempt, route)
-                accepted = called and result ~= false
-            end
-            if accepted and entryCurrent(entry) then
-                local targetSent, targetRoute = callNamedFire(
-                    "Change Pet Target", entry.PetId, "Coin", job.CoinId)
-                local farmSent, farmRoute = callNamedFire("Farm Coin", job.CoinId, entry.PetId)
-                if context and type(context.OnSignalsSent) == "function" then
-                    pcall(context.OnSignalsSent, entry.PetId, entry.State, job.Record,
-                        targetSent, farmSent, targetRoute, farmRoute)
-                end
-                if not targetSent or not farmSent then
-                    run.Errors = run.Errors + 1
-                    run.LastProblem = "post-join signal failure"
-                end
-            end
-        end
+    if #signalFailures > 0 then
+        run.Errors = run.Errors + #signalFailures
+        run.LastProblem = "post-join signal failure"
+        scheduleRetry(job, signalFailures, run.LastProblem)
     end
-    clearPending(acceptedEntries)
-
     if #rejectedEntries > 0 then
-        run.LastProblem = "Join Coin rejected " .. tostring(#rejectedEntries) .. " pet(s)"
+        run.LastProblem = "Join Coin rejected "
+            .. tostring(#rejectedEntries) .. " pet(s)"
         scheduleRetry(job, rejectedEntries, run.LastProblem)
-    else
+    elseif #signalFailures == 0 then
         run.LastProblem = "none"
     end
 end
 
 pump = function()
     compactQueue()
-    while run.Context and run.Active < run.Limit and run.Head <= #run.Queue do
+    while run.Context and run.Active < DEFAULT_DISPATCH_WIDTH
+        and run.Head <= #run.Queue do
         local job = run.Queue[run.Head]
         run.Queue[run.Head] = false
         run.Head = run.Head + 1
         if contextActive(job) then
             run.Active = run.Active + 1
-            scheduler.spawn(function()
+            -- InvokeServer yields. These short-lived coroutines are owned by one
+            -- fixed-width pump and never become persistent per-pet workers.
+            local thread = coroutine.create(function()
                 local handled, problem = pcall(process, job)
                 if not handled then
                     run.Errors = run.Errors + 1
                     run.LastProblem = tostring(problem)
-                    adjustLanes(0, 0, true)
-                    local entries = currentEntries(job)
-                    scheduleRetry(job, entries, "dispatch worker error: " .. tostring(problem))
-                    trace("pet dispatch worker", tostring(problem))
+                    local current = currentEntries(job)
+                    scheduleRetry(job, current,
+                        "dispatch call failed: " .. tostring(problem))
+                    trace("pet dispatch", tostring(problem))
                 end
                 run.Active = math.max(run.Active - 1, 0)
                 pump()
                 local context = run.Context
-                if context and type(context.Pulse) == "function" then pcall(context.Pulse) end
+                if context and type(context.Pulse) == "function" then
+                    pcall(context.Pulse)
+                end
             end)
+            local resumed, problem = coroutine.resume(thread)
+            if not resumed then
+                run.Errors = run.Errors + 1
+                run.LastProblem = tostring(problem)
+                run.Active = math.max(run.Active - 1, 0)
+                local current = currentEntries(job)
+                scheduleRetry(job, current,
+                    "dispatch coroutine failed: " .. tostring(problem))
+                trace("pet dispatch", tostring(problem))
+                pump()
+            end
         else
-            clearPending(job.Entries)
+            clearPending(job and job.Entries)
         end
     end
     compactQueue()
@@ -427,15 +511,9 @@ end
 local function start(context)
     if type(context) ~= "table" then return false, "context table required" end
     resetQueue()
+    resetStats()
     run.Context = context
-    run.MinLanes = math.max(1, tonumber(context.MinLanes) or DEFAULT_MIN_LANES)
-    run.MaxLanes = math.max(run.MinLanes, tonumber(context.MaxLanes) or DEFAULT_MAX_LANES)
-    run.PolicyMaxLanes = run.MaxLanes
-    run.Limit = math.clamp(tonumber(context.InitialLanes) or DEFAULT_INITIAL_LANES,
-        run.MinLanes, run.PolicyMaxLanes)
-    run.CleanStreak = 0
-    run.FailureStreak = 0
-    run.LastProblem = "none"
+    run.Limit = DEFAULT_DISPATCH_WIDTH
     return true
 end
 
@@ -444,11 +522,17 @@ local function dispatch(payload)
     if type(payload) ~= "table" or type(payload.Entries) ~= "table" then
         return false, "dispatch payload is invalid"
     end
+
     local entries = {}
     for _, entry in ipairs(payload.Entries) do
         if type(entry) == "table" and entry.PetId ~= nil and entry.State ~= nil then
             local petId = tostring(entry.PetId)
-            if run.PendingByPet[petId] ~= entry.State then
+            local pending = run.PendingByPet[petId]
+            if pending and not entryCurrent({ PetId = petId, State = pending }) then
+                run.PendingByPet[petId] = nil
+                pending = nil
+            end
+            if not pending then
                 entries[#entries + 1] = {
                     PetId = petId,
                     State = entry.State,
@@ -457,21 +541,20 @@ local function dispatch(payload)
             end
         end
     end
-    if #entries == 0 then return false, "dispatch has no current pets" end
-    if queueSize() >= MAX_QUEUED_JOBS then
+    if #entries == 0 then return false, "dispatch has no free current pets" end
+    if queueSize() + #run.Delayed >= MAX_QUEUED_JOBS then
         run.Dropped = run.Dropped + #entries
         clearPending(entries)
         return false, "bounded dispatch queue is full"
     end
+
     run.Queue[#run.Queue + 1] = {
         Epoch = run.Epoch,
         Record = payload.Record,
-        Model = payload.Model,
         CoinId = tostring(payload.CoinId),
         Entries = entries,
-        Attempt = math.max(1, tonumber(payload.Attempt) or 1),
+        Attempt = 1,
     }
-    run.PeakQueued = math.max(run.PeakQueued, queueSize())
     pump()
     return true
 end
@@ -481,40 +564,21 @@ local function stats()
         Version = MODULE_VERSION,
         Epoch = run.Epoch,
         Active = run.Active,
-        Queued = queueSize(),
+        Queued = queueSize() + #run.Delayed,
+        Delayed = #run.Delayed,
         Limit = run.Limit,
-        PolicyMaxLanes = run.PolicyMaxLanes,
+        PolicyMaxLanes = run.Limit,
         Accepted = run.Accepted,
         Rejected = run.Rejected,
         Errors = run.Errors,
         Retries = run.Retries,
         Stale = run.Stale,
-        CompletedJobs = run.CompletedJobs,
-        FailureStreak = run.FailureStreak,
+        Dropped = run.Dropped,
         AverageRTT = run.AverageRTT,
         LastRTT = run.LastRTT,
         LastProblem = run.LastProblem,
-        PeakQueued = run.PeakQueued,
-        Dropped = run.Dropped,
         QueueCapacity = MAX_QUEUED_JOBS,
     }
-end
-
-local function setLimit(value)
-    if not run.Context then return false, "engine is not started" end
-    local desired = math.clamp(math.floor(tonumber(value) or run.MaxLanes),
-        run.MinLanes, run.MaxLanes)
-    local previous = run.PolicyMaxLanes
-    run.PolicyMaxLanes = desired
-    if run.Limit > desired then
-        run.Limit = desired
-    elseif desired > previous and run.Limit < desired then
-        -- Restore one lane immediately; subsequent clean accepts continue the
-        -- additive ramp without producing a new burst.
-        run.Limit = math.min(desired, run.Limit + 1)
-    end
-    pump()
-    return true, desired
 end
 
 return function(action, context, value)
@@ -524,7 +588,6 @@ return function(action, context, value)
     if action == "reset" then resetQueue(); return true end
     if action == "stop" then resetQueue(); run.Context = nil; return true end
     if action == "stats" then return stats() end
-    if action == "set-limit" then return setLimit(context) end
     if action == "classify" then return classifyResponse(context, value) end
     if action == "retry-delay" then return retryDelay(context) end
     if action == "version" then return MODULE_VERSION end

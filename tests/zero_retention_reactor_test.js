@@ -6,134 +6,166 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const assert = (condition, message) => {
     if (!condition) throw new Error(message);
 };
+const count = (text, expression) => (text.match(expression) || []).length;
 
 const manifest = JSON.parse(read("runtime_manifest.json"));
+const farm = read("slim_farm.lua");
+const engine = read("pet_farm_engine.lua");
+const loot = read("loot_reactor.lua");
+const graphics = read("graphics_module.lua");
 const activeFiles = [
     manifest.suite.sourceEntry,
     ...manifest.moduleOrder.map((key) => manifest.modules[key].path),
-    "build_slim.js",
 ];
 const activeText = activeFiles.map((file) => `${file}\n${read(file)}`).join("\n");
-const farm = read("slim_farm.lua");
-const engine = read("pet_farm_engine.lua");
-const graphics = read("graphics_module.lua");
-const removedScheduler = ["Runtime", "Kernel"].join("");
-const forbiddenSchedulerCalls = ["Register", "Connect", "Every", "Emit", "Stats"]
-    .map((method) => `${removedScheduler}:${method}`);
+const removedKernel = ["Runtime", "Kernel"].join("");
 
-assert(![removedScheduler, ...forbiddenSchedulerCalls].some((marker) => activeText.includes(marker)),
-    "active runtime still references the removed global scheduler");
-const removedModulePath = ["runtime", "kernel", "module.lua"].join("_");
-assert(!fs.existsSync(path.join(root, removedModulePath)),
-    "removed scheduler module still exists");
-assert(!/workspace\s*\.\s*DescendantAdded/.test(graphics),
-    "graphics module still observes every descendant in Workspace");
+assert(manifest.modules.lootReactor
+    && manifest.modules.lootReactor.path === "loot_reactor.lua",
+    "the native loot reactor is absent from the active manifest");
+assert(!activeText.includes(removedKernel),
+    "the removed global scheduler is still reachable from the active graph");
+assert(!fs.existsSync(path.join(root, "runtime_kernel_module.lua")),
+    "the removed scheduler module still exists");
 
+// Coin registry: one bootstrap snapshot and one folder scan, then signals only.
+assert(farm.includes("local coinRecords = {}")
+    && farm.includes("folder.ChildAdded:Connect")
+    && farm.includes("folder.ChildRemoved:Connect"),
+    "CoinRegistry is not driven by the live Coins folder");
+assert(farm.includes('connect("New Coin"')
+    && farm.includes('connect("Update Coin Health"')
+    && farm.includes('connect("Update Coin Pets"')
+    && farm.includes('connect("Remove Coin"'),
+    "CoinRegistry is missing named network deltas");
+assert(count(farm, /"Get Coins"/g) === 1,
+    "Get Coins must be used only for the initial world snapshot");
+assert(farm.includes("coinIndex.Cache.Revision")
+    && farm.includes("coinIndex:Invalidate()"),
+    "target ordering is not revision-cached");
+assert(!/workspace\s*\.\s*DescendantAdded/.test(farm),
+    "the farm still observes every Workspace descendant");
+assert(!/GetChildren\s*\(\s*\)\s*\[\s*\d+\s*\]/.test(activeText),
+    "a fixed per-session remote index re-entered active source");
+
+// Pet allocator and transport: one coalesced allocator plus one bounded writer.
 for (const marker of [
+    "DEFAULT_DISPATCH_WIDTH = 16",
     "MAX_QUEUED_JOBS = 64",
-    "OrbQueue = 1024",
-    "OrbInFlight = 2048",
-    "LootbagRecords = 512",
-    "MAX_PERSISTENT_OBJECTS = 4096",
-    "MAX_URGENT_QUEUE = 4096",
-    "MAX_NORMAL_QUEUE = 8192",
+    "MAX_JOIN_ATTEMPTS = 3",
+    "RETRY_DELAYS = { 0.05, 0.15 }",
+    "PendingByPet = {}",
+    "TargetContainsPet",
 ]) {
-    assert(activeText.includes(marker), `missing bounded-state marker: ${marker}`);
+    assert(engine.includes(marker), `missing bounded pet-writer marker: ${marker}`);
 }
-
-for (const marker of [
-    "reconcileFarmWatchdog",
-    "reconcileDiamondWorker",
-    "reconcileRewardWorker",
-    "lootCollector:SyncWorker",
-    "lootCollector:StopWorker",
-]) {
-    assert(farm.includes(marker), `missing feature-owned worker lifecycle: ${marker}`);
-}
-
-assert(engine.includes("PendingByPet"), "pet dispatch does not deduplicate pending UID work");
+assert(engine.includes("while run.Context and run.Active < DEFAULT_DISPATCH_WIDTH"),
+    "pet dispatch is not owned by one fixed-width pump");
 assert(engine.includes("clearPending(job.Entries)"),
-    "stale pet jobs can retain their pending UID marker");
+    "stale pet dispatch can retain a pending UID");
+assert(!engine.includes("task.spawn"),
+    "pet transport still creates task.spawn workers");
+assert(!engine.includes('"set-limit"'),
+    "dynamic lane collapse re-entered the fixed-width transport");
 assert(farm.includes("if self.AllocatorScheduled or allocatorBusy"),
-    "allocator callbacks are not coalesced");
-assert(farm.includes("OrbBatchInterval = 0.25"),
-    "native orb microbatch interval drifted from the game protocol");
-assert(farm.includes("OrbBatchSize = 256")
-    && farm.includes("InitialOrbScan = 1024")
-    && farm.includes("InitialLootbagScan = 512"),
-    "loot reactor startup or batch bounds are unsafe");
-assert(farm.includes("OrbQueuedAt = {}")
-    && farm.includes("age >= LOOT_LIMITS.OrbBatchInterval"),
-    "fresh orb IDs can be claimed before the game's native creation window");
-assert(farm.includes("LOOT_LIMITS.OrbBatchJitter"),
-    "crowded clients no longer stagger their native orb batches");
-assert(farm.includes('self:FireNative("Claim Orbs", ids)'),
-    "orb IDs are not sent through one named native batch");
-assert(farm.includes('self:FireNative("Collect Lootbag", record.Id, position)'),
-    "lootbags are not sent through their named native command");
-assert(farm.includes('self:ConnectNamedEvent("Orb Added"'),
-    "native Orb Added feed is not bound");
-assert(farm.includes('self:ConnectNamedEvent("Spawn Lootbag"'),
-    "native Spawn Lootbag feed is not bound");
-assert(farm.includes("local things = Library and Library.Things")
-    && farm.includes('things:FindFirstChild("Orbs")')
-    && farm.includes("folder.ChildAdded:Connect"),
-    "native loot fallback is not bound to the live Library.Things folders");
-assert(farm.includes("or self:CreateLootbagRecord(lootbagId, item)"),
-    "lootbag ChildAdded fallback cannot recover a missed Spawn Lootbag event");
-assert(farm.includes("if not resolved or allowed then"),
-    "lootbags without an owner attribute are still rejected");
-assert(farm.includes('readObjectValue(item, "ReadyForCollection")'),
-    "lootbag readiness is not checked before collection");
-assert(!farm.includes("firetouchinterest"),
-    "physical touch emulation re-entered the active loot path");
-assert(!farm.includes("function lootCollector:Touch"),
-    "the removed physical loot worker re-entered the active source");
-assert(!farm.includes("preparePickupPart"),
-    "loot collection still mutates pickup parts");
-const earlyStartupEnd = farm.indexOf('trace("07 startup complete")');
-assert(earlyStartupEnd > 0
-    && !farm.slice(0, earlyStartupEnd).includes("lootCollector.StartupArmed = true"),
-    "loot reactor can arm before the interface is fully initialized");
-assert(farm.includes("lootCollector.StartupArmed = true")
-    && farm.includes("StartupDelay = 0.75")
-    && farm.includes('trace("07A loot reactor starting"'),
-    "deferred loot reactor startup guard is missing");
-assert(!farm.includes("self:ScheduleOrbFlush(0)"),
-    "orb overflow can still create an immediate unthrottled flush chain");
-assert(farm.includes("if self.WorkerActive then\n        self:MarkStatus()\n        return"),
-    "repeated toggle/profile callbacks can restart the loot reactor and rescan the world");
-assert(farm.includes("env.__PSX_START_INTERFACE_WORKERS = function()")
-    && farm.includes("env.__PSX_START_INTERFACE_WORKERS = nil"),
-    "UI startup still consumes a scarce top-level Luau local register");
+    "allocator callback bursts are not coalesced");
+assert(farm.includes('Phase = "joining"')
+    && farm.includes('state.Phase = "working"')
+    && farm.includes("Generation = farmGeneration"),
+    "pet state is missing its minimal generation-safe lifecycle");
+assert(!farm.includes("runtimePetCounts")
+    && !farm.includes("runtimePetPositions")
+    && !farm.includes("teleportPet"),
+    "visual pet mirroring/teleportation re-entered the farm hot path");
 
-const uiLoop = farm.slice(farm.indexOf("local nextZoneRefreshAt"));
-assert(!uiLoop.includes("orderedTargets("),
-    "visible UI loop still sorts/scans target records");
-assert(!uiLoop.includes("getEquippedPetIds("),
-    "visible UI loop still performs a full equipped-pet scan");
+// Loot: native IDs, one 0.25-second shared batch, no physics or fake ack state.
+for (const marker of [
+    "ORB_FLUSH_INTERVAL = 0.25",
+    "ORB_BATCH_SIZE = 2048",
+    "MAX_PENDING_ORBS = 8192",
+    "PendingOrbIds = {}",
+    'fire("Claim Orbs", ids)',
+    'fire("Collect Lootbag", record.Id, position)',
+    "folder.ChildAdded:Connect(queueOrb)",
+    "folder.ChildAdded:Connect(watchBag)",
+    'GetAttributeChangedSignal(',
+    "OrbDropped",
+]) {
+    assert(loot.includes(marker), `missing native loot marker: ${marker}`);
+}
+for (const forbidden of [
+    "firetouchinterest",
+    "CFrame =",
+    "Heartbeat",
+    "RenderStepped",
+    "task.spawn",
+    "OrbInFlight",
+    "AckHistory",
+]) {
+    assert(!loot.includes(forbidden), `forbidden loot behavior returned: ${forbidden}`);
+}
+assert(!farm.includes("function lootCollector:Touch")
+    && !farm.includes("preparePickupPart")
+    && !farm.includes("OrbQueuedAt"),
+    "legacy inline/physics loot code is still active");
 
-// Model the exact dirty-set/coalesced-runner contract under a 100k event burst.
+// Graphics: a one-time scan per narrow farm root, then DescendantAdded only.
+assert(!/workspace\s*\.\s*DescendantAdded/.test(graphics),
+    "graphics still observes every Workspace descendant");
+assert(!graphics.includes("CurrentCamera")
+    && !graphics.includes("CanTouch")
+    && !graphics.includes("CanQuery"),
+    "graphics crosses the map/camera/network preservation boundary");
+assert(count(graphics, /GetDescendants\s*\(/g) === 1,
+    "graphics must have exactly one narrow initial-tree scan implementation");
+assert(graphics.includes("root.DescendantAdded:Connect")
+    && graphics.includes('workspace:FindFirstChild("__DEBRIS")')
+    && graphics.includes('workspace:FindFirstChild("__THINGS")'),
+    "graphics is not bound to the narrow farm roots");
+assert(!graphics.includes("Heartbeat")
+    && !graphics.includes("RenderStepped")
+    && !graphics.includes("task.wait"),
+    "graphics still has a permanent frame/polling worker");
+
+// Lifecycle and bounded telemetry.
+for (const marker of [
+    "coinIndex:DisconnectFolder()",
+    "table.clear(coinRecords)",
+    "table.clear(commandRemoteCache)",
+    "table.clear(eventRemoteCache)",
+    "table.clear(fireRemoteCache)",
+    'pcall(petFarm.Engine, "stop")',
+    "lootCollector:StopWorker()",
+    "table.clear(moduleLoadState.Cache)",
+]) {
+    assert(farm.includes(marker), `STOP/reload cleanup is missing: ${marker}`);
+}
+assert(!farm.includes("task.spawn"),
+    "main source still owns a long-lived task.spawn worker");
+assert(farm.includes("task.delay(1, tick)"),
+    "scalar UI telemetry is not rate-limited to one update per second");
+
+// Model the coalesced dirty-set contract under a 100k callback burst.
 const dirty = new Set();
-let runnerPending = false;
-let scheduledRunners = 0;
-function onSyntheticEvent(uid) {
-    dirty.add(uid);
-    if (runnerPending) return;
-    runnerPending = true;
-    scheduledRunners += 1;
-}
+let allocatorScheduled = false;
+let scheduledAllocators = 0;
 for (let index = 0; index < 100_000; index += 1) {
-    onSyntheticEvent(`uid-${index % 256}`);
+    dirty.add(`coin-${index % 256}`);
+    if (!allocatorScheduled) {
+        allocatorScheduled = true;
+        scheduledAllocators += 1;
+    }
 }
-assert(scheduledRunners === 1, "100k events scheduled more than one coalesced runner");
-assert(dirty.size === 256, "deduplicated dirty state grew with event count");
+assert(scheduledAllocators === 1,
+    "100k callbacks scheduled more than one allocator reconciliation");
+assert(dirty.size === 256,
+    "deduplicated dirty state grew with callback count");
 dirty.clear();
-runnerPending = false;
-assert(dirty.size === 0 && runnerPending === false,
-    "synthetic burst left backlog after reconciliation");
+allocatorScheduled = false;
+assert(dirty.size === 0 && allocatorScheduled === false,
+    "synthetic callback burst retained a backlog");
 
 process.stdout.write(
-    `Zero-retention reactor OK | activeFiles=${activeFiles.length}`
-    + " | syntheticEvents=100000 | backlog=0 | coalescedRunners=1\n"
+    `Event-driven zero-retention policy OK | activeFiles=${activeFiles.length}`
+    + " | callbacks=100000 | retained=0 | allocatorRuns=1\n"
 );
