@@ -2,7 +2,7 @@
 -- The parent supplies a live pet catalog and a shared inventory-operation gate.
 
 local activeState
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.0.1"
 
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
@@ -149,11 +149,13 @@ local function collectCandidates(state, context, save)
         if type(pet) == "table" then
             local definition = getDefinition(context, pet)
             local petId = tostring(pet.id or "")
-            if type(definition) == "table" and targetIds[petId] then
+            if targetIds[petId] then
                 stats.Found = stats.Found + 1
                 local uid = pet.uid ~= nil and tostring(pet.uid) or nil
                 local equipped = pet.e == true
                 local locked = pet.l == true or pet.locked == true
+                local directoryBlocked = type(definition) == "table"
+                    and (definition.isPremium or definition.rarity == "Exclusive")
                 if equipped then stats.Equipped = stats.Equipped + 1 end
                 if locked then stats.Locked = stats.Locked + 1 end
                 if pet.g or pet.r or pet.dm then
@@ -164,7 +166,7 @@ local function collectCandidates(state, context, save)
                     stats.Locked = stats.Locked + 1
                 elseif state.Pending[uid] then
                     stats.Pending = stats.Pending + 1
-                elseif definition.isPremium or definition.rarity == "Exclusive" then
+                elseif directoryBlocked then
                     stats.Locked = stats.Locked + 1
                 else
                     stats.Eligible = stats.Eligible + 1
@@ -172,7 +174,7 @@ local function collectCandidates(state, context, save)
                     groups[petId][#groups[petId] + 1] = {
                         Uid = uid,
                         Id = petId,
-                        Name = tostring(definition.name or petId),
+                        Name = tostring(type(definition) == "table" and definition.name or petId),
                     }
                 end
             end
@@ -219,7 +221,7 @@ local function validateSelection(context, selectedCandidates)
         if not pet then return false, nil, nil, shortUID(uid) .. " disappeared before dispatch" end
         local definition = getDefinition(context, pet)
         local petId = tostring(pet.id or "")
-        if type(definition) ~= "table" or not targetIds[petId] then
+        if not targetIds[petId] then
             return false, nil, nil, shortUID(uid) .. " is no longer in the event-pet catalog"
         end
         if pet.g or pet.r or pet.dm then
@@ -229,7 +231,8 @@ local function validateSelection(context, selectedCandidates)
         if pet.l == true or pet.locked == true then
             return false, nil, nil, shortUID(uid) .. " is locked"
         end
-        if definition.isPremium or definition.rarity == "Exclusive" then
+        if type(definition) == "table"
+            and (definition.isPremium or definition.rarity == "Exclusive") then
             return false, nil, nil, shortUID(uid) .. " is not machine-eligible"
         end
         expectedId = expectedId or petId

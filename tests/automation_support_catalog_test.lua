@@ -1,6 +1,6 @@
 local support = require("../automation_support_module")
 
-assert(support("version") == "1.1.1")
+assert(support("version") == "1.1.2")
 
 local context = {
     Library = {
@@ -54,5 +54,16 @@ end
 assert(string.find(summary, "Silver Stag", 1, true))
 assert(string.find(summary, "Silver Dragon", 1, true))
 assert(string.find(summary, "Santa Paws", 1, true))
+
+local sparseIds, sparseNames, sparseSummary = support("catalog", {
+    Library = { Directory = { Pets = {}, Eggs = {} } },
+}, true)
+for _, id in ipairs({ "263", "264", "265" }) do
+    assert(sparseIds[id] == true, "pinned machine id depends on Directory.Pets: " .. id)
+end
+assert(#sparseNames == 3, "sparse catalog should contain exactly the pinned trio")
+assert(string.find(sparseSummary, "Santa Paws", 1, true))
+assert(string.find(sparseSummary, "Silver Stag", 1, true))
+assert(string.find(sparseSummary, "Silver Dragon", 1, true))
 
 print("PASS machine catalog resolves all Christmas Mythicals across live Directory schemas")

@@ -2,7 +2,7 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.0.1"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 
@@ -315,7 +315,7 @@ local function collectCandidates(state, context, save)
         if type(pet) == "table" then
             local definition = definitionFor(context, pet)
             local petId = tostring(pet.id or "")
-            if type(definition) == "table" and targetIds[petId] then
+            if targetIds[petId] then
                 stats.All = stats.All + 1
                 if not pet.r or pet.g or pet.dm then
                     stats.Other = stats.Other + 1
@@ -328,8 +328,9 @@ local function collectCandidates(state, context, save)
                     if protected then stats.Protected = stats.Protected + 1 end
                     if equipped then stats.Equipped = stats.Equipped + 1 end
                     if locked then stats.Locked = stats.Locked + 1 end
-                    if protected or equipped or locked or uid == nil
-                        or definition.isPremium or definition.rarity == "Exclusive" then
+                    local directoryBlocked = type(definition) == "table"
+                        and (definition.isPremium or definition.rarity == "Exclusive")
+                    if protected or equipped or locked or uid == nil or directoryBlocked then
                         -- Deliberately excluded.
                     elseif state.PendingCreate[uid] then
                         stats.Pending = stats.Pending + 1
@@ -340,7 +341,7 @@ local function collectCandidates(state, context, save)
                         groups[id][#groups[id] + 1] = {
                             Uid = uid,
                             Id = id,
-                            Name = tostring(definition.name or id),
+                            Name = tostring(type(definition) == "table" and definition.name or id),
                         }
                     end
                 end
@@ -377,7 +378,7 @@ local function validateSelection(context, candidates)
         if not pet then return false, nil, nil, shortUID(uid) .. " disappeared before dispatch" end
         local definition = definitionFor(context, pet)
         local petId = tostring(pet.id or "")
-        if type(definition) ~= "table" or not targetIds[petId] then
+        if not targetIds[petId] then
             return false, nil, nil, shortUID(uid) .. " is no longer in the event-pet catalog"
         end
         if not pet.r or pet.g or pet.dm then
@@ -391,7 +392,8 @@ local function validateSelection(context, candidates)
         if pet.l == true or pet.locked == true then
             return false, nil, nil, shortUID(uid) .. " is locked"
         end
-        if definition.isPremium or definition.rarity == "Exclusive" then
+        if type(definition) == "table"
+            and (definition.isPremium or definition.rarity == "Exclusive") then
             return false, nil, nil, shortUID(uid) .. " is not machine-eligible"
         end
         expectedId = expectedId or petId

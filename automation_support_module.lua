@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.1.1"
+local MODULE_VERSION = "1.1.2"
 
 local gate = {
     Owner = nil,
@@ -115,7 +115,11 @@ local function gateStatus(context)
 end
 
 local function definitionAllowed(definition, rawId)
-    if type(definition) ~= "table" then return false end
+    -- Current event IDs are authoritative even when this place ships an older
+    -- Directory.Pets table that has no definition for the new pets yet.
+    if type(definition) ~= "table" then
+        return explicitMachinePet(nil, rawId)
+    end
     local rarity = normalize(definition.rarity or definition.Rarity)
     if definition.isPremium == true or definition.huge == true or definition.isHuge == true
         or definition.isExclusive == true or definition.isVanity == true
@@ -137,6 +141,13 @@ local function getCatalog(context, force)
     local pets = type(directory.Pets) == "table" and directory.Pets or {}
     local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
     local ids, eventEggs = {}, {}
+
+    -- Do not make the current Christmas trio depend on the live egg/directory
+    -- schema. Some worlds expose the pets in Save.Pets before Directory.Pets
+    -- is updated, which previously reduced the catalog to Galaxy Fox only.
+    for id in pairs(MACHINE_PET_IDS) do
+        ids[id] = true
+    end
 
     local function petDefinition(rawId)
         if rawId == nil then return nil end
