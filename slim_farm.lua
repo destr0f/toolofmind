@@ -166,7 +166,6 @@ local camera = workspace.CurrentCamera
 local token = {}
 local connections = {}
 local RuntimeKernel
-local trackedConnectionSequence = 0
 local config = {
     PetFarm = false,
     Mode = "Different Strongest",
@@ -234,9 +233,9 @@ end
 local function track(connection, owner, key)
     table.insert(connections, connection)
     if RuntimeKernel and connection and type(connection.Disconnect) == "function" then
-        trackedConnectionSequence = trackedConnectionSequence + 1
+        connections.Sequence = (tonumber(connections.Sequence) or 0) + 1
         RuntimeKernel:TrackConnection(
-            key or ("main:" .. tostring(trackedConnectionSequence)),
+            key or ("main:" .. tostring(connections.Sequence)),
             connection,
             owner or "main"
         )
@@ -1637,6 +1636,7 @@ local petFarm = {
     TargetWindow = 0,
     TargetShards = 1,
     PolicyLanes = 16,
+    LifecycleSignals = {},
     NextFailureTraceAt = 0,
     SuppressedFailures = 0,
     StatsCache = {
@@ -2586,17 +2586,16 @@ local function clearAssignments(sendBack)
     return true
 end
 
-local scheduleFarmReset
-scheduleFarmReset = function(delay)
+function petFarm:ScheduleReset(delay)
     RuntimeKernel:After("farm.reset", delay or 0, "P0", function(cancelToken)
         if cancelToken:IsCancelled() or not running() or not farmResetRequested then return false end
         if farmResetRunning or allocatorBusy then
-            scheduleFarmReset(0.02)
+            self:ScheduleReset(0.02)
             return false
         end
         if config.PetFarm and not networkReady() then
             driverStatus = "waiting for Network before reset"
-            scheduleFarmReset(0.05)
+            self:ScheduleReset(0.05)
             return false
         end
 
@@ -2611,11 +2610,11 @@ scheduleFarmReset = function(delay)
         if config.PetFarm and not networkCleaned then
             farmResetRequested = true
             driverStatus = "waiting for Network before reset"
-            scheduleFarmReset(0.05)
+            self:ScheduleReset(0.05)
             return false
         end
         if farmResetRequested then
-            scheduleFarmReset(0)
+            self:ScheduleReset(0)
             return false
         end
 
@@ -2635,7 +2634,7 @@ requestFarmReset = function(reason)
     farmResetReason = tostring(reason or "configuration changed")
     farmSelectionSignature = currentFarmSignature()
     farmResetRequested = true
-    scheduleFarmReset(0)
+    petFarm:ScheduleReset(0)
 end
 
 local function dispatchPlan(record, petIds)
@@ -2785,6 +2784,7 @@ end
 local statusViews = {}
 local statusSetters = {}
 statusSetters.Cache = {}
+statusSetters.WorkerSync = {}
 function statusSetters.Set(key, text)
     local view = statusViews[key]
     if not view then return end
@@ -3547,9 +3547,8 @@ requestAllocatorPulse = function()
     petFarm:ScheduleAllocatorPass()
 end
 
-local petLifecycleSignals = {}
 local function connectPetLifecycleSignal(name, removed)
-    if petLifecycleSignals[name] then return true end
+    if petFarm.LifecycleSignals[name] then return true end
     local signal = Library and Library.Signal
     if not signal or type(signal.Fired) ~= "function" then return false end
 
@@ -3574,7 +3573,7 @@ local function connectPetLifecycleSignal(name, removed)
         })
     end)
     if not connected or not connection then return false end
-    petLifecycleSignals[name] = connection
+    petFarm.LifecycleSignals[name] = connection
     return true
 end
 
@@ -3587,7 +3586,7 @@ end, {
     Owner = "pet-farm",
 })
 
-local function syncFarmWatchdog()
+function petFarm:SyncWatchdog()
     if not config.PetFarm or not running() then
         RuntimeKernel:Unregister("farm.assignment-watchdog", "pet farm disabled")
         return
@@ -4009,7 +4008,7 @@ function lootCollector:Status()
     )
 end
 
-local function syncLootWorkers()
+function lootCollector:SyncWorkers()
     if not running() or (not config.Orbs and not config.Lootbags) then
         lootCollector:RefreshBindings(os.clock())
         RuntimeKernel:CancelOwner("loot", "loot disabled")
@@ -4051,10 +4050,9 @@ local function syncLootWorkers()
     end
 end
 
-syncLootWorkers()
+lootCollector:SyncWorkers()
 
-local workerSync = {}
-workerSync.AntiAFK = function()
+statusSetters.WorkerSync.AntiAFK = function()
     if not config.AntiAFK or not running() then
         RuntimeKernel:UnregisterConnection("signal:anti-afk")
         RuntimeKernel:Unregister("anti-afk.release", "anti-AFK disabled")
@@ -4072,7 +4070,7 @@ workerSync.AntiAFK = function()
         end, { Owner = "session", Replace = true })
     end, { Owner = "session" })
 end
-workerSync.AntiAFK()
+statusSetters.WorkerSync.AntiAFK()
 
 local function startInterfaceAndWorkers()
 local function uiStageYield(stage)
@@ -4200,7 +4198,7 @@ UI.FarmHero:Toggle({
                 if not ready then trace("pet engine load", tostring(problem)) end
             end, { Owner = "pet-farm" })
         end
-        syncFarmWatchdog()
+        petFarm:SyncWatchdog()
         requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
     end,
 })
@@ -4376,7 +4374,7 @@ UI.DiamondSection:Toggle({
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
         diamondPackNextCheck = 0
-        if workerSync.Diamond then workerSync.Diamond() end
+        if statusSetters.WorkerSync.Diamond then statusSetters.WorkerSync.Diamond() end
         if config.AutoTechDiamondPack then
             statusSetters.Diamond("Enabled. A local balance check will run now; below 1T no request is sent.")
         else
@@ -4403,7 +4401,7 @@ UI.LootHero:Toggle({
     Callback = function(value)
         config.Orbs = value == true
         lootCollector.NextBindingAt = 0
-        syncLootWorkers()
+        lootCollector:SyncWorkers()
     end,
 })
 UI.LootHero:Toggle({
@@ -4414,7 +4412,7 @@ UI.LootHero:Toggle({
     Callback = function(value)
         config.Lootbags = value == true
         lootCollector.NextBindingAt = 0
-        syncLootWorkers()
+        lootCollector:SyncWorkers()
     end,
 })
 statusViews.Loot = UI.LootHero:Paragraph({
@@ -4440,7 +4438,7 @@ UI.RewardsHero:Toggle({
         state.NextAttempt = 0
         state.LastTimingError = nil
         state.ArmedReported = false
-        if workerSync.Rewards then workerSync.Rewards() end
+        if statusSetters.WorkerSync.Rewards then statusSetters.WorkerSync.Rewards() end
     end,
 })
 UI.RewardsHero:Toggle({
@@ -4455,7 +4453,7 @@ UI.RewardsHero:Toggle({
         state.NextAttempt = 0
         state.LastTimingError = nil
         state.ArmedReported = false
-        if workerSync.Rewards then workerSync.Rewards() end
+        if statusSetters.WorkerSync.Rewards then statusSetters.WorkerSync.Rewards() end
     end,
 })
 UI.RewardsHero:Paragraph({
@@ -4504,7 +4502,7 @@ UI.SessionSection:Toggle({
     Value = true,
     Callback = function(value)
         config.AntiAFK = value == true
-        workerSync.AntiAFK()
+        statusSetters.WorkerSync.AntiAFK()
     end,
 })
 
@@ -4562,11 +4560,11 @@ function UI.ReconcileProfile(label)
         end
         if not zoneValid then savedZone = config.Zone end
         pcall(function() UI.ZoneDropdown:Select(savedZone) end)
-        syncFarmWatchdog()
-        syncLootWorkers()
-        workerSync.AntiAFK()
-        if workerSync.Diamond then workerSync.Diamond() end
-        if workerSync.Rewards then workerSync.Rewards() end
+        petFarm:SyncWatchdog()
+        lootCollector:SyncWorkers()
+        statusSetters.WorkerSync.AntiAFK()
+        if statusSetters.WorkerSync.Diamond then statusSetters.WorkerSync.Diamond() end
+        if statusSetters.WorkerSync.Rewards then statusSetters.WorkerSync.Rewards() end
         UI.SetProfileStatus(string.format(
             "%s\nWorld: %s | Zone: %s | Egg: %s | auto-load: enabled",
             tostring(label or "Profile synchronized"),
@@ -4731,7 +4729,7 @@ UI.SessionSection:Button({
     end,
 })
 
-workerSync.Diamond = function()
+statusSetters.WorkerSync.Diamond = function()
     if not config.AutoTechDiamondPack or not running() then
         RuntimeKernel:Unregister("automation.diamond-pack", "diamond automation disabled")
         return
@@ -4753,7 +4751,7 @@ workerSync.Diamond = function()
 end
 
 local rewardOrder = { "VIP", "Rank" }
-workerSync.Rewards = function()
+statusSetters.WorkerSync.Rewards = function()
     if not running() or (not config.AutoVIPRewards and not config.AutoRankRewards) then
         RuntimeKernel:Unregister("automation.rewards", "reward automation disabled")
         return
@@ -4799,8 +4797,8 @@ workerSync.Rewards = function()
     end, { Owner = "automation" })
 end
 
-workerSync.Diamond()
-workerSync.Rewards()
+statusSetters.WorkerSync.Diamond()
+statusSetters.WorkerSync.Rewards()
 
 local lastRateSelection, lastRateText = nil, nil
 RuntimeKernel:Every("ui.balance-rate", 1, "P4", function(cancelToken)
