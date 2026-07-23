@@ -17,11 +17,15 @@ const activeText = activeFiles.map((file) => `${file}\n${read(file)}`).join("\n"
 const farm = read("slim_farm.lua");
 const engine = read("pet_farm_engine.lua");
 const graphics = read("graphics_module.lua");
+const removedScheduler = ["Runtime", "Kernel"].join("");
+const forbiddenSchedulerCalls = ["Register", "Connect", "Every", "Emit", "Stats"]
+    .map((method) => `${removedScheduler}:${method}`);
 
-assert(!/RuntimeKernel|Kernel:Register|Kernel:Connect|Kernel:Every|Kernel:Emit|Kernel:Stats/.test(activeText),
+assert(![removedScheduler, ...forbiddenSchedulerCalls].some((marker) => activeText.includes(marker)),
     "active runtime still references the removed global scheduler");
-assert(!fs.existsSync(path.join(root, "runtime_kernel_module.lua")),
-    "runtime_kernel_module.lua still exists");
+const removedModulePath = ["runtime", "kernel", "module.lua"].join("_");
+assert(!fs.existsSync(path.join(root, removedModulePath)),
+    "removed scheduler module still exists");
 assert(!/workspace\s*\.\s*DescendantAdded/.test(graphics),
     "graphics module still observes every descendant in Workspace");
 

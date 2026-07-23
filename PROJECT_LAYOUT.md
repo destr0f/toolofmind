@@ -23,6 +23,14 @@ WindUI and `automation_ui_module.lua` are startup dependencies. The remaining
 modules are declared at startup but downloaded only when their feature is used.
 Lazy loading does not weaken identity checks.
 
+## Runtime execution policy
+
+The active build has no global scheduler or retained per-event job registry.
+High-frequency game signals update bounded indexes and wake at most one
+feature-owned coalesced runner. Pet dispatch, loot and graphics queues have
+explicit capacities; disabling a feature stops its worker and clears its
+connections/state. STOP and reload invalidate every active worker token.
+
 ## Repository categories
 
 - `source`: editable runtime source and the manifest.
@@ -44,9 +52,12 @@ Run:
 
 ```powershell
 node build_slim.js
+node tests/zero_retention_reactor_test.js
 node tests/runtime_manifest_test.js
 ```
 
 The build fails if a tracked file is unclassified, a file appears in two
 categories, the suite version drifts, a pinned Git blob changes, a vendored
 dependency differs from its release identity, or a generated artifact is stale.
+The zero-retention test also checks the removed scheduler cannot re-enter the
+active graph and models a 100,000-event burst with no retained backlog.
