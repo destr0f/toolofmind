@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.1.0"
 
 local gate = {
     Owner = nil,
@@ -17,11 +17,11 @@ local catalogCache = {
     Summary = "not scanned",
 }
 
-local FALLBACK_NAMES = {
-    ["Galaxy Fox"] = true,
-    ["Silver Stag"] = true,
-    ["Silver Dragon"] = true,
-    ["Santa Paws"] = true,
+local MACHINE_PET_NAMES = {
+    ["galaxy fox"] = "Galaxy Fox",
+    ["silver stag"] = "Silver Stag",
+    ["silver dragon"] = "Silver Dragon",
+    ["santa paws"] = "Santa Paws",
 }
 
 local function normalize(value)
@@ -29,6 +29,17 @@ local function normalize(value)
     value = string.gsub(value, "[%p_]+", " ")
     value = string.gsub(value, "%s+", " ")
     return string.match(value, "^%s*(.-)%s*$") or value
+end
+
+local function definitionName(definition)
+    if type(definition) ~= "table" then return nil end
+    return definition.name or definition.Name
+        or definition.displayName or definition.DisplayName
+end
+
+local function explicitMachinePet(definition)
+    local name = definitionName(definition)
+    return name ~= nil and MACHINE_PET_NAMES[normalize(name)] ~= nil
 end
 
 local function trace(context, stage, detail)
@@ -104,6 +115,7 @@ local function definitionAllowed(definition)
         or rarity == "exclusive" or rarity == "secret" then
         return false
     end
+    if explicitMachinePet(definition) then return true end
     return rarity == "legendary" or rarity == "mythical"
 end
 
@@ -119,10 +131,15 @@ local function getCatalog(context, force)
     local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
     local ids, eventEggs = {}, {}
 
+    local function petDefinition(rawId)
+        if rawId == nil then return nil end
+        return pets[rawId] or pets[tostring(rawId)] or pets[tonumber(rawId)]
+    end
+
     local function addPet(rawId)
         if rawId == nil then return end
         local id = tostring(rawId)
-        local definition = pets[id] or pets[tonumber(id)]
+        local definition = petDefinition(rawId)
         if definitionAllowed(definition) then ids[id] = true end
     end
 
@@ -137,9 +154,16 @@ local function getCatalog(context, force)
         if type(drops) == "string" then
             addEggDrops(drops, visiting)
         elseif type(drops) == "table" then
-            for _, drop in pairs(drops) do
-                local petId = type(drop) == "table"
-                    and (drop[1] or drop.id or drop.ID or drop.petId or drop.PetId) or drop
+            for dropKey, drop in pairs(drops) do
+                local petId
+                if type(drop) == "table" then
+                    petId = drop[1] or drop.id or drop.ID or drop.petId or drop.PetId
+                elseif petDefinition(drop) then
+                    petId = drop
+                elseif petDefinition(dropKey) then
+                    -- Some Directory.Eggs revisions store drops as [petId] = chance.
+                    petId = dropKey
+                end
                 addPet(petId)
             end
         end
@@ -168,15 +192,15 @@ local function getCatalog(context, force)
     end
 
     for id, definition in pairs(pets) do
-        if type(definition) == "table" and FALLBACK_NAMES[tostring(definition.name)] then
+        if explicitMachinePet(definition) then
             addPet(id)
         end
     end
 
     local names = {}
     for id in pairs(ids) do
-        local definition = pets[id] or pets[tonumber(id)]
-        names[#names + 1] = tostring(type(definition) == "table" and definition.name or id)
+        local definition = petDefinition(id)
+        names[#names + 1] = tostring(definitionName(definition) or id)
     end
     table.sort(names)
     table.sort(eventEggs)

@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.2.0"
+local MODULE_VERSION = "1.2.1"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -150,7 +150,7 @@ local function build(context)
     local machines = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
     machines:Paragraph({
         Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
-        Desc = "Galaxy Fox and live event pets; every batch is validated and confirmed from Save.",
+        Desc = "Galaxy Fox + Silver Stag + Silver Dragon + Santa Paws; every batch is validated and confirmed from Save.",
     })
     machines:Slider({
         Flag = "machine_batch_size",
