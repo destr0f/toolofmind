@@ -4481,7 +4481,7 @@ track(player.Idled:Connect(function()
     end
 end))
 
-local function startInterfaceAndWorkers()
+env.__PSX_START_INTERFACE_WORKERS = function()
 local function uiStageYield(stage)
     if not running() then return end
     if stage then trace("UI stage", stage) end
@@ -5275,4 +5275,5 @@ task.defer(function()
 end)
 end
 
-startInterfaceAndWorkers()
+env.__PSX_START_INTERFACE_WORKERS()
+env.__PSX_START_INTERFACE_WORKERS = nil

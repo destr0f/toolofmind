@@ -95,6 +95,9 @@ assert(!farm.includes("self:ScheduleOrbFlush(0)"),
     "orb overflow can still create an immediate unthrottled flush chain");
 assert(farm.includes("if self.WorkerActive then\n        self:MarkStatus()\n        return"),
     "repeated toggle/profile callbacks can restart the loot reactor and rescan the world");
+assert(farm.includes("env.__PSX_START_INTERFACE_WORKERS = function()")
+    && farm.includes("env.__PSX_START_INTERFACE_WORKERS = nil"),
+    "UI startup still consumes a scarce top-level Luau local register");
 
 const uiLoop = farm.slice(farm.indexOf("local nextZoneRefreshAt"));
 assert(!uiLoop.includes("orderedTargets("),
