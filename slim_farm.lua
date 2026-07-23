@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.3"
+local VERSION = "1.4.1-dev.4"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -86,6 +86,8 @@ local config = {
     AutoDarkMatterGalaxyFox = false,
     AutoClaimDarkMatter = false,
     MachineBatchSize = 6,
+    DarkMatterBatchSize = 6,
+    DarkMatterMaxWaitHours = 0,
     AutoBoostBundle = false,
     BoostRenewBefore = 5,
     AutoTripleCoins = false,
@@ -99,7 +101,7 @@ local config = {
     EggAnimation = "Headless (No Animation)",
 }
 
-local MODULE_REVISION = "37605acb544cf4c95b20f088d424046e5f1d536e"
+local MODULE_REVISION = "88f48f18e167df39dcddd1f00d31c8796d06acd3"
 local RAW_MODULE_BASE = "https://raw.githubusercontent.com/destr0f/toolofmind/"
     .. MODULE_REVISION .. "/"
 local SUPPORT_MODULE_URL = RAW_MODULE_BASE .. "automation_support_module.lua"
@@ -2428,7 +2430,14 @@ function machineModules:Start(kind)
         GetCurrency = getCurrentCurrency,
         FormatNumber = formatRateNumber,
         GetMachinePetCatalog = getMachinePetCatalog,
-        BatchSize = function() return config.MachineBatchSize end,
+        BatchSize = function()
+            return kind == "DarkMatter" and config.DarkMatterBatchSize or config.MachineBatchSize
+        end,
+        MaxWaitSeconds = function()
+            if kind ~= "DarkMatter" then return nil end
+            local hours = tonumber(config.DarkMatterMaxWaitHours) or 0
+            return hours > 0 and hours * 3600 or nil
+        end,
         GetCommandRemote = getCommandRemote,
         InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
         InvokeCommand = invokeCommand,
