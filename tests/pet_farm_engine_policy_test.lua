@@ -56,7 +56,7 @@ local function context(overrides)
             return true
         end,
         OnFailed = function() error("acceptance test must not fail") end,
-        DispatchWidth = 8,
+        DispatchWidth = 16,
     }
     for key, item in pairs(overrides or {}) do value[key] = item end
     return value
@@ -79,7 +79,7 @@ local dispatchStats = engine("stats")
 assert(dispatchStats.Accepted == 15, "all 15 explicit UIDs should be accepted")
 assert(dispatchStats.Rejected == 0 and dispatchStats.Errors == 0)
 assert(dispatchStats.Queued == 0 and dispatchStats.Active == 0)
-assert(dispatchStats.Limit == 8 and dispatchStats.QueueCapacity == 32)
+assert(dispatchStats.Limit == 16 and dispatchStats.QueueCapacity == 32)
 assert(fireCalls == 30, "each accepted lock needs target + farm signals")
 for _, state in pairs(states) do assert(state.Phase == "working") end
 
@@ -128,7 +128,7 @@ local rejected = engine("stats")
 assert(rejected.Rejected == 1 and rejected.Retries == 0)
 assert(rejected.Queued == 0 and failedCount == 1 and states.failure == nil)
 
--- Transport failures never widen the fixed eight-lane writer.
+-- Transport failures never widen the fixed sixteen-lane writer.
 network.Invoke = function() error("transient transport failure") end
 local transportState = { Phase = "joining" }
 states.transport = transportState
@@ -143,6 +143,6 @@ assert(engine("dispatch", {
 }) == true)
 local transport = engine("stats")
 assert(transport.Errors == 1 and transport.Retries == 0)
-assert(transport.Limit == 8 and transport.PolicyMaxLanes == 8)
+assert(transport.Limit == 16 and transport.PolicyMaxLanes == 16)
 
-print("PASS event-driven eight-lane Lite Reactor and bounded one-retry policy")
+print("PASS event-driven sixteen-lane Lite Reactor and bounded one-retry policy")

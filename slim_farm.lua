@@ -1678,7 +1678,7 @@ local petFarm = {
         Active = 0,
         Queued = 0,
         Limit = 0,
-        PolicyMaxLanes = 8,
+        PolicyMaxLanes = 16,
         Accepted = 0,
         Rejected = 0,
         Errors = 0,
@@ -2119,7 +2119,7 @@ function petFarm:EnsureEngine()
             pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
         end,
         Trace = trace,
-        DispatchWidth = 8,
+        DispatchWidth = 16,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
     self.Loading = false

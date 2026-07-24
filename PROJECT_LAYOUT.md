@@ -35,7 +35,7 @@ indexes and wake at most one feature-owned coalesced runner.
   world. `ChildAdded`, `ChildRemoved` and named coin deltas maintain the live
   registry afterwards.
 - Pet allocation is event-driven. Accepted pets stay locked until their target
-  disappears; one eight-wide writer owns Join/Target/Farm traffic and permits
+  disappears; one sixteen-wide writer owns Join/Target/Farm traffic and permits
   only one delayed retry. `Update Coin Pets` is intentionally outside the hot
   path, so other players cannot trigger a full local contention rebuild.
 - The Orbs LocalScript is gated at its global `AddOrb` producer when `getsenv`
