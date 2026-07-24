@@ -1648,6 +1648,7 @@ end
 
 local petStates = {}
 local rejectedUntil = {}
+local JOIN_COIN_REJECT_PREFIX = "Join Coin rejected"
 local farmResetRunning = false
 local farmResetScheduled = false
 local farmResetReason = "startup"
@@ -2076,6 +2077,10 @@ function petFarm:EnsureEngine()
         StateCurrent = function(petId, state)
             return petStates[tostring(petId)] == state
                 and state.Generation == farmGeneration
+        end,
+        ShouldRetry = function(_, reason)
+            local text = tostring(reason or "")
+            return string.sub(text, 1, #JOIN_COIN_REJECT_PREFIX) ~= JOIN_COIN_REJECT_PREFIX
         end,
         OnAccepted = function(petId, state, record, _, attempt, route)
             petId = tostring(petId)

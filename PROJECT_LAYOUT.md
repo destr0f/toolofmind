@@ -36,8 +36,10 @@ indexes and wake at most one feature-owned coalesced runner.
   registry afterwards.
 - Pet allocation is event-driven. Accepted pets stay locked until their target
   disappears; one sixteen-wide writer owns Join/Target/Farm traffic and permits
-  only one delayed retry. `Update Coin Pets` is intentionally outside the hot
-  path, so other players cannot trigger a full local contention rebuild.
+  only one delayed retry for transport/signal failures. A confirmed `Join Coin`
+  rejection immediately cools down that stale target and wakes the allocator.
+  `Update Coin Pets` is intentionally outside the hot path, so other players
+  cannot trigger a full local contention rebuild.
 - The Orbs LocalScript is gated at its global `AddOrb` producer when `getsenv`
   is available. IDs are deduplicated into one current set and sent in a shared
   0.25-second native batch before Parts, billboards or body movers are created.

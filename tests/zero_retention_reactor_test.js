@@ -69,6 +69,10 @@ assert(farm.includes("if self.AllocatorScheduled or allocatorBusy"),
     "allocator callback bursts are not coalesced");
 assert(farm.includes("if not force and expected > 0 and assignmentCount() >= expected then return end"),
     "coin callbacks still wake the allocator while every UID is locked");
+assert(farm.includes('local JOIN_COIN_REJECT_PREFIX = "Join Coin rejected"')
+    && farm.includes("ShouldRetry = function(_, reason)")
+    && farm.includes("#JOIN_COIN_REJECT_PREFIX"),
+    "confirmed Join Coin rejection is still delayed behind a same-target retry");
 assert(!farm.includes("RecordExternalPets")
     && !farm.includes("ContendedTargetOrder")
     && !farm.includes("TargetContainsPet"),
