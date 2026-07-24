@@ -1149,9 +1149,18 @@ local function getZoneOptions(worldChoice)
     return options, resolvedWorld
 end
 
-local snapshotBusy = false
-local snapshotPrimed = false
-local coinSignalsReady = false
+local coinSync = {
+    SnapshotBusy = false,
+    SnapshotPrimed = false,
+    RetryArmed = false,
+    RetryToken = 0,
+    LastProblem = "not requested",
+    RecordCount = 0,
+    TargetsValidated = false,
+    SignalsReady = false,
+    SignalConnections = {},
+    WorldSignalReady = false,
+}
 local coinGeneration = 0
 local coinMutationSerial = 0
 local coinIndex = {
@@ -1350,20 +1359,61 @@ local function refreshWorkspaceCoins()
     end
 end
 
-local function refreshCoinSnapshot()
-    if snapshotBusy or snapshotPrimed then return end
+local refreshCoinSnapshot
+
+local function scheduleCoinSnapshotRetry(delaySeconds, problem)
+    if problem then coinSync.LastProblem = tostring(problem) end
+    if coinSync.RetryArmed
+        or (coinSync.SnapshotPrimed and coinSync.SignalsReady)
+        or not running() then return end
+    if not config.PetFarm and not config.PotatoMode then return end
+    coinSync.RetryArmed = true
+    coinSync.RetryToken = coinSync.RetryToken + 1
+    local retryToken = coinSync.RetryToken
+    local generation = coinGeneration
+    task.delay(math.max(tonumber(delaySeconds) or 0.75, 0.1), function()
+        if retryToken ~= coinSync.RetryToken or generation ~= coinGeneration then return end
+        coinSync.RetryArmed = false
+        if not running()
+            or (coinSync.SnapshotPrimed and coinSync.SignalsReady) then return end
+        if type(requestAllocatorPulse) == "function" then
+            requestAllocatorPulse(true)
+        elseif type(refreshCoinSnapshot) == "function" then
+            task.defer(refreshCoinSnapshot)
+        end
+    end)
+end
+
+local function coinCatalogReady()
+    return coinSync.SnapshotPrimed and coinSync.SignalsReady
+        and coinSync.TargetsValidated and coinSync.RecordCount > 0
+end
+
+refreshCoinSnapshot = function()
+    if coinSync.SnapshotBusy or coinSync.SnapshotPrimed then return end
     local network = networkReady()
-    if not network then return end
-    snapshotBusy = true
+    if not network then
+        scheduleCoinSnapshotRetry(0.5, "Library.Network is not ready")
+        return
+    end
+    coinSync.SnapshotBusy = true
     local generation = coinGeneration
     local serialAtStart = coinMutationSerial
     local ok, response = pcall(network.Invoke, "Get Coins")
     if generation ~= coinGeneration then
-        snapshotBusy = false
+        coinSync.SnapshotBusy = false
         return
     end
-    if ok and type(response) == "table"
-        and coinMutationSerial == serialAtStart then
+    local validCount = 0
+    if ok and type(response) == "table" then
+        for _, data in pairs(response) do
+            if type(data) == "table" then validCount = validCount + 1 end
+        end
+    end
+    local responseAccepted = ok and type(response) == "table"
+        and validCount > 0 and coinMutationSerial == serialAtStart
+    if responseAccepted then
+        coinSync.TargetsValidated = false
         local seen = {}
         for id, data in pairs(response) do
             if type(data) == "table" then
@@ -1379,19 +1429,30 @@ local function refreshCoinSnapshot()
         for _, id in ipairs(stale) do removeCoin(id, false) end
         if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     end
-    -- This is an initial metadata snapshot, not a reconciliation loop. If a
-    -- live event raced the response, discard the stale snapshot and continue
-    -- from the workspace/event registry instead of invoking Get Coins again.
-    snapshotPrimed = true
-    snapshotBusy = false
+    coinSync.SnapshotPrimed = responseAccepted
+    coinSync.RecordCount = responseAccepted and validCount or 0
+    if responseAccepted then
+        coinSync.LastProblem = string.format("ready with %d records", validCount)
+    elseif not ok then
+        coinSync.LastProblem = "Get Coins failed: " .. tostring(response)
+    elseif type(response) ~= "table" then
+        coinSync.LastProblem = "Get Coins returned " .. typeof(response)
+    elseif validCount == 0 then
+        coinSync.LastProblem = "Get Coins returned an empty catalog"
+    else
+        coinSync.LastProblem = "Get Coins raced a live coin event"
+    end
+    coinSync.SnapshotBusy = false
+    if not responseAccepted then scheduleCoinSnapshotRetry(0.75, coinSync.LastProblem) end
 end
 
 local function connectCoinSignals()
-    if coinSignalsReady then return end
+    if coinSync.SignalsReady then return end
     local network = networkReady()
     if not network or type(network.Fired) ~= "function" then return end
 
     local function connect(name, callback)
+        if coinSync.SignalConnections[name] then return true end
         local ok, signal = pcall(network.Fired, name)
         if ok and signal and type(signal.Connect) == "function" then
             local connected, connection = pcall(function()
@@ -1400,8 +1461,12 @@ local function connectCoinSignals()
                     if not handled then warn("[PSX SLIM] " .. name .. ": " .. tostring(problem)) end
                 end)
             end)
-            if connected and connection then track(connection) end
+            if connected and connection then
+                coinSync.SignalConnections[name] = track(connection)
+                return true
+            end
         end
+        return false
     end
 
     connect("New Coin", function(id, data) applyCoinData(id, data, true) end)
@@ -1422,14 +1487,19 @@ local function connectCoinSignals()
         end
     end)
     connect("Remove Coin", function(id) removeCoin(id, true) end)
+    coinSync.SignalsReady = coinSync.SignalConnections["New Coin"] ~= nil
+        and coinSync.SignalConnections["Update Coin Health"] ~= nil
+        and coinSync.SignalConnections["Remove Coin"] ~= nil
 
     local signal = Library.Signal
-    if signal and type(signal.Fired) == "function" then
+    if not coinSync.WorldSignalReady and signal and type(signal.Fired) == "function" then
         pcall(function()
             local worldChanged = signal.Fired("World Changed")
-            track(worldChanged:Connect(function()
+            local connection = worldChanged:Connect(function()
                 coinGeneration = coinGeneration + 1
                 coinMutationSerial = coinMutationSerial + 1
+                coinSync.RetryToken = coinSync.RetryToken + 1
+                coinSync.RetryArmed = false
                 table.clear(coinRecords)
                 table.clear(coinIndex.Models)
                 table.clear(coinIndex.IdByModel)
@@ -1445,14 +1515,23 @@ local function connectCoinSignals()
                 nextWorldCheck = 0
                 zoneCatalogDirty = true
                 eggCatalogDirty = true
-                snapshotPrimed = false
+                coinSync.SnapshotPrimed = false
+                coinSync.RecordCount = 0
+                coinSync.TargetsValidated = false
+                coinSync.LastProblem = "world changed; awaiting fresh catalog"
                 if config.PetFarm and type(requestFarmReset) == "function" then
                     requestFarmReset("world changed")
                 end
-            end))
+                scheduleCoinSnapshotRetry(0.15, coinSync.LastProblem)
+            end)
+            track(connection)
+            coinSync.WorldSignalReady = true
         end)
     end
-    coinSignalsReady = true
+    if not coinSync.SignalsReady then
+        coinSync.LastProblem = "named coin signals are not fully connected"
+        scheduleCoinSnapshotRetry(0.75, coinSync.LastProblem)
+    end
 end
 
 local cachedPetIds = {}
@@ -1541,6 +1620,7 @@ local function orderedTargets(mode)
             table.insert(targets, record)
         end
     end
+    coinSync.TargetsValidated = #targets > 0
 
     local strongest = mode ~= "Different Weakest"
     table.sort(targets, function(left, right)
@@ -2924,7 +3004,9 @@ allocatorPass = function()
     local ok, problem = pcall(function()
         connectCoinSignals()
         refreshWorkspaceCoins()
-        if not snapshotPrimed and not snapshotBusy then task.defer(refreshCoinSnapshot) end
+        if not coinSync.SnapshotPrimed and not coinSync.SnapshotBusy then
+            task.defer(refreshCoinSnapshot)
+        end
 
         if not config.PetFarm or farmResetRunning then return end
 
@@ -3196,6 +3278,7 @@ local lootContext = {
     EnabledOrbs = function() return config.Orbs == true end,
     EnabledLootbags = function() return config.Lootbags == true end,
     HeadlessCoins = function() return config.PotatoMode == true end,
+    CoinCatalogReady = coinCatalogReady,
     GetThings = function()
         local things = Library and Library.Things
         if typeof(things) == "Instance" then return things end
@@ -3952,8 +4035,16 @@ local function finishShutdown()
     cachedPetIds = {}
 
     coinGeneration = coinGeneration + 1
-    snapshotBusy = false
-    snapshotPrimed = false
+    coinSync.SnapshotBusy = false
+    coinSync.SnapshotPrimed = false
+    coinSync.RetryToken = coinSync.RetryToken + 1
+    coinSync.RetryArmed = false
+    coinSync.LastProblem = "stopped"
+    coinSync.RecordCount = 0
+    coinSync.TargetsValidated = false
+    coinSync.SignalsReady = false
+    coinSync.WorldSignalReady = false
+    table.clear(coinSync.SignalConnections)
     coinIndex:DisconnectFolder()
     table.clear(coinRecords)
     table.clear(coinIndex.Models)
@@ -4177,7 +4268,7 @@ local function updateRuntimeTelemetry()
             local dispatchStats = petFarm:RefreshStats()
             local networkState = networkReady() and "ready" or "waiting"
             statusSetters.Farm(string.format(
-                "%s  >  %s\nTargets: %d | locked: %d/%d | working: %d | joining: %d | true idle: %d\nCached target window: %d | no Update Coin Pets reconciliation",
+                "%s  >  %s\nTargets: %d | locked: %d/%d | working: %d | joining: %d | true idle: %d\nCached target window: %d | coin catalog: %s",
                 tostring(petFarm.LastWorld or "unknown"),
                 tostring(petFarm.LastZone or "unknown"),
                 tonumber(petFarm.LastTargetCount) or 0,
@@ -4186,7 +4277,9 @@ local function updateRuntimeTelemetry()
                 workingCount,
                 joiningCount,
                 math.max(equippedCount - assignedCount, 0),
-                tonumber(petFarm.TargetWindow) or 0
+                tonumber(petFarm.TargetWindow) or 0,
+                coinCatalogReady() and ("ready (" .. tostring(coinSync.RecordCount) .. ")")
+                    or ("fail-open: " .. tostring(coinSync.LastProblem))
             ))
             statusSetters.Health(string.format(
                 "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nSlow recoveries: %d | last: %s\nDriver: %s",

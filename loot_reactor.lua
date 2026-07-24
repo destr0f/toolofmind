@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.0.0"
+local MODULE_VERSION = "3.0.1"
 local ORB_FLUSH_INTERVAL = 0.25
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
@@ -115,9 +115,22 @@ end
 
 local function coinsHeadlessEnabled()
     local context = run.Context
-    return contextRunning() and context
-        and type(context.HeadlessCoins) == "function"
-        and context.HeadlessCoins() == true
+    if not contextRunning() or not context
+        or type(context.HeadlessCoins) ~= "function" then
+        return false
+    end
+    local ok, enabled = pcall(context.HeadlessCoins)
+    return ok and enabled == true
+end
+
+local function coinCatalogReady()
+    local context = run.Context
+    if not contextRunning() or not context
+        or type(context.CoinCatalogReady) ~= "function" then
+        return false
+    end
+    local ok, ready = pcall(context.CoinCatalogReady)
+    return ok and ready == true
 end
 
 local function profileBegin(label)
@@ -170,6 +183,12 @@ local function objectPosition(object)
 end
 
 local function statusText()
+    local coinProducer = run.CoinsProducer
+    local coinReason = run.CoinGateReason
+    if run.CoinProducerRecord and coinsHeadlessEnabled() and not coinCatalogReady() then
+        coinProducer = "visual fail-open"
+        coinReason = "waiting for verified coin catalog"
+    end
     return string.format(
         "Orbs producer: %s (%s) | Coins producer: %s (%s)\n"
             .. "Lootbags producer: %s (%s) | gate generation %d | last rebind: %s\n"
@@ -180,8 +199,8 @@ local function statusText()
             .. "Retention: unsent orb IDs + unacknowledged bag IDs only",
         run.OrbsProducer,
         run.OrbGateReason,
-        run.CoinsProducer,
-        run.CoinGateReason,
+        coinProducer,
+        coinReason,
         run.BagGate and "direct" or "fallback",
         run.BagGateReason,
         run.GateGeneration,
@@ -794,11 +813,15 @@ local function restoreProducerRecord(record)
     table.clear(record.Originals or {})
 end
 
-local function producerCall(record, original, prevent, ...)
+local function coinProducerCall(record, original, producerName, ...)
     local shouldPrevent = false
     if record.Active and record.Generation == run.Generation and contextRunning() then
-        local checked, result = pcall(prevent)
-        shouldPrevent = checked and result == true
+        local headless = coinsHeadlessEnabled()
+        shouldPrevent = headless and (
+            producerName == "DamageAnimation"
+            or producerName == "PetDamageAnimation"
+            or coinCatalogReady()
+        )
     end
     if shouldPrevent then
         local profiled = profileBegin("PSX.ProducerGate")
@@ -939,11 +962,11 @@ local function installCoinProducer()
     for _, name in ipairs(names) do
         local original = environment[name]
         record.Originals[name] = original
-        record.Wrappers[name] = (function(savedOriginal)
+        record.Wrappers[name] = (function(savedName, savedOriginal)
             return function(...)
-                return producerCall(record, savedOriginal, coinsHeadlessEnabled, ...)
+                return coinProducerCall(record, savedOriginal, savedName, ...)
             end
-        end)(original)
+        end)(name, original)
     end
 
     local installed, installProblem = pcall(function()
@@ -960,7 +983,7 @@ local function installCoinProducer()
 
     run.CoinProducerRecord = record
     run.CoinsProducer = "producer-gated"
-    run.CoinGateReason = "getsenv coin visuals gated"
+    run.CoinGateReason = "effects gated; models require verified catalog"
     return true
 end
 
