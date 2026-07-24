@@ -74,7 +74,7 @@
     "petFarmEngine": {
       "id": "petFarmEngine",
       "label": "Pet farm engine",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-lite.2",
@@ -82,10 +82,10 @@
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "6a2f990ca137c0489a2b378a5a72d5ccbb045ff8",
-      "bytes": 19311,
-      "sha256": "a3b658ebff644a657874e003f8d94b295e2eac7735dd702a67c3a04f16489b94",
-      "djb2": "fe32a31f"
+      "commit": "0c7211b7b7a507394c68b8fb45a7a85e7025bab1",
+      "bytes": 19312,
+      "sha256": "2f48dee11ff34e996dc02375cab430de14fc82431303942522b2526a1c203992",
+      "djb2": "55882a8f"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -272,32 +272,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "cdcf3cdb3e10686a981f0fff62400532db2e5450",
+    "generatedFromCommit": "0c7211b7b7a507394c68b8fb45a7a85e7025bab1",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 5297,
-      "sha256": "9d1b7cab6e934e57872708a565586763fc2d6259ef60ed58937a2941695cd682",
-      "djb2": "95d39d7c"
+      "sha256": "1e1d3f3b0e3e1b6acbaef9dd56aba5892687785622838238715661af97353750",
+      "djb2": "04a9a20f"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-lite.2",
-      "bytes": 162852,
-      "sha256": "c4f4b2ba6a48fc0e3cf2720f56e5d8a156ff082cc090babbfd7e73d68ff34a86",
-      "djb2": "6153e2ef"
+      "bytes": 162854,
+      "sha256": "3890b852b5e8905456f8d7b71c4c1a86327559da152bee5dd186f6f376bc9d82",
+      "djb2": "8160ddcd"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 131995,
-        "sha256": "e0e0f225d7e0ea86cd4b7ea1e412c1ef85acb5a85bd0850097930038ca9c8736",
-        "djb2": "b6aa550a"
+        "bytes": 131997,
+        "sha256": "ba194bd3c1da2f4756382352ef6e5c705c07b0195193b7890e7e34c02562e89d",
+        "djb2": "7058fec2"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 131995,
-        "sha256": "e0e0f225d7e0ea86cd4b7ea1e412c1ef85acb5a85bd0850097930038ca9c8736",
-        "djb2": "b6aa550a"
+        "bytes": 131997,
+        "sha256": "ba194bd3c1da2f4756382352ef6e5c705c07b0195193b7890e7e34c02562e89d",
+        "djb2": "7058fec2"
       }
     }
   }
