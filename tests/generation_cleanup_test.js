@@ -40,6 +40,8 @@ assert(loot.includes("run.Generation = run.Generation + 1")
     && loot.includes("if generation ~= run.Generation then return end")
     && loot.includes("clearConnections(run.Connections)")
     && loot.includes("clearWorld()")
+    && loot.includes("restoreOrbGate()")
+    && loot.includes("restoreBagGate()")
     && loot.includes("run.Context = nil"),
     "loot lifecycle does not fully invalidate/disconnect/clear");
 const statusCallback = loot.slice(
@@ -49,13 +51,13 @@ const statusCallback = loot.slice(
 assert(statusCallback.indexOf("if generation ~= run.Generation then return end")
     < statusCallback.indexOf("run.StatusArmed = false"),
     "a stale loot status callback can mutate the new generation");
-const retryCallback = loot.slice(
-    loot.indexOf("task.delay(BAG_RETRY_DELAY"),
-    loot.indexOf("local function watchReadyChild")
+const wakeCallback = loot.slice(
+    loot.indexOf("task.delay(math.max(target - os.clock(), 0)"),
+    loot.indexOf("local function tryCollectBag")
 );
-assert(retryCallback.indexOf("if generation ~= run.Generation")
-    < retryCallback.indexOf("run.RetryArmed = false"),
-    "a stale loot retry callback can mutate the new generation");
+assert(wakeCallback.indexOf("if generation ~= run.Generation")
+    < wakeCallback.indexOf("run.BagWakeArmed = false"),
+    "a stale loot wake callback can mutate the new generation");
 
 for (const marker of [
     "active.Generation = (active.Generation or 0) + 1",

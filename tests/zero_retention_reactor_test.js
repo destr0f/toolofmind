@@ -82,13 +82,22 @@ assert(!farm.includes("runtimePetCounts")
     && !farm.includes("teleportPet"),
     "visual pet mirroring returned to the farm hot path");
 
-// Loot owns Orbs/Lootbags and retains only unsent IDs/unready records.
+// Loot owns Orbs/Lootbags and prefers source-filtered named event gates.
 for (const marker of [
     "ORB_FLUSH_INTERVAL = 0.25",
     "ORB_BATCH_SIZE = 2048",
     "MAX_PENDING_ORBS = 8192",
+    "BAG_FIRST_ATTEMPT_DELAY = 0.08",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
+    "DisabledOrbs = {}",
+    "DisabledBags = {}",
+    'networkSignal("Orb Added")',
+    'networkSignal("Spawn Lootbag")',
+    'networkSignal("Remove Lootbag")',
+    "disableScriptConnections(",
+    "restoreDisabled(run.DisabledOrbs)",
+    "restoreDisabled(run.DisabledBags)",
     'fire("Claim Orbs", ids)',
     'fire("Collect Lootbag", record.Id, position)',
     "folder.ChildAdded:Connect(queueOrb)",
@@ -100,7 +109,8 @@ for (const marker of [
 for (const forbidden of [
     "firetouchinterest",
     "CFrame =",
-    "Heartbeat",
+    "RunService.Heartbeat:Connect",
+    "RunService.Stepped:Connect",
     "RenderStepped",
     "task.spawn",
     "GetDescendants",
@@ -110,6 +120,16 @@ for (const forbidden of [
 ]) {
     assert(!loot.includes(forbidden), `forbidden loot behavior returned: ${forbidden}`);
 }
+assert(loot.includes("if not run.OrbGate then")
+    && loot.includes("if not run.BagGate then"),
+    "workspace ChildAdded fallback is not gated behind capability detection");
+assert(loot.includes("functionBelongsToScript")
+    && loot.includes("sourceScript.Name == scriptName"),
+    "event gate can disable callbacks without source ownership proof");
+assert(loot.includes("record.Attempts >= 2")
+    && loot.includes("BAG_ACK_TIMEOUT")
+    && loot.includes("BAG_FINAL_ACK_TIMEOUT"),
+    "direct lootbag collection lacks a bounded acknowledgement policy");
 
 // Graphics uses one temporary frame-budgeted drain, never one task per object.
 for (const marker of [

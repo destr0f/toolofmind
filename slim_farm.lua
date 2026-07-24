@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-lite.1"
+local VERSION = "1.4.1-lite.2"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -3231,12 +3231,19 @@ function lootCollector:Status()
         return "Native loot reactor loaded; scalar status is pending."
     end
     return string.format(
-        "Orbs pending/sent/errors: %d/%d/%d\nLootbags waiting/sent/retried/errors: %d/%d/%d/%d",
+        "Event gates: Orbs %s | Lootbags %s\n"
+            .. "Orbs pending/events/sent/errors: %d/%d/%d/%d\n"
+            .. "Lootbags waiting/events/sent/ack/retry/errors: %d/%d/%d/%d/%d/%d",
+        stats.OrbGate and "direct" or "fallback",
+        stats.BagGate and "direct" or "fallback",
         tonumber(stats.PendingOrbs) or 0,
+        tonumber(stats.OrbEvents) or 0,
         tonumber(stats.OrbIdsSent) or 0,
         tonumber(stats.OrbErrors) or 0,
         tonumber(stats.WaitingBags) or 0,
+        tonumber(stats.BagEvents) or 0,
         tonumber(stats.BagSent) or 0,
+        tonumber(stats.BagAcked) or 0,
         tonumber(stats.BagRetried) or 0,
         tonumber(stats.BagErrors) or 0
     )
@@ -3630,13 +3637,13 @@ uiStageYield("diamond controls")
 
 UI.LootHero = UI.LootTab:Section({ Title = "Native Loot Reactor", Box = true, Opened = true })
 UI.LootHero:Paragraph({
-    Title = "ZERO-PHYSICS COLLECTION",
-    Desc = "Orb IDs are claimed in native microbatches; ready lootbags use the game's named collection command.",
+    Title = "EVENT-FIRST ZERO-PHYSICS",
+    Desc = "Named loot events are consumed before PSX creates physical orb and lootbag models; a safe workspace fallback remains available.",
 })
 UI.LootHero:Toggle({
     Flag = "collect_orbs",
     Title = "Collect Orbs",
-    Desc = "Enabled by default: Orb Added IDs are deduplicated and claimed every 0.25 seconds",
+    Desc = "Enabled by default: Orb Added IDs are deduplicated and claimed every 0.25 seconds without local orb physics",
     Value = true,
     Callback = function(value)
         config.Orbs = value == true
@@ -3646,7 +3653,7 @@ UI.LootHero:Toggle({
 UI.LootHero:Toggle({
     Flag = "collect_lootbags",
     Title = "Collect Lootbags",
-    Desc = "Enabled by default: locally spawned bags are claimed once ReadyForCollection is true",
+    Desc = "Enabled by default: Spawn Lootbag is claimed directly and confirmed by Remove Lootbag without creating a model",
     Value = true,
     Callback = function(value)
         config.Lootbags = value == true
@@ -3655,7 +3662,7 @@ UI.LootHero:Toggle({
 })
 statusViews.Loot = UI.LootHero:Paragraph({
     Title = "Native Protocol Health",
-    Desc = "The reactor is binding named Orb/Lootbag events without touching local physics.",
+    Desc = "The reactor is checking source-filtered event gates; unsupported executors fall back without disabling unknown callbacks.",
 })
 statusTabs.Loot = UI.LootTab
 statusSetters.Set("Loot", lootCollector:Status())
