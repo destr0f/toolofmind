@@ -98,10 +98,10 @@
       "load": "lazy",
       "role": "event-first-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "d01575462a51a8614644c8029a75171d2b932840",
-      "bytes": 19622,
-      "sha256": "00ce26e4e44146f28a693e7ec5a8323937c0f49f26de806969384414838ac73c",
-      "djb2": "314d1329"
+      "commit": "2b15ddf6ce83d5c098634418404eb508d900ebe8",
+      "bytes": 34112,
+      "sha256": "3a60a071e9d37c875932d78ee94d638696178738ad4d1f1acf300dcb5402ab8b",
+      "djb2": "eccaf850"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -271,32 +271,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "6a2f990ca137c0489a2b378a5a72d5ccbb045ff8",
+    "generatedFromCommit": "2b15ddf6ce83d5c098634418404eb508d900ebe8",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 5282,
-      "sha256": "dd994794e07c84af884039bfca9830006be83e68d2de7999da3350dda52d3183",
-      "djb2": "95515229"
+      "bytes": 5294,
+      "sha256": "ae1581b54d100c5deb913d0b62ed1270666b6fd75a0c39fd39281a9edbf2fc2c",
+      "djb2": "d1f511ec"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-lite.2",
-      "bytes": 157307,
-      "sha256": "0825ae5fc5f7c0fe3af27838e25526e0af22b13f67920a1980a10f6c14e217f4",
-      "djb2": "2788f764"
+      "bytes": 157746,
+      "sha256": "3782b7c72c106ac031c7f1b51518877ae9eec4b55eab5fcb298afd16ec8ee6a8",
+      "djb2": "bf5b3276"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 127375,
-        "sha256": "83d711b8dbd95dc2f5338de1ec4042a3d534a0794a7fb6d57046c882a7764c16",
-        "djb2": "aedbba74"
+        "bytes": 127744,
+        "sha256": "3fe8854e4a68c870dfc04fcb78711098c9eeb30d8920e9662f830a9541173670",
+        "djb2": "a2c7a1d9"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 127375,
-        "sha256": "83d711b8dbd95dc2f5338de1ec4042a3d534a0794a7fb6d57046c882a7764c16",
-        "djb2": "aedbba74"
+        "bytes": 127744,
+        "sha256": "3fe8854e4a68c870dfc04fcb78711098c9eeb30d8920e9662f830a9541173670",
+        "djb2": "a2c7a1d9"
       }
     }
   }
