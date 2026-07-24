@@ -90,7 +90,7 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.0.0",
+      "version": "3.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-lite.2",
@@ -98,10 +98,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "f19bcc70fa2269bb8a72e476e94e55a856ffb40f",
-      "bytes": 44695,
-      "sha256": "543d1cc11fd18e7aa23889af245850685091fbb63e6db930341fb3aed9bf7ee4",
-      "djb2": "3225121b"
+      "commit": "cdcf3cdb3e10686a981f0fff62400532db2e5450",
+      "bytes": 45502,
+      "sha256": "3327ed142e85dab409efdffa7e3000f2890dfcb188a52cd4d750d1e16feb658b",
+      "djb2": "827b22f2"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -241,6 +241,7 @@
         "tests/pet_farm_engine_policy_test.lua",
         "tests/runtime_manifest_test.js",
         "tests/zero_retention_reactor_test.js",
+        "tests/coin_catalog_fail_open_test.js",
         "tests/rolling_currency_window_test.js",
         "tests/coalesced_queue_test.js",
         "tests/generation_cleanup_test.js"
@@ -271,32 +272,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "f19bcc70fa2269bb8a72e476e94e55a856ffb40f",
+    "generatedFromCommit": "cdcf3cdb3e10686a981f0fff62400532db2e5450",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 5297,
-      "sha256": "3421677de27bfe300e0e90bab8bf7600fcf98fe557b8a1ad0c6a5abac83ddbb2",
-      "djb2": "8d53049c"
+      "sha256": "9d1b7cab6e934e57872708a565586763fc2d6259ef60ed58937a2941695cd682",
+      "djb2": "95d39d7c"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-lite.2",
-      "bytes": 158931,
-      "sha256": "39ff35d70accef8068dadafa4509d65b14da1f05df257bf48b84ba256ccd42dd",
-      "djb2": "83ca1784"
+      "bytes": 162852,
+      "sha256": "c4f4b2ba6a48fc0e3cf2720f56e5d8a156ff082cc090babbfd7e73d68ff34a86",
+      "djb2": "6153e2ef"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 128686,
-        "sha256": "8eb03783ee202817da181576a3ee581b18e192133abe443a89d787a9ad890bcf",
-        "djb2": "c2f0c5ba"
+        "bytes": 131995,
+        "sha256": "e0e0f225d7e0ea86cd4b7ea1e412c1ef85acb5a85bd0850097930038ca9c8736",
+        "djb2": "b6aa550a"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 128686,
-        "sha256": "8eb03783ee202817da181576a3ee581b18e192133abe443a89d787a9ad890bcf",
-        "djb2": "c2f0c5ba"
+        "bytes": 131995,
+        "sha256": "e0e0f225d7e0ea86cd4b7ea1e412c1ef85acb5a85bd0850097930038ca9c8736",
+        "djb2": "b6aa550a"
       }
     }
   }
