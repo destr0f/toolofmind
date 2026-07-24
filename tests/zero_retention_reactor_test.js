@@ -82,7 +82,7 @@ assert(!farm.includes("runtimePetCounts")
     && !farm.includes("teleportPet"),
     "visual pet mirroring returned to the farm hot path");
 
-// Loot owns Orbs/Lootbags and prefers source-filtered named event gates.
+// Loot owns Orbs/Lootbags and gates the game producers before Instance creation.
 for (const marker of [
     "ORB_FLUSH_INTERVAL = 0.25",
     "ORB_BATCH_SIZE = 2048",
@@ -90,18 +90,26 @@ for (const marker of [
     "BAG_FIRST_ATTEMPT_DELAY = 0.08",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
-    "DisabledOrbs = {}",
     "DisabledBags = {}",
-    'networkSignal("Orb Added")',
     'networkSignal("Spawn Lootbag")',
     'networkSignal("Remove Lootbag")',
+    "type(getsenv)",
+    'findGameScript("Orbs")',
+    'findGameScript("Coins")',
+    "environment.AddOrb",
+    '"DamageAnimation", "PetDamageAnimation", "AddCoin", "UpdateCoin"',
+    'profileBegin("PSX.ProducerGate")',
+    'profileBegin("PSX.LootFallback")',
+    "restoreProducerRecord(run.OrbProducerRecord)",
+    "restoreProducerRecord(run.CoinProducerRecord)",
+    "playerScripts.DescendantAdded:Connect",
+    "playerScripts.DescendantRemoving:Connect",
     "disableScriptConnections(",
-    "restoreDisabled(run.DisabledOrbs)",
     "restoreDisabled(run.DisabledBags)",
     'fire("Claim Orbs", ids)',
     'fire("Collect Lootbag", record.Id, position)',
-    "folder.ChildAdded:Connect(queueOrb)",
-    "folder.ChildAdded:Connect(watchBag)",
+    "folder.ChildAdded:Connect(queueOrbFallback)",
+    "folder.ChildAdded:Connect(watchBagFallback)",
     "OrbDropped",
 ]) {
     assert(loot.includes(marker), `missing native loot marker: ${marker}`);
@@ -123,27 +131,35 @@ for (const forbidden of [
 assert(loot.includes("if not run.OrbGate then")
     && loot.includes("if not run.BagGate then"),
     "workspace ChildAdded fallback is not gated behind capability detection");
-assert(loot.includes("functionBelongsToScript")
-    && loot.includes("sourceScript.Name == scriptName"),
-    "event gate can disable callbacks without source ownership proof");
+const orbGate = loot.slice(
+    loot.indexOf("local function bindOrbGate"),
+    loot.indexOf("local function bindBagGate")
+);
+assert(!orbGate.includes("getconnections")
+    && !orbGate.includes('networkSignal("Orb Added")'),
+    "Orbs still enumerate or intercept the named event instead of gating AddOrb");
+assert(!loot.includes("AssemblyLinearVelocity")
+    && !loot.includes("AssemblyAngularVelocity")
+    && !loot.includes("object.Anchored")
+    && !loot.includes("object.CFrame"),
+    "loot fallback mutates physics or transforms");
 assert(loot.includes("record.Attempts >= 2")
     && loot.includes("BAG_ACK_TIMEOUT")
     && loot.includes("BAG_FINAL_ACK_TIMEOUT"),
     "direct lootbag collection lacks a bounded acknowledgement policy");
 
-// Graphics uses one temporary frame-budgeted drain, never one task per object.
+// Graphics uses one temporary one-pass drain and no high-rate descendants.
 for (const marker of [
-    "QUEUE_CAPACITY = 32768",
-    "SETTLE_CAPACITY = 8192",
-    "MAX_PER_FRAME = 192",
-    "FRAME_BUDGET_SECONDS = 0.00075",
+    "QUEUE_CAPACITY = 16384",
+    "MAX_PER_FRAME = 128",
+    "FRAME_BUDGET_SECONDS = 0.0006",
     "QueueHead = 1",
-    "SettleHead = 1",
     'setmetatable({}, { __mode = "k" })',
-    "root.DescendantAdded:Connect",
+    "root.ChildAdded:Connect",
     "object:GetChildren()",
     "active.QueueObjects[index] = nil",
-    "active.SettleObjects[index] = nil",
+    'debug.profilebegin',
+    '"PSX.GraphicsQueue"',
 ]) {
     assert(graphics.includes(marker), `missing coalesced graphics marker: ${marker}`);
 }
@@ -153,18 +169,24 @@ assert(graphics.includes("if active.QueueCount <= 0 then")
     && graphics.includes("disconnect(active.DrainConnection)"),
     "graphics drain does not disconnect when the queue becomes empty");
 assert(!graphics.includes("GetDescendants")
+    && !graphics.includes("DescendantAdded")
+    && !graphics.includes("SETTLE_DELAY")
+    && !graphics.includes("SettleObjects")
     && !graphics.includes("task.spawn")
     && !graphics.includes(":Destroy()")
     && !graphics.includes("Parent = nil"),
     "graphics performs an unbounded scan/task/destructive mutation");
 const thingRoots = graphics.slice(
-    graphics.indexOf("local THING_ROOTS"),
+    graphics.indexOf("local LOW_RATE_ROOTS"),
     graphics.indexOf("local EFFECT_CLASSES")
 );
-assert(thingRoots.includes("Coins") && thingRoots.includes("Pets")
-    && thingRoots.includes("Eggs") && thingRoots.includes("Machines")
+assert(thingRoots.includes("Pets") && thingRoots.includes("Eggs")
+    && thingRoots.includes("Machines") && !thingRoots.includes("Coins")
     && !thingRoots.includes("Orbs") && !thingRoots.includes("Lootbags"),
-    "graphics and loot root ownership overlap");
+    "graphics high-rate and loot root ownership overlap");
+assert(graphics.includes('"things:Coins"')
+    && graphics.includes('"farm", false'),
+    "graphics lost its one-time existing Coins cleanup");
 assert(graphics.includes('object.TextureID = ""')
     && graphics.includes('object.TextureId = ""')
     && graphics.includes("stripSurfaceAppearance(active, object)")

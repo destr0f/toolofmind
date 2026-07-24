@@ -38,13 +38,18 @@ indexes and wake at most one feature-owned coalesced runner.
   disappears; one eight-wide writer owns Join/Target/Farm traffic and permits
   only one delayed retry. `Update Coin Pets` is intentionally outside the hot
   path, so other players cannot trigger a full local contention rebuild.
-- Orb IDs are deduplicated into one current set and sent in a shared 0.25-second
-  native batch. Lootbags wait on readiness signals and have one bounded retry.
-- Farm FX observes `__DEBRIS` and the Coins/Pets/Orbs/Lootbags roots. Potato
-  mode additionally performs one bounded pass over `__MAP` and `Lighting`, then
-  follows only their `DescendantAdded` signals. Map, egg and machine geometry
-  remains intact while texture/material maps are stripped in place. Player UI,
-  camera and Network containers are never traversed.
+- The Orbs LocalScript is gated at its global `AddOrb` producer when `getsenv`
+  is available. IDs are deduplicated into one current set and sent in a shared
+  0.25-second native batch before Parts, billboards or body movers are created.
+  Headless mode similarly no-ops only the Coins visual producers while the
+  source registry continues to consume named server deltas. Unsupported
+  executors fall back to read-only folder IDs without changing physics.
+- Graphics performs one bounded pass over `__MAP`, `Lighting`, `__DEBRIS` and
+  existing farm roots. It does not subscribe to high-rate Coins/Orbs/debris
+  descendants and has no delayed second pass. Only top-level Pets, Eggs and
+  Machines additions are observed. Geometry remains intact while safe visual
+  textures/material maps are stripped in place. Player UI, camera and Network
+  containers are never traversed.
 
 Disabling a feature clears its connections/state. STOP and reload invalidate
 every active generation, empty current registries, clear remote caches and
@@ -59,9 +64,8 @@ The source audit intentionally leaves only the following cases:
 - the player currency fallback scans only the local player's descendants;
 - area bounds scan only the current `__MAP.Areas` hierarchy when the world
   changes;
-- graphics calls `GetDescendants()` once when each explicit visual root is bound,
-  then uses `DescendantAdded`; game-owned FX instances are deferred until their
-  parent assignment completes and are disabled in place rather than destroyed;
+- graphics walks explicit roots through one bounded `GetChildren()` queue and
+  observes only low-rate top-level Pets/Eggs/Machines additions;
 - bounded `while` loops drain fixed queues (16 assignment lanes or 256 initial
   FX objects), never the whole world per frame;
 - one `Heartbeat:Wait()` yields between staged UI construction groups;

@@ -6,7 +6,7 @@ const assert = (condition, message) => {
     if (!condition) throw new Error(message);
 };
 
-const CAPACITY = 32768;
+const CAPACITY = 16384;
 const queue = new Array(CAPACITY);
 const seen = new Set();
 let head = 0;
@@ -70,7 +70,7 @@ for (const marker of [
     "active.QueueRoots[index] = nil",
     "active.QueueKinds[index] = nil",
     "active.QueueScans[index] = nil",
-    "active.QueuePasses[index] = nil",
+    "active.Seen[object] = true",
 ]) {
     assert(graphics.includes(marker), `missing queue coalescing marker: ${marker}`);
 }

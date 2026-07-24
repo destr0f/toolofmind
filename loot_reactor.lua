@@ -1,10 +1,10 @@
--- Event-first zero-physics loot collection for PSX OG.
--- The preferred path disables only the game's Orb Added / Spawn Lootbag
--- visual producers and consumes their named Network events directly.
--- A conservative workspace fallback remains available when connection
--- introspection is unavailable or the source script cannot be identified.
+-- Producer-gated loot collection for PSX OG.
+-- The preferred Orbs path replaces the game LocalScript's global AddOrb
+-- before it can allocate any physical or visual Instances. Coins use the same
+-- technique only while the suite's full headless/anti-lag mode is enabled.
+-- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "2.0.0"
+local MODULE_VERSION = "3.0.0"
 local ORB_FLUSH_INTERVAL = 0.25
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
@@ -13,7 +13,6 @@ local BAG_ACK_TIMEOUT = 0.9
 local BAG_FINAL_ACK_TIMEOUT = 1.5
 local STATUS_INTERVAL = 1
 
-local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 
 local run = {
@@ -26,8 +25,9 @@ local run = {
     BagConnections = {},
     OrbGateConnections = {},
     BagGateConnections = {},
+    ProducerConnections = {},
+    PlayerScriptConnections = {},
     RecordConnections = {},
-    DisabledOrbs = {},
     DisabledBags = {},
     Things = nil,
     OrbFolder = nil,
@@ -38,6 +38,17 @@ local run = {
     BagGate = false,
     OrbGateReason = "not armed",
     BagGateReason = "not armed",
+    OrbsProducer = "unavailable",
+    CoinsProducer = "visual",
+    CoinGateReason = "headless disabled",
+    OrbProducerRecord = nil,
+    CoinProducerRecord = nil,
+    PlayerScripts = nil,
+    ProducerRebindArmed = false,
+    ProducerRebindSerial = 0,
+    GateGeneration = 0,
+    LastRebindReason = "startup",
+    VisualInstancesPrevented = 0,
     OrbToken = 0,
     BagToken = 0,
     BagWakeSerial = 0,
@@ -102,6 +113,26 @@ local function bagsEnabled()
     return contextRunning() and run.BagsOn
 end
 
+local function coinsHeadlessEnabled()
+    local context = run.Context
+    return contextRunning() and context
+        and type(context.HeadlessCoins) == "function"
+        and context.HeadlessCoins() == true
+end
+
+local function profileBegin(label)
+    local begin = debug and debug.profilebegin
+    if type(begin) ~= "function" then return false end
+    local ok = pcall(begin, label)
+    return ok == true
+end
+
+local function profileEnd(started)
+    if not started then return end
+    local finish = debug and debug.profileend
+    if type(finish) == "function" then pcall(finish) end
+end
+
 local function readValue(object, name)
     if not object then return nil end
     local child = object:FindFirstChild(name .. "_Attr") or object:FindFirstChild(name)
@@ -138,61 +169,31 @@ local function objectPosition(object)
     return normalizePosition(readValue(object, "Position") or readValue(object, "POS"))
 end
 
-local function suppressLocalInstance(object)
-    if not object then return end
-    pcall(function()
-        if object:IsA("BasePart") then
-            object.LocalTransparencyModifier = 1
-            object.Anchored = true
-            object.CanCollide = false
-            object.CanTouch = false
-            object.CanQuery = false
-            object.AssemblyLinearVelocity = Vector3.zero
-            object.AssemblyAngularVelocity = Vector3.zero
-        end
-        if object:IsA("BillboardGui") or object:IsA("SurfaceGui")
-            or object:IsA("ParticleEmitter") or object:IsA("Trail")
-            or object:IsA("Beam") or object:IsA("Smoke")
-            or object:IsA("Fire") or object:IsA("Sparkles") then
-            object.Enabled = false
-        elseif object:IsA("BodyPosition") then
-            object.MaxForce = Vector3.zero
-            object.P = 0
-            object.D = 0
-        elseif object:IsA("BodyGyro") then
-            object.MaxTorque = Vector3.zero
-            object.P = 0
-            object.D = 0
-        end
-    end)
-end
-
-local function disableLocalPickup(object)
-    if not object then return end
-    suppressLocalInstance(object)
-    for _, child in ipairs(object:GetChildren()) do
-        suppressLocalInstance(child)
-    end
-end
-
 local function statusText()
     return string.format(
-        "Event gate: Orbs %s (%s) | Lootbags %s (%s)\n"
+        "Orbs producer: %s (%s) | Coins producer: %s (%s)\n"
+            .. "Lootbags producer: %s (%s) | gate generation %d | last rebind: %s\n"
             .. "Native routes: Claim Orbs %s | Collect Lootbag %s\n"
-            .. "Orbs: pending %d/%d | events/batches/IDs %d/%d/%d | error/overflow/drop %d/%d/%d\n"
+            .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
+            .. "Orbs: pending %d/%d | events/batches %d/%d | error/overflow/drop %d/%d/%d\n"
             .. "Lootbags: waiting %d | events/sent/ack/retry/skip/error %d/%d/%d/%d/%d/%d\n"
             .. "Retention: unsent orb IDs + unacknowledged bag IDs only",
-        run.OrbGate and "direct" or "fallback",
+        run.OrbsProducer,
         run.OrbGateReason,
+        run.CoinsProducer,
+        run.CoinGateReason,
         run.BagGate and "direct" or "fallback",
         run.BagGateReason,
+        run.GateGeneration,
+        run.LastRebindReason,
         run.RouteOrbs,
         run.RouteLootbags,
+        run.VisualInstancesPrevented,
+        run.OrbIdsSent,
         run.PendingOrbCount,
         MAX_PENDING_ORBS,
         run.OrbEvents,
         run.OrbBatches,
-        run.OrbIdsSent,
         run.OrbErrors,
         run.OrbOverflow,
         run.OrbDropped,
@@ -456,7 +457,6 @@ local function queueOrb(itemOrId, fromEvent)
         run.PendingOrbCount = run.PendingOrbCount + 1
     end
     if fromEvent then run.OrbEvents = run.OrbEvents + 1 end
-    if isObject then disableLocalPickup(itemOrId) end
     armOrbFlush()
     armStatus()
 end
@@ -595,7 +595,6 @@ local function tryCollectBag(record)
                 and BAG_ACK_TIMEOUT or BAG_FINAL_ACK_TIMEOUT)
             armBagWake(record.NextAttempt - now)
         else
-            disableLocalPickup(record.Item)
             closeBag(record, false)
         end
     elseif record.EventOnly and record.Attempts < 2 then
@@ -754,10 +753,231 @@ local function clearBagBinding()
     run.LootbagFolder = nil
 end
 
+local function findGameScript(name)
+    local player = Players.LocalPlayer
+    local playerScripts = player and player:FindFirstChild("PlayerScripts")
+    local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
+    local gameScripts = scripts and scripts:FindFirstChild("Game")
+    local scriptObject = gameScripts and gameScripts:FindFirstChild(name)
+    if scriptObject and scriptObject:IsA("LocalScript") then return scriptObject end
+    return nil
+end
+
+local function scriptEnvironment(scriptObject)
+    if typeof(scriptObject) ~= "Instance" then
+        return nil, "game LocalScript is unavailable"
+    end
+    if type(getsenv) ~= "function" then
+        return nil, "getsenv is unavailable"
+    end
+    local ok, environment = pcall(getsenv, scriptObject)
+    if not ok or type(environment) ~= "table" then
+        return nil, "getsenv did not return a table"
+    end
+    return environment
+end
+
+local function restoreProducerRecord(record)
+    if type(record) ~= "table" then return end
+    record.Active = false
+    local environment = record.Environment
+    if type(environment) == "table" then
+        for name, wrapper in pairs(record.Wrappers or {}) do
+            if environment[name] == wrapper then
+                pcall(function() environment[name] = record.Originals[name] end)
+            end
+        end
+    end
+    record.Environment = nil
+    record.Script = nil
+    table.clear(record.Wrappers or {})
+    table.clear(record.Originals or {})
+end
+
+local function producerCall(record, original, prevent, ...)
+    local shouldPrevent = false
+    if record.Active and record.Generation == run.Generation and contextRunning() then
+        local checked, result = pcall(prevent)
+        shouldPrevent = checked and result == true
+    end
+    if shouldPrevent then
+        local profiled = profileBegin("PSX.ProducerGate")
+        run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
+        profileEnd(profiled)
+        return nil
+    end
+    return original(...)
+end
+
+local function installOrbProducer()
+    restoreProducerRecord(run.OrbProducerRecord)
+    run.OrbProducerRecord = nil
+    run.OrbGate = false
+    run.OrbsProducer = "fallback"
+
+    if not orbsEnabled() then
+        run.OrbsProducer = "disabled"
+        run.OrbGateReason = "collection disabled"
+        return false
+    end
+
+    local scriptObject = findGameScript("Orbs")
+    local environment, problem = scriptEnvironment(scriptObject)
+    if not environment then
+        run.OrbGateReason = problem
+        return false
+    end
+    if type(environment.AddOrb) ~= "function" then
+        run.OrbGateReason = "Orbs.AddOrb is unavailable"
+        return false
+    end
+
+    local record = {
+        Active = true,
+        Generation = run.Generation,
+        Script = scriptObject,
+        Environment = environment,
+        Originals = {},
+        Wrappers = {},
+    }
+    for _, name in ipairs({ "AddOrb", "OrbLoop", "PlaySounds" }) do
+        if type(environment[name]) == "function" then
+            record.Originals[name] = environment[name]
+        end
+    end
+
+    local originalAddOrb = record.Originals.AddOrb
+    record.Wrappers.AddOrb = function(id, ...)
+        if record.Active and record.Generation == run.Generation
+            and orbsEnabled() then
+            local profiled = profileBegin("PSX.ProducerGate")
+            local queued = pcall(queueOrb, id, true)
+            if queued then
+                run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
+            else
+                run.OrbErrors = run.OrbErrors + 1
+            end
+            profileEnd(profiled)
+            return nil
+        end
+        return originalAddOrb(id, ...)
+    end
+    for _, name in ipairs({ "OrbLoop", "PlaySounds" }) do
+        local original = record.Originals[name]
+        if original then
+            record.Wrappers[name] = (function(savedOriginal)
+                return function(...)
+                    if record.Active and record.Generation == run.Generation
+                        and orbsEnabled() then
+                        return nil
+                    end
+                    return savedOriginal(...)
+                end
+            end)(original)
+        end
+    end
+
+    local installed, installProblem = pcall(function()
+        for name, wrapper in pairs(record.Wrappers) do
+            environment[name] = wrapper
+        end
+    end)
+    if not installed then
+        restoreProducerRecord(record)
+        run.OrbGateReason = "producer install failed: " .. tostring(installProblem)
+        return false
+    end
+
+    run.OrbProducerRecord = record
+    run.OrbGate = true
+    run.OrbsProducer = "producer-gated"
+    run.OrbGateReason = "getsenv AddOrb/loop/sound gate"
+
+    local removedSignal = networkSignal("Orb Removed")
+    if removedSignal then
+        run.OrbGateConnections[#run.OrbGateConnections + 1] =
+            removedSignal:Connect(removeQueuedOrb)
+    end
+    return true
+end
+
+local function installCoinProducer()
+    restoreProducerRecord(run.CoinProducerRecord)
+    run.CoinProducerRecord = nil
+
+    if not coinsHeadlessEnabled() then
+        run.CoinsProducer = "visual"
+        run.CoinGateReason = "headless disabled"
+        return false
+    end
+
+    local scriptObject = findGameScript("Coins")
+    local environment, problem = scriptEnvironment(scriptObject)
+    if not environment then
+        run.CoinsProducer = "fallback"
+        run.CoinGateReason = problem
+        return false
+    end
+
+    local names = { "DamageAnimation", "PetDamageAnimation", "AddCoin", "UpdateCoin" }
+    for _, name in ipairs(names) do
+        if type(environment[name]) ~= "function" then
+            run.CoinsProducer = "fallback"
+            run.CoinGateReason = "Coins." .. name .. " is unavailable"
+            return false
+        end
+    end
+
+    local record = {
+        Active = true,
+        Generation = run.Generation,
+        Script = scriptObject,
+        Environment = environment,
+        Originals = {},
+        Wrappers = {},
+    }
+    for _, name in ipairs(names) do
+        local original = environment[name]
+        record.Originals[name] = original
+        record.Wrappers[name] = (function(savedOriginal)
+            return function(...)
+                return producerCall(record, savedOriginal, coinsHeadlessEnabled, ...)
+            end
+        end)(original)
+    end
+
+    local installed, installProblem = pcall(function()
+        for name, wrapper in pairs(record.Wrappers) do
+            environment[name] = wrapper
+        end
+    end)
+    if not installed then
+        restoreProducerRecord(record)
+        run.CoinsProducer = "fallback"
+        run.CoinGateReason = "producer install failed: " .. tostring(installProblem)
+        return false
+    end
+
+    run.CoinProducerRecord = record
+    run.CoinsProducer = "producer-gated"
+    run.CoinGateReason = "getsenv coin visuals gated"
+    return true
+end
+
 local function restoreOrbGate()
     clearConnections(run.OrbGateConnections)
-    restoreDisabled(run.DisabledOrbs)
+    restoreProducerRecord(run.OrbProducerRecord)
+    run.OrbProducerRecord = nil
     run.OrbGate = false
+    run.OrbsProducer = run.OrbsOn and "fallback" or "disabled"
+end
+
+local function restoreCoinGate()
+    restoreProducerRecord(run.CoinProducerRecord)
+    run.CoinProducerRecord = nil
+    run.CoinsProducer = coinsHeadlessEnabled() and "fallback" or "visual"
+    run.CoinGateReason = coinsHeadlessEnabled()
+        and "producer gate unavailable" or "headless disabled"
 end
 
 local function restoreBagGate()
@@ -780,45 +1000,7 @@ end
 
 local function bindOrbGate()
     restoreOrbGate()
-    run.OrbGateReason = "disabled"
-    if not orbsEnabled() then return false end
-
-    local addedSignal, signalProblem = networkSignal("Orb Added")
-    if not addedSignal then
-        run.OrbGateReason = signalProblem
-        return false
-    end
-    local removedSignal = networkSignal("Orb Removed")
-    local disabled, disableProblem = disableScriptConnections(
-        addedSignal, "Orbs", run.DisabledOrbs
-    )
-    if disabled == 0 then
-        restoreDisabled(run.DisabledOrbs)
-        run.OrbGateReason = disableProblem or "Orb Added callback not isolated"
-        return false
-    end
-
-    local steppedDisabled = select(1, disableScriptConnections(
-        RunService.Stepped, "Orbs", run.DisabledOrbs
-    ))
-    local heartbeatDisabled = select(1, disableScriptConnections(
-        RunService.Heartbeat, "Orbs", run.DisabledOrbs
-    ))
-    run.OrbGateConnections[#run.OrbGateConnections + 1] =
-        addedSignal:Connect(function(id)
-            queueOrb(id, true)
-        end)
-    if removedSignal then
-        run.OrbGateConnections[#run.OrbGateConnections + 1] =
-            removedSignal:Connect(removeQueuedOrb)
-    end
-    run.OrbGate = true
-    run.OrbGateReason = string.format(
-        "%d producer + %d frame callbacks gated",
-        disabled,
-        steppedDisabled + heartbeatDisabled
-    )
-    return true
+    return installOrbProducer()
 end
 
 local function bindBagGate()
@@ -852,15 +1034,110 @@ local function bindBagGate()
     return true
 end
 
+local bindRoots
+
+local function producerScriptRelevant(object)
+    if typeof(object) ~= "Instance" then return false end
+    if object.Name ~= "Orbs" and object.Name ~= "Coins" then return false end
+    local scripts = object:FindFirstAncestor("Scripts")
+    local gameFolder = object.Parent
+    return scripts ~= nil and gameFolder ~= nil and gameFolder.Name == "Game"
+end
+
+local function reconcileProducerGates()
+    if not contextRunning() then return end
+    run.GateGeneration = run.GateGeneration + 1
+    bindOrbGate()
+    restoreCoinGate()
+    installCoinProducer()
+end
+
+local function scheduleProducerRebind(reason)
+    if not contextRunning() then return end
+    run.LastRebindReason = tostring(reason or "script change")
+    run.ProducerRebindSerial = run.ProducerRebindSerial + 1
+    local serial = run.ProducerRebindSerial
+    if run.ProducerRebindArmed then return end
+    run.ProducerRebindArmed = true
+    local generation = run.Generation
+    task.defer(function()
+        if generation ~= run.Generation or not contextRunning() then return end
+        run.ProducerRebindArmed = false
+        if serial ~= run.ProducerRebindSerial then
+            scheduleProducerRebind(run.LastRebindReason)
+            return
+        end
+        reconcileProducerGates()
+        bindRoots(false, true, false)
+        armStatus()
+    end)
+end
+
+local function bindPlayerScriptWatchers()
+    clearConnections(run.ProducerConnections)
+    clearConnections(run.PlayerScriptConnections)
+    local player = Players.LocalPlayer
+    local playerScripts = player and player:FindFirstChild("PlayerScripts")
+    run.PlayerScripts = playerScripts
+
+    if player then
+        run.PlayerScriptConnections[#run.PlayerScriptConnections + 1] =
+            player.ChildAdded:Connect(function(child)
+                if child.Name == "PlayerScripts" then
+                    bindPlayerScriptWatchers()
+                    scheduleProducerRebind("PlayerScripts added")
+                end
+            end)
+        run.PlayerScriptConnections[#run.PlayerScriptConnections + 1] =
+            player.ChildRemoved:Connect(function(child)
+                if child == run.PlayerScripts then
+                    clearConnections(run.ProducerConnections)
+                    run.PlayerScripts = nil
+                    scheduleProducerRebind("PlayerScripts removed")
+                end
+            end)
+    end
+    if playerScripts then
+        run.ProducerConnections[#run.ProducerConnections + 1] =
+            playerScripts.DescendantAdded:Connect(function(object)
+                if producerScriptRelevant(object) then
+                    scheduleProducerRebind(object.Name .. " added")
+                end
+            end)
+        run.ProducerConnections[#run.ProducerConnections + 1] =
+            playerScripts.DescendantRemoving:Connect(function(object)
+                if object == (run.OrbProducerRecord and run.OrbProducerRecord.Script)
+                    or object == (run.CoinProducerRecord and run.CoinProducerRecord.Script)
+                    or producerScriptRelevant(object) then
+                    scheduleProducerRebind(object.Name .. " removed")
+                end
+            end)
+    end
+end
+
+local function queueOrbFallback(item)
+    local profiled = profileBegin("PSX.LootFallback")
+    local ok = pcall(queueOrb, item, false)
+    profileEnd(profiled)
+    if not ok then run.OrbErrors = run.OrbErrors + 1 end
+end
+
+local function watchBagFallback(item)
+    local profiled = profileBegin("PSX.LootFallback")
+    local ok = pcall(watchBag, item)
+    profileEnd(profiled)
+    if not ok then run.BagErrors = run.BagErrors + 1 end
+end
+
 local function bindOrbFolder(folder)
     clearOrbBinding()
     run.OrbFolder = folder
     if not folder or not orbsEnabled() then return end
     if not run.OrbGate then
         run.OrbConnections[#run.OrbConnections + 1] =
-            folder.ChildAdded:Connect(queueOrb)
+            folder.ChildAdded:Connect(queueOrbFallback)
     end
-    scanFolder(folder, queueOrb)
+    scanFolder(folder, run.OrbGate and queueOrb or queueOrbFallback)
 end
 
 local function bindLootbagFolder(folder)
@@ -869,14 +1146,14 @@ local function bindLootbagFolder(folder)
     if not folder or not bagsEnabled() then return end
     if not run.BagGate then
         run.BagConnections[#run.BagConnections + 1] =
-            folder.ChildAdded:Connect(watchBag)
+            folder.ChildAdded:Connect(watchBagFallback)
     end
     run.BagConnections[#run.BagConnections + 1] =
         folder.ChildRemoved:Connect(function(item)
             local id = objectId(item)
             if id then acknowledgeBag(id) end
         end)
-    scanFolder(folder, watchBag)
+    scanFolder(folder, run.BagGate and watchBag or watchBagFallback)
 end
 
 local function resolveThings()
@@ -893,9 +1170,9 @@ local function reconcileGates(refreshOrbs, refreshBags)
     if refreshBags then
         if run.BagsOn then bindBagGate() else restoreBagGate() end
     end
+    restoreCoinGate()
+    installCoinProducer()
 end
-
-local bindRoots
 
 bindRoots = function(resetAll, refreshOrbs, refreshBags)
     if not contextRunning() then return end
@@ -938,23 +1215,33 @@ local function resetStats()
     run.BagRetried = 0
     run.BagSkipped = 0
     run.BagErrors = 0
+    run.VisualInstancesPrevented = 0
+    run.GateGeneration = 0
+    run.LastRebindReason = "startup"
     run.LastStatusText = nil
 end
 
 local function start(context)
     if type(context) ~= "table" then return false, "context table required" end
     run.Generation = run.Generation + 1
+    run.Active = false
     clearConnections(run.Connections)
+    clearConnections(run.ProducerConnections)
+    clearConnections(run.PlayerScriptConnections)
     clearWorld()
     restoreOrbGate()
+    restoreCoinGate()
     restoreBagGate()
     run.Context = context
     run.Active = true
+    run.ProducerRebindArmed = false
+    run.ProducerRebindSerial = 0
     run.StatusArmed = false
     run.OrbsOn, run.BagsOn = wantedFlags()
     resetStats()
     local generation = run.Generation
 
+    bindPlayerScriptWatchers()
     reconcileGates(true, true)
     run.Connections[#run.Connections + 1] = workspace.ChildAdded:Connect(function(child)
         if child.Name == "__THINGS" and generation == run.Generation then
@@ -966,6 +1253,7 @@ local function start(context)
         local ok, connection = pcall(function()
             return signal.Fired("World Changed"):Connect(function()
                 if generation ~= run.Generation then return end
+                scheduleProducerRebind("World Changed")
                 task.defer(function()
                     if generation == run.Generation then
                         bindRoots(true, true, true)
@@ -984,10 +1272,16 @@ end
 local function stop()
     run.Generation = run.Generation + 1
     run.Active = false
+    run.ProducerRebindSerial = run.ProducerRebindSerial + 1
+    run.ProducerRebindArmed = false
     clearConnections(run.Connections)
+    clearConnections(run.ProducerConnections)
+    clearConnections(run.PlayerScriptConnections)
     clearWorld()
     restoreOrbGate()
+    restoreCoinGate()
     restoreBagGate()
+    run.PlayerScripts = nil
     run.Context = nil
     run.OrbsOn = false
     run.BagsOn = false
@@ -999,7 +1293,8 @@ end
 local function sync()
     if not run.Context then return false, "reactor is not started" end
     local orbs, bags = wantedFlags()
-    if not orbs and not bags then return stop() end
+    local headless = coinsHeadlessEnabled()
+    if not orbs and not bags and not headless then return stop() end
     local refreshOrbs = orbs ~= run.OrbsOn
     local refreshBags = bags ~= run.BagsOn
     run.OrbsOn, run.BagsOn = orbs, bags
@@ -1016,8 +1311,14 @@ local function stats()
         Version = MODULE_VERSION,
         OrbGate = run.OrbGate,
         BagGate = run.BagGate,
+        OrbsProducer = run.OrbsProducer,
+        CoinsProducer = run.CoinsProducer,
         OrbGateReason = run.OrbGateReason,
+        CoinGateReason = run.CoinGateReason,
         BagGateReason = run.BagGateReason,
+        GateGeneration = run.GateGeneration,
+        LastRebindReason = run.LastRebindReason,
+        VisualInstancesPrevented = run.VisualInstancesPrevented,
         PendingOrbs = run.PendingOrbCount,
         WaitingBags = run.WaitingBagCount,
         OrbEvents = run.OrbEvents,

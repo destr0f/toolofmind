@@ -36,14 +36,36 @@ callbacks.length = 0;
 assert(mutations === 0 && callbacks.length === 0,
     "stale generation callbacks mutated the new run");
 
+// Model the producer record contract: one active wrapper, exact restoration,
+// and stale wrapper calls forwarding to the original function.
+const producerEnv = { AddOrb: () => "original" };
+const originalAddOrb = producerEnv.AddOrb;
+const producerRecord = { active: true };
+const wrapper = () => producerRecord.active ? "gated" : originalAddOrb();
+producerEnv.AddOrb = wrapper;
+assert(producerEnv.AddOrb() === "gated", "producer wrapper did not gate");
+producerRecord.active = false;
+if (producerEnv.AddOrb === wrapper) producerEnv.AddOrb = originalAddOrb;
+assert(producerEnv.AddOrb === originalAddOrb
+    && producerEnv.AddOrb() === "original",
+    "producer wrapper was not restored exactly");
+
 assert(loot.includes("run.Generation = run.Generation + 1")
     && loot.includes("if generation ~= run.Generation then return end")
     && loot.includes("clearConnections(run.Connections)")
     && loot.includes("clearWorld()")
     && loot.includes("restoreOrbGate()")
+    && loot.includes("restoreCoinGate()")
     && loot.includes("restoreBagGate()")
+    && loot.includes("clearConnections(run.ProducerConnections)")
+    && loot.includes("clearConnections(run.PlayerScriptConnections)")
     && loot.includes("run.Context = nil"),
     "loot lifecycle does not fully invalidate/disconnect/clear");
+assert(loot.includes("if environment[name] == wrapper")
+    && loot.includes("environment[name] = record.Originals[name]")
+    && loot.includes("restoreProducerRecord(run.OrbProducerRecord)")
+    && loot.includes("restoreProducerRecord(run.CoinProducerRecord)"),
+    "producer gates do not restore only their own live wrappers");
 const statusCallback = loot.slice(
     loot.indexOf("task.delay(STATUS_INTERVAL"),
     loot.indexOf("local function fire")
@@ -62,11 +84,11 @@ assert(wakeCallback.indexOf("if generation ~= run.Generation")
 for (const marker of [
     "active.Generation = (active.Generation or 0) + 1",
     "disconnect(active.DrainConnection)",
-    "clearArray(active.QueueObjects)",
-    "clearArray(active.SettleObjects)",
-    "active.FirstSeen = nil",
-    "active.SecondSeen = nil",
-    "active.SettleSeen = nil",
+    "table.clear(active.QueueObjects)",
+    "table.clear(active.QueueRoots)",
+    "table.clear(active.QueueKinds)",
+    "table.clear(active.QueueScans)",
+    "active.Seen = nil",
     "active.Protection = nil",
 ]) {
     assert(graphics.includes(marker), `graphics STOP misses ${marker}`);

@@ -1,22 +1,19 @@
--- Coalesced graphics reduction for crowded PSX OG farming zones.
--- Game-owned instances are never destroyed or reparented. One bounded queue
--- suppresses visual work while Loot Reactor exclusively owns Orbs/Lootbags.
+-- One-pass graphics reduction for crowded PSX OG farming zones.
+-- High-rate Coins/Orbs producers are owned by loot_reactor.lua. This module
+-- never destroys, reparents, teleports, anchors, or otherwise moves game data.
 
-local MODULE_VERSION = "3.0.0"
+local MODULE_VERSION = "4.0.0"
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local Terrain = workspace:FindFirstChildOfClass("Terrain")
 local state
 
-local QUEUE_CAPACITY = 32768
-local SETTLE_CAPACITY = 8192
-local MAX_PER_FRAME = 192
-local FRAME_BUDGET_SECONDS = 0.00075
-local SETTLE_DELAY = 0.05
+local QUEUE_CAPACITY = 16384
+local MAX_PER_FRAME = 128
+local FRAME_BUDGET_SECONDS = 0.0006
 
-local THING_ROOTS = {
-    Coins = "farm",
+local LOW_RATE_ROOTS = {
     Pets = "farm",
     Eggs = "world",
     Machines = "world",
@@ -45,40 +42,43 @@ local function disconnect(connection)
     if connection then pcall(function() connection:Disconnect() end) end
 end
 
-local function clearArray(array)
-    if type(array) == "table" then table.clear(array) end
+local function clearConnections(collection)
+    if type(collection) ~= "table" then return end
+    for key, connection in pairs(collection) do
+        disconnect(connection)
+        collection[key] = nil
+    end
 end
 
-local function disconnectAll(active)
+local function beginProfile()
+    local callback = debug and debug.profilebegin
+    if type(callback) ~= "function" then return false end
+    return pcall(callback, "PSX.GraphicsQueue") == true
+end
+
+local function endProfile(started)
+    if not started then return end
+    local callback = debug and debug.profileend
+    if type(callback) == "function" then pcall(callback) end
+end
+
+local function stopActive(active)
     if type(active) ~= "table" then return end
     active.Running = false
     active.Generation = (active.Generation or 0) + 1
     disconnect(active.DrainConnection)
     active.DrainConnection = nil
-    for _, connection in ipairs(active.Connections or {}) do disconnect(connection) end
-    for _, connection in pairs(active.RootConnections or {}) do disconnect(connection) end
-    for _, connection in ipairs(active.ThingsConnections or {}) do disconnect(connection) end
-    clearArray(active.Connections)
-    clearArray(active.RootConnections)
-    clearArray(active.ThingsConnections)
-    clearArray(active.Roots)
-    clearArray(active.QueueObjects)
-    clearArray(active.QueueRoots)
-    clearArray(active.QueueKinds)
-    clearArray(active.QueueScans)
-    clearArray(active.QueuePasses)
-    clearArray(active.SettleObjects)
-    clearArray(active.SettleRoots)
-    clearArray(active.SettleKinds)
+    clearConnections(active.Connections)
+    clearConnections(active.RootConnections)
+    clearConnections(active.ThingsConnections)
+    table.clear(active.Roots)
+    table.clear(active.QueueObjects)
+    table.clear(active.QueueRoots)
+    table.clear(active.QueueKinds)
+    table.clear(active.QueueScans)
     active.QueueHead = 1
     active.QueueCount = 0
-    active.SettleHead = 1
-    active.SettleCount = 0
-    active.SettleArmed = false
-    active.RootRefreshArmed = false
-    active.FirstSeen = nil
-    active.SecondSeen = nil
-    active.SettleSeen = nil
+    active.Seen = nil
     active.Protection = nil
     active.Things = nil
     if env.StopPSXPotatoMode == active.StopFunction then
@@ -149,11 +149,7 @@ local function stripSurfaceAppearance(active, object)
 end
 
 local function suppress(active, object, kind)
-    if not active.Running or not object then return false end
-    if protected(active, object) then
-        active.Protected = active.Protected + 1
-        return false
-    end
+    if not active.Running or not object or protected(active, object) then return end
     local class = object.ClassName
     local visual = kind == "farm" or kind == "effects" or kind == "world"
     local ok = pcall(function()
@@ -197,7 +193,7 @@ local function suppress(active, object, kind)
             pcall(function() object.MaterialVariant = "" end)
             if (kind == "farm" or kind == "effects")
                 and string.lower(tostring(object.Name)) ~= "pos" then
-                pcall(function() object.LocalTransparencyModifier = 1 end)
+                object.LocalTransparencyModifier = 1
                 active.Hidden = active.Hidden + 1
             end
             if class == "MeshPart" then
@@ -230,12 +226,10 @@ local function suppress(active, object, kind)
         end
     end)
     if not ok then active.Errors = active.Errors + 1 end
-    return ok and EFFECT_CLASSES[class] == true
 end
 
 local enqueue
 local armDrain
-local armSettle
 
 local function popQueue(active)
     if active.QueueCount <= 0 then return nil end
@@ -244,59 +238,40 @@ local function popQueue(active)
     local root = active.QueueRoots[index]
     local kind = active.QueueKinds[index]
     local scan = active.QueueScans[index]
-    local pass = active.QueuePasses[index]
     active.QueueObjects[index] = nil
     active.QueueRoots[index] = nil
     active.QueueKinds[index] = nil
     active.QueueScans[index] = nil
-    active.QueuePasses[index] = nil
     active.QueueHead = index % QUEUE_CAPACITY + 1
     active.QueueCount = active.QueueCount - 1
-    return object, root, kind, scan, pass
-end
-
-local function scheduleSettle(active, root, object, kind)
-    if active.SettleSeen[object] then return end
-    if active.SettleCount >= SETTLE_CAPACITY then
-        active.SettleDropped = active.SettleDropped + 1
-        return
-    end
-    active.SettleSeen[object] = true
-    local tail = (active.SettleHead + active.SettleCount - 1) % SETTLE_CAPACITY + 1
-    active.SettleObjects[tail] = object
-    active.SettleRoots[tail] = root
-    active.SettleKinds[tail] = kind
-    active.SettleCount = active.SettleCount + 1
-    armSettle(active)
+    return object, root, kind, scan
 end
 
 local function processQueue(active)
     if not active.Running then return end
+    local profiled = beginProfile()
     local started = os.clock()
     local processed = 0
-    while active.QueueCount > 0 and processed < MAX_PER_FRAME do
-        if processed > 0 and os.clock() - started >= FRAME_BUDGET_SECONDS then break end
-        local object, root, kind, scan, pass = popQueue(active)
-        processed = processed + 1
-        if object and object.Parent
-            and (not root or object == root or object:IsDescendantOf(root))
-            and not protected(active, object) then
-            local needsSettle = suppress(active, object, kind)
-            if scan then
-                local ok, children = pcall(function() return object:GetChildren() end)
-                if ok then
+    local ok = pcall(function()
+        while active.QueueCount > 0 and processed < MAX_PER_FRAME do
+            if processed > 0 and os.clock() - started >= FRAME_BUDGET_SECONDS then break end
+            local object, root, kind, scan = popQueue(active)
+            processed = processed + 1
+            if object and object.Parent
+                and (not root or object == root or object:IsDescendantOf(root))
+                and not protected(active, object) then
+                suppress(active, object, kind)
+                if scan then
+                    local children = object:GetChildren()
                     for _, child in ipairs(children) do
-                        enqueue(active, root or object, child, kind, true, 1)
+                        enqueue(active, root or object, child, kind, true)
                     end
-                else
-                    active.Errors = active.Errors + 1
                 end
             end
-            if pass == 1 and needsSettle then
-                scheduleSettle(active, root, object, kind)
-            end
         end
-    end
+    end)
+    endProfile(profiled)
+    if not ok then active.Errors = active.Errors + 1 end
     active.Processed = active.Processed + processed
 end
 
@@ -317,122 +292,88 @@ armDrain = function(active)
     end)
 end
 
-enqueue = function(active, root, object, kind, scan, pass)
-    if not active.Running or not object then return false end
-    pass = pass == 2 and 2 or 1
-    local seen = pass == 2 and active.SecondSeen or active.FirstSeen
-    if seen[object] then return false end
+enqueue = function(active, root, object, kind, scan)
+    if not active.Running or not object or active.Seen[object] then return false end
     if active.QueueCount >= QUEUE_CAPACITY then
         active.QueueDropped = active.QueueDropped + 1
         return false
     end
-    seen[object] = true
+    active.Seen[object] = true
     local tail = (active.QueueHead + active.QueueCount - 1) % QUEUE_CAPACITY + 1
     active.QueueObjects[tail] = object
     active.QueueRoots[tail] = root
     active.QueueKinds[tail] = kind
     active.QueueScans[tail] = scan == true
-    active.QueuePasses[tail] = pass
     active.QueueCount = active.QueueCount + 1
     armDrain(active)
     return true
 end
 
-armSettle = function(active)
-    if active.SettleArmed or not active.Running then return end
-    active.SettleArmed = true
-    local generation = active.Generation
-    task.delay(SETTLE_DELAY, function()
-        if not active.Running or active.Generation ~= generation then return end
-        active.SettleArmed = false
-        local count = active.SettleCount
-        for _ = 1, count do
-            local index = active.SettleHead
-            local object = active.SettleObjects[index]
-            local root = active.SettleRoots[index]
-            local kind = active.SettleKinds[index]
-            active.SettleObjects[index] = nil
-            active.SettleRoots[index] = nil
-            active.SettleKinds[index] = nil
-            active.SettleHead = index % SETTLE_CAPACITY + 1
-            active.SettleCount = active.SettleCount - 1
-            if object and object.Parent then
-                enqueue(active, root, object, kind, false, 2)
-            end
-        end
-        if active.SettleCount > 0 then armSettle(active) end
-    end)
-end
-
 local function queueTree(active, root, kind)
-    if root then enqueue(active, root, root, kind, true, 1) end
+    if root then enqueue(active, root, root, kind, true) end
 end
 
-local function bindDynamicRoot(active, key, root, kind)
+local function bindRoot(active, key, root, kind, watchTopLevel)
     if active.Roots[key] == root then return end
     disconnect(active.RootConnections[key])
     active.RootConnections[key] = nil
     active.Roots[key] = root
     if not root then return end
     queueTree(active, root, kind)
-    active.RootConnections[key] = root.DescendantAdded:Connect(function(object)
-        enqueue(active, root, object, kind, true, 1)
-    end)
+    if watchTopLevel then
+        active.RootConnections[key] = root.ChildAdded:Connect(function(child)
+            queueTree(active, child, kind)
+        end)
+    end
 end
 
 local function bindThings(active, things)
     if active.Things ~= things then
-        for _, connection in ipairs(active.ThingsConnections) do disconnect(connection) end
-        table.clear(active.ThingsConnections)
+        clearConnections(active.ThingsConnections)
+        for key in pairs(active.Roots) do
+            if string.sub(key, 1, 7) == "things:" then
+                disconnect(active.RootConnections[key])
+                active.RootConnections[key] = nil
+                active.Roots[key] = nil
+            end
+        end
         active.Things = things
         if things then
-            active.ThingsConnections[#active.ThingsConnections + 1] =
-                things.ChildAdded:Connect(function(child)
-                    local kind = THING_ROOTS[child.Name]
-                    if kind then
-                        bindDynamicRoot(active, "things:" .. child.Name, child, kind)
-                    end
-                end)
-            active.ThingsConnections[#active.ThingsConnections + 1] =
-                things.ChildRemoved:Connect(function(child)
-                    local key = "things:" .. child.Name
-                    if THING_ROOTS[child.Name] and active.Roots[key] == child then
-                        bindDynamicRoot(active, key, nil, THING_ROOTS[child.Name])
-                    end
-                end)
+            active.ThingsConnections.Added = things.ChildAdded:Connect(function(child)
+                local kind = LOW_RATE_ROOTS[child.Name]
+                if kind then
+                    bindRoot(active, "things:" .. child.Name, child, kind, true)
+                elseif child.Name == "Coins" then
+                    bindRoot(active, "things:Coins", child, "farm", false)
+                end
+            end)
+            active.ThingsConnections.Removed = things.ChildRemoved:Connect(function(child)
+                local key = "things:" .. child.Name
+                if active.Roots[key] == child then
+                    bindRoot(active, key, nil, LOW_RATE_ROOTS[child.Name] or "farm", false)
+                end
+            end)
         end
     end
-    for name, kind in pairs(THING_ROOTS) do
-        bindDynamicRoot(active, "things:" .. name,
-            things and things:FindFirstChild(name) or nil, kind)
+    bindRoot(active, "things:Coins",
+        things and things:FindFirstChild("Coins") or nil, "farm", false)
+    for name, kind in pairs(LOW_RATE_ROOTS) do
+        bindRoot(active, "things:" .. name,
+            things and things:FindFirstChild(name) or nil, kind, true)
     end
 end
 
 local function refreshRoots(active)
     if not active.Running then return end
-    local map = workspace:FindFirstChild("__MAP")
-    local things = workspace:FindFirstChild("__THINGS")
-    local debris = workspace:FindFirstChild("__DEBRIS")
-    bindDynamicRoot(active, "map", map, "world")
-    bindDynamicRoot(active, "lighting", Lighting, "world")
-    bindDynamicRoot(active, "debris", debris, "effects")
-    bindThings(active, things)
-end
-
-local function armRootRefresh(active)
-    if active.RootRefreshArmed or not active.Running then return end
-    active.RootRefreshArmed = true
-    local generation = active.Generation
-    task.defer(function()
-        if not active.Running or active.Generation ~= generation then return end
-        active.RootRefreshArmed = false
-        refreshRoots(active)
-    end)
+    bindRoot(active, "map", workspace:FindFirstChild("__MAP"), "world", false)
+    bindRoot(active, "lighting", Lighting, "world", false)
+    bindRoot(active, "debris", workspace:FindFirstChild("__DEBRIS"), "effects", false)
+    bindThings(active, workspace:FindFirstChild("__THINGS"))
 end
 
 local function startPotato()
     if state and state.Running then return true end
-    if env.PSX_POTATO_STATE then disconnectAll(env.PSX_POTATO_STATE) end
+    if env.PSX_POTATO_STATE then stopActive(env.PSX_POTATO_STATE) end
 
     local active = {
         Running = true,
@@ -446,20 +387,10 @@ local function startPotato()
         QueueRoots = {},
         QueueKinds = {},
         QueueScans = {},
-        QueuePasses = {},
         QueueHead = 1,
         QueueCount = 0,
-        SettleObjects = {},
-        SettleRoots = {},
-        SettleKinds = {},
-        SettleHead = 1,
-        SettleCount = 0,
-        SettleArmed = false,
         DrainConnection = nil,
-        RootRefreshArmed = false,
-        FirstSeen = setmetatable({}, { __mode = "k" }),
-        SecondSeen = setmetatable({}, { __mode = "k" }),
-        SettleSeen = setmetatable({}, { __mode = "k" }),
+        Seen = setmetatable({}, { __mode = "k" }),
         Protection = setmetatable({}, { __mode = "k" }),
         StopFunction = nil,
         Hidden = 0,
@@ -470,31 +401,34 @@ local function startPotato()
         Errors = 0,
         Processed = 0,
         QueueDropped = 0,
-        SettleDropped = 0,
     }
     state = active
     env.PSX_POTATO_STATE = active
     optimizeRendering()
 
-    active.Connections[#active.Connections + 1] = workspace.ChildAdded:Connect(function(object)
+    active.Connections.Added = workspace.ChildAdded:Connect(function(object)
         if object.Name == "__MAP" or object.Name == "__THINGS"
             or object.Name == "__DEBRIS" then
-            armRootRefresh(active)
+            task.defer(function()
+                if active.Running then refreshRoots(active) end
+            end)
         end
     end)
-    active.Connections[#active.Connections + 1] = workspace.ChildRemoved:Connect(function(object)
+    active.Connections.Removed = workspace.ChildRemoved:Connect(function(object)
         if object == active.Roots.map or object == active.Things
             or object == active.Roots.debris then
-            armRootRefresh(active)
+            task.defer(function()
+                if active.Running then refreshRoots(active) end
+            end)
         end
     end)
 
     refreshRoots(active)
     active.StopFunction = function()
-        if env.PSX_POTATO_STATE == active then disconnectAll(active) end
+        if env.PSX_POTATO_STATE == active then stopActive(active) end
     end
     env.StopPSXPotatoMode = active.StopFunction
-    print("[PSX SLIM] potato | coalesced bounded visual reactor | loot roots excluded")
+    print("[PSX SLIM] potato | one-pass bounded graphics queue | producer gates own Coins/Orbs")
     return true
 end
 
@@ -510,13 +444,30 @@ local function setFPS(choice)
     return ok, problem
 end
 
+local function stats()
+    local active = state
+    if not active then return { Version = MODULE_VERSION, Running = false } end
+    return {
+        Version = MODULE_VERSION,
+        Running = active.Running,
+        Pending = active.QueueCount,
+        Processed = active.Processed,
+        Dropped = active.QueueDropped,
+        Hidden = active.Hidden,
+        Disabled = active.Disabled,
+        Stripped = active.Stripped,
+        Errors = active.Errors,
+    }
+end
+
 return function(action, value)
     if action == "potato" then
-        if value == false then disconnectAll(state); state = nil; return true end
+        if value == false then stopActive(state); state = nil; return true end
         return startPotato()
     end
     if action == "fps" then return setFPS(value) end
-    if action == "stop" then disconnectAll(state); state = nil; return true end
+    if action == "stats" then return stats() end
+    if action == "stop" then stopActive(state); state = nil; return true end
     if action == "version" then return MODULE_VERSION end
     return false, "unknown graphics action"
 end

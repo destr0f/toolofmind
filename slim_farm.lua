@@ -388,6 +388,19 @@ local function normalize(value)
 end
 
 local graphicsController
+local syncLootRuntime
+
+local function beginProfile(label)
+    local callback = debug and debug.profilebegin
+    if type(callback) ~= "function" then return false end
+    return pcall(callback, label) == true
+end
+
+local function endProfile(started)
+    if not started then return end
+    local callback = debug and debug.profileend
+    if type(callback) == "function" then pcall(callback) end
+end
 
 local function graphicsAction(action, value)
     if not graphicsController then
@@ -406,7 +419,14 @@ local function setPotatoMode(enabled)
     enabled = enabled == true
     if config.PotatoMode == enabled then return end
     config.PotatoMode = enabled
-    if not graphicsAction("potato", enabled) then config.PotatoMode = false end
+    if enabled and type(syncLootRuntime) == "function" then
+        -- Install the Coins producer gate before the one-time graphics scan.
+        pcall(syncLootRuntime)
+    end
+    if not graphicsAction("potato", enabled) then
+        config.PotatoMode = false
+    end
+    if type(syncLootRuntime) == "function" then pcall(syncLootRuntime) end
 end
 
 local function applyFPSLimit(choice)
@@ -2900,6 +2920,7 @@ allocatorPass = function()
     end
     allocatorBusy = true
     allocatorRequested = false
+    local profiled = beginProfile("PSX.FarmAllocator")
     local ok, problem = pcall(function()
         connectCoinSignals()
         refreshWorkspaceCoins()
@@ -3022,6 +3043,7 @@ allocatorPass = function()
             armFarmRecovery(1.05)
         end
     end)
+    endProfile(profiled)
     if not ok then driverStatus = "allocator error: " .. tostring(problem) end
 
     allocatorBusy = false
@@ -3173,6 +3195,7 @@ local lootContext = {
     Running = running,
     EnabledOrbs = function() return config.Orbs == true end,
     EnabledLootbags = function() return config.Lootbags == true end,
+    HeadlessCoins = function() return config.PotatoMode == true end,
     GetThings = function()
         local things = Library and Library.Things
         if typeof(things) == "Instance" then return things end
@@ -3203,7 +3226,8 @@ local lootContext = {
 }
 
 function lootCollector:IsEnabled()
-    return running() and (config.Orbs == true or config.Lootbags == true)
+    return running() and (config.Orbs == true or config.Lootbags == true
+        or config.PotatoMode == true)
 end
 
 function lootCollector:Ensure()
@@ -3231,11 +3255,15 @@ function lootCollector:Status()
         return "Native loot reactor loaded; scalar status is pending."
     end
     return string.format(
-        "Event gates: Orbs %s | Lootbags %s\n"
+        "Producer gates: Orbs %s | Coins %s | Lootbags %s\n"
+            .. "Gate generation: %d | prevented visuals: %d\n"
             .. "Orbs pending/events/sent/errors: %d/%d/%d/%d\n"
             .. "Lootbags waiting/events/sent/ack/retry/errors: %d/%d/%d/%d/%d/%d",
-        stats.OrbGate and "direct" or "fallback",
+        tostring(stats.OrbsProducer or (stats.OrbGate and "direct" or "fallback")),
+        tostring(stats.CoinsProducer or "visual"),
         stats.BagGate and "direct" or "fallback",
+        tonumber(stats.GateGeneration) or 0,
+        tonumber(stats.VisualInstancesPrevented) or 0,
         tonumber(stats.PendingOrbs) or 0,
         tonumber(stats.OrbEvents) or 0,
         tonumber(stats.OrbIdsSent) or 0,
@@ -3286,6 +3314,10 @@ function lootCollector:SyncWorker()
         self.WorkerActive = false
         self:StartWorker()
     end
+end
+
+syncLootRuntime = function()
+    lootCollector:SyncWorker()
 end
 
 track(player.Idled:Connect(function()
@@ -3637,13 +3669,13 @@ uiStageYield("diamond controls")
 
 UI.LootHero = UI.LootTab:Section({ Title = "Native Loot Reactor", Box = true, Opened = true })
 UI.LootHero:Paragraph({
-    Title = "EVENT-FIRST ZERO-PHYSICS",
-    Desc = "Named loot events are consumed before PSX creates physical orb and lootbag models; a safe workspace fallback remains available.",
+    Title = "PRODUCER-GATED HEADLESS",
+    Desc = "Orbs and headless coin visuals are stopped inside their game LocalScripts before allocation; unsupported executors use a read-only ID fallback.",
 })
 UI.LootHero:Toggle({
     Flag = "collect_orbs",
     Title = "Collect Orbs",
-    Desc = "Enabled by default: Orb Added IDs are deduplicated and claimed every 0.25 seconds without local orb physics",
+    Desc = "Enabled by default: AddOrb IDs are deduplicated and claimed every 0.25 seconds before local orb physics exists",
     Value = true,
     Callback = function(value)
         config.Orbs = value == true
@@ -3662,7 +3694,7 @@ UI.LootHero:Toggle({
 })
 statusViews.Loot = UI.LootHero:Paragraph({
     Title = "Native Protocol Health",
-    Desc = "The reactor is checking source-filtered event gates; unsupported executors fall back without disabling unknown callbacks.",
+    Desc = "Checking getsenv producer gates, script generation and named routes; fallback never mutates physics.",
 })
 statusTabs.Loot = UI.LootTab
 statusSetters.Set("Loot", lootCollector:Status())
@@ -3712,7 +3744,7 @@ uiStageYield("reward controls")
 UI.GraphicsHero = UI.GraphicsTab:Section({ Title = "Client Performance Profile", Box = true, Opened = true })
 UI.GraphicsHero:Paragraph({
     Title = "CROWDED-ZONE RENDER FIREWALL",
-    Desc = "Map visuals, eggs, machines, coins, pets and __DEBRIS are coalesced; gameplay UI and loot roots stay isolated.",
+    Desc = "Map, Lighting and existing farm visuals receive one bounded pass; only top-level pet, egg and machine additions are observed.",
 })
 UI.GraphicsHero:Toggle({
     Flag = "balanced_potato_mode",
