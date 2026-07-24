@@ -21,7 +21,7 @@ At startup the generated entry:
 
 WindUI and `automation_ui_module.lua` are startup dependencies. The remaining
 modules are declared at startup but downloaded only when their feature is used.
-`pet_farm_engine.lua` owns the fixed-width assignment writer and
+`pet_farm_lite_engine.lua` owns the event-driven assignment writer and
 `loot_reactor.lua` owns the only orb/lootbag subscriptions. Lazy loading does
 not weaken identity checks.
 
@@ -35,8 +35,9 @@ indexes and wake at most one feature-owned coalesced runner.
   world. `ChildAdded`, `ChildRemoved` and named coin deltas maintain the live
   registry afterwards.
 - Pet allocation is event-driven. Accepted pets stay locked until their target
-  disappears; one 16-wide writer owns Join/Target/Farm traffic and two bounded
-  retries.
+  disappears; one eight-wide writer owns Join/Target/Farm traffic and permits
+  only one delayed retry. `Update Coin Pets` is intentionally outside the hot
+  path, so other players cannot trigger a full local contention rebuild.
 - Orb IDs are deduplicated into one current set and sent in a shared 0.25-second
   native batch. Lootbags wait on readiness signals and have one bounded retry.
 - Farm FX observes `__DEBRIS` and the Coins/Pets/Orbs/Lootbags roots. Potato

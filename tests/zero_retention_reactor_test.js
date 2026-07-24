@@ -10,7 +10,7 @@ const count = (text, expression) => (text.match(expression) || []).length;
 
 const manifest = JSON.parse(read("runtime_manifest.json"));
 const farm = read("slim_farm.lua");
-const engine = read("pet_farm_engine.lua");
+const engine = read("pet_farm_lite_engine.lua");
 const loot = read("loot_reactor.lua");
 const graphics = read("graphics_module.lua");
 const egg = read("auto_egg_module.lua");
@@ -38,9 +38,11 @@ assert(farm.includes("local coinRecords = {}")
     && farm.includes("folder.ChildAdded:Connect")
     && farm.includes("folder.ChildRemoved:Connect"),
     "CoinRegistry is not driven by the live Coins folder");
-for (const command of ["New Coin", "Update Coin Health", "Update Coin Pets", "Remove Coin"]) {
+for (const command of ["New Coin", "Update Coin Health", "Remove Coin"]) {
     assert(farm.includes(`connect("${command}"`), `missing coin delta ${command}`);
 }
+assert(!farm.includes('connect("Update Coin Pets"'),
+    "Lite farm still subscribes to high-frequency pet-set reconciliation");
 assert(count(farm, /"Get Coins"/g) === 1,
     "Get Coins must remain an initial-world snapshot only");
 assert(!/workspace\s*\.\s*DescendantAdded/.test(farm),
@@ -49,23 +51,28 @@ assert(!/GetChildren\s*\(\s*\)\s*\[\s*\d+\s*\]/.test(activeText),
     "a fixed per-session remote index re-entered active source");
 
 for (const marker of [
-    "DEFAULT_DISPATCH_WIDTH = 16",
-    "MAX_QUEUED_JOBS = 64",
-    "MAX_JOIN_ATTEMPTS = 3",
-    "RETRY_DELAYS = { 0.05, 0.15 }",
+    "DEFAULT_DISPATCH_WIDTH = 8",
+    "MAX_QUEUED_JOBS = 32",
+    "MAX_JOIN_ATTEMPTS = 2",
+    "RETRY_DELAY = 0.25",
     "PendingByPet = {}",
-    "TargetContainsPet",
 ]) {
-    assert(engine.includes(marker), `missing bounded pet-writer marker: ${marker}`);
+    assert(engine.includes(marker), `missing Lite Reactor marker: ${marker}`);
 }
-assert(engine.includes("while run.Context and run.Active < DEFAULT_DISPATCH_WIDTH"),
-    "pet dispatch is not owned by one fixed-width pump");
+assert(engine.includes("while run.Context and run.Active < run.Limit"),
+    "pet dispatch is not owned by one fixed-width Lite pump");
 assert(engine.includes("clearPending(job.Entries)"),
     "stale pet dispatch can retain a pending UID");
 assert(!engine.includes("task.spawn"),
     "pet transport creates per-job task.spawn workers");
 assert(farm.includes("if self.AllocatorScheduled or allocatorBusy"),
     "allocator callback bursts are not coalesced");
+assert(farm.includes("if not force and expected > 0 and assignmentCount() >= expected then return end"),
+    "coin callbacks still wake the allocator while every UID is locked");
+assert(!farm.includes("RecordExternalPets")
+    && !farm.includes("ContendedTargetOrder")
+    && !farm.includes("TargetContainsPet"),
+    "contention/live-pet reconciliation remains in the Lite hot path");
 assert(farm.includes('Phase = "joining"')
     && farm.includes('state.Phase = "working"')
     && farm.includes("Generation = farmGeneration"),
@@ -213,5 +220,5 @@ for (const marker of [
 
 process.stdout.write(
     `Single-client zero-retention policy OK | activeFiles=${activeFiles.length}`
-    + " | petTransport=preserved | graphicsDrain=1 | uiHz=1\n"
+    + " | petTransport=lite-event-driven | graphicsDrain=1 | uiHz=1\n"
 );

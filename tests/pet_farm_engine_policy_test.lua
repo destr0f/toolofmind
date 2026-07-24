@@ -1,4 +1,4 @@
-local engine = require("../pet_farm_engine")
+local engine = require("../pet_farm_lite_engine")
 
 local pets = { "pet-a", "pet-b", "pet-c" }
 
@@ -24,16 +24,17 @@ local nested = engine("classify", {
 assert(nested["pet-a"] == true and nested["pet-c"] == true)
 assert(nested["pet-b"] == nil)
 
-assert(math.abs(engine("retry-delay", 1) - 0.05) < 0.0001)
-assert(math.abs(engine("retry-delay", 2) - 0.15) < 0.0001)
-assert(math.abs(engine("retry-delay", 9) - 0.15) < 0.0001)
+assert(math.abs(engine("retry-delay", 1) - 0.25) < 0.0001)
+assert(math.abs(engine("retry-delay", 9) - 0.25) < 0.0001)
 
 local states = {}
 local fireCalls = 0
 local network = {
     Invoke = function(command, _, requested)
         assert(command == "Join Coin")
-        return { requested[1] }
+        local accepted = {}
+        for _, petId in ipairs(requested) do accepted[petId] = true end
+        return accepted
     end,
     Fire = function(command)
         assert(command == "Change Pet Target" or command == "Farm Coin")
@@ -49,13 +50,13 @@ local function context(overrides)
         NetworkReady = function() return network end,
         RecordAlive = function(record) return record.Alive end,
         StateCurrent = function(petId, state) return states[petId] == state end,
-        TargetContainsPet = function() return false end,
         OnAccepted = function(petId, state)
             assert(states[petId] == state, "accepted callback received a stale lock")
             state.Phase = "working"
             return true
         end,
         OnFailed = function() error("acceptance test must not fail") end,
+        DispatchWidth = 8,
     }
     for key, item in pairs(overrides or {}) do value[key] = item end
     return value
@@ -78,31 +79,34 @@ local dispatchStats = engine("stats")
 assert(dispatchStats.Accepted == 15, "all 15 explicit UIDs should be accepted")
 assert(dispatchStats.Rejected == 0 and dispatchStats.Errors == 0)
 assert(dispatchStats.Queued == 0 and dispatchStats.Active == 0)
-assert(dispatchStats.Limit == 16 and dispatchStats.QueueCapacity == 64)
+assert(dispatchStats.Limit == 8 and dispatchStats.QueueCapacity == 32)
 assert(fireCalls == 30, "each accepted lock needs target + farm signals")
 for _, state in pairs(states) do assert(state.Phase == "working") end
 
--- A live target-pet set is authoritative and prevents a duplicate Join Coin.
-local joinCalls = 0
-network.Invoke = function()
-    joinCalls = joinCalls + 1
-    return false
+-- A grouped target produces one Join Coin call and two fire signals per UID.
+local groupedCalls = 0
+network.Invoke = function(_, _, requested)
+    groupedCalls = groupedCalls + 1
+    local accepted = {}
+    for _, petId in ipairs(requested) do accepted[petId] = true end
+    return accepted
 end
-local preflightState = { Phase = "joining" }
-states.preflight = preflightState
-assert(engine("start", context({
-    TargetContainsPet = function(_, petId) return petId == "preflight" end,
-})) == true)
+assert(engine("start", context()) == true)
+local groupedEntries = {}
+for index = 1, 6 do
+    local petId = "group-" .. tostring(index)
+    local state = { Phase = "joining" }
+    states[petId] = state
+    groupedEntries[#groupedEntries + 1] = { PetId = petId, State = state }
+end
 assert(engine("dispatch", {
-    CoinId = "already-attached",
+    CoinId = "boss",
     Record = { Alive = true },
-    Entries = { { PetId = "preflight", State = preflightState } },
+    Entries = groupedEntries,
 }) == true)
-assert(joinCalls == 0, "live target preflight must suppress duplicate Join Coin")
-assert(preflightState.Phase == "working")
+assert(groupedCalls == 1, "one target group must use one Join Coin request")
 
--- Callers may stop a rejected target immediately; retry timing/caps are also
--- asserted above and by the static zero-retention policy test.
+-- Explicit rejection can be stopped by the caller after one attempt.
 local failedCount = 0
 network.Invoke = function() return false end
 local failedState = { Phase = "joining" }
@@ -121,20 +125,16 @@ assert(engine("dispatch", {
     Entries = { { PetId = "failure", State = failedState } },
 }) == true)
 local rejected = engine("stats")
-assert(rejected.Rejected == 1,
-    "caller-stopped rejection must make one attempt; got " .. tostring(rejected.Rejected))
-assert(rejected.Retries == 0, "caller-stopped rejection must not enter retry state")
+assert(rejected.Rejected == 1 and rejected.Retries == 0)
 assert(rejected.Queued == 0 and failedCount == 1 and states.failure == nil)
 
--- Transport errors do not collapse the fixed writer width.
+-- Transport failures never widen the fixed eight-lane writer.
 network.Invoke = function() error("transient transport failure") end
 local transportState = { Phase = "joining" }
 states.transport = transportState
 assert(engine("start", context({
     ShouldRetry = function() return false end,
-    OnFailed = function(petId)
-        states[petId] = nil
-    end,
+    OnFailed = function(petId) states[petId] = nil end,
 })) == true)
 assert(engine("dispatch", {
     CoinId = "transport-coin",
@@ -143,7 +143,6 @@ assert(engine("dispatch", {
 }) == true)
 local transport = engine("stats")
 assert(transport.Errors == 1 and transport.Retries == 0)
-assert(transport.Limit == 16 and transport.PolicyMaxLanes == 16,
-    "transport failure must not collapse the fixed 16-lane writer")
+assert(transport.Limit == 8 and transport.PolicyMaxLanes == 8)
 
-print("PASS fixed 16-lane pet writer, live preflight and bounded retries")
+print("PASS event-driven eight-lane Lite Reactor and bounded one-retry policy")

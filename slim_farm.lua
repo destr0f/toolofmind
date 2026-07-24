@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.24"
+local VERSION = "1.4.1-lite.1"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -805,6 +805,7 @@ local coinRecords = {}
 local requestAllocatorPulse
 local releaseAssignmentsForCoin
 local requestFarmReset
+local assignmentCount
 
 local function getPlayerZone()
     if os.clock() < nextZoneCheck then return currentZone end
@@ -1154,32 +1155,11 @@ function coinIndex:Invalidate()
     self.Cache.Revision = -1
 end
 
-local function normalizePetSet(rawPets)
-    local result = {}
-    if type(rawPets) ~= "table" then return result end
-    for key, value in pairs(rawPets) do
-        local petId
-        if type(key) == "number" then
-            petId = type(value) == "table" and (value.uid or value.id) or value
-        elseif value == true then
-            petId = key
-        elseif type(value) == "table" then
-            petId = value.uid or value.id or key
-        elseif type(value) == "string" then
-            petId = value
-        elseif value ~= nil and value ~= false then
-            petId = key
-        end
-        if petId ~= nil then result[tostring(petId)] = true end
-    end
-    return result
-end
-
 local function applyCoinData(rawId, data, fromEvent)
     if rawId == nil or type(data) ~= "table" then return nil end
     local id = tostring(rawId)
     local created = coinRecords[id] == nil
-    local record = coinRecords[id] or { Id = id, Pets = {} }
+    local record = coinRecords[id] or { Id = id }
     coinRecords[id] = record
     local selectionChanged = created
     local previousHealth = tonumber(record.Health)
@@ -1219,10 +1199,6 @@ local function applyCoinData(rawId, data, fromEvent)
     record.Removed = false
     record.FromServer = true
 
-    local pets = data.pets or data.Pets
-    if pets ~= nil then record.Pets = normalizePetSet(pets) end
-    local farmingPets = data.petsFarming or data.PetsFarming
-    if farmingPets ~= nil then record.PetsFarming = normalizePetSet(farmingPets) end
     if fromEvent then coinMutationSerial = coinMutationSerial + 1 end
     if selectionChanged then coinIndex:Invalidate() end
     if fromEvent and type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
@@ -1236,8 +1212,6 @@ local function removeCoin(rawId, fromEvent)
     if record then
         record.Health = 0
         record.Removed = true
-        record.Pets = {}
-        record.PetsFarming = {}
     end
     coinRecords[id] = nil
     local model = coinIndex.Models[id]
@@ -1261,7 +1235,7 @@ function coinIndex:IndexModel(model, refreshHealth)
     if not model then return nil end
     local id = tostring(readObjectValue(model, "ID") or model.Name)
 
-    local record = coinRecords[id] or { Id = id, Pets = {} }
+    local record = coinRecords[id] or { Id = id }
     local created = coinRecords[id] == nil
     local modelChanged = record.Model ~= model
     local selectionChanged = created or modelChanged
@@ -1331,6 +1305,14 @@ function coinIndex:WatchFolder(folder)
         if not id then return end
         self.IdByModel[model] = nil
         if self.Models[id] == model then self.Models[id] = nil end
+        local record = coinRecords[id]
+        if record and record.FromServer and (tonumber(record.Health) or 0) > 0 then
+            -- Animated/potato models are replaced locally. A workspace removal
+            -- must not unlock a pet while the authoritative server coin lives.
+            record.Model = nil
+            record.WorkspaceIndexed = false
+            return
+        end
         removeCoin(id, false)
     end)
     return true
@@ -1417,15 +1399,6 @@ local function connectCoinSignals()
             -- Absorb a missed creation event into the live registry. Repeating
             -- Get Coins here would turn an event race into a reconciliation loop.
             applyCoinData(id, { Health = health }, true)
-        end
-    end)
-    connect("Update Coin Pets", function(id, pets)
-        local record = coinRecords[tostring(id)]
-        if record then
-            record.Pets = normalizePetSet(pets)
-            coinMutationSerial = coinMutationSerial + 1
-        else
-            applyCoinData(id, { Pets = pets }, true)
         end
     end)
     connect("Remove Coin", function(id) removeCoin(id, true) end)
@@ -1592,11 +1565,8 @@ local petFarm = {
     AllocatorScheduled = false,
     RouteSummary = "resolving 0/4",
     EquippedCount = 0,
-    ExternalPetCount = 0,
-    ContendedTargets = 0,
     TargetWindow = 0,
-    TargetShards = 1,
-    PolicyLanes = 16,
+    PolicyLanes = 8,
     LastTargetCount = 0,
     LastWorld = "unknown",
     LastZone = "unknown",
@@ -1608,7 +1578,7 @@ local petFarm = {
         Active = 0,
         Queued = 0,
         Limit = 0,
-        PolicyMaxLanes = 16,
+        PolicyMaxLanes = 8,
         Accepted = 0,
         Rejected = 0,
         Errors = 0,
@@ -1957,13 +1927,6 @@ local function resetSupportCoordinator()
     if supportController then pcall(supportController, "reset", supportContext) end
 end
 
-function petFarm:TargetContainsPet(record, petId)
-    if not record then return false end
-    petId = tostring(petId)
-    return (record.Pets and record.Pets[petId] == true)
-        or (record.PetsFarming and record.PetsFarming[petId] == true)
-end
-
 function petFarm:RefreshStats()
     if not self.Engine then return self.StatsCache end
     local ok, stats = pcall(self.Engine, "stats")
@@ -1976,7 +1939,7 @@ function petFarm:EnsureEngine()
     if self.Loading then return false, "engine load already in progress" end
     self.Loading = true
     self.Problem = nil
-    driverStatus = "loading high-throughput UID engine"
+    driverStatus = "loading event-driven Lite Reactor"
 
     local controller, problem = loadRemoteController(
         "petFarmEngine",
@@ -2014,7 +1977,6 @@ function petFarm:EnsureEngine()
             return petStates[tostring(petId)] == state
                 and state.Generation == farmGeneration
         end,
-        TargetContainsPet = function(record, petId) return self:TargetContainsPet(record, petId) end,
         OnAccepted = function(petId, state, record, _, attempt, route)
             petId = tostring(petId)
             if petStates[petId] ~= state
@@ -2022,16 +1984,14 @@ function petFarm:EnsureEngine()
                 or not recordAlive(record) then return false end
             state.Phase = "working"
             state.RetryCount = math.max((tonumber(attempt) or 1) - 1, 0)
-            record.Pets = record.Pets or {}
-            record.Pets[petId] = true
-            driverStatus = "UID-direct assignment accepted via " .. tostring(route)
+            driverStatus = "Lite lock accepted via " .. tostring(route)
             return true
         end,
         OnRetry = function(petId, state, _, reason, nextAttempt)
             if petStates[tostring(petId)] ~= state then return end
             state.Phase = "joining"
             state.RetryCount = math.max((tonumber(nextAttempt) or 2) - 1, 1)
-            driverStatus = "retrying the same pet target"
+            driverStatus = "one bounded retry for the same lock"
         end,
         OnFailed = function(petId, state, record, reason)
             petId = tostring(petId)
@@ -2039,11 +1999,11 @@ function petFarm:EnsureEngine()
             local now = os.clock()
             petStates[petId] = nil
             if record then
-                rejectedUntil[tostring(record.Id)] = now + 0.2
+                rejectedUntil[tostring(record.Id)] = now + 1
             end
             idleRecoveryCount = idleRecoveryCount + 1
             lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
-            driverStatus = "UID join exhausted; selecting a fresh target"
+            driverStatus = "Lite join failed; selecting another live target"
             self.SuppressedFailures = self.SuppressedFailures + 1
             if now >= self.NextFailureTraceAt then
                 trace("pet dispatch recovery", tostring(reason)
@@ -2058,19 +2018,8 @@ function petFarm:EnsureEngine()
             if not network or not record then return end
             pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
         end,
-        Pulse = function()
-            -- Accepted workers already own a pending/locked state. Wake the
-            -- allocator only when a UID is genuinely free; this avoids one
-            -- full allocator scan for every successful pet response.
-            local assigned = 0
-            for _ in pairs(petStates) do assigned = assigned + 1 end
-            if assigned < (tonumber(self.EquippedCount) or 0)
-                and type(requestAllocatorPulse) == "function" then
-                requestAllocatorPulse()
-            end
-        end,
         Trace = trace,
-        DispatchWidth = 16,
+        DispatchWidth = 8,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
     self.Loading = false
@@ -2092,8 +2041,8 @@ function petFarm:EnsureEngine()
     end
     self.RouteSummary = "named routes " .. tostring(resolvedRoutes) .. "/4"
     self:RefreshStats()
-    driverStatus = "high-throughput UID engine ready"
-    if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+    driverStatus = "event-driven Lite Reactor ready"
+    if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
     return true
 end
 
@@ -2131,12 +2080,6 @@ local function clearAssignments(sendBack, callback)
     local network = sendBack and networkReady() or nil
     table.clear(petStates)
     table.clear(rejectedUntil)
-    for _, record in pairs(coinRecords) do
-        for petId in pairs(allPets) do
-            if record.Pets then record.Pets[petId] = nil end
-            if record.PetsFarming then record.PetsFarming[petId] = nil end
-        end
-    end
 
     if not sendBack or not network then
         if type(callback) == "function" then callback(network ~= nil or not sendBack) end
@@ -2219,8 +2162,8 @@ end
 local function dispatchPlan(record, petIds)
     if not recordAlive(record) or #petIds == 0 then return end
     if not petFarm.Engine then
-        driverStatus = petFarm.Loading and "high-throughput engine is loading"
-            or "high-throughput engine is unavailable"
+        driverStatus = petFarm.Loading and "Lite Reactor is loading"
+            or "Lite Reactor is unavailable"
         return
     end
     local coinId = tostring(record.Id)
@@ -2232,6 +2175,7 @@ local function dispatchPlan(record, petIds)
             Phase = "joining",
             Generation = farmGeneration,
             RetryCount = 0,
+            StartedAt = os.clock(),
         }
         petStates[petId] = state
         entries[#entries + 1] = { PetId = petId, State = state }
@@ -2246,13 +2190,13 @@ local function dispatchPlan(record, petIds)
         for _, entry in ipairs(entries) do
             if petStates[entry.PetId] == entry.State then petStates[entry.PetId] = nil end
         end
-        rejectedUntil[coinId] = os.clock() + 0.12
-        driverStatus = "UID dispatch queue error: " .. tostring(called and problem or accepted)
+        rejectedUntil[coinId] = os.clock() + 1
+        driverStatus = "Lite dispatch queue error: " .. tostring(called and problem or accepted)
         if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     end
 end
 
-local function assignmentCount()
+assignmentCount = function()
     local count = 0
     for _ in pairs(petStates) do count = count + 1 end
     return count
@@ -2935,45 +2879,6 @@ local function reconcileRewardWorker()
     rewardWorker.Schedule(generation, 0)
 end
 
-function petFarm:RecordExternalPets(record, equipped, allExternal)
-    local seen, count = {}, 0
-    for _, petSet in ipairs({ record.Pets or {}, record.PetsFarming or {} }) do
-        for rawPetId in pairs(petSet) do
-            local petId = tostring(rawPetId)
-            if not equipped[petId] and not seen[petId] then
-                seen[petId] = true
-                allExternal[petId] = true
-                count = count + 1
-            end
-        end
-    end
-    return count
-end
-
-function petFarm:ContendedTargetOrder(usable, claimed, freeCount, equipped)
-    local freeTargets, occupiedTargets, allExternal = {}, {}, {}
-    local contended = 0
-    for _, record in ipairs(usable) do
-        local external = self:RecordExternalPets(record, equipped, allExternal)
-        if external > 0 then contended = contended + 1 end
-        if not claimed[tostring(record.Id)] then
-            local destination = external == 0 and freeTargets or occupiedTargets
-            destination[#destination + 1] = record
-        end
-    end
-
-    local externalCount = 0
-    for _ in pairs(allExternal) do externalCount = externalCount + 1 end
-    self.ExternalPetCount = externalCount
-    self.ContendedTargets = contended
-    local ordered = {}
-    for _, record in ipairs(freeTargets) do ordered[#ordered + 1] = record end
-    for _, record in ipairs(occupiedTargets) do ordered[#ordered + 1] = record end
-    self.TargetWindow = math.min(#ordered, math.max(freeCount, 1))
-    self.TargetShards = 1
-    return ordered
-end
-
 local allocatorPass
 local armFarmRecovery
 
@@ -2981,9 +2886,8 @@ function petFarm:ScheduleAllocatorPass()
     if self.AllocatorScheduled or allocatorBusy or not running() then return end
     self.AllocatorScheduled = true
     task.defer(function()
-        -- task.defer coalesces a burst of coin/pet callbacks without forcing a
-        -- full render-frame gap. A destroyed target can therefore receive its
-        -- replacement assignment in the same scheduler turn.
+        -- All coin/pet callbacks collapse into one allocator turn. The turn is
+        -- only requested while at least one equipped UID is genuinely free.
         self.AllocatorScheduled = false
         if running() then allocatorPass() end
     end)
@@ -3010,8 +2914,8 @@ allocatorPass = function()
                     if not ready then trace("pet engine load", tostring(engineProblem)) end
                 end)
             end
-            driverStatus = petFarm.Loading and "loading high-throughput UID engine"
-                or "waiting for high-throughput UID engine"
+            driverStatus = petFarm.Loading and "loading event-driven Lite Reactor"
+                or "waiting for event-driven Lite Reactor"
             return
         end
 
@@ -3050,57 +2954,54 @@ allocatorPass = function()
         petFarm.LastTargetCount = #targets
         petFarm.LastWorld = selectedWorld or "unknown"
         petFarm.LastZone = selectedZone or "unknown"
-        local targetIds = {}
-        for _, record in ipairs(targets) do targetIds[tostring(record.Id)] = true end
-        for _, state in pairs(petStates) do
-            local coinId = tostring(state.CoinId)
-            if recordAlive(coinRecords[coinId]) and not targetIds[coinId] then
-                requestFarmReset("active target left selected zone")
-                return
-            end
-        end
 
         local usable = {}
+        local now = os.clock()
         for _, record in ipairs(targets) do
-            if os.clock() >= (rejectedUntil[tostring(record.Id)] or 0) then
+            if now >= (rejectedUntil[tostring(record.Id)] or 0) then
                 table.insert(usable, record)
             end
         end
-        if #usable == 0 then return end
+        if #usable == 0 then
+            petFarm.TargetWindow = 0
+            if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
+            return
+        end
 
         local plans, plansById = {}, {}
         if config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only" then
             petFarm.TargetWindow = math.min(#usable, 1)
-            petFarm.TargetShards = 1
             local groupTarget
             for _, state in pairs(petStates) do
                 local coinId = tostring(state.CoinId)
                 local record = coinRecords[coinId]
                 local matchesMode = config.Mode == "Boss Chest Only" and isBossChest(record)
                     or config.Mode == "All on Strongest Regular" and not isBossChest(record)
-                if matchesMode and recordAlive(record) and targetIds[coinId] then
+                if matchesMode and recordAlive(record) then
                     groupTarget = record
                     break
                 end
             end
             groupTarget = groupTarget or usable[1]
-            local external = {}
-            petFarm.ExternalPetCount = petFarm:RecordExternalPets(
-                groupTarget, equipped, external)
-            petFarm.ContendedTargets = petFarm.ExternalPetCount > 0 and 1 or 0
             plans[1] = { Record = groupTarget, Pets = freePets }
         else
             local claimed = {}
             for _, state in pairs(petStates) do
                 local coinId = tostring(state.CoinId)
-                if targetIds[coinId] and recordAlive(coinRecords[coinId]) then claimed[coinId] = true end
+                if recordAlive(coinRecords[coinId]) then claimed[coinId] = true end
             end
-            local unique = petFarm:ContendedTargetOrder(
-                usable, claimed, #freePets, equipped)
+            petFarm.TargetWindow = math.min(#usable, #freePets)
             local uniqueIndex, sharedIndex = 1, 1
             for _, petId in ipairs(freePets) do
-                local record = unique[uniqueIndex]
-                uniqueIndex = uniqueIndex + 1
+                local record
+                while uniqueIndex <= #usable do
+                    local candidate = usable[uniqueIndex]
+                    uniqueIndex = uniqueIndex + 1
+                    if not claimed[tostring(candidate.Id)] then
+                        record = candidate
+                        break
+                    end
+                end
                 if not record then
                     record = usable[((sharedIndex - 1) % #usable) + 1]
                     sharedIndex = sharedIndex + 1
@@ -3118,7 +3019,7 @@ allocatorPass = function()
         end
         for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
         if assignmentCount() < #petIds and type(armFarmRecovery) == "function" then
-            armFarmRecovery()
+            armFarmRecovery(1.05)
         end
     end)
     if not ok then driverStatus = "allocator error: " .. tostring(problem) end
@@ -3127,7 +3028,10 @@ allocatorPass = function()
     if allocatorRequested then petFarm:ScheduleAllocatorPass() end
 end
 
-requestAllocatorPulse = function()
+requestAllocatorPulse = function(force)
+    if not running() or not config.PetFarm or farmResetRunning then return end
+    local expected = tonumber(petFarm.EquippedCount) or 0
+    if not force and expected > 0 and assignmentCount() >= expected then return end
     allocatorRequested = true
     petFarm:ScheduleAllocatorPass()
 end
@@ -3163,7 +3067,7 @@ local function connectPetLifecycleSignal(name, removed)
             if config.PetFarm then
                 driverStatus = removed and "pet unequipped; assignments reconciled"
                     or "equipped pet detected; assigning target"
-                requestAllocatorPulse()
+                requestAllocatorPulse(true)
             end
         end)
     end)
@@ -3194,15 +3098,15 @@ local farmWatch = {
     ZoneToken = 0,
 }
 
-armFarmRecovery = function()
+armFarmRecovery = function(delaySeconds)
     if farmWatch.RecoveryArmed or not running() or not config.PetFarm then return end
     farmWatch.RecoveryArmed = true
     local token = farmWatch.RecoveryToken
-    task.delay(0.15, function()
+    task.delay(math.max(tonumber(delaySeconds) or 1.05, 1), function()
         farmWatch.RecoveryArmed = false
         if token ~= farmWatch.RecoveryToken or not running() or not config.PetFarm then return end
         local expected = tonumber(petFarm.EquippedCount) or 0
-        if expected > 0 and assignmentCount() < expected then requestAllocatorPulse() end
+        if expected > 0 and assignmentCount() < expected then requestAllocatorPulse(true) end
     end)
 end
 
@@ -3212,7 +3116,9 @@ local function restartFarmWatchers()
     farmWatch.ZoneToken = farmWatch.ZoneToken + 1
     local token = farmWatch.ZoneToken
     if not running() or not config.PetFarm then return end
-    if assignmentCount() < (tonumber(petFarm.EquippedCount) or 0) then armFarmRecovery() end
+    if assignmentCount() < (tonumber(petFarm.EquippedCount) or 0) then
+        armFarmRecovery(1.05)
+    end
     if config.Zone ~= "Player Zone" then return end
 
     local function checkZone()
@@ -3221,9 +3127,9 @@ local function restartFarmWatchers()
         if signature ~= farmSelectionSignature then
             requestFarmReset("player zone changed")
         end
-        task.delay(0.3, checkZone)
+        task.delay(0.75, checkZone)
     end
-    task.delay(0.3, checkZone)
+    task.delay(0.75, checkZone)
 end
 
 local LOOT_LIMITS = {
@@ -3495,8 +3401,8 @@ end
 
 UI.FarmHero = UI.FarmTab:Section({ Title = "01 / Adaptive Routing", Box = true, Opened = true })
 UI.FarmHero:Paragraph({
-    Title = "RESERVE > JOIN > FARM > BREAK",
-    Desc = "One bounded 16-lane pump assigns every free UID while accepted pets remain locked to one live target.",
+    Title = "LITE REACTOR / EVENT-DRIVEN",
+    Desc = "Coin deltas wake one cached allocator; each UID stays locked until its target is removed.",
 })
 UI.FarmHero:Toggle({
     Flag = "pet_farm",
@@ -4232,7 +4138,7 @@ local function updateRuntimeTelemetry()
             local dispatchStats = petFarm:RefreshStats()
             local networkState = networkReady() and "ready" or "waiting"
             statusSetters.Farm(string.format(
-                "%s  >  %s\nTargets: %d | active intents: %d/%d | working: %d | joining: %d | true idle: %d\nContention: %d external pets on %d targets | target window: %d",
+                "%s  >  %s\nTargets: %d | locked: %d/%d | working: %d | joining: %d | true idle: %d\nCached target window: %d | no Update Coin Pets reconciliation",
                 tostring(petFarm.LastWorld or "unknown"),
                 tostring(petFarm.LastZone or "unknown"),
                 tonumber(petFarm.LastTargetCount) or 0,
@@ -4241,12 +4147,10 @@ local function updateRuntimeTelemetry()
                 workingCount,
                 joiningCount,
                 math.max(equippedCount - assignedCount, 0),
-                tonumber(petFarm.ExternalPetCount) or 0,
-                tonumber(petFarm.ContendedTargets) or 0,
                 tonumber(petFarm.TargetWindow) or 0
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nBounded pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nRecoveries: %d | last: %s\nDriver: %s",
+                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nSlow recoveries: %d | last: %s\nDriver: %s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
