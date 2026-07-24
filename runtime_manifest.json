@@ -90,18 +90,18 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "2.0.0",
+      "version": "3.0.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-lite.2",
       "required": false,
       "load": "lazy",
-      "role": "event-first-native-loot-reactor",
+      "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "2b15ddf6ce83d5c098634418404eb508d900ebe8",
-      "bytes": 34112,
-      "sha256": "3a60a071e9d37c875932d78ee94d638696178738ad4d1f1acf300dcb5402ab8b",
-      "djb2": "eccaf850"
+      "commit": "f19bcc70fa2269bb8a72e476e94e55a856ffb40f",
+      "bytes": 44695,
+      "sha256": "543d1cc11fd18e7aa23889af245850685091fbb63e6db930341fb3aed9bf7ee4",
+      "djb2": "3225121b"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -184,7 +184,7 @@
     "graphics": {
       "id": "graphics",
       "label": "Graphics anti-lag",
-      "version": "3.0.0",
+      "version": "4.0.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-lite.2",
@@ -192,10 +192,10 @@
       "load": "lazy",
       "role": "graphics-runtime",
       "path": "graphics_module.lua",
-      "commit": "d01575462a51a8614644c8029a75171d2b932840",
-      "bytes": 18317,
-      "sha256": "202c6a452f3d41f482a9d5d4280e05c4595355106997a2e10962933378b9d5a8",
-      "djb2": "7f37f0c4"
+      "commit": "f19bcc70fa2269bb8a72e476e94e55a856ffb40f",
+      "bytes": 16218,
+      "sha256": "ff8ac4c984a882156f6f4daab0cb7ed9741782312e74e2887d717fbc9cc10006",
+      "djb2": "0bbfb328"
     }
   },
   "layout": {
@@ -271,32 +271,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "2b15ddf6ce83d5c098634418404eb508d900ebe8",
+    "generatedFromCommit": "f19bcc70fa2269bb8a72e476e94e55a856ffb40f",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 5294,
-      "sha256": "ae1581b54d100c5deb913d0b62ed1270666b6fd75a0c39fd39281a9edbf2fc2c",
-      "djb2": "d1f511ec"
+      "bytes": 5297,
+      "sha256": "3421677de27bfe300e0e90bab8bf7600fcf98fe557b8a1ad0c6a5abac83ddbb2",
+      "djb2": "8d53049c"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-lite.2",
-      "bytes": 157746,
-      "sha256": "3782b7c72c106ac031c7f1b51518877ae9eec4b55eab5fcb298afd16ec8ee6a8",
-      "djb2": "bf5b3276"
+      "bytes": 158931,
+      "sha256": "39ff35d70accef8068dadafa4509d65b14da1f05df257bf48b84ba256ccd42dd",
+      "djb2": "83ca1784"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 127744,
-        "sha256": "3fe8854e4a68c870dfc04fcb78711098c9eeb30d8920e9662f830a9541173670",
-        "djb2": "a2c7a1d9"
+        "bytes": 128686,
+        "sha256": "8eb03783ee202817da181576a3ee581b18e192133abe443a89d787a9ad890bcf",
+        "djb2": "c2f0c5ba"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 127744,
-        "sha256": "3fe8854e4a68c870dfc04fcb78711098c9eeb30d8920e9662f830a9541173670",
-        "djb2": "a2c7a1d9"
+        "bytes": 128686,
+        "sha256": "8eb03783ee202817da181576a3ee581b18e192133abe443a89d787a9ad890bcf",
+        "djb2": "c2f0c5ba"
       }
     }
   }
