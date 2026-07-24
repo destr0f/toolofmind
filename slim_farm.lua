@@ -824,6 +824,8 @@ local BossChestZones
 local coinRecords = {}
 local requestAllocatorPulse
 local releaseAssignmentsForCoin
+local fastHandoffReleasedPets
+local dispatchPlan
 local requestFarmReset
 local assignmentCount
 
@@ -1247,8 +1249,13 @@ local function removeCoin(rawId, fromEvent)
     if model then coinIndex.IdByModel[model] = nil end
     coinIndex.Models[id] = nil
     coinIndex:Invalidate()
-    if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(id) end
-    if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+    local releasedPetIds = type(releaseAssignmentsForCoin) == "function"
+        and releaseAssignmentsForCoin(id) or nil
+    local handedOff = fromEvent and type(fastHandoffReleasedPets) == "function"
+        and fastHandoffReleasedPets(releasedPetIds) == true
+    if not handedOff and type(requestAllocatorPulse) == "function" then
+        requestAllocatorPulse()
+    end
 end
 
 function coinIndex:DisconnectFolder()
@@ -1657,8 +1664,14 @@ local farmGeneration = 0
 local allocatorBusy = false
 local allocatorRequested = false
 local driverStatus = "waiting for first target"
-local idleRecoveryCount = 0
-local lastRecovery = "none"
+local fastRerouteCount = 0
+local lastFastReroute = "none"
+local slowRecoveryCount = 0
+local lastSlowRecovery = "none"
+local fastHandoffCount = 0
+local fastHandoffPetCount = 0
+local fastHandoffFallbackCount = 0
+local targetCacheRefreshScheduled = false
 local petFarm = {
     Engine = nil,
     Loading = false,
@@ -1695,16 +1708,20 @@ releaseAssignmentsForCoin = function(rawId)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
         table.clear(petStates)
         table.clear(rejectedUntil)
-        return
+        return nil
     end
 
     local coinId = tostring(rawId)
+    local releasedPetIds
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId then
             petStates[petId] = nil
+            releasedPetIds = releasedPetIds or {}
+            releasedPetIds[#releasedPetIds + 1] = tostring(petId)
         end
     end
     rejectedUntil[coinId] = nil
+    return releasedPetIds
 end
 
 local function functionUpvalueAt(callback, index)
@@ -2102,16 +2119,28 @@ function petFarm:EnsureEngine()
             petId = tostring(petId)
             if petStates[petId] ~= state then return end
             local now = os.clock()
+            local reasonText = tostring(reason or "")
+            local confirmedReject = string.sub(
+                reasonText,
+                1,
+                #JOIN_COIN_REJECT_PREFIX
+            ) == JOIN_COIN_REJECT_PREFIX
             petStates[petId] = nil
             if record then
                 rejectedUntil[tostring(record.Id)] = now + 1
             end
-            idleRecoveryCount = idleRecoveryCount + 1
-            lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
-            driverStatus = "Lite join failed; selecting another live target"
+            if confirmedReject then
+                fastRerouteCount = fastRerouteCount + 1
+                lastFastReroute = "server rejected " .. string.sub(petId, 1, 8)
+                driverStatus = "confirmed stale target; fast reroute requested"
+            else
+                slowRecoveryCount = slowRecoveryCount + 1
+                lastSlowRecovery = "transport failed for " .. string.sub(petId, 1, 8)
+                driverStatus = "Lite transport failed; allocator recovery requested"
+            end
             self.SuppressedFailures = self.SuppressedFailures + 1
             if now >= self.NextFailureTraceAt then
-                trace("pet dispatch recovery", tostring(reason)
+                trace(confirmedReject and "pet fast reroute" or "pet dispatch recovery", reasonText
                     .. " | coalesced=" .. tostring(self.SuppressedFailures))
                 self.SuppressedFailures = 0
                 self.NextFailureTraceAt = now + 2
@@ -2264,12 +2293,12 @@ requestFarmReset = function(reason)
     end)
 end
 
-local function dispatchPlan(record, petIds)
-    if not recordAlive(record) or #petIds == 0 then return end
+dispatchPlan = function(record, petIds)
+    if not recordAlive(record) or #petIds == 0 then return false end
     if not petFarm.Engine then
         driverStatus = petFarm.Loading and "Lite Reactor is loading"
             or "Lite Reactor is unavailable"
-        return
+        return false
     end
     local coinId = tostring(record.Id)
     local entries = {}
@@ -2296,9 +2325,145 @@ local function dispatchPlan(record, petIds)
             if petStates[entry.PetId] == entry.State then petStates[entry.PetId] = nil end
         end
         rejectedUntil[coinId] = os.clock() + 1
+        slowRecoveryCount = slowRecoveryCount + 1
+        lastSlowRecovery = "dispatch queue rejected " .. tostring(#entries) .. " pet(s)"
         driverStatus = "Lite dispatch queue error: " .. tostring(called and problem or accepted)
         if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+        return false
     end
+    return true
+end
+
+local function scheduleTargetCacheRefresh()
+    if targetCacheRefreshScheduled then return end
+    targetCacheRefreshScheduled = true
+    local generation = farmGeneration
+    local signature = farmSelectionSignature
+    task.defer(function()
+        targetCacheRefreshScheduled = false
+        if not running() or not config.PetFarm or farmResetRunning
+            or generation ~= farmGeneration or signature ~= farmSelectionSignature then
+            return
+        end
+        local ok, targets, world, zone = pcall(orderedTargets, config.Mode)
+        if not ok then
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
+            return
+        end
+        petFarm.LastTargetCount = #targets
+        petFarm.LastWorld = world or "unknown"
+        petFarm.LastZone = zone or "unknown"
+    end)
+end
+
+fastHandoffReleasedPets = function(releasedPetIds)
+    if type(releasedPetIds) ~= "table" or #releasedPetIds == 0 then return true end
+    if not running() or not config.PetFarm or farmResetRunning
+        or allocatorBusy or not petFarm.Engine then
+        fastHandoffFallbackCount = fastHandoffFallbackCount + 1
+        return false
+    end
+
+    -- Remove Coin invalidates the cache revision but intentionally leaves the
+    -- already ordered target array in place. The fast path consumes that array,
+    -- skips dead/cooling records and never scans Workspace or calls Get Coins.
+    local cache = coinIndex.Cache
+    if cache.Signature ~= farmSelectionSignature
+        or type(cache.Targets) ~= "table" or #cache.Targets == 0 then
+        fastHandoffFallbackCount = fastHandoffFallbackCount + 1
+        return false
+    end
+
+    local equipped = {}
+    for _, petId in ipairs(petFarm.LastEquippedIds or {}) do
+        equipped[tostring(petId)] = true
+    end
+
+    local freePets = {}
+    for _, petId in ipairs(releasedPetIds) do
+        petId = tostring(petId)
+        if equipped[petId] and not petStates[petId] then
+            freePets[#freePets + 1] = petId
+        end
+    end
+    if #freePets == 0 then return true end
+
+    local now = os.clock()
+    local usable = {}
+    for _, record in ipairs(cache.Targets) do
+        if recordAlive(record)
+            and now >= (rejectedUntil[tostring(record.Id)] or 0) then
+            usable[#usable + 1] = record
+        end
+    end
+    if #usable == 0 then
+        fastHandoffFallbackCount = fastHandoffFallbackCount + 1
+        return false
+    end
+
+    local plans, plansById = {}, {}
+    if config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only" then
+        local groupTarget
+        for _, state in pairs(petStates) do
+            local record = coinRecords[tostring(state.CoinId)]
+            local matchesMode = config.Mode == "Boss Chest Only" and isBossChest(record)
+                or config.Mode == "All on Strongest Regular" and not isBossChest(record)
+            if matchesMode and recordAlive(record) then
+                groupTarget = record
+                break
+            end
+        end
+        plans[1] = { Record = groupTarget or usable[1], Pets = freePets }
+    else
+        local claimed = {}
+        for _, state in pairs(petStates) do
+            local coinId = tostring(state.CoinId)
+            if recordAlive(coinRecords[coinId]) then claimed[coinId] = true end
+        end
+
+        local uniqueIndex, sharedIndex = 1, 1
+        for _, petId in ipairs(freePets) do
+            local record
+            while uniqueIndex <= #usable do
+                local candidate = usable[uniqueIndex]
+                uniqueIndex = uniqueIndex + 1
+                if not claimed[tostring(candidate.Id)] then
+                    record = candidate
+                    break
+                end
+            end
+            if not record then
+                record = usable[((sharedIndex - 1) % #usable) + 1]
+                sharedIndex = sharedIndex + 1
+            end
+            local recordId = tostring(record.Id)
+            local plan = plansById[recordId]
+            if not plan then
+                plan = { Record = record, Pets = {} }
+                plansById[recordId] = plan
+                plans[#plans + 1] = plan
+            end
+            plan.Pets[#plan.Pets + 1] = petId
+            claimed[recordId] = true
+        end
+    end
+
+    local dispatchedPets = 0
+    for _, plan in ipairs(plans) do
+        if dispatchPlan(plan.Record, plan.Pets) then
+            dispatchedPets = dispatchedPets + #plan.Pets
+        end
+    end
+    if dispatchedPets ~= #freePets then
+        fastHandoffFallbackCount = fastHandoffFallbackCount + 1
+        return false
+    end
+
+    fastHandoffCount = fastHandoffCount + 1
+    fastHandoffPetCount = fastHandoffPetCount + dispatchedPets
+    scheduleTargetCacheRefresh()
+    driverStatus = "cached Remove Coin handoff dispatched"
+    return true
 end
 
 assignmentCount = function()
@@ -3215,7 +3380,13 @@ armFarmRecovery = function(delaySeconds)
         farmWatch.RecoveryArmed = false
         if token ~= farmWatch.RecoveryToken or not running() or not config.PetFarm then return end
         local expected = tonumber(petFarm.EquippedCount) or 0
-        if expected > 0 and assignmentCount() < expected then requestAllocatorPulse(true) end
+        local assigned = assignmentCount()
+        if expected > 0 and assigned < expected then
+            slowRecoveryCount = slowRecoveryCount + 1
+            lastSlowRecovery = "watchdog found "
+                .. tostring(math.max(expected - assigned, 0)) .. " idle pet(s)"
+            requestAllocatorPulse(true)
+        end
     end)
 end
 
@@ -4287,7 +4458,7 @@ local function updateRuntimeTelemetry()
                     or ("fail-open: " .. tostring(coinSync.LastProblem))
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nSlow recoveries: %d | last: %s\nDriver: %s",
+                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | last: %s\nCached handoffs: %d events / %d pets | fallbacks: %d\nSlow recoveries: %d | last: %s\nDriver: %s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
@@ -4300,8 +4471,13 @@ local function updateRuntimeTelemetry()
                 tonumber(dispatchStats.Retries) or 0,
                 tonumber(dispatchStats.Rejected) or 0,
                 tonumber(dispatchStats.Errors) or 0,
-                idleRecoveryCount,
-                lastRecovery,
+                fastRerouteCount,
+                lastFastReroute,
+                fastHandoffCount,
+                fastHandoffPetCount,
+                fastHandoffFallbackCount,
+                slowRecoveryCount,
+                lastSlowRecovery,
                 driverStatus
             ))
         end
