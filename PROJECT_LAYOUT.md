@@ -38,14 +38,12 @@ indexes and wake at most one feature-owned coalesced runner.
   disappears; one sixteen-wide writer owns Join/Target/Farm traffic and permits
   only one delayed retry for transport/signal failures. A confirmed `Join Coin`
   rejection immediately cools down that stale target and wakes the allocator.
-  `Remove Coin` only releases UIDs into one bounded, deduplicated handoff set.
-  One coalesced `task.defer` consumes the already ordered target cache outside
-  the game's Network callback, so dispatch never re-enters that callback.
-  A second coalesced deferred cache refresh prepares the next handoff; the full
-  allocator remains the fallback for stale selection, empty cache, overflow or
-  dispatch failure. Generation tokens cancel both paths across reconfiguration,
-  STOP and reload. Telemetry counts these deferred handoffs separately from
-  fast stale-target reroutes and true transport/watchdog recoveries.
+  `Remove Coin` releases the affected UID set directly into a same-turn handoff
+  that consumes the already ordered target cache before any full allocator pass.
+  A coalesced deferred cache refresh prepares the next handoff; the full
+  allocator remains the fallback for stale selection, empty cache or dispatch
+  failure. Telemetry counts these fast reroutes/handoffs separately from
+  transport, queue and watchdog recoveries.
   `Update Coin Pets` is intentionally outside the hot path, so other players
   cannot trigger a full local contention rebuild.
 - The Orbs LocalScript is gated at its global `AddOrb` producer when `getsenv`

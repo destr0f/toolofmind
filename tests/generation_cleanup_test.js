@@ -36,33 +36,6 @@ callbacks.length = 0;
 assert(mutations === 0 && callbacks.length === 0,
     "stale generation callbacks mutated the new run");
 
-// Model Step 3.1: Remove Coin may fire in bursts, but released pet UIDs are
-// deduplicated into one bounded deferred handoff and a generation change makes
-// the already scheduled drain inert.
-const pendingHandoffs = new Map();
-let handoffGeneration = 1;
-let handoffToken = 0;
-let handoffScheduled = false;
-let handoffArms = 0;
-for (let index = 0; index < 10_000; index += 1) {
-    pendingHandoffs.set(`pet-${index % 15}`, handoffGeneration);
-    if (!handoffScheduled) {
-        handoffScheduled = true;
-        handoffArms += 1;
-    }
-}
-assert(handoffArms === 1 && pendingHandoffs.size === 15,
-    "Remove Coin burst did not coalesce released UIDs");
-const capturedHandoffToken = handoffToken;
-handoffGeneration += 1;
-handoffToken += 1;
-handoffScheduled = false;
-pendingHandoffs.clear();
-assert(capturedHandoffToken !== handoffToken
-    && pendingHandoffs.size === 0
-    && handoffScheduled === false,
-    "STOP/reconfigure retained a deferred handoff");
-
 // Model the producer record contract: one active wrapper, exact restoration,
 // and stale wrapper calls forwarding to the original function.
 const producerEnv = { AddOrb: () => "original" };
@@ -151,9 +124,6 @@ for (const marker of [
     "farmWatch.ZoneToken = farmWatch.ZoneToken + 1",
     "disconnectPetLifecycleSignals()",
     "table.clear(petLifecycle.Signals)",
-    "handoffToken = handoffToken + 1",
-    "table.clear(pendingHandoffPets)",
-    "clearPendingHandoffs()",
 ]) {
     assert(farm.includes(marker), `main STOP misses generation cleanup: ${marker}`);
 }
