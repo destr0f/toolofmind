@@ -90,7 +90,7 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.0.1",
+      "version": "3.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-lite.2",
@@ -98,10 +98,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "cdcf3cdb3e10686a981f0fff62400532db2e5450",
-      "bytes": 45502,
-      "sha256": "3327ed142e85dab409efdffa7e3000f2890dfcb188a52cd4d750d1e16feb658b",
-      "djb2": "827b22f2"
+      "commit": "3d4788c6c2f4c53707885d557e933aa9bf952f6c",
+      "bytes": 46949,
+      "sha256": "d0df2499c8e237b2d9855feb6cbecd0e283bd75aa365e7cf7ae8d0b05a0c9695",
+      "djb2": "f4711a00"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -272,12 +272,12 @@
     }
   },
   "build": {
-    "generatedFromCommit": "cdcf3cdb3e10686a981f0fff62400532db2e5450",
+    "generatedFromCommit": "3d4788c6c2f4c53707885d557e933aa9bf952f6c",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 5297,
-      "sha256": "9d1b7cab6e934e57872708a565586763fc2d6259ef60ed58937a2941695cd682",
-      "djb2": "95d39d7c"
+      "sha256": "d8ed9e981c3d5f4e86777edc09d3f20b3868423952422c5774789a22bb79b23c",
+      "djb2": "7fd041a1"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -290,14 +290,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 131995,
-        "sha256": "e0e0f225d7e0ea86cd4b7ea1e412c1ef85acb5a85bd0850097930038ca9c8736",
-        "djb2": "b6aa550a"
+        "sha256": "9c7d7b4c5e60ab8bfd3d6e983c2ce188b98c9577bca87d2754591c9e20a3fd54",
+        "djb2": "54cac18e"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 131995,
-        "sha256": "e0e0f225d7e0ea86cd4b7ea1e412c1ef85acb5a85bd0850097930038ca9c8736",
-        "djb2": "b6aa550a"
+        "sha256": "9c7d7b4c5e60ab8bfd3d6e983c2ce188b98c9577bca87d2754591c9e20a3fd54",
+        "djb2": "54cac18e"
       }
     }
   }
