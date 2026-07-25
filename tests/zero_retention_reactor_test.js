@@ -73,10 +73,27 @@ assert(farm.includes('local JOIN_COIN_REJECT_PREFIX = "Join Coin rejected"')
     && farm.includes("ShouldRetry = function(_, reason)")
     && farm.includes("#JOIN_COIN_REJECT_PREFIX"),
     "confirmed Join Coin rejection is still delayed behind a same-target retry");
-assert(farm.includes("local fastHandoffReleasedPets")
+assert(farm.includes("local queueReleasedPetsForHandoff")
     && farm.includes("releaseAssignmentsForCoin(id) or nil")
-    && farm.includes("fastHandoffReleasedPets(releasedPetIds) == true"),
-    "Remove Coin does not synchronously pass released UIDs to the cached handoff");
+    && farm.includes("queueReleasedPetsForHandoff(releasedPetIds) == true"),
+    "Remove Coin does not pass released UIDs to the deferred handoff queue");
+const removeCoinHandler = farm.slice(
+    farm.indexOf("local function removeCoin"),
+    farm.indexOf("function coinIndex:DisconnectFolder")
+);
+assert(!removeCoinHandler.includes("fastHandoffReleasedPets(releasedPetIds)"),
+    "Remove Coin re-enters pet dispatch synchronously from the network callback");
+for (const marker of [
+    "MAX_PENDING_HANDOFF_PETS = 64",
+    "pendingHandoffPets = {}",
+    "handoffToken = 0",
+    "task.defer(function()",
+    "token ~= handoffToken",
+    "fastHandoffReleasedPets(batch) ~= true",
+    "clearPendingHandoffs()",
+]) {
+    assert(farm.includes(marker), `missing bounded deferred handoff marker: ${marker}`);
+}
 assert(farm.includes("local cache = coinIndex.Cache")
     && farm.includes("cache.Signature ~= farmSelectionSignature")
     && farm.includes("for _, record in ipairs(cache.Targets) do")
@@ -85,6 +102,7 @@ assert(farm.includes("local cache = coinIndex.Cache")
 assert(farm.includes("fastRerouteCount = fastRerouteCount + 1")
     && farm.includes("slowRecoveryCount = slowRecoveryCount + 1")
     && farm.includes("Fast reroutes:")
+    && farm.includes("Deferred handoffs:")
     && farm.includes("Slow recoveries:"),
     "fast reject reroutes and true slow recoveries are not separately observable");
 assert(!farm.includes("RecordExternalPets")

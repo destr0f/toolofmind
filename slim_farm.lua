@@ -825,6 +825,7 @@ local coinRecords = {}
 local requestAllocatorPulse
 local releaseAssignmentsForCoin
 local fastHandoffReleasedPets
+local queueReleasedPetsForHandoff
 local dispatchPlan
 local requestFarmReset
 local assignmentCount
@@ -1251,8 +1252,8 @@ local function removeCoin(rawId, fromEvent)
     coinIndex:Invalidate()
     local releasedPetIds = type(releaseAssignmentsForCoin) == "function"
         and releaseAssignmentsForCoin(id) or nil
-    local handedOff = fromEvent and type(fastHandoffReleasedPets) == "function"
-        and fastHandoffReleasedPets(releasedPetIds) == true
+    local handedOff = fromEvent and type(queueReleasedPetsForHandoff) == "function"
+        and queueReleasedPetsForHandoff(releasedPetIds) == true
     if not handedOff and type(requestAllocatorPulse) == "function" then
         requestAllocatorPulse()
     end
@@ -1672,6 +1673,11 @@ local fastHandoffCount = 0
 local fastHandoffPetCount = 0
 local fastHandoffFallbackCount = 0
 local targetCacheRefreshScheduled = false
+local MAX_PENDING_HANDOFF_PETS = 64
+local pendingHandoffPets = {}
+local pendingHandoffCount = 0
+local handoffScheduled = false
+local handoffToken = 0
 local petFarm = {
     Engine = nil,
     Loading = false,
@@ -1702,12 +1708,20 @@ local petFarm = {
     },
 }
 
+local function clearPendingHandoffs()
+    handoffToken = handoffToken + 1
+    handoffScheduled = false
+    pendingHandoffCount = 0
+    table.clear(pendingHandoffPets)
+end
+
 releaseAssignmentsForCoin = function(rawId)
     if rawId == nil then
         farmGeneration = farmGeneration + 1
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
         table.clear(petStates)
         table.clear(rejectedUntil)
+        clearPendingHandoffs()
         return nil
     end
 
@@ -2214,6 +2228,7 @@ local function clearAssignments(sendBack, callback)
     local network = sendBack and networkReady() or nil
     table.clear(petStates)
     table.clear(rejectedUntil)
+    clearPendingHandoffs()
 
     if not sendBack or not network then
         if type(callback) == "function" then callback(network ~= nil or not sendBack) end
@@ -2463,6 +2478,55 @@ fastHandoffReleasedPets = function(releasedPetIds)
     fastHandoffPetCount = fastHandoffPetCount + dispatchedPets
     scheduleTargetCacheRefresh()
     driverStatus = "cached Remove Coin handoff dispatched"
+    return true
+end
+
+queueReleasedPetsForHandoff = function(releasedPetIds)
+    if type(releasedPetIds) ~= "table" or #releasedPetIds == 0 then return true end
+    if not running() or not config.PetFarm or farmResetRunning or not petFarm.Engine then
+        return false
+    end
+
+    local generation = farmGeneration
+    for _, petId in ipairs(releasedPetIds) do
+        petId = tostring(petId)
+        if pendingHandoffPets[petId] == nil then
+            if pendingHandoffCount >= MAX_PENDING_HANDOFF_PETS then
+                fastHandoffFallbackCount = fastHandoffFallbackCount + 1
+                clearPendingHandoffs()
+                return false
+            end
+            pendingHandoffCount = pendingHandoffCount + 1
+        end
+        pendingHandoffPets[petId] = generation
+    end
+
+    if handoffScheduled then return true end
+    handoffScheduled = true
+    local token = handoffToken
+    task.defer(function()
+        if token ~= handoffToken then return end
+        handoffScheduled = false
+        if not running() or not config.PetFarm or farmResetRunning
+            or generation ~= farmGeneration then
+            clearPendingHandoffs()
+            return
+        end
+
+        local batch = {}
+        for petId, petGeneration in pairs(pendingHandoffPets) do
+            if petGeneration == farmGeneration and not petStates[petId] then
+                batch[#batch + 1] = petId
+            end
+        end
+        table.clear(pendingHandoffPets)
+        pendingHandoffCount = 0
+
+        if #batch > 0 and fastHandoffReleasedPets(batch) ~= true
+            and type(requestAllocatorPulse) == "function" then
+            requestAllocatorPulse()
+        end
+    end)
     return true
 end
 
@@ -4207,6 +4271,8 @@ local function finishShutdown()
     farmWatch.RecoveryArmed = false
     allocatorRequested = false
     allocatorBusy = false
+    targetCacheRefreshScheduled = false
+    clearPendingHandoffs()
     petCacheValid = false
     cachedPetIds = {}
 
@@ -4458,7 +4524,7 @@ local function updateRuntimeTelemetry()
                     or ("fail-open: " .. tostring(coinSync.LastProblem))
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | last: %s\nCached handoffs: %d events / %d pets | fallbacks: %d\nSlow recoveries: %d | last: %s\nDriver: %s",
+                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | last: %s\nDeferred handoffs: %d events / %d pets | pending/fallbacks: %d/%d\nSlow recoveries: %d | last: %s\nDriver: %s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
@@ -4475,6 +4541,7 @@ local function updateRuntimeTelemetry()
                 lastFastReroute,
                 fastHandoffCount,
                 fastHandoffPetCount,
+                pendingHandoffCount,
                 fastHandoffFallbackCount,
                 slowRecoveryCount,
                 lastSlowRecovery,
