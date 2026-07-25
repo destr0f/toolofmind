@@ -24,6 +24,8 @@ const activeFiles = [
 ];
 const activeText = activeFiles.map((file) => `${file}\n${read(file)}`).join("\n");
 const removedKernel = ["Runtime", "Kernel"].join("");
+const topLevelLocalLines = farm.split(/\r?\n/)
+    .filter((line) => /^local\s/.test(line)).length;
 
 assert(manifest.modules.lootReactor
     && manifest.modules.lootReactor.path === "loot_reactor.lua",
@@ -32,6 +34,8 @@ assert(!activeText.includes(removedKernel),
     "the removed global scheduler is still reachable from the active graph");
 assert(!fs.existsSync(path.join(root, "runtime_kernel_module.lua")),
     "the removed scheduler module still exists");
+assert(topLevelLocalLines <= 221,
+    `main chunk local/register pressure regressed: ${topLevelLocalLines} > 221`);
 
 // Preserve the already validated event-driven coin registry and pet transport.
 assert(farm.includes("local coinRecords = {}")
@@ -73,6 +77,25 @@ assert(farm.includes('local JOIN_COIN_REJECT_PREFIX = "Join Coin rejected"')
     && farm.includes("ShouldRetry = function(_, reason)")
     && farm.includes("#JOIN_COIN_REJECT_PREFIX"),
     "confirmed Join Coin rejection is still delayed behind a same-target retry");
+assert(farm.includes("Handoff = {")
+    && farm.includes("MaxPending = 64")
+    && farm.includes("petFarm:FastHandoff(generation, handoffToken)")
+    && farm.includes("function petFarm:FastHandoff(generation, handoffToken)")
+    && farm.includes("Deferred handoffs:"),
+    "zero-local-pressure deferred handoff is incomplete");
+const removeCoinHandler = farm.slice(
+    farm.indexOf("local function removeCoin"),
+    farm.indexOf("function coinIndex:DisconnectFolder")
+);
+assert(removeCoinHandler.includes("releaseAssignmentsForCoin(id, fromEvent)")
+    && !removeCoinHandler.includes("dispatchPlan(")
+    && !removeCoinHandler.includes(":FastHandoff("),
+    "Remove Coin performs dispatch work inside the game callback");
+assert(!farm.includes("local fastHandoffReleasedPets")
+    && !farm.includes("local queueReleasedPetsForHandoff")
+    && !farm.includes("local pendingHandoffPets")
+    && !farm.includes("local handoffToken"),
+    "Step 3 reintroduced top-level local/register pressure");
 assert(!farm.includes("RecordExternalPets")
     && !farm.includes("ContendedTargetOrder")
     && !farm.includes("TargetContainsPet"),

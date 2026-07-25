@@ -36,6 +36,12 @@ callbacks.length = 0;
 assert(mutations === 0 && callbacks.length === 0,
     "stale generation callbacks mutated the new run");
 
+assert(farm.includes("handoff.Token = handoff.Token + 1")
+    && farm.includes("table.clear(handoff.Pending)")
+    && farm.includes("petFarm.Handoff.Token = petFarm.Handoff.Token + 1")
+    && farm.includes("table.clear(petFarm.Handoff.Pending)"),
+    "deferred pet handoff is not invalidated by world/reset cleanup");
+
 // Model the producer record contract: one active wrapper, exact restoration,
 // and stale wrapper calls forwarding to the original function.
 const producerEnv = { AddOrb: () => "original" };

@@ -38,6 +38,11 @@ indexes and wake at most one feature-owned coalesced runner.
   disappears; one sixteen-wide writer owns Join/Target/Farm traffic and permits
   only one delayed retry for transport/signal failures. A confirmed `Join Coin`
   rejection immediately cools down that stale target and wakes the allocator.
+  `Remove Coin` stores released UIDs in the existing `petFarm.Handoff` state
+  table and schedules one generation-guarded deferred cache handoff. It never
+  dispatches from the game's Network callback and introduces no new top-level
+  local state into the already large main chunk. The normal allocator remains
+  the fallback for stale/empty caches, queue overflow and rejected dispatch.
   `Update Coin Pets` is intentionally outside the hot path, so other players
   cannot trigger a full local contention rebuild.
 - The Orbs LocalScript is gated at its global `AddOrb` producer when `getsenv`

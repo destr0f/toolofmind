@@ -1238,17 +1238,25 @@ local function removeCoin(rawId, fromEvent)
     local id = tostring(rawId)
     coinMutationSerial = coinMutationSerial + 1
     local record = coinRecords[id]
+    local known = record ~= nil
     if record then
         record.Health = 0
         record.Removed = true
     end
     coinRecords[id] = nil
     local model = coinIndex.Models[id]
+    known = known or model ~= nil
     if model then coinIndex.IdByModel[model] = nil end
     coinIndex.Models[id] = nil
     coinIndex:Invalidate()
-    if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(id) end
-    if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+    local handedOff, released = false, false
+    if type(releaseAssignmentsForCoin) == "function" then
+        handedOff, released = releaseAssignmentsForCoin(id, fromEvent)
+    end
+    if not handedOff and (known or released)
+        and type(requestAllocatorPulse) == "function" then
+        requestAllocatorPulse()
+    end
 end
 
 function coinIndex:DisconnectFolder()
@@ -1674,6 +1682,16 @@ local petFarm = {
     LastEquippedIds = {},
     NextFailureTraceAt = 0,
     SuppressedFailures = 0,
+    Handoff = {
+        Pending = {},
+        Count = 0,
+        MaxPending = 64,
+        Scheduled = false,
+        Token = 0,
+        Events = 0,
+        Pets = 0,
+        Fallbacks = 0,
+    },
     StatsCache = {
         Version = "loading",
         Active = 0,
@@ -1689,22 +1707,72 @@ local petFarm = {
     },
 }
 
-releaseAssignmentsForCoin = function(rawId)
+releaseAssignmentsForCoin = function(rawId, deferHandoff)
+    local handoff = petFarm.Handoff
     if rawId == nil then
         farmGeneration = farmGeneration + 1
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
         table.clear(petStates)
         table.clear(rejectedUntil)
-        return
+        handoff.Token = handoff.Token + 1
+        handoff.Scheduled = false
+        handoff.Count = 0
+        table.clear(handoff.Pending)
+        return false, false
     end
 
     local coinId = tostring(rawId)
+    local released, overflow = 0, false
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId then
             petStates[petId] = nil
+            released = released + 1
+            if deferHandoff then
+                petId = tostring(petId)
+                if handoff.Pending[petId] == nil then
+                    if handoff.Count >= handoff.MaxPending then
+                        overflow = true
+                    else
+                        handoff.Count = handoff.Count + 1
+                        handoff.Pending[petId] = farmGeneration
+                    end
+                end
+            end
         end
     end
     rejectedUntil[coinId] = nil
+    if released == 0 or not deferHandoff then return false, released > 0 end
+    if overflow or not running() or not config.PetFarm or farmResetRunning
+        or not petFarm.Engine then
+        handoff.Fallbacks = handoff.Fallbacks + 1
+        handoff.Token = handoff.Token + 1
+        handoff.Scheduled = false
+        handoff.Count = 0
+        table.clear(handoff.Pending)
+        return false, true
+    end
+    if handoff.Scheduled then return true, true end
+
+    handoff.Scheduled = true
+    local generation, handoffToken = farmGeneration, handoff.Token
+    task.defer(function()
+        if handoffToken ~= handoff.Token then return end
+        handoff.Scheduled = false
+        if not running() or not config.PetFarm or farmResetRunning
+            or generation ~= farmGeneration then
+            handoff.Token = handoff.Token + 1
+            handoff.Count = 0
+            table.clear(handoff.Pending)
+            return
+        end
+        local accepted = petFarm:FastHandoff(generation, handoffToken) == true
+        if not accepted then
+            handoff.Count = 0
+            table.clear(handoff.Pending)
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+        end
+    end)
+    return true, true
 end
 
 local function functionUpvalueAt(callback, index)
@@ -2185,6 +2253,10 @@ local function clearAssignments(sendBack, callback)
     local network = sendBack and networkReady() or nil
     table.clear(petStates)
     table.clear(rejectedUntil)
+    petFarm.Handoff.Token = petFarm.Handoff.Token + 1
+    petFarm.Handoff.Scheduled = false
+    petFarm.Handoff.Count = 0
+    table.clear(petFarm.Handoff.Pending)
 
     if not sendBack or not network then
         if type(callback) == "function" then callback(network ~= nil or not sendBack) end
@@ -2265,11 +2337,11 @@ requestFarmReset = function(reason)
 end
 
 local function dispatchPlan(record, petIds)
-    if not recordAlive(record) or #petIds == 0 then return end
+    if not recordAlive(record) or #petIds == 0 then return false end
     if not petFarm.Engine then
         driverStatus = petFarm.Loading and "Lite Reactor is loading"
             or "Lite Reactor is unavailable"
-        return
+        return false
     end
     local coinId = tostring(record.Id)
     local entries = {}
@@ -2298,7 +2370,9 @@ local function dispatchPlan(record, petIds)
         rejectedUntil[coinId] = os.clock() + 1
         driverStatus = "Lite dispatch queue error: " .. tostring(called and problem or accepted)
         if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+        return false
     end
+    return true
 end
 
 assignmentCount = function()
@@ -3135,6 +3209,49 @@ allocatorPass = function()
 
     allocatorBusy = false
     if allocatorRequested then petFarm:ScheduleAllocatorPass() end
+end
+
+function petFarm:FastHandoff(generation, handoffToken)
+    local handoff = self.Handoff
+    if generation ~= farmGeneration or handoffToken ~= handoff.Token
+        or allocatorBusy or self.AllocatorScheduled or not self.Engine then
+        handoff.Fallbacks = handoff.Fallbacks + 1
+        return false
+    end
+
+    -- Reuse the last ordered array for exactly one allocator pass. Dead records
+    -- are removed first; the cache is invalidated again immediately afterwards
+    -- so new coins are included by the next normal pass.
+    local cache, ready = coinIndex.Cache, {}
+    if cache.Signature ~= farmSelectionSignature or type(cache.Targets) ~= "table" then
+        handoff.Fallbacks = handoff.Fallbacks + 1
+        return false
+    end
+    for _, record in ipairs(cache.Targets) do
+        if recordAlive(record) then ready[#ready + 1] = record end
+    end
+    if #ready == 0 then
+        handoff.Fallbacks = handoff.Fallbacks + 1
+        return false
+    end
+
+    local releasedCount, before = handoff.Count, assignmentCount()
+    handoff.Count = 0
+    table.clear(handoff.Pending)
+    cache.Targets = ready
+    cache.Revision = coinIndex.Revision
+    allocatorPass()
+    cache.Revision = -1
+
+    local dispatched = math.max(assignmentCount() - before, 0)
+    if dispatched < releasedCount then
+        handoff.Fallbacks = handoff.Fallbacks + 1
+        return false
+    end
+    handoff.Events = handoff.Events + 1
+    handoff.Pets = handoff.Pets + math.min(dispatched, releasedCount)
+    driverStatus = "deferred cached allocator handoff accepted"
+    return true
 end
 
 requestAllocatorPulse = function(force)
@@ -4287,7 +4404,7 @@ local function updateRuntimeTelemetry()
                     or ("fail-open: " .. tostring(coinSync.LastProblem))
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nSlow recoveries: %d | last: %s\nDriver: %s",
+                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nDeferred handoffs: %d events / %d pets | pending/fallbacks: %d/%d\nSlow recoveries: %d | last: %s\nDriver: %s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
@@ -4300,6 +4417,10 @@ local function updateRuntimeTelemetry()
                 tonumber(dispatchStats.Retries) or 0,
                 tonumber(dispatchStats.Rejected) or 0,
                 tonumber(dispatchStats.Errors) or 0,
+                petFarm.Handoff.Events,
+                petFarm.Handoff.Pets,
+                petFarm.Handoff.Count,
+                petFarm.Handoff.Fallbacks,
                 idleRecoveryCount,
                 lastRecovery,
                 driverStatus
