@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.0.1"
+local MODULE_VERSION = "3.1.0"
 local ORB_FLUSH_INTERVAL = 0.25
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
@@ -49,6 +49,7 @@ local run = {
     GateGeneration = 0,
     LastRebindReason = "startup",
     VisualInstancesPrevented = 0,
+    InstantCoinLandings = 0,
     OrbToken = 0,
     BagToken = 0,
     BagWakeSerial = 0,
@@ -157,6 +158,32 @@ local function readValue(object, name)
     return ok and value or nil
 end
 
+local function writeValue(object, name, value)
+    if not object then return false end
+    local child = object:FindFirstChild(name .. "_Attr") or object:FindFirstChild(name)
+    if child and child:IsA("ValueBase") then
+        local ok = pcall(function() child.Value = value end)
+        return ok
+    end
+    return pcall(function() object:SetAttribute(name, value) end)
+end
+
+local function instantLandCoin(rawId)
+    if rawId == nil then return false end
+    local things = run.Things or workspace:FindFirstChild("__THINGS")
+    local coins = things and things:FindFirstChild("Coins")
+    local recordFolder = coins and coins:FindFirstChild(tostring(rawId))
+    if not recordFolder or readValue(recordFolder, "HasLanded") == true then
+        return false
+    end
+    local landed = writeValue(recordFolder, "HasLanded", true)
+    writeValue(recordFolder, "IsFalling", false)
+    if landed then
+        run.InstantCoinLandings = run.InstantCoinLandings + 1
+    end
+    return landed
+end
+
 local function objectId(object)
     if not object then return nil end
     local value = readValue(object, "ID")
@@ -186,14 +213,14 @@ local function statusText()
     local coinProducer = run.CoinsProducer
     local coinReason = run.CoinGateReason
     if run.CoinProducerRecord and coinsHeadlessEnabled() and not coinCatalogReady() then
-        coinProducer = "visual fail-open"
-        coinReason = "waiting for verified coin catalog"
+        coinProducer = "instant visual fail-open"
+        coinReason = "catalog unavailable; native models skip the 0.9s landing tween"
     end
     return string.format(
         "Orbs producer: %s (%s) | Coins producer: %s (%s)\n"
             .. "Lootbags producer: %s (%s) | gate generation %d | last rebind: %s\n"
             .. "Native routes: Claim Orbs %s | Collect Lootbag %s\n"
-            .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
+            .. "Prevented visual calls: %d | instant coin landings: %d | Claim IDs sent: %d\n"
             .. "Orbs: pending %d/%d | events/batches %d/%d | error/overflow/drop %d/%d/%d\n"
             .. "Lootbags: waiting %d | events/sent/ack/retry/skip/error %d/%d/%d/%d/%d/%d\n"
             .. "Retention: unsent orb IDs + unacknowledged bag IDs only",
@@ -208,6 +235,7 @@ local function statusText()
         run.RouteOrbs,
         run.RouteLootbags,
         run.VisualInstancesPrevented,
+        run.InstantCoinLandings,
         run.OrbIdsSent,
         run.PendingOrbCount,
         MAX_PENDING_ORBS,
@@ -817,11 +845,18 @@ local function coinProducerCall(record, original, producerName, ...)
     local shouldPrevent = false
     if record.Active and record.Generation == run.Generation and contextRunning() then
         local headless = coinsHeadlessEnabled()
-        shouldPrevent = headless and (
-            producerName == "DamageAnimation"
-            or producerName == "PetDamageAnimation"
-            or coinCatalogReady()
-        )
+        if headless then
+            if producerName == "DamageAnimation"
+                or producerName == "PetDamageAnimation" then
+                shouldPrevent = true
+            else
+                local catalogReady = coinCatalogReady()
+                shouldPrevent = catalogReady
+                if not catalogReady and producerName == "UpdateCoin" then
+                    instantLandCoin((...))
+                end
+            end
+        end
     end
     if shouldPrevent then
         local profiled = profileBegin("PSX.ProducerGate")
@@ -1342,6 +1377,7 @@ local function stats()
         GateGeneration = run.GateGeneration,
         LastRebindReason = run.LastRebindReason,
         VisualInstancesPrevented = run.VisualInstancesPrevented,
+        InstantCoinLandings = run.InstantCoinLandings,
         PendingOrbs = run.PendingOrbCount,
         WaitingBags = run.WaitingBagCount,
         OrbEvents = run.OrbEvents,

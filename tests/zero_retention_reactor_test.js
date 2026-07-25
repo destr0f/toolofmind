@@ -91,6 +91,7 @@ for (const marker of [
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
     "DisabledBags = {}",
+    "InstantCoinLandings = 0",
     'networkSignal("Spawn Lootbag")',
     'networkSignal("Remove Lootbag")',
     "type(getsenv)",
@@ -98,6 +99,9 @@ for (const marker of [
     'findGameScript("Coins")',
     "environment.AddOrb",
     '"DamageAnimation", "PetDamageAnimation", "AddCoin", "UpdateCoin"',
+    'producerName == "UpdateCoin"',
+    'writeValue(recordFolder, "HasLanded", true)',
+    'writeValue(recordFolder, "IsFalling", false)',
     'profileBegin("PSX.ProducerGate")',
     'profileBegin("PSX.LootFallback")',
     "restoreProducerRecord(run.OrbProducerRecord)",
@@ -114,6 +118,10 @@ for (const marker of [
 ]) {
     assert(loot.includes(marker), `missing native loot marker: ${marker}`);
 }
+assert(!loot.includes("FastTween")
+    && !loot.includes("TweenService")
+    && !loot.includes("task.wait(0.05)"),
+    "instant coin landing copied or reimplemented the game's visual tween");
 for (const forbidden of [
     "firetouchinterest",
     "CFrame =",

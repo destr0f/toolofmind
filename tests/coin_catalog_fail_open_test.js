@@ -43,14 +43,18 @@ for (const name of ["New Coin", "Update Coin Health", "Remove Coin"]) {
         `missing real connection proof for ${name}`);
 }
 
-// Damage effects remain headless immediately; model creation stays visual
-// fail-open until the catalog is independently usable.
+// Damage effects remain headless immediately. Model creation stays available
+// until the catalog is independently usable, but its native landing tween is
+// skipped before the original UpdateCoin renders the model at its final POS.
 assert(loot.includes('producerName == "DamageAnimation"')
     && loot.includes('or producerName == "PetDamageAnimation"')
-    && loot.includes("or coinCatalogReady()"),
+    && loot.includes("local catalogReady = coinCatalogReady()")
+    && loot.includes("shouldPrevent = catalogReady")
+    && loot.includes('not catalogReady and producerName == "UpdateCoin"')
+    && loot.includes("instantLandCoin((...))"),
     "coin visual wrappers do not distinguish effects from model producers");
-assert(loot.includes('coinProducer = "visual fail-open"')
-    && loot.includes('"waiting for verified coin catalog"'),
+assert(loot.includes('coinProducer = "instant visual fail-open"')
+    && loot.includes('"catalog unavailable; native models skip the 0.9s landing tween"'),
     "UI does not expose the fail-open safety state");
 
 // Small behavioral model of the guard.
