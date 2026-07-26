@@ -6,7 +6,9 @@ SHA-256, runtime DJB2 checksum, compatibility declaration and repository layout.
 
 ## Active runtime graph
 
-`slim_farm.lua` is the readable source entry. `build_slim.js` validates and
+`slim_farm.lua` is the readable source entry. `lowonline_coin_probe.lua` is a
+read-only diagnostic that inventories the live `Library.Things.Coins` catalog
+without firing a remote. `build_slim.js` validates and
 compacts it into the published `loader.lua` and `toolofmind.lua` artifacts.
 The generated entry embeds the validated runtime subset of the manifest.
 

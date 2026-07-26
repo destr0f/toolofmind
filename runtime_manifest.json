@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "suite": {
-    "name": "PSX OG Nova Develop",
+    "name": "LowOnline Develop",
     "version": "1.4.1-lite.2",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
@@ -202,6 +202,7 @@
     "source": {
       "files": [
         "slim_farm.lua",
+        "lowonline_coin_probe.lua",
         "runtime_manifest.json",
         "automation_support_module.lua",
         "automation_ui_module.lua",
@@ -244,7 +245,8 @@
         "tests/coin_catalog_fail_open_test.js",
         "tests/rolling_currency_window_test.js",
         "tests/coalesced_queue_test.js",
-        "tests/generation_cleanup_test.js"
+        "tests/generation_cleanup_test.js",
+        "tests/lowonline_adapter_test.js"
       ]
     },
     "documentation": {

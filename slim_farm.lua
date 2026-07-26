@@ -1,4 +1,4 @@
--- PSX OG Slim Farm
+-- LowOnline Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
 local VERSION = "1.4.1-lite.2"
@@ -579,11 +579,9 @@ end
 local eggLabelToId = {}
 local eggIdToLabel = {}
 
-local WorldOrder = {
-    "Spawn World", "Fantasy World", "Tech World", "Axolotl Ocean",
-    "Pixel World", "Cat World", "The Void", "Doodle World",
-    "Kawaii World", "Dog World", "Diamond Mine", "Christmas Event", "Trading Plaza",
-}
+-- LowOnline is the launch/first-update game line. Keep its target catalog
+-- deliberately small so the UI never exposes worlds that do not exist here.
+local WorldOrder = { "Spawn World" }
 
 local CurrencyChoices = {
     "Active Balances", "Auto", "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
@@ -592,93 +590,55 @@ local CurrencyChoices = {
 
 local CurrencyByWorld = {
     ["Spawn World"] = "Coins",
-    ["Fantasy World"] = "Fantasy Coins",
-    ["Tech World"] = "Tech Coins",
-    ["Axolotl Ocean"] = "Rainbow Coins",
-    ["Pixel World"] = "Rainbow Coins",
-    ["Cat World"] = "Rainbow Coins",
-    ["The Void"] = "Rainbow Coins",
-    ["Doodle World"] = "Cartoon Coins",
-    ["Kawaii World"] = "Cartoon Coins",
-    ["Dog World"] = "Cartoon Coins",
-    ["Diamond Mine"] = "Diamonds",
-    ["Christmas Event"] = "Gingerbread",
-    ["Trading Plaza"] = "Coins",
 }
 
 local WorldZones = {
     ["Spawn World"] = {
         "Shop", "Town", "Forest", "Beach", "Mine", "Winter", "Glacier",
-        "Desert", "Volcano", "Cave", "VIP", "Tech Entry",
+        "Desert", "Volcano", "Cave",
     },
-    ["Fantasy World"] = {
-        "Fantasy Shop", "Enchanted Forest", "Portals", "Ancient Island", "Samurai Island",
-        "Candy Island", "Haunted Island", "Hell Island", "Heaven Island", "Heaven's Gate",
-    },
-    ["Tech World"] = {
-        "Tech Shop", "Tech City", "Dark Tech", "Steampunk", "Steampunk Chest",
-        "Alien Lab", "Alien Forest", "Giant Alien Chest", "Glitch", "Hacker Portal",
-    },
-    ["Axolotl Ocean"] = { "Axolotl Ocean", "Axolotl Deep Ocean", "Axolotl Cave" },
-    ["Pixel World"] = { "Pixel Forest", "Pixel Kyoto", "Pixel Alps", "Pixel Vault" },
-    ["Cat World"] = { "Cat Paradise", "Cat Backyard", "Cat Taiga", "Cat Kingdom", "Cat Throne Room" },
-    ["The Void"] = { "The Void" },
-    ["Doodle World"] = {
-        "Doodle Shop", "Doodle Meadow", "Doodle Peaks", "Doodle Farm", "Doodle Barn",
-        "Doodle Oasis", "Doodle Woodlands", "Doodle Safari", "Doodle Fairyland", "Doodle Cave",
-    },
-    ["Kawaii World"] = { "Kawaii Tokyo", "Kawaii Village", "Kawaii Candyland", "Kawaii Temple", "Kawaii Dojo" },
-    ["Dog World"] = { "Dog Park", "Dog City", "Dog Firehouse", "Dog Mansion", "Dog Club" },
-    ["Diamond Mine"] = { "Paradise Cave", "Cyber Cavern", "Mystic Mine" },
-    ["Christmas Event"] = { "Christmas Event" },
-    ["Trading Plaza"] = { "Trading Plaza" },
 }
 
-local ZoneAliases = {
-    ["Fantasy Shop"] = "Shop",
-    ["Tech Shop"] = "Shop",
-    ["Doodle Shop"] = "Shop",
-    ["Steampunk Chest Area"] = "Steampunk Chest",
-}
+local ZoneAliases = {}
 
 local WorldAliases = {
     ["spawn"] = "Spawn World",
     ["spawn world"] = "Spawn World",
-    ["fantasy"] = "Fantasy World",
-    ["fantasy world"] = "Fantasy World",
-    ["tech"] = "Tech World",
-    ["tech world"] = "Tech World",
-    ["axolotl"] = "Axolotl Ocean",
-    ["axolotl ocean"] = "Axolotl Ocean",
-    ["pixel"] = "Pixel World",
-    ["pixel world"] = "Pixel World",
-    ["cat"] = "Cat World",
-    ["cat world"] = "Cat World",
-    ["void"] = "The Void",
-    ["the void"] = "The Void",
-    ["doodle"] = "Doodle World",
-    ["doodle world"] = "Doodle World",
-    ["kawaii"] = "Kawaii World",
-    ["kawaii world"] = "Kawaii World",
-    ["dog"] = "Dog World",
-    ["dog world"] = "Dog World",
-    ["diamond mine"] = "Diamond Mine",
-    ["christmas"] = "Christmas Event",
-    ["christmas event"] = "Christmas Event",
-    ["trading plaza"] = "Trading Plaza",
 }
+
+local THINGS_ROOT_NAMES = { "__ITEMS", "__THINGS" }
+
+local function getThingsRoot()
+    local things = Library and Library.Things
+    if typeof(things) == "Instance" and things.Parent ~= nil then
+        return things
+    end
+    for _, rootName in ipairs(THINGS_ROOT_NAMES) do
+        local root = workspace:FindFirstChild(rootName)
+        if root then return root end
+    end
+    return nil
+end
+
+local function getCoinsFolder()
+    local things = getThingsRoot()
+    return things and things:FindFirstChild("Coins") or nil
+end
 
 local function readObjectValue(object, name)
     if not object then return nil end
+    local ok, value = pcall(function()
+        local native = object:GetAttribute(name)
+        if native ~= nil then return native end
+        return object:GetAttribute(name .. "_Attr")
+    end)
+    if ok and value ~= nil then return value end
     local child = object:FindFirstChild(name .. "_Attr") or object:FindFirstChild(name)
     if child then
-        local ok, value = pcall(function() return child.Value end)
-        if ok and value ~= nil then return value end
+        local childOk, childValue = pcall(function() return child.Value end)
+        if childOk and childValue ~= nil then return childValue end
     end
-    local ok, value = pcall(function()
-        return object:GetAttribute(name .. "_Attr") or object:GetAttribute(name)
-    end)
-    return ok and value or nil
+    return nil
 end
 
 local function getInstancePosition(object)
@@ -833,7 +793,26 @@ local function getPlayerZone()
     local character = player.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
     currentZone = root and areaForPosition(root.Position) or nil
-    currentZoneAnchor = nil
+    currentZoneAnchor = root and root.Position or nil
+    if root and currentZone == nil then
+        local nearestArea, nearestDistance = nil, math.huge
+        for _, record in pairs(coinRecords) do
+            if record.Area and typeof(record.Position) == "Vector3" then
+                local distance = (record.Position - root.Position).Magnitude
+                if distance < nearestDistance then
+                    nearestArea, nearestDistance = tostring(record.Area), distance
+                end
+            end
+        end
+        if nearestArea and nearestDistance <= 240 then
+            currentZone = nearestArea
+        else
+            -- Some launch builds expose neither __MAP.Areas nor an Area
+            -- attribute. Player Radius keeps Player Zone useful without baked
+            -- coordinates and is intentionally bounded to loaded nearby coins.
+            currentZone = "Player Radius"
+        end
+    end
     if root and BossChestZones then
         local nearestZone, nearestAnchor, nearestDistance = nil, nil, math.huge
         for _, record in pairs(coinRecords) do
@@ -1348,8 +1327,7 @@ function coinIndex:WatchFolder(folder)
 end
 
 local function refreshWorkspaceCoins()
-    local things = workspace:FindFirstChild("__THINGS")
-    local folder = things and things:FindFirstChild("Coins")
+    local folder = getCoinsFolder()
     local folderChanged = coinIndex:WatchFolder(folder)
     if not folder then return end
     if not folderChanged and coinIndex.ScannedFolder == folder then return end
@@ -1555,17 +1533,46 @@ local function getEquippedPetIds()
 end
 
 local function recordAlive(record)
-    if not record or record.Removed or (tonumber(record.Health) or 0) <= 0 then return false end
+    if not record or record.Removed then return false end
+    local knownHealth = tonumber(record.Health)
+    if knownHealth ~= nil and knownHealth <= 0 then return false end
     -- Animated/potato-mode models can be replaced locally while the server coin
     -- is still alive. Keep the authoritative record and reacquire its model.
     if record.Model and record.Model.Parent == nil then
         if record.FromServer then record.Model = nil else return false end
     end
+    -- Early LowOnline builds may expose only ID/Name/POS in the replicated
+    -- model. Presence under Library.Things.Coins is then the liveness signal;
+    -- ChildRemoved/Remove Coin remains the authoritative death transition.
+    if knownHealth == nil and not record.FromServer then
+        return record.Model ~= nil and record.Model.Parent ~= nil
+    end
     return true
 end
 
+local function classifyCoin(record)
+    local name = normalize(record and record.Name)
+    if BossChestNames[name] == true then return "Boss Chest" end
+    if string.find(name, "chest", 1, true) then return "Chest" end
+    if string.find(name, "vault", 1, true)
+        or string.find(name, "safe", 1, true) then
+        return "Vault"
+    end
+    if string.find(name, "gift", 1, true)
+        or string.find(name, "present", 1, true)
+        or string.find(name, "crate", 1, true) then
+        return "Breakable"
+    end
+    if string.find(name, "diamond", 1, true)
+        or string.find(name, "gem", 1, true) then
+        return "Diamonds"
+    end
+    if string.find(name, "coin", 1, true) then return "Coins" end
+    return "Unknown"
+end
+
 local function isBossChest(record)
-    return BossChestNames[normalize(record and record.Name)] == true
+    return classifyCoin(record) == "Boss Chest"
 end
 
 local function findZoneAnchor(zone)
@@ -1587,6 +1594,10 @@ end
 
 local function recordInZone(record, zone, zoneAnchor)
     if not recordAlive(record) or not zone then return false end
+    if zone == "Player Radius" then
+        return zoneAnchor ~= nil and record.Position ~= nil
+            and (record.Position - zoneAnchor).Magnitude <= 240
+    end
     local normalizedName = normalize(record.Name)
     local bossZone = BossChestZones[normalizedName]
     if bossZone and namesMatch(bossZone, zone) then return true end
@@ -3280,9 +3291,7 @@ local lootContext = {
     HeadlessCoins = function() return config.PotatoMode == true end,
     CoinCatalogReady = coinCatalogReady,
     GetThings = function()
-        local things = Library and Library.Things
-        if typeof(things) == "Instance" then return things end
-        return workspace:FindFirstChild("__THINGS")
+        return getThingsRoot()
     end,
     LocalLootOwner = localLootOwner,
     Fire = function(commandName, ...)
@@ -3433,10 +3442,10 @@ WindUI:AddTheme({
 
 local UI = {}
 Window = WindUI:CreateWindow({
-    Title = "PSX OG | Nova Develop",
+    Title = "LowOnline | Develop",
     Icon = "sparkles",
     Author = "Reliable automation suite | v" .. VERSION,
-    Folder = "PSX_Nova_Stable",
+    Folder = "LowOnline_Develop",
     Size = UDim2.fromOffset(820, 570),
     MinSize = Vector2.new(650, 430),
     MaxSize = Vector2.new(1120, 780),
