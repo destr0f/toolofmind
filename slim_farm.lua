@@ -1148,14 +1148,6 @@ local coinIndex = {
     },
 }
 
-local function countLocalCoinRecords()
-    local count = 0
-    for _, record in pairs(coinRecords) do
-        if record and not record.Removed then count = count + 1 end
-    end
-    return count
-end
-
 function coinIndex:Invalidate()
     self.Revision = self.Revision + 1
     self.Cache.Revision = -1
@@ -1429,7 +1421,10 @@ refreshCoinSnapshot = function()
     end
     if not responseAccepted then
         coinSync.SnapshotFailures = coinSync.SnapshotFailures + 1
-        local localCount = countLocalCoinRecords()
+        local localCount = 0
+        for _, record in pairs(coinRecords) do
+            if record and not record.Removed then localCount = localCount + 1 end
+        end
         if coinSync.SnapshotFailures >= 3 and localCount > 0 then
             coinSync.SnapshotSuspended = true
             coinSync.LastProblem = string.format(

@@ -32,7 +32,7 @@ assert(farm.includes("coinSync.SnapshotPrimed = responseAccepted")
     && farm.includes("if not responseAccepted and not coinSync.SnapshotSuspended then")
     && farm.includes("scheduleCoinSnapshotRetry(0.75, coinSync.LastProblem)")
     && farm.includes("coinSync.SnapshotFailures >= 3")
-    && farm.includes("local localCount = countLocalCoinRecords()"),
+    && farm.includes("for _, record in pairs(coinRecords) do"),
     "failed snapshots do not use bounded workspace fail-open retry");
 assert(farm.includes("(coinSync.SnapshotPrimed and coinSync.SignalsReady)"),
     "signal binding retries stop merely because the snapshot succeeded");
