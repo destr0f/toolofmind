@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.2.1"
+local MODULE_VERSION = "1.3.0-lowonline"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -18,6 +18,7 @@ local function build(context)
         "SetEggCatalogStatus",
         "RefreshRoutes", "SetRouteStatus", "GetMachinePetCatalog", "StartMachine",
         "StopMachine", "SetGoldStatus", "SetRainbowStatus", "SetDarkMatterStatus",
+        "SetFuseStatus",
         "ReconcileBoost", "BoostEnabled", "StartBoost",
     })
     if not valid then return false, problem end
@@ -174,6 +175,48 @@ local function build(context)
         end,
     })
     yieldUI("machine controls")
+
+    local fuse = UI.MachinesTab:Section({ Title = "Golden Spiked Egg Fuse", Box = true, Opened = true })
+    fuse:Paragraph({
+        Title = "EXACT RARITY BATCHES / LIVE DIRECTORY",
+        Desc = "Selects species from Golden Spiked Egg drops; equipped, locked and upgraded pets are protected.",
+    })
+    local fuseModeDropdown = fuse:Dropdown({
+        Flag = "lowonline_fuse_mode",
+        Title = "Fuse Mode",
+        Desc = "Each request contains exactly one validated rarity batch.",
+        Values = { "12 Basic", "8 Rare", "5 Epic" },
+        Value = "12 Basic",
+        Multi = false,
+        AllowNone = false,
+        Callback = function(value)
+            if value ~= "8 Rare" and value ~= "5 Epic" then value = "12 Basic" end
+            config.FuseMode = value
+            context.SetFuseStatus("Mode selected: " .. value
+                .. ". The next request will be rebuilt from a fresh Save.Pets snapshot.")
+        end,
+    })
+    fuse:Toggle({
+        Flag = "lowonline_auto_fuse",
+        Title = "Enable Auto Fuse",
+        Desc = "Uses Get Fuse Pets Info and Use Fuse Machine by stable Network names; no session index is stored.",
+        Value = false,
+        Callback = function(value)
+            config.AutoFuse = value == true
+            if config.AutoFuse then
+                context.SetFuseStatus("Enabled. Loading the protected Golden Spiked Egg fuse worker...")
+                task.spawn(function() context.StartMachine("Fuse") end)
+            else
+                context.StopMachine("Fuse")
+                context.SetFuseStatus("Disabled. No pets will be sent to the Fuse Machine.")
+            end
+        end,
+    })
+    statusViews.Fuse = fuse:Paragraph({
+        Title = "Fuse Machine Status",
+        Desc = "Disabled / no pet UIDs have been selected",
+    })
+    yieldUI("fuse machine")
 
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
@@ -355,6 +398,7 @@ local function build(context)
         AutoEggToggle = autoEggToggle,
         EggScopeDropdown = eggScope,
         EggDropdown = eggDropdown,
+        FuseModeDropdown = fuseModeDropdown,
     }
 end
 

@@ -2,7 +2,8 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.4.0"
+local MODULE_VERSION = "1.5.0-lowonline"
+local BUY_COMMAND = "Buy Egg"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -978,7 +979,7 @@ local function finishTimeout(state, context, pending)
     state.ConsecutiveFailures = state.ConsecutiveFailures + 1
 
     if not pending.ResponseDone then
-        local reason = "Buy Egg Yay did not return in " .. tostring(pending.TimeoutSeconds)
+        local reason = BUY_COMMAND .. " did not return in " .. tostring(pending.TimeoutSeconds)
             .. "s; auto hatch stopped so a second request cannot overlap it"
         stopForSafety(state, context, pending, reason)
         return
@@ -1089,7 +1090,7 @@ local function handlePending(state, context, now)
             .. tostring(pending.SkipResult or pending.SkipPolicy or "Fast skip watcher is armed..."))
     elseif pending.EventReceived and not pending.ResponseDone then
         setStatus(state, context, "Open Egg received for " .. requestLabel(pending)
-            .. "; waiting for the single Buy Egg Yay call to return...")
+            .. "; waiting for the single " .. BUY_COMMAND .. " call to return...")
     elseif pending.Headless and pending.ResponseDone and pending.Accepted and not pending.EventReceived then
         local expected = pending.Triple and 3 or 1
         setStatus(state, context, string.format(
@@ -1098,7 +1099,7 @@ local function handlePending(state, context, now)
             requestLabel(pending), tonumber(pending.InventoryDeltaSeen) or 0, expected
         ))
     elseif pending.ResponseDone and pending.Accepted and not pending.EventReceived then
-        setStatus(state, context, "Buy Egg Yay accepted for " .. requestLabel(pending)
+        setStatus(state, context, BUY_COMMAND .. " accepted for " .. requestLabel(pending)
             .. "; waiting for native OpeningEgg or its matching Open Egg event...\n"
             .. tostring(pending.SkipResult or pending.SkipPolicy or "Fast skip watcher is armed..."))
     end
@@ -1176,7 +1177,7 @@ local function beginRequest(state, context, options, inspection)
     state.Requests = state.Requests + 1
     if not headless then armNativeSkip(state, context, pending) end
     setStatus(state, context, string.format(
-        "Sending one Buy Egg Yay request: %s\nDistance: %.1f/15 | request #%d | dynamic Network route\n%s",
+        "Sending one " .. BUY_COMMAND .. " request: %s\nDistance: %.1f/15 | request #%d | dynamic Network route\n%s",
         requestLabel(pending), tonumber(inspection.Distance) or 0, state.Requests,
         headless and "Headless gate armed before purchase"
             or tostring(pending.SkipPolicy or "Native skip watcher is preparing...")
@@ -1184,7 +1185,7 @@ local function beginRequest(state, context, options, inspection)
 
     task.spawn(function()
         if state.Pending ~= pending or not state.Running then return end
-        local result = table.pack(context.InvokeCommand("Buy Egg Yay", pending.Egg, pending.Triple))
+        local result = table.pack(context.InvokeCommand(BUY_COMMAND, pending.Egg, pending.Triple))
         if state.Pending ~= pending or not state.Running then return end
         pending.ResponseDone = true
         pending.TransportOk = result[1] == true
@@ -1227,7 +1228,7 @@ local function runCycle(state, context)
     if not ready then
         state.NextAction = now + LOCAL_RECHECK_DELAY
         setStatus(state, context, tostring(inspection)
-            .. "\nLocal preflight blocked Buy Egg Yay; zero requests sent.")
+            .. "\nLocal preflight blocked " .. BUY_COMMAND .. "; zero requests sent.")
         return
     end
     beginRequest(state, context, options, inspection)

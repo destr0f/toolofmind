@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.1.2"
+local MODULE_VERSION = "1.1.3-lowonline"
 
 local gate = {
     Owner = nil,
@@ -247,11 +247,12 @@ local function routeHealth(context)
     local _, _, catalogSummary = getCatalog(context, false)
     local owner, waiting = gateStatus(context)
     return table.concat({
-        "Egg: Buy=" .. invoke("Buy Egg Yay") .. " | Open event resolves only when Auto Egg starts",
+        "Egg: Buy=" .. invoke("Buy Egg") .. " | Open event resolves only when Auto Egg starts",
         "Gold: use=" .. invoke("Use Golden Machine") .. " | info=" .. invoke("Get Golden Machine Info"),
         "Rainbow: use=" .. invoke("Use Rainbow Machine") .. " | info=" .. invoke("Get Rainbow Machine Info"),
         "Dark Matter: create=" .. invoke("Convert To Dark Matter")
             .. " | claim=" .. invoke("Redeem Dark Matter Pet"),
+        "Fuse: use=" .. invoke("Use Fuse Machine") .. " | info=" .. invoke("Get Fuse Pets Info"),
         "Boosts: activate=" .. fire("Activate Boost") .. " | bundle=" .. invoke("Buy Boost Bundle"),
         "Rewards: VIP=" .. invoke("Redeem VIP Rewards") .. " | Rank=" .. invoke("Redeem Rank Rewards"),
         "Pet catalog: " .. tostring(catalogSummary),

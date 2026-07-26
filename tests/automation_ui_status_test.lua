@@ -31,7 +31,7 @@ end
 local statusViews = {}
 local statusSetters = {}
 local config = {}
-for _, key in ipairs({ "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMatter", "Boost" }) do
+for _, key in ipairs({ "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMatter", "Fuse", "Boost" }) do
     statusSetters[key] = function(value)
         local view = statusViews[key]
         assert(type(view) == "table", key .. " view was not installed")
@@ -65,6 +65,7 @@ local accepted, controls = automationUI("build", {
     SetGoldStatus = statusSetters.Gold,
     SetRainbowStatus = statusSetters.Rainbow,
     SetDarkMatterStatus = statusSetters.DarkMatter,
+    SetFuseStatus = statusSetters.Fuse,
     ReconcileBoost = noOp,
     BoostEnabled = function() return false end,
     StartBoost = noOp,
@@ -83,6 +84,13 @@ countSlider.Definition.Callback(4)
 timeSlider.Definition.Callback(12.5)
 assert(config.DarkMatterBatchSize == 4, "Dark Matter pet-count slider did not update config")
 assert(config.DarkMatterMaxWaitHours == 12.5, "Dark Matter time slider did not update config")
+
+local fuseMode = controlsByFlag.lowonline_fuse_mode
+local fuseToggle = controlsByFlag.lowonline_auto_fuse
+assert(type(fuseMode) == "table", "LowOnline fuse mode dropdown is missing")
+assert(type(fuseToggle) == "table", "LowOnline auto fuse toggle is missing")
+fuseMode.Definition.Callback("5 Epic")
+assert(config.FuseMode == "5 Epic", "Fuse mode did not update config")
 
 for key, setter in pairs(statusSetters) do
     assert(type(setter) == "function", key .. " setter was overwritten")

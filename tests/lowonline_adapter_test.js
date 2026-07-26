@@ -42,8 +42,20 @@ check(
 );
 check(
     source.includes('Title = "LowOnline | Develop"')
-        && source.includes('Folder = "LowOnline_Develop"'),
+        && source.includes('Folder = "LowOnline_Develop"')
+        && source.includes('Config("lowonline-default-v1", false)'),
     "LowOnline must not reuse the PSX UI/profile identity"
+);
+check(
+    source.includes('profile_namespace", "LowOnline/v1"')
+        && source.includes('lowonline_autoload", true'),
+    "LowOnline profile metadata must remain isolated from the main line"
+);
+const autoEgg = fs.readFileSync(path.join(root, "auto_egg_module.lua"), "utf8");
+check(
+    autoEgg.includes('local BUY_COMMAND = "Buy Egg"')
+        && !autoEgg.includes('"Buy Egg Yay"'),
+    "LowOnline auto egg must use the launch-build Buy Egg command"
 );
 
 for (const forbidden of [

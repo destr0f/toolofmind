@@ -1,7 +1,7 @@
 -- LowOnline Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-lite.2"
+local VERSION = "1.4.2-low.1"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -180,6 +180,8 @@ local config = {
     AutoRainbowGalaxyFox = false,
     AutoDarkMatterGalaxyFox = false,
     AutoClaimDarkMatter = false,
+    AutoFuse = false,
+    FuseMode = "12 Basic",
     MachineBatchSize = 6,
     DarkMatterBatchSize = 6,
     DarkMatterMaxWaitHours = 0,
@@ -2338,6 +2340,9 @@ end
 function statusSetters.DarkMatter(text)
     statusSetters.Set("DarkMatter", text)
 end
+function statusSetters.Fuse(text)
+    statusSetters.Set("Fuse", text)
+end
 function statusSetters.Egg(text)
     statusSetters.Set("Egg", text)
 end
@@ -2559,6 +2564,12 @@ local machineModules = {
         Label = "dark matter machine",
         SetStatus = statusSetters.DarkMatter,
     },
+    Fuse = {
+        Module = "fuse",
+        ConfigKeys = { "AutoFuse" },
+        Label = "fuse machine",
+        SetStatus = statusSetters.Fuse,
+    },
 }
 
 local MACHINE_PET_SNAPSHOT_TTL = 5
@@ -2616,6 +2627,7 @@ function machineModules:StopAll()
     self:Stop("Gold")
     self:Stop("Rainbow")
     self:Stop("DarkMatter")
+    self:Stop("Fuse")
 end
 
 function machineModules:Start(kind)
@@ -2659,6 +2671,7 @@ function machineModules:Start(kind)
             local hours = tonumber(config.DarkMatterMaxWaitHours) or 0
             return hours > 0 and hours * 3600 or nil
         end,
+        Mode = function() return config.FuseMode end,
         GetCommandRemote = getCommandRemote,
         InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
         InvokeCommand = invokeCommand,
@@ -3432,7 +3445,7 @@ uiStageYield("window ready")
 
 if Window.ConfigManager then
     local created, profile = pcall(function()
-        return Window.ConfigManager:Config("default", false)
+        return Window.ConfigManager:Config("lowonline-default-v1", false)
     end)
     if created then
         UI.Profile = profile
@@ -3678,6 +3691,7 @@ do
             SetGoldStatus = statusSetters.Gold,
             SetRainbowStatus = statusSetters.Rainbow,
             SetDarkMatterStatus = statusSetters.DarkMatter,
+            SetFuseStatus = statusSetters.Fuse,
             ReconcileBoost = reconcileBoostModule,
             BoostEnabled = boostAutomationEnabled,
             StartBoost = startBoostModule,
@@ -3694,12 +3708,14 @@ do
     autoEggToggleControl = automationUIControls.AutoEggToggle
     UI.EggScopeDropdown = automationUIControls.EggScopeDropdown
     UI.EggDropdown = automationUIControls.EggDropdown
+    UI.FuseModeDropdown = automationUIControls.FuseModeDropdown
     statusTabs.EggCatalog = UI.EggTab
     statusTabs.Egg = UI.EggTab
     statusTabs.Routes = UI.MonitorTab
     statusTabs.Gold = UI.MachinesTab
     statusTabs.Rainbow = UI.MachinesTab
     statusTabs.DarkMatter = UI.MachinesTab
+    statusTabs.Fuse = UI.MachinesTab
     statusTabs.Boost = UI.BoostsTab
     refreshEggDropdown(true)
     trace("06B automation UI ready")
@@ -3869,6 +3885,11 @@ function UI.ReconcileProfile(label)
     local savedZone = UI.Profile:Get("selected_zone")
     local savedEgg = UI.Profile:Get("selected_egg_id")
     local savedEggScope = UI.Profile:Get("selected_egg_scope")
+    local savedFuseMode = UI.Profile:Get("lowonline_fuse_mode")
+    if savedFuseMode == "12 Basic" or savedFuseMode == "8 Rare" or savedFuseMode == "5 Epic" then
+        config.FuseMode = savedFuseMode
+        pcall(function() UI.FuseModeDropdown:Select(savedFuseMode) end)
+    end
     if savedEggScope == "Nearby Eggs" or savedEggScope == "All Hatchable Eggs" then
         config.EggScope = savedEggScope
         pcall(function() UI.EggScopeDropdown:Select(savedEggScope) end)
@@ -3917,8 +3938,10 @@ function UI.SaveProfile()
     UI.Profile:Set("selected_zone", config.Zone)
     UI.Profile:Set("selected_egg_id", config.EggName or "")
     UI.Profile:Set("selected_egg_scope", config.EggScope)
+    UI.Profile:Set("lowonline_fuse_mode", config.FuseMode)
+    UI.Profile:Set("profile_namespace", "LowOnline/v1")
     UI.Profile:Set("script_version", VERSION)
-    UI.Profile:Set("nova_autoload", true)
+    UI.Profile:Set("lowonline_autoload", true)
     UI.Profile:SetAutoLoad(false)
     local saved, result = pcall(function() return UI.Profile:Save() end)
     if not saved then
@@ -4054,6 +4077,7 @@ local function shutdown(reason)
     config.AutoRainbowGalaxyFox = false
     config.AutoDarkMatterGalaxyFox = false
     config.AutoClaimDarkMatter = false
+    config.AutoFuse = false
     config.AutoBoostBundle = false
     config.AutoTripleCoins = false
     config.AutoTripleDamage = false
