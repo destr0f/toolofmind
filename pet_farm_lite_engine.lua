@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.1.0-lowonline"
 local DEFAULT_DISPATCH_WIDTH = 8
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -457,7 +457,11 @@ local function process(job)
     if #rejectedEntries > 0 then
         run.Rejected = run.Rejected + #rejectedEntries
         run.LastProblem = "Join Coin rejected " .. tostring(#rejectedEntries) .. " pet(s)"
-        scheduleRetry(job, rejectedEntries, run.LastProblem, false)
+        -- LowOnline returns a UID -> boolean dictionary from Join Coin.
+        -- A completed Invoke with a missing/false UID is an authoritative
+        -- gameplay rejection, not a transport failure. Retrying the same dead
+        -- or already-full coin only delays reassignment and duplicates traffic.
+        failEntries(job, rejectedEntries, run.LastProblem)
     elseif #signalFailures == 0 then
         run.LastProblem = "none"
     end

@@ -41,6 +41,17 @@ check(
     "workspace records without replicated health must remain usable while alive"
 );
 check(
+    source.includes("coinSync.SnapshotFailures >= 3")
+        && source.includes("coinSync.SnapshotSuspended = true")
+        && source.includes("suspended after %d attempts on %d workspace targets"),
+    "a nil Get Coins response must settle into bounded workspace fail-open mode"
+);
+check(
+    source.includes("record.MaxHealth = math.max(")
+        && source.includes("tonumber(value) or 0"),
+    "Update Coin Health must retain the largest observed health for strong-target ordering"
+);
+check(
     source.includes('Title = "LowOnline | Develop"')
         && source.includes('Folder = "LowOnline_Develop"')
         && source.includes('Config("lowonline-default-v1", false)'),

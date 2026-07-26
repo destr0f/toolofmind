@@ -22,14 +22,18 @@ assert(farm.includes("local function coinCatalogReady()")
 assert(farm.includes("CoinCatalogReady = coinCatalogReady"),
     "loot reactor does not receive the authoritative catalog readiness guard");
 
-// Failed, empty and raced snapshots must stay unprimed and retry. The previous
-// regression marked every response as primed and permanently stranded targets.
+// Failed, empty and raced snapshots must stay unprimed. LowOnline is allowed
+// to stop retrying only after a bounded failure threshold when the replicated
+// workspace catalog is already populated.
 assert(farm.includes("local responseAccepted = ok and type(response) == \"table\"")
     && farm.includes("and validCount > 0 and coinMutationSerial == serialAtStart"),
     "empty or raced Get Coins responses are still accepted");
 assert(farm.includes("coinSync.SnapshotPrimed = responseAccepted")
-    && farm.includes("if not responseAccepted then scheduleCoinSnapshotRetry"),
-    "failed snapshots do not remain fail-open and retry");
+    && farm.includes("if not responseAccepted and not coinSync.SnapshotSuspended then")
+    && farm.includes("scheduleCoinSnapshotRetry(0.75, coinSync.LastProblem)")
+    && farm.includes("coinSync.SnapshotFailures >= 3")
+    && farm.includes("local localCount = countLocalCoinRecords()"),
+    "failed snapshots do not use bounded workspace fail-open retry");
 assert(farm.includes("(coinSync.SnapshotPrimed and coinSync.SignalsReady)"),
     "signal binding retries stop merely because the snapshot succeeded");
 assert(farm.includes("coinSync.LastProblem = \"world changed; awaiting fresh catalog\"")
@@ -82,6 +86,6 @@ assert(preventsModel({
 }), "a verified catalog does not enable the headless model producer");
 
 process.stdout.write(
-    "Coin catalog fail-open OK | failed/empty/raced snapshots retry"
+    "Coin catalog fail-open OK | failed/empty/raced snapshots retry then settle"
     + " | world transition safe | model producer guarded\n"
 );

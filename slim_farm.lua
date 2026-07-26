@@ -1,7 +1,7 @@
 -- LowOnline Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.3-low.0"
+local VERSION = "1.4.3-low.1"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -1119,6 +1119,8 @@ end
 local coinSync = {
     SnapshotBusy = false,
     SnapshotPrimed = false,
+    SnapshotFailures = 0,
+    SnapshotSuspended = false,
     RetryArmed = false,
     RetryToken = 0,
     LastProblem = "not requested",
@@ -1145,6 +1147,14 @@ local coinIndex = {
         Zone = nil,
     },
 }
+
+local function countLocalCoinRecords()
+    local count = 0
+    for _, record in pairs(coinRecords) do
+        if record and not record.Removed then count = count + 1 end
+    end
+    return count
+end
 
 function coinIndex:Invalidate()
     self.Revision = self.Revision + 1
@@ -1335,6 +1345,7 @@ local refreshCoinSnapshot
 local function scheduleCoinSnapshotRetry(delaySeconds, problem)
     if problem then coinSync.LastProblem = tostring(problem) end
     if coinSync.RetryArmed
+        or coinSync.SnapshotSuspended
         or (coinSync.SnapshotPrimed and coinSync.SignalsReady)
         or not running() then return end
     if not config.PetFarm and not config.PotatoMode then return end
@@ -1361,7 +1372,8 @@ local function coinCatalogReady()
 end
 
 refreshCoinSnapshot = function()
-    if coinSync.SnapshotBusy or coinSync.SnapshotPrimed then return end
+    if coinSync.SnapshotBusy or coinSync.SnapshotPrimed
+        or coinSync.SnapshotSuspended then return end
     local network = networkReady()
     if not network then
         scheduleCoinSnapshotRetry(0.5, "Library.Network is not ready")
@@ -1403,6 +1415,8 @@ refreshCoinSnapshot = function()
     coinSync.SnapshotPrimed = responseAccepted
     coinSync.RecordCount = responseAccepted and validCount or 0
     if responseAccepted then
+        coinSync.SnapshotFailures = 0
+        coinSync.SnapshotSuspended = false
         coinSync.LastProblem = string.format("ready with %d records", validCount)
     elseif not ok then
         coinSync.LastProblem = "Get Coins failed: " .. tostring(response)
@@ -1413,8 +1427,23 @@ refreshCoinSnapshot = function()
     else
         coinSync.LastProblem = "Get Coins raced a live coin event"
     end
+    if not responseAccepted then
+        coinSync.SnapshotFailures = coinSync.SnapshotFailures + 1
+        local localCount = countLocalCoinRecords()
+        if coinSync.SnapshotFailures >= 3 and localCount > 0 then
+            coinSync.SnapshotSuspended = true
+            coinSync.LastProblem = string.format(
+                "%s; suspended after %d attempts on %d workspace targets",
+                coinSync.LastProblem,
+                coinSync.SnapshotFailures,
+                localCount
+            )
+        end
+    end
     coinSync.SnapshotBusy = false
-    if not responseAccepted then scheduleCoinSnapshotRetry(0.75, coinSync.LastProblem) end
+    if not responseAccepted and not coinSync.SnapshotSuspended then
+        scheduleCoinSnapshotRetry(0.75, coinSync.LastProblem)
+    end
 end
 
 local function connectCoinSignals()
@@ -1449,6 +1478,10 @@ local function connectCoinSignals()
                 removeCoin(id, true)
             else
                 record.Health = value
+                record.MaxHealth = math.max(
+                    tonumber(record.MaxHealth) or 0,
+                    tonumber(value) or 0
+                )
                 coinMutationSerial = coinMutationSerial + 1
             end
         elseif (tonumber(health) or 0) > 0 then
@@ -1487,6 +1520,8 @@ local function connectCoinSignals()
                 zoneCatalogDirty = true
                 eggCatalogDirty = true
                 coinSync.SnapshotPrimed = false
+                coinSync.SnapshotFailures = 0
+                coinSync.SnapshotSuspended = false
                 coinSync.RecordCount = 0
                 coinSync.TargetsValidated = false
                 coinSync.LastProblem = "world changed; awaiting fresh catalog"
@@ -4061,6 +4096,8 @@ local function finishShutdown()
     coinGeneration = coinGeneration + 1
     coinSync.SnapshotBusy = false
     coinSync.SnapshotPrimed = false
+    coinSync.SnapshotFailures = 0
+    coinSync.SnapshotSuspended = false
     coinSync.RetryToken = coinSync.RetryToken + 1
     coinSync.RetryArmed = false
     coinSync.LastProblem = "stopped"

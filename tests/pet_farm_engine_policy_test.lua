@@ -1,4 +1,5 @@
 local engine = require("../pet_farm_lite_engine")
+assert(engine("version") == "1.1.0-lowonline")
 
 local pets = { "pet-a", "pet-b", "pet-c" }
 
@@ -106,13 +107,17 @@ assert(engine("dispatch", {
 }) == true)
 assert(groupedCalls == 1, "one target group must use one Join Coin request")
 
--- Explicit rejection can be stopped by the caller after one attempt.
+-- A completed LowOnline Join Coin response is authoritative. Missing/false
+-- UIDs must be released immediately without retrying the same coin.
 local failedCount = 0
-network.Invoke = function() return false end
+local rejectedInvokes = 0
+network.Invoke = function()
+    rejectedInvokes = rejectedInvokes + 1
+    return false
+end
 local failedState = { Phase = "joining" }
 states.failure = failedState
 assert(engine("start", context({
-    ShouldRetry = function() return false end,
     OnFailed = function(petId, state)
         assert(petId == "failure" and states[petId] == state)
         states[petId] = nil
@@ -126,6 +131,7 @@ assert(engine("dispatch", {
 }) == true)
 local rejected = engine("stats")
 assert(rejected.Rejected == 1 and rejected.Retries == 0)
+assert(rejectedInvokes == 1, "business rejection must not repeat Join Coin")
 assert(rejected.Queued == 0 and failedCount == 1 and states.failure == nil)
 
 -- Transport failures never widen the fixed eight-lane writer.
