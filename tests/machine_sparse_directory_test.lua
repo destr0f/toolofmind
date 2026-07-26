@@ -1,6 +1,8 @@
-local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
+local function exercise(
+    modulePath, pet, infoCommand, actionCommand, darkMatter, expectedVersion, expectRequest
+)
     local machine = require(modulePath)
-    assert(machine("version") == "1.1.0")
+    assert(machine("version") == expectedVersion)
 
     local callback
     local calls = {}
@@ -17,7 +19,13 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         DarkMatterSlots = 1,
     }
     local context = {
-        Library = { Directory = { Pets = {} } },
+        Library = {
+            Directory = {
+                Pets = {
+                    ["114"] = { name = "Domortuus", rarity = "Mythical" },
+                },
+            },
+        },
         Task = workerTask,
         Running = function() return true end,
         Enabled = function() return enabled end,
@@ -27,9 +35,9 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         GetCurrency = function() return 1e15 end,
         FormatNumber = tostring,
         GetMachinePetCatalog = function()
-            return { ["263"] = true, ["264"] = true, ["265"] = true },
-                { "Santa Paws", "Silver Stag", "Silver Dragon" },
-                "pinned current Christmas trio"
+            return { ["114"] = true },
+                { "Domortuus" },
+                "live Domortuus catalog"
         end,
         BatchSize = function() return 1 end,
         MaxWaitSeconds = function() return nil end,
@@ -64,6 +72,11 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     assert(type(callback) == "function", "machine worker was not registered")
     callback()
 
+    if expectRequest == false then
+        assert(#calls == 0, table.concat(statuses, "\n"))
+        machine("stop")
+        return
+    end
     assert(#calls == 1, table.concat(statuses, "\n"))
     assert(calls[1].Command == actionCommand,
         "expected " .. actionCommand .. ", got " .. tostring(calls[1].Command))
@@ -73,20 +86,34 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
 end
 
 exercise("../gold_machine_module", {
-    id = "263",
-    uid = "santa-paws-normal",
-}, "Get Golden Machine Info", "Use Golden Machine", false)
+    id = "114",
+    uid = "domortuus-normal",
+}, "Get Golden Machine Info", "Use Golden Machine", false, "1.2.0-lowonline")
 
 exercise("../rainbow_machine_module", {
-    id = "264",
-    uid = "silver-stag-golden",
+    id = "114",
+    uid = "domortuus-golden",
     g = true,
-}, "Get Rainbow Machine Info", "Use Rainbow Machine", false)
+}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.2.0-lowonline")
 
 exercise("../dark_matter_module", {
-    id = "265",
-    uid = "silver-dragon-rainbow",
+    id = "114",
+    uid = "domortuus-rainbow",
     r = true,
-}, "Get Dark Matter Machine Info", "Convert To Dark Matter", true)
+}, "Get Dark Matter Machine Info", "Convert To Dark Matter", true, "1.1.0")
 
-print("PASS Gold, Rainbow and Dark Matter accept pinned IDs without Directory.Pets definitions")
+exercise("../rainbow_machine_module", {
+    id = "114",
+    uid = "domortuus-golden-coins-iv",
+    g = true,
+    powers = { { "Coins", "IV" } },
+}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.2.0-lowonline", false)
+
+exercise("../rainbow_machine_module", {
+    id = "114",
+    uid = "domortuus-golden-coins-v",
+    g = true,
+    Powers = { Coins = "V" },
+}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.2.0-lowonline", false)
+
+print("PASS Domortuus machine pipeline works and Rainbow protects Coins IV/V")

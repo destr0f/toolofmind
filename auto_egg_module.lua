@@ -2,13 +2,13 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.1-lowonline"
+local MODULE_VERSION = "1.6.0-lowonline"
 local BUY_COMMAND = "Buy Egg"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
-local INITIAL_REQUEST_DELAY = 0.75
-local MIN_REQUEST_DELAY = 0.55
+local INITIAL_REQUEST_DELAY = 0.35
+local MIN_REQUEST_DELAY = 0.08
 local MAX_REQUEST_DELAY = 8
 local HEADLESS_EVENT_TIMEOUT = 8
 local HEADLESS_REPLICATION_TIMEOUT = 4
@@ -366,23 +366,96 @@ local function openingFlag(context)
     return variables and variables.OpeningEgg == true
 end
 
+local function snapshotOpenEggConnections(signal)
+    if type(getconnections) ~= "function" or signal == nil then
+        return {}, false, "getconnections is unavailable"
+    end
+    local ok, connections = pcall(getconnections, signal)
+    if not ok or type(connections) ~= "table" then
+        return {}, false, tostring(connections or "Open Egg connections are unavailable")
+    end
+    local records = {}
+    for _, connection in ipairs(connections) do
+        if connection ~= nil then
+            local enabled = true
+            pcall(function() enabled = connection.Enabled ~= false end)
+            records[#records + 1] = {
+                Connection = connection,
+                WasEnabled = enabled,
+                DisabledByUs = false,
+            }
+        end
+    end
+    return records, true, "captured " .. tostring(#records) .. " pre-existing callback(s)"
+end
+
+local function suppressOpenEggConnections(state)
+    if state.HeadlessSuppressed then return true end
+    state.HeadlessSuppressed = true
+    local disabled = 0
+    for _, record in ipairs(state.OpenEggConnections or {}) do
+        if record.WasEnabled and record.Connection ~= nil then
+            local connection = record.Connection
+            local ok = false
+            local readOk, disable = pcall(function() return connection.Disable end)
+            if readOk and type(disable) == "function" then
+                ok = pcall(disable, connection)
+            end
+            if not ok then
+                ok = pcall(function() connection.Enabled = false end)
+            end
+            if ok then
+                record.DisabledByUs = true
+                disabled = disabled + 1
+            end
+        end
+    end
+    state.SuppressedConnectionCount = disabled
+    return true
+end
+
+local function restoreOpenEggConnections(state)
+    if not state.HeadlessSuppressed then return end
+    state.HeadlessSuppressed = false
+    for _, record in ipairs(state.OpenEggConnections or {}) do
+        if record.DisabledByUs and record.Connection ~= nil then
+            local connection = record.Connection
+            local ok = false
+            local readOk, enable = pcall(function() return connection.Enable end)
+            if readOk and type(enable) == "function" then
+                ok = pcall(enable, connection)
+            end
+            if not ok then
+                pcall(function() connection.Enabled = true end)
+            end
+            record.DisabledByUs = false
+        end
+    end
+    state.SuppressedConnectionCount = 0
+end
+
 local function acquireHeadlessGate(state, context)
     local variables = context.Library and context.Library.Variables
     if not variables then return false, "Library.Variables is unavailable" end
     if variables.OpeningEgg == true and not state.GateOwned then
         return false, "another egg animation is still active"
     end
+    suppressOpenEggConnections(state)
     local ok, problem = pcall(function() variables.OpeningEgg = true end)
-    if not ok then return false, tostring(problem) end
+    if not ok then
+        restoreOpenEggConnections(state)
+        return false, tostring(problem)
+    end
     state.GateOwned = true
     return true
 end
 
 local function releaseHeadlessGate(state, context)
-    if not state.GateOwned then return end
+    local owned = state.GateOwned
     state.GateOwned = false
     local variables = context.Library and context.Library.Variables
-    if variables then pcall(function() variables.OpeningEgg = false end) end
+    if owned and variables then pcall(function() variables.OpeningEgg = false end) end
+    restoreOpenEggConnections(state)
 end
 
 local function acquireInventoryOperation(state, context)
@@ -857,23 +930,11 @@ local function startHeadlessReconcile(state, context, pending)
                 pending.EventReceived = true
                 pending.EventAt = os.clock()
                 pending.MatchMode = "inventory delta auto-detection"
-
-                local network = context.Library and context.Library.Network
-                local acknowledged, ackProblem = false, "Library.Network.Fire is unavailable"
-                if network and type(network.Fire) == "function" then
-                    acknowledged, ackProblem = pcall(network.Fire, "Opening Egg", pending.Egg, pets)
-                end
-                if not acknowledged then
-                    pending.AckFailure = tostring(ackProblem)
-                    pending.ReconcileDone = true
-                    return
-                end
-
                 pending.Acknowledged = true
                 pending.ReconcileDone = true
                 state.AcknowledgedEvents[eventSignature(pending.Egg, pets)] = os.clock()
                 context.Trace("auto egg headless reconcile", string.format(
-                    "%s | observed %d/%d new pet(s) | Opening Egg acknowledged from inventory delta",
+                    "%s | observed %d/%d new pet(s) | acknowledged directly from inventory delta",
                     requestLabel(pending), lastObserved, expected
                 ))
                 startHeadlessPostProcess(state, context, pending, pets)
@@ -918,17 +979,27 @@ local function finishSuccess(state, context, pending, note)
     end
     state.ConsecutiveFailures = 0
     state.CleanSuccesses = state.CleanSuccesses + 1
-    if state.CleanSuccesses >= 8 then
+    local now = os.clock()
+    local cycle = math.max(0, now - (tonumber(pending.StartedAt) or now))
+    state.AverageCycle = state.AverageCycle == nil and cycle
+        or (state.AverageCycle * 0.8 + cycle * 0.2)
+    local manual = pending.PaceMode == "Manual Delay"
+    if not manual and state.CleanSuccesses >= 4 then
         state.CleanSuccesses = 0
         state.RequestDelay = math.max(MIN_REQUEST_DELAY, state.RequestDelay - 0.025)
     end
-    state.NextAction = os.clock() + state.RequestDelay
+    local nextDelay = manual
+        and math.clamp((tonumber(pending.ManualDelayMs) or 100) / 1000, 0.05, 3)
+        or state.RequestDelay
+    state.NextAction = now + nextDelay
     setStatus(state, context, string.format(
-        "Hatched %s | completed: %d\n%s | adaptive delay: %.2fs | one request in flight",
+        "Hatched %s | completed: %d\n%s | %s delay: %.2fs | avg cycle: %.2fs | one request in flight",
         requestLabel(pending),
         state.Successes,
         tostring(note or pending.Route or "Open Egg event confirmed"),
-        state.RequestDelay
+        manual and "manual" or "adaptive",
+        nextDelay,
+        tonumber(state.AverageCycle) or cycle
     ))
 end
 
@@ -1167,6 +1238,8 @@ local function beginRequest(state, context, options, inspection)
         ReconcileFailure = nil,
         InputConnections = not headless and inputConnectionSnapshot(context) or nil,
         Inspection = inspection,
+        PaceMode = options.PaceMode == "Manual Delay" and "Manual Delay" or "Adaptive (History)",
+        ManualDelayMs = math.clamp(math.floor(tonumber(options.ManualDelayMs) or 100), 50, 3000),
     }
     state.Pending = pending
     state.Requests = state.Requests + 1
@@ -1272,10 +1345,10 @@ local function stop()
 end
 
 local function workerDelay(state)
-    if state.Pending then return 0.05 end
+    if state.Pending then return 0.02 end
     local remaining = (tonumber(state.NextAction) or 0) - os.clock()
-    if remaining <= 0 then return 0.05 end
-    return math.clamp(remaining, 0.05, MAX_REQUEST_DELAY)
+    if remaining <= 0 then return 0.02 end
+    return math.clamp(remaining, 0.02, MAX_REQUEST_DELAY)
 end
 
 return function(action, context)
@@ -1311,14 +1384,14 @@ return function(action, context)
 
     local network = context.Library and context.Library.Network
     local networkDeadline = os.clock() + 10
-    while (not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function")
+    while (not network or type(network.Fired) ~= "function")
         and context.Running() and context.Enabled() and os.clock() < networkDeadline do
         task.wait(0.1)
         network = context.Library and context.Library.Network
     end
     if not context.Running() or not context.Enabled() then return true end
-    if not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function" then
-        return false, "Library.Network Fired/Fire is unavailable"
+    if not network or type(network.Fired) ~= "function" then
+        return false, "Library.Network.Fired is unavailable"
     end
     local signal, eventRoute, eventIndex, eventProblem
     if type(context.GetEventRemote) == "function" then
@@ -1343,6 +1416,8 @@ return function(action, context)
         eventRoute = "Library.Network.Fired fallback"
     end
 
+    local openEggConnections, canSuppress, suppressionNote =
+        snapshotOpenEggConnections(signal)
     local state = {
         Context = context,
         Running = true,
@@ -1366,6 +1441,12 @@ return function(action, context)
         ConsecutiveFailures = 0,
         EventRoute = eventRoute,
         EventIndex = eventIndex,
+        OpenEggConnections = openEggConnections,
+        CanSuppressOpenEgg = canSuppress,
+        SuppressionNote = suppressionNote,
+        HeadlessSuppressed = false,
+        SuppressedConnectionCount = 0,
+        AverageCycle = nil,
         WorkerThread = nil,
     }
     activeState = state
@@ -1410,15 +1491,8 @@ return function(action, context)
                 local now = os.clock()
                 cleanEventCache(state, now)
                 local signature = eventSignature(eggName, pets)
-                if not state.AcknowledgedEvents[signature] then
-                    local ackOk, ackProblem = pcall(network.Fire, "Opening Egg", eggName, pets)
-                    if ackOk then
-                        state.AcknowledgedEvents[signature] = now
-                        if matching then pending.Acknowledged = true end
-                    elseif matching then
-                        pending.AckFailure = tostring(ackProblem)
-                    end
-                elseif matching then
+                if matching then
+                    state.AcknowledgedEvents[signature] = now
                     pending.Acknowledged = true
                 end
             end
@@ -1433,7 +1507,7 @@ return function(action, context)
                     end
                 end
             elseif state.GateOwned then
-                context.Trace("auto egg", "acknowledged an unexpected Open Egg while the headless gate was owned: "
+                context.Trace("auto egg", "ignored an unexpected Open Egg while the headless gate was owned: "
                     .. tostring(eggName))
             end
         end)
@@ -1449,11 +1523,12 @@ return function(action, context)
     env.PSX_OG_FastEggState = state
     context.Trace("auto egg module",
         "v" .. MODULE_VERSION
-        .. " | Native OpeningEgg + Headless direct-event/inventory-delta acknowledgement | Open Egg: "
+        .. " | direct Headless event/inventory acknowledgement; no synthetic Opening Egg callback | Open Egg: "
         .. tostring(eventRoute) .. " [session index " .. tostring(eventIndex or "?") .. "]")
     setStatus(state, context,
         "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
-        .. "Waiting for a valid selected egg loaded in the current world; distance does not block purchases...")
+        .. "Headless callback suppression: " .. tostring(suppressionNote)
+        .. "\nWaiting for a valid selected egg loaded in the current world; distance does not block purchases...")
 
     state.WorkerThread = task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do

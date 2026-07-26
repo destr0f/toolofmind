@@ -1,7 +1,7 @@
 -- LowOnline Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.2-low.2"
+local VERSION = "1.4.3-low.0"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -181,12 +181,15 @@ local config = {
     AutoDarkMatterGalaxyFox = false,
     AutoClaimDarkMatter = false,
     AutoFuse = false,
-    FuseMode = "12 Basic",
+    AutoFuseBasic = false,
+    AutoFuseRare = false,
+    AutoFuseEpic = false,
     MachineBatchSize = 6,
     DarkMatterBatchSize = 6,
     DarkMatterMaxWaitHours = 0,
-    AutoBoostBundle = false,
+    AutoBuyPotions = false,
     BoostRenewBefore = 5,
+    BoostPurchaseLead = 30,
     AutoTripleCoins = false,
     AutoTripleDamage = false,
     AutoSuperLucky = false,
@@ -196,6 +199,8 @@ local config = {
     EggName = nil,
     EggCount = 1,
     EggAnimation = "Headless (No Animation)",
+    EggPaceMode = "Adaptive (History)",
+    EggManualDelayMs = 100,
 }
 
 local DIAMOND_PACK_TIER = 4
@@ -2523,6 +2528,8 @@ local function startAutoEggModule()
                 Egg = config.EggName,
                 Count = config.EggCount,
                 Animation = config.EggAnimation,
+                PaceMode = config.EggPaceMode,
+                ManualDelayMs = config.EggManualDelayMs,
             }
         end,
         InspectEgg = inspectEggThroughModule,
@@ -2566,7 +2573,7 @@ local machineModules = {
     },
     Fuse = {
         Module = "fuse",
-        ConfigKeys = { "AutoFuse" },
+        ConfigKeys = { "AutoFuseBasic", "AutoFuseRare", "AutoFuseEpic" },
         Label = "fuse machine",
         SetStatus = statusSetters.Fuse,
     },
@@ -2671,7 +2678,13 @@ function machineModules:Start(kind)
             local hours = tonumber(config.DarkMatterMaxWaitHours) or 0
             return hours > 0 and hours * 3600 or nil
         end,
-        Mode = function() return config.FuseMode end,
+        Modes = function()
+            return {
+                ["12 Basic"] = config.AutoFuseBasic == true,
+                ["8 Rare"] = config.AutoFuseRare == true,
+                ["5 Epic"] = config.AutoFuseEpic == true,
+            }
+        end,
         GetCommandRemote = getCommandRemote,
         InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
         InvokeCommand = invokeCommand,
@@ -2697,7 +2710,7 @@ local boostLoading = false
 local boostLoadProblem
 
 local function boostAutomationEnabled()
-    return config.AutoBoostBundle or config.AutoTripleCoins or config.AutoTripleDamage
+    return config.AutoBuyPotions or config.AutoTripleCoins or config.AutoTripleDamage
         or config.AutoSuperLucky or config.AutoUltraLucky
 end
 
@@ -2732,17 +2745,16 @@ local function startBoostModule()
         Enabled = boostAutomationEnabled,
         GetOptions = function()
             return {
-                AutoBoostBundle = config.AutoBoostBundle,
+                AutoBuyPotions = config.AutoBuyPotions,
                 AutoTripleCoins = config.AutoTripleCoins,
                 AutoTripleDamage = config.AutoTripleDamage,
                 AutoSuperLucky = config.AutoSuperLucky,
                 AutoUltraLucky = config.AutoUltraLucky,
                 RenewBefore = config.BoostRenewBefore,
+                PurchaseLead = config.BoostPurchaseLead,
             }
         end,
         GetSave = getRewardSave,
-        GetCurrency = getCurrentCurrency,
-        FormatNumber = formatRateNumber,
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
         InvokeCommand = invokeCommand,
@@ -3708,7 +3720,9 @@ do
     autoEggToggleControl = automationUIControls.AutoEggToggle
     UI.EggScopeDropdown = automationUIControls.EggScopeDropdown
     UI.EggDropdown = automationUIControls.EggDropdown
-    UI.FuseModeDropdown = automationUIControls.FuseModeDropdown
+    UI.EggPaceModeDropdown = automationUIControls.EggPaceModeDropdown
+    UI.EggManualDelaySlider = automationUIControls.EggManualDelaySlider
+    UI.FuseModeToggles = automationUIControls.FuseModeToggles
     statusTabs.EggCatalog = UI.EggTab
     statusTabs.Egg = UI.EggTab
     statusTabs.Routes = UI.MonitorTab
@@ -3885,10 +3899,14 @@ function UI.ReconcileProfile(label)
     local savedZone = UI.Profile:Get("selected_zone")
     local savedEgg = UI.Profile:Get("selected_egg_id")
     local savedEggScope = UI.Profile:Get("selected_egg_scope")
-    local savedFuseMode = UI.Profile:Get("lowonline_fuse_mode")
-    if savedFuseMode == "12 Basic" or savedFuseMode == "8 Rare" or savedFuseMode == "5 Epic" then
-        config.FuseMode = savedFuseMode
-        pcall(function() UI.FuseModeDropdown:Select(savedFuseMode) end)
+    local savedPaceMode = UI.Profile:Get("lowonline_egg_pace_mode")
+    local savedManualDelay = tonumber(UI.Profile:Get("lowonline_egg_manual_delay_ms"))
+    if savedPaceMode == "Adaptive (History)" or savedPaceMode == "Manual Delay" then
+        config.EggPaceMode = savedPaceMode
+        pcall(function() UI.EggPaceModeDropdown:Select(savedPaceMode) end)
+    end
+    if savedManualDelay then
+        config.EggManualDelayMs = math.clamp(math.floor(savedManualDelay), 50, 3000)
     end
     if savedEggScope == "Nearby Eggs" or savedEggScope == "All Hatchable Eggs" then
         config.EggScope = savedEggScope
@@ -3938,8 +3956,12 @@ function UI.SaveProfile()
     UI.Profile:Set("selected_zone", config.Zone)
     UI.Profile:Set("selected_egg_id", config.EggName or "")
     UI.Profile:Set("selected_egg_scope", config.EggScope)
-    UI.Profile:Set("lowonline_fuse_mode", config.FuseMode)
-    UI.Profile:Set("profile_namespace", "LowOnline/v1")
+    UI.Profile:Set("lowonline_egg_pace_mode", config.EggPaceMode)
+    UI.Profile:Set("lowonline_egg_manual_delay_ms", config.EggManualDelayMs)
+    UI.Profile:Set("lowonline_fuse_basic", config.AutoFuseBasic)
+    UI.Profile:Set("lowonline_fuse_rare", config.AutoFuseRare)
+    UI.Profile:Set("lowonline_fuse_epic", config.AutoFuseEpic)
+    UI.Profile:Set("profile_namespace", "LowOnline/v2")
     UI.Profile:Set("script_version", VERSION)
     UI.Profile:Set("lowonline_autoload", true)
     UI.Profile:SetAutoLoad(false)
@@ -4078,7 +4100,10 @@ local function shutdown(reason)
     config.AutoDarkMatterGalaxyFox = false
     config.AutoClaimDarkMatter = false
     config.AutoFuse = false
-    config.AutoBoostBundle = false
+    config.AutoFuseBasic = false
+    config.AutoFuseRare = false
+    config.AutoFuseEpic = false
+    config.AutoBuyPotions = false
     config.AutoTripleCoins = false
     config.AutoTripleDamage = false
     config.AutoSuperLucky = false

@@ -1,3 +1,10 @@
+task = {
+    spawn = function(callback)
+        callback()
+        return {}
+    end,
+}
+
 local automationUI = require("../automation_ui_module")
 
 local function newControl()
@@ -41,6 +48,8 @@ end
 
 local noOp = function() end
 local uiYieldCount = 0
+local machineStarts = {}
+local machineStops = {}
 local accepted, controls = automationUI("build", {
     UI = {
         EggTab = newTab(),
@@ -48,6 +57,7 @@ local accepted, controls = automationUI("build", {
         MachinesTab = newTab(),
         BoostsTab = newTab(),
     },
+    Task = task,
     Config = config,
     StatusViews = statusViews,
     RefreshEggs = noOp,
@@ -60,8 +70,8 @@ local accepted, controls = automationUI("build", {
     RefreshRoutes = noOp,
     SetRouteStatus = statusSetters.Routes,
     GetMachinePetCatalog = function() return {}, {}, "ok" end,
-    StartMachine = noOp,
-    StopMachine = noOp,
+    StartMachine = function(name) machineStarts[#machineStarts + 1] = name end,
+    StopMachine = function(name) machineStops[#machineStops + 1] = name end,
     SetGoldStatus = statusSetters.Gold,
     SetRainbowStatus = statusSetters.Rainbow,
     SetDarkMatterStatus = statusSetters.DarkMatter,
@@ -85,12 +95,41 @@ timeSlider.Definition.Callback(12.5)
 assert(config.DarkMatterBatchSize == 4, "Dark Matter pet-count slider did not update config")
 assert(config.DarkMatterMaxWaitHours == 12.5, "Dark Matter time slider did not update config")
 
-local fuseMode = controlsByFlag.lowonline_fuse_mode
-local fuseToggle = controlsByFlag.lowonline_auto_fuse
-assert(type(fuseMode) == "table", "LowOnline fuse mode dropdown is missing")
-assert(type(fuseToggle) == "table", "LowOnline auto fuse toggle is missing")
-fuseMode.Definition.Callback("5 Epic")
-assert(config.FuseMode == "5 Epic", "Fuse mode did not update config")
+local paceMode = controlsByFlag.egg_pace_mode
+local manualDelay = controlsByFlag.egg_manual_delay_ms
+assert(type(paceMode) == "table", "AutoEgg pace dropdown is missing")
+assert(type(manualDelay) == "table", "AutoEgg manual-delay slider is missing")
+paceMode.Definition.Callback("Manual Delay")
+manualDelay.Definition.Callback(75)
+assert(config.EggPaceMode == "Manual Delay", "AutoEgg pace mode did not update config")
+assert(config.EggManualDelayMs == 75, "AutoEgg manual delay did not update config")
+
+local basicFuse = controlsByFlag.lowonline_fuse_basic
+local rareFuse = controlsByFlag.lowonline_fuse_rare
+local epicFuse = controlsByFlag.lowonline_fuse_epic
+assert(type(basicFuse) == "table", "LowOnline Basic fuse toggle is missing")
+assert(type(rareFuse) == "table", "LowOnline Rare fuse toggle is missing")
+assert(type(epicFuse) == "table", "LowOnline Epic fuse toggle is missing")
+basicFuse.Definition.Callback(true)
+rareFuse.Definition.Callback(true)
+epicFuse.Definition.Callback(true)
+assert(config.AutoFuseBasic and config.AutoFuseRare and config.AutoFuseEpic,
+    "all three LowOnline fuse modes cannot stay enabled together")
+assert(config.AutoFuse == true, "combined Fuse worker was not armed")
+assert(#machineStarts == 3 and machineStarts[1] == "Fuse",
+    "Fuse worker was not reconciled after each mode change")
+rareFuse.Definition.Callback(false)
+assert(config.AutoFuseBasic and not config.AutoFuseRare and config.AutoFuseEpic,
+    "disabling one Fuse mode disabled the other active modes")
+
+local purchaseLead = controlsByFlag.boost_purchase_lead
+local autoBuyPotions = controlsByFlag.auto_buy_potions
+assert(type(purchaseLead) == "table", "potion purchase-lead slider is missing")
+assert(type(autoBuyPotions) == "table", "auto-buy potion toggle is missing")
+purchaseLead.Definition.Callback(45)
+autoBuyPotions.Definition.Callback(true)
+assert(config.BoostPurchaseLead == 45, "potion purchase lead did not update config")
+assert(config.AutoBuyPotions == true, "auto-buy potions did not update config")
 
 for key, setter in pairs(statusSetters) do
     assert(type(setter) == "function", key .. " setter was overwritten")

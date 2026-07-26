@@ -1,8 +1,8 @@
--- Lazy event-pet Golden Machine worker for PSX OG Nova develop.
+-- Lazy LowOnline Domortuus Golden Machine worker.
 -- The parent supplies a live pet catalog and a shared inventory-operation gate.
 
 local activeState
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0-lowonline"
 
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
@@ -76,7 +76,7 @@ end
 local function targetCatalog(context)
     local ids, names, summary = context.GetMachinePetCatalog()
     return type(ids) == "table" and ids or {}, type(names) == "table" and names or {},
-        tostring(summary or "event pet catalog unavailable")
+        tostring(summary or "Domortuus catalog unavailable")
 end
 
 local function acquireOperation(state, context)

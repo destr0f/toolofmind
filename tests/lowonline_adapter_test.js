@@ -47,7 +47,7 @@ check(
     "LowOnline must not reuse the PSX UI/profile identity"
 );
 check(
-    source.includes('profile_namespace", "LowOnline/v1"')
+    source.includes('profile_namespace", "LowOnline/v2"')
         && source.includes('lowonline_autoload", true'),
     "LowOnline profile metadata must remain isolated from the main line"
 );
@@ -67,6 +67,15 @@ check(
     autoEgg.includes("distance is informational")
         && autoEgg.includes("no client distance limit"),
     "LowOnline auto egg status must clearly expose the range-free policy"
+);
+check(
+    autoEgg.includes('PaceMode = options.PaceMode == "Manual Delay"')
+        && autoEgg.includes("ManualDelayMs")
+        && autoEgg.includes("Adaptive (History)")
+        && autoEgg.includes("suppressOpenEggConnections")
+        && autoEgg.includes("restoreOpenEggConnections")
+        && !autoEgg.includes('network.Fire("Opening Egg"'),
+    "LowOnline headless hatch pacing/suppression contract is incomplete"
 );
 
 for (const forbidden of [

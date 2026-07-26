@@ -1,22 +1,21 @@
--- Lazy boost and Boost Bundle worker for PSX OG Nova develop.
+-- Lazy LowOnline boost and potion-shop worker.
 -- Named Library.Network routes are resolved locally; no session index is hard-coded.
 
 local activeState
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "2.0.0-lowonline"
 
-local BUNDLE_COST = 270000
 local ROUTE_REFRESH_INTERVAL = 8
 local ACTIVATION_TIMEOUT = 5
-local BUNDLE_CONFIRM_TIMEOUT = 10
+local PURCHASE_CONFIRM_TIMEOUT = 10
 local TRANSPORT_RETRY = 8
 local REJECTED_RETRY = 30
 local IDLE_SAFETY_DELAY = 30
 
 local BOOSTS = {
-    { Key = "Triple Coins", ConfigKey = "AutoTripleCoins", BundleCount = 5 },
-    { Key = "Triple Damage", ConfigKey = "AutoTripleDamage", BundleCount = 5 },
-    { Key = "Super Lucky", ConfigKey = "AutoSuperLucky", BundleCount = 7 },
-    { Key = "Ultra Lucky", ConfigKey = "AutoUltraLucky", BundleCount = 3 },
+    { Key = "Triple Coins", ConfigKey = "AutoTripleCoins" },
+    { Key = "Triple Damage", ConfigKey = "AutoTripleDamage" },
+    { Key = "Super Lucky", ConfigKey = "AutoSuperLucky" },
+    { Key = "Ultra Lucky", ConfigKey = "AutoUltraLucky" },
 }
 
 local function normalize(value)
@@ -84,29 +83,20 @@ local function acquireOperation(state, context)
     return true
 end
 
-local function inventorySnapshot(inventory)
-    local snapshot = {}
-    for _, definition in ipairs(BOOSTS) do
-        local name = resolveName(definition, {}, inventory)
-        snapshot[definition.Key] = tonumber(inventory[name]) or 0
-    end
-    return snapshot
-end
-
 local function refreshRoutes(state, context, force)
     local now = os.clock()
     if not force and now < state.NextRouteRefresh then return end
     state.NextRouteRefresh = now + ROUTE_REFRESH_INTERVAL
 
-    local bundle, bundleSource, bundleIndex, bundleProblem =
-        context.GetCommandRemote("Buy Boost Bundle")
+    local purchase, purchaseSource, purchaseIndex, purchaseProblem =
+        context.GetCommandRemote("Purchase Boosts")
     local activate, activateSource, activateIndex, activateProblem =
         context.GetFireRemote("Activate Boost")
-    state.BundleRoute = bundle and context.RouteText(bundleSource, bundleIndex)
-        or ("missing: " .. tostring(bundleProblem))
+    state.PurchaseRoute = purchase and context.RouteText(purchaseSource, purchaseIndex)
+        or ("missing: " .. tostring(purchaseProblem))
     state.ActivateRoute = activate and context.RouteText(activateSource, activateIndex)
         or ("missing: " .. tostring(activateProblem))
-    state.BundleReady = bundle ~= nil
+    state.PurchaseReady = purchase ~= nil
     state.ActivateReady = activate ~= nil
 end
 
@@ -115,7 +105,7 @@ local function statusText(state, context, save, action)
     local options = context.GetOptions()
     local lines = {
         "Activate Boost: " .. tostring(state.ActivateReady and "ready" or state.ActivateRoute),
-        "Buy Boost Bundle: " .. tostring(state.BundleReady and "ready" or state.BundleRoute),
+        "Purchase Boosts: " .. tostring(state.PurchaseReady and "ready" or state.PurchaseRoute),
     }
     for _, definition in ipairs(BOOSTS) do
         local name = resolveName(definition, active, inventory)
@@ -130,8 +120,9 @@ local function statusText(state, context, save, action)
     end
     local owner, waiting = context.OperationStatus()
     lines[#lines + 1] = string.format(
-        "Bundle fallback: %s (270k Diamonds) | inventory gate: %s +%d waiting",
-        options.AutoBoostBundle and "enabled" or "disabled",
+        "Auto-buy missing potions: %s | purchase lead: %ds | inventory gate: %s +%d waiting",
+        options.AutoBuyPotions and "enabled" or "disabled",
+        math.max(1, math.floor(tonumber(options.PurchaseLead) or 30)),
         tostring(owner), tonumber(waiting) or 0
     )
     lines[#lines + 1] = "Action: " .. tostring(action or "monitoring live Save data")
@@ -161,32 +152,26 @@ local function confirmPending(state, context, save, now)
         return "waiting for Save confirmation: " .. activation.Key
     end
 
-    local bundle = state.PendingBundle
-    if bundle then
-        local current = inventorySnapshot(inventory)
-        local increased = false
-        for key, before in pairs(bundle.InventoryBefore) do
-            if (tonumber(current[key]) or 0) > (tonumber(before) or 0) then
-                increased = true
-                break
-            end
-        end
-        if increased then
-            state.PendingBundle = nil
-            state.NextBundleAttempt = now + 0.25
+    local purchase = state.PendingPurchase
+    if purchase then
+        local current = tonumber(inventory[purchase.Name]) or 0
+        if current > purchase.InventoryBefore then
+            state.PendingPurchase = nil
+            state.NextPurchaseAttempt[purchase.Key] = now + 0.25
             releaseOperation(state, context)
-            context.Trace("boost bundle confirmed", tostring(bundle.Route))
-            return "Boost Bundle confirmed by BoostsInventory"
+            context.Trace("boost potion confirmed", purchase.Key .. " | " .. tostring(purchase.Route))
+            return "potion purchase confirmed by BoostsInventory: " .. purchase.Key
         end
-        if now - bundle.SentAt >= BUNDLE_CONFIRM_TIMEOUT then
-            state.PendingBundle = nil
-            state.NextBundleAttempt = now + REJECTED_RETRY
+        if now - purchase.SentAt >= PURCHASE_CONFIRM_TIMEOUT then
+            state.PendingPurchase = nil
+            state.NextPurchaseAttempt[purchase.Key] = now + REJECTED_RETRY
             releaseOperation(state, context)
-            context.Trace("boost bundle timeout", "accepted response was not confirmed by Save")
-            return "bundle response was not confirmed; no blind repeat for "
+            context.Trace("boost potion timeout",
+                purchase.Key .. " accepted response was not confirmed by Save")
+            return "potion response was not confirmed; no blind repeat for "
                 .. tostring(REJECTED_RETRY) .. "s"
         end
-        return "waiting for Boost Bundle inventory confirmation"
+        return "waiting for potion inventory confirmation: " .. purchase.Key
     end
     return nil
 end
@@ -219,7 +204,7 @@ local function runCycle(state, context)
     end
 
     local pendingAction = confirmPending(state, context, save, now)
-    if state.PendingActivation or state.PendingBundle then
+    if state.PendingActivation or state.PendingPurchase then
         state.NextWakeAt = now + 0.25
         setStatus(state, context, statusText(state, context, save, pendingAction))
         return
@@ -242,12 +227,33 @@ local function runCycle(state, context)
 
     local active, inventory = saveTables(save)
     local renewBefore = math.max(1, math.floor(tonumber(options.RenewBefore) or 5))
+    local purchaseLead = math.max(renewBefore,
+        math.floor(tonumber(options.PurchaseLead) or 30))
     local activationCandidate
+    local purchaseCandidate
     local missing = {}
     for _, definition in ipairs(selected) do
         local name = resolveName(definition, active, inventory)
         local remaining = tonumber(active[name]) or 0
         local stock = tonumber(inventory[name]) or 0
+        local nextPurchase = state.NextPurchaseAttempt[definition.Key] or 0
+        if stock <= 0 and remaining <= purchaseLead then
+            missing[#missing + 1] = definition.Key
+            if options.AutoBuyPotions == true and now >= nextPurchase
+                and not purchaseCandidate then
+                purchaseCandidate = {
+                    Definition = definition,
+                    Name = name,
+                    Remaining = remaining,
+                    Stock = stock,
+                }
+            elseif nextPurchase > now then
+                state.NextWakeAt = math.min(state.NextWakeAt, nextPurchase)
+            end
+        elseif stock <= 0 and remaining > purchaseLead then
+            state.NextWakeAt = math.min(state.NextWakeAt,
+                now + math.max(remaining - purchaseLead, 0.25))
+        end
         if remaining <= renewBefore then
             local nextAttempt = state.NextAttempt[definition.Key] or 0
             if stock > 0 and now >= nextAttempt
@@ -260,13 +266,72 @@ local function runCycle(state, context)
                 }
             elseif stock > 0 and nextAttempt > now then
                 state.NextWakeAt = math.min(state.NextWakeAt, nextAttempt)
-            elseif stock <= 0 then
-                missing[#missing + 1] = definition.Key
             end
         else
             state.NextWakeAt = math.min(state.NextWakeAt,
                 now + math.max(remaining - renewBefore, 0.25))
         end
+    end
+
+    if purchaseCandidate then
+        if not state.PurchaseReady then
+            setStatus(state, context, statusText(state, context, save,
+                "Purchase Boosts route is unavailable; no purchase sent"))
+            return
+        end
+        local acquired, owner = acquireOperation(state, context)
+        if not acquired then
+            state.NextWakeAt = now + 0.25
+            setStatus(state, context, statusText(state, context, save,
+                "ready to buy " .. purchaseCandidate.Definition.Key
+                .. ", waiting for " .. tostring(owner)))
+            return
+        end
+        local fresh = context.GetSave()
+        if not boostSaveReady(fresh) then
+            releaseOperation(state, context)
+            setStatus(state, context,
+                "Boost Save data changed during potion safety recheck; no purchase was sent.")
+            return
+        end
+        local freshActive, freshInventory = saveTables(fresh)
+        local freshName = resolveName(purchaseCandidate.Definition, freshActive, freshInventory)
+        local freshStock = tonumber(freshInventory[freshName]) or 0
+        local freshRemaining = tonumber(freshActive[freshName]) or 0
+        local freshOptions = context.GetOptions()
+        if freshStock > 0 or freshRemaining > purchaseLead
+            or type(freshOptions) ~= "table" or freshOptions.AutoBuyPotions ~= true then
+            releaseOperation(state, context)
+            return
+        end
+        local transportOk, accepted, message, sourceName, sessionIndex =
+            context.InvokeCommand("Purchase Boosts", freshName, false)
+        if not transportOk or not accepted then
+            releaseOperation(state, context)
+            local retry = transportOk and REJECTED_RETRY or TRANSPORT_RETRY
+            state.NextPurchaseAttempt[purchaseCandidate.Definition.Key] = now + retry
+            state.NextWakeAt = math.min(state.NextWakeAt,
+                state.NextPurchaseAttempt[purchaseCandidate.Definition.Key])
+            local reason = transportOk and tostring(message or "request rejected")
+                or ("transport error: " .. tostring(message))
+            setStatus(state, context, statusText(state, context, fresh,
+                "Purchase Boosts not accepted for "
+                .. purchaseCandidate.Definition.Key .. ": " .. reason))
+            context.Trace("boost potion", purchaseCandidate.Definition.Key .. " | " .. reason)
+            return
+        end
+        state.PendingPurchase = {
+            Key = purchaseCandidate.Definition.Key,
+            Name = freshName,
+            InventoryBefore = freshStock,
+            SentAt = now,
+            Route = context.RouteText(sourceName, sessionIndex),
+        }
+        state.NextWakeAt = now + 0.25
+        setStatus(state, context, statusText(state, context, fresh,
+            "Purchase Boosts accepted for " .. purchaseCandidate.Definition.Key
+            .. "; waiting for BoostsInventory"))
+        return
     end
 
     if activationCandidate then
@@ -321,91 +386,10 @@ local function runCycle(state, context)
         return
     end
 
-    if #missing > 0 and options.AutoBoostBundle == true then
-        if now < state.NextBundleAttempt then
-            state.NextWakeAt = math.min(state.NextWakeAt, state.NextBundleAttempt)
-            setStatus(state, context, statusText(state, context, save,
-                "bundle retry cooldown; missing: " .. table.concat(missing, ", ")))
-            return
-        end
-        local diamonds = context.GetCurrency("Diamonds")
-        if diamonds == nil or diamonds < BUNDLE_COST then
-            local balance = diamonds == nil and "unknown" or context.FormatNumber(diamonds)
-            setStatus(state, context, statusText(state, context, save,
-                "missing " .. table.concat(missing, ", ") .. "; Diamonds "
-                .. balance .. "/" .. context.FormatNumber(BUNDLE_COST)
-                .. "; no bundle request sent"))
-            return
-        end
-        if not state.BundleReady then
-            setStatus(state, context, statusText(state, context, save,
-                "Buy Boost Bundle route is unavailable; no purchase sent"))
-            return
-        end
-
-        local acquired, owner = acquireOperation(state, context)
-        if not acquired then
-            state.NextWakeAt = now + 0.25
-            setStatus(state, context, statusText(state, context, save,
-                "bundle is needed, waiting for " .. tostring(owner)))
-            return
-        end
-
-        local fresh = context.GetSave()
-        if not boostSaveReady(fresh) then
-            releaseOperation(state, context)
-            setStatus(state, context,
-                "Boost Save data changed during the bundle safety recheck; no purchase was sent.")
-            return
-        end
-        local freshActive, freshInventory = saveTables(fresh)
-        local stillMissing = {}
-        for _, definition in ipairs(selected) do
-            local name = resolveName(definition, freshActive, freshInventory)
-            local remaining = tonumber(freshActive[name]) or 0
-            local stock = tonumber(freshInventory[name]) or 0
-            if remaining <= renewBefore and stock <= 0 then
-                stillMissing[#stillMissing + 1] = definition.Key
-            end
-        end
-        local freshDiamonds = context.GetCurrency("Diamonds")
-        if #stillMissing == 0 or freshDiamonds == nil or freshDiamonds < BUNDLE_COST then
-            releaseOperation(state, context)
-            local reason = #stillMissing == 0 and "the selected boost stock was refilled"
-                or ("Diamonds changed to "
-                    .. (freshDiamonds == nil and "unknown" or context.FormatNumber(freshDiamonds)))
-            setStatus(state, context, statusText(state, context, fresh,
-                "bundle safety recheck cancelled the purchase: " .. reason))
-            return
-        end
-        local before = inventorySnapshot(freshInventory)
-        local transportOk, accepted, message, sourceName, sessionIndex =
-            context.InvokeCommand("Buy Boost Bundle")
-        if not transportOk or not accepted then
-            releaseOperation(state, context)
-            state.NextBundleAttempt = now + (transportOk and REJECTED_RETRY or TRANSPORT_RETRY)
-            state.NextWakeAt = math.min(state.NextWakeAt, state.NextBundleAttempt)
-            local reason = transportOk and tostring(message or "request rejected")
-                or ("transport error: " .. tostring(message))
-            setStatus(state, context, statusText(state, context, fresh,
-                "Boost Bundle not accepted: " .. reason))
-            context.Trace("boost bundle", reason)
-            return
-        end
-        state.PendingBundle = {
-            InventoryBefore = before,
-            SentAt = now,
-            Route = context.RouteText(sourceName, sessionIndex),
-        }
-        state.NextWakeAt = now + 0.25
-        setStatus(state, context, statusText(state, context, fresh,
-            "Boost Bundle accepted; waiting for BoostsInventory"))
-        return
-    end
-
     releaseOperation(state, context)
     local action = #missing > 0
-        and ("out of " .. table.concat(missing, ", ") .. "; bundle fallback is disabled")
+        and ("out of " .. table.concat(missing, ", ")
+            .. "; potion auto-buy is " .. (options.AutoBuyPotions and "cooling down" or "disabled"))
         or (pendingAction or "all selected boosts are outside the renewal window")
     setStatus(state, context, statusText(state, context, save, action))
 end
@@ -420,10 +404,11 @@ local function stopState(state, context)
     if not state then return true end
     state.Running = false
     state.PendingActivation = nil
-    state.PendingBundle = nil
+    state.PendingPurchase = nil
     releaseOperation(state, context)
     pcall(context.CancelOperation, context.OperationOwner)
     table.clear(state.NextAttempt)
+    table.clear(state.NextPurchaseAttempt)
     local worker = state.WorkerThread
     state.WorkerThread = nil
     if worker and worker ~= coroutine.running() and type(task.cancel) == "function" then
@@ -445,8 +430,8 @@ return function(action, context)
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
-        "Library", "Running", "Enabled", "GetOptions", "GetSave", "GetCurrency",
-        "FormatNumber", "GetCommandRemote", "GetFireRemote", "InvokeCommand",
+        "Library", "Running", "Enabled", "GetOptions", "GetSave",
+        "GetCommandRemote", "GetFireRemote", "InvokeCommand",
         "FireCommand", "RouteText", "AcquireOperation", "ReleaseOperation",
         "CancelOperation", "OperationStatus", "OperationOwner", "SetStatus", "Trace",
     }) do
@@ -458,9 +443,9 @@ return function(action, context)
         Running = true,
         OperationOwned = false,
         PendingActivation = nil,
-        PendingBundle = nil,
+        PendingPurchase = nil,
         NextAttempt = {},
-        NextBundleAttempt = 0,
+        NextPurchaseAttempt = {},
         NextRouteRefresh = 0,
         NextWakeAt = 0,
         WorkerThread = nil,
@@ -468,13 +453,15 @@ return function(action, context)
     activeState = state
     refreshRoutes(state, context, true)
     context.Trace("auto boost module", "v" .. MODULE_VERSION
-        .. " | dynamic Activate Boost + Buy Boost Bundle routes")
+        .. " | dynamic Activate Boost + Purchase Boosts routes")
     state.WorkerThread = task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
             local ok, problem = pcall(runCycle, state, context)
             if not ok then
                 releaseOperation(state, context)
-                state.NextBundleAttempt = os.clock() + TRANSPORT_RETRY
+                for _, definition in ipairs(BOOSTS) do
+                    state.NextPurchaseAttempt[definition.Key] = os.clock() + TRANSPORT_RETRY
+                end
                 local status = "Auto boost worker recovered from a local error: " .. tostring(problem)
                 context.Trace("auto boost", status)
                 setStatus(state, context, status .. "\nNo immediate request; retry delayed.")

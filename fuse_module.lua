@@ -3,7 +3,7 @@
 -- before one Use Fuse Machine request.
 
 local activeState
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.1.0-lowonline"
 
 local TARGET_EGG = "Golden Spiked Egg"
 local IDLE_CHECK_DELAY = 3
@@ -15,6 +15,7 @@ local MODE_POLICY = {
     ["8 Rare"] = { Rarity = "Rare", Count = 8 },
     ["5 Epic"] = { Rarity = "Epic", Count = 5 },
 }
+local MODE_ORDER = { "12 Basic", "8 Rare", "5 Epic" }
 
 local function shortUID(uid)
     uid = tostring(uid or "?")
@@ -60,11 +61,22 @@ local function resolveEggDrops(context)
     return ids, nil
 end
 
-local function policyFor(context)
-    local name = tostring(context.Mode() or "")
-    local policy = MODE_POLICY[name]
-    if not policy then return nil, "unknown fuse mode: " .. name end
-    return policy, name
+local function activeModes(context)
+    local configured = context.Modes()
+    local result = {}
+    if type(configured) == "table" then
+        for _, name in ipairs(MODE_ORDER) do
+            if configured[name] == true then result[#result + 1] = name end
+        end
+        for _, rawName in ipairs(configured) do
+            local name = tostring(rawName)
+            if MODE_POLICY[name] and configured[name] ~= false
+                and not table.find(result, name) then
+                result[#result + 1] = name
+            end
+        end
+    end
+    return result
 end
 
 local function acquireOperation(state, context)
@@ -249,23 +261,15 @@ local function runCheck(state, context)
         state.Busy = false
     end
 
-    local policy, modeName = policyFor(context)
-    if not policy then
-        context.SetStatus(tostring(modeName) .. "; no request sent.")
+    local enabledModes = activeModes(context)
+    if #enabledModes == 0 then
+        context.SetStatus("No fuse rarity mode is enabled; no request sent.")
         finish(RETRY_DELAY)
         return
     end
     local info, infoProblem = readFuseInfo(state, context)
     if not info then
         context.SetStatus("Fuse route/info error; no request sent: " .. tostring(infoProblem))
-        finish(RETRY_DELAY)
-        return
-    end
-    if policy.Count < info.Minimum or policy.Count > info.Maximum then
-        context.SetStatus(string.format(
-            "%s requires %d pets, outside live server limits %d-%d. No request sent.",
-            modeName, policy.Count, info.Minimum, info.Maximum
-        ))
         finish(RETRY_DELAY)
         return
     end
@@ -290,11 +294,31 @@ local function runCheck(state, context)
         finish(0.4)
         return
     end
-    local candidates, stats = collectCandidates(context, snapshot.Pets, targetIds, policy)
-    if #candidates < policy.Count then
-        context.SetStatus("Waiting for " .. modeName .. " from " .. TARGET_EGG
-            .. "; have " .. tostring(#candidates) .. "/" .. tostring(policy.Count)
-            .. ". No request sent.\n" .. statsText(stats)
+    local modeName, policy, candidates, stats
+    local summaries = {}
+    local startIndex = math.clamp(math.floor(tonumber(state.NextModeIndex) or 1), 1, #enabledModes)
+    for offset = 0, #enabledModes - 1 do
+        local index = ((startIndex + offset - 1) % #enabledModes) + 1
+        local candidateMode = enabledModes[index]
+        local candidatePolicy = MODE_POLICY[candidateMode]
+        if candidatePolicy.Count >= info.Minimum and candidatePolicy.Count <= info.Maximum then
+            local modeCandidates, modeStats =
+                collectCandidates(context, snapshot.Pets, targetIds, candidatePolicy)
+            summaries[#summaries + 1] = candidateMode .. " "
+                .. tostring(#modeCandidates) .. "/" .. tostring(candidatePolicy.Count)
+            if not modeName and #modeCandidates >= candidatePolicy.Count then
+                modeName, policy, candidates, stats =
+                    candidateMode, candidatePolicy, modeCandidates, modeStats
+                state.NextModeIndex = (index % #enabledModes) + 1
+            end
+        else
+            summaries[#summaries + 1] = string.format(
+                "%s blocked by live limits %d-%d", candidateMode, info.Minimum, info.Maximum)
+        end
+    end
+    if not modeName then
+        context.SetStatus("Waiting for any enabled " .. TARGET_EGG .. " fuse batch.\n"
+            .. table.concat(summaries, " | ")
             .. "\nLast confirmed: " .. state.LastConfirmedAudit)
         finish(IDLE_CHECK_DELAY)
         return
@@ -379,7 +403,7 @@ return function(action, context)
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
-        "Library", "Running", "Enabled", "Mode", "GetPetSnapshot",
+        "Library", "Running", "Enabled", "Modes", "GetPetSnapshot",
         "InvalidatePetSnapshot", "GetCommandRemote", "InvalidateCommand",
         "InvokeCommand", "RouteText", "AcquireOperation", "ReleaseOperation",
         "CancelOperation", "OperationOwner", "SetStatus", "Trace",
@@ -399,6 +423,7 @@ return function(action, context)
         LastConfirmedAudit = "none",
         FuseInfo = nil,
         Completed = 0,
+        NextModeIndex = 1,
         WorkerThread = nil,
         Task = context.Task or task,
     }

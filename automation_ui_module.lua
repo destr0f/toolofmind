@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.3.1-lowonline"
+local MODULE_VERSION = "1.4.0-lowonline"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -26,6 +26,7 @@ local function build(context)
     local UI = context.UI
     local config = context.Config
     local statusViews = context.StatusViews
+    local spawn = type(context.Task) == "table" and context.Task.spawn or task.spawn
     local yieldUI = type(context.YieldUI) == "function" and context.YieldUI or function() end
 
     local eggCatalog = UI.EggTab:Section({ Title = "01 / Live Egg Catalog", Box = true, Opened = true })
@@ -64,7 +65,7 @@ local function build(context)
         Desc = "Loads the egg worker and re-indexes local models; no server request.",
         Icon = "refresh-cw",
         Callback = function()
-            task.spawn(function()
+            spawn(function()
                 local loaded, loadProblem = context.EnsureAutoEgg()
                 if not loaded then
                     context.SetEggCatalogStatus("Catalog module could not be loaded: " .. tostring(loadProblem))
@@ -109,6 +110,29 @@ local function build(context)
                 or "Headless (No Animation)"
         end,
     })
+    local eggPaceMode = eggAutomation:Dropdown({
+        Flag = "egg_pace_mode",
+        Title = "Request Pace",
+        Desc = "Adaptive learns from confirmed hatches; Manual uses the exact delay below. Both keep one request in flight.",
+        Values = { "Adaptive (History)", "Manual Delay" },
+        Value = "Adaptive (History)",
+        Multi = false,
+        AllowNone = false,
+        Callback = function(value)
+            config.EggPaceMode = value == "Manual Delay" and "Manual Delay" or "Adaptive (History)"
+        end,
+    })
+    local eggManualDelay = eggAutomation:Slider({
+        Flag = "egg_manual_delay_ms",
+        Title = "Manual Hatch Delay",
+        Desc = "Milliseconds after a confirmed hatch. Minimum 50ms; server replies still control the real maximum speed.",
+        Step = 25,
+        Value = { Min = 50, Max = 3000, Default = 100 },
+        Callback = function(value)
+            config.EggManualDelayMs =
+                math.clamp(math.floor(tonumber(value) or 100), 50, 3000)
+        end,
+    })
     local autoEggToggle = eggAutomation:Toggle({
         Flag = "auto_egg",
         Title = "Enable Auto Hatch",
@@ -119,7 +143,7 @@ local function build(context)
             if config.AutoEgg == enabled then return end
             config.AutoEgg = enabled
             if enabled then
-                task.spawn(context.StartAutoEgg)
+                spawn(context.StartAutoEgg)
             else
                 context.StopAutoEgg("Auto hatch disabled. No egg request is active.")
             end
@@ -140,7 +164,7 @@ local function build(context)
         Title = "REFRESH COMMAND STATUS",
         Desc = "Manual local lookup through Library.Network; never invokes the server.",
         Icon = "refresh-cw",
-        Callback = function() task.spawn(context.RefreshRoutes) end,
+        Callback = function() spawn(context.RefreshRoutes) end,
     })
     statusViews.Routes = routes:Paragraph({
         Title = "Command Status",
@@ -151,7 +175,7 @@ local function build(context)
     local machines = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
     machines:Paragraph({
         Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
-        Desc = "Galaxy Fox + Silver Stag + Silver Dragon + Santa Paws; every batch is validated and confirmed from Save.",
+        Desc = "LowOnline Domortuus only; every batch is rebuilt and confirmed from a fresh Save snapshot.",
     })
     machines:Slider({
         Flag = "machine_batch_size",
@@ -164,11 +188,11 @@ local function build(context)
         end,
     })
     machines:Button({
-        Title = "REFRESH EVENT PET CATALOG",
-        Desc = "Re-reads Directory.Eggs/Pets locally; no machine request.",
+        Title = "REFRESH DOMORTUUS CATALOG",
+        Desc = "Re-reads Directory.Pets locally; no machine request.",
         Icon = "refresh-cw",
         Callback = function()
-            task.spawn(function()
+            spawn(function()
                 local _, _, summary = context.GetMachinePetCatalog(true)
                 context.SetRouteStatus("Pet catalog refreshed locally: " .. tostring(summary))
             end)
@@ -181,37 +205,43 @@ local function build(context)
         Title = "EXACT RARITY BATCHES / LIVE DIRECTORY",
         Desc = "Selects species from Golden Spiked Egg drops; equipped, locked and upgraded pets are protected.",
     })
-    local fuseModeDropdown = fuse:Dropdown({
-        Flag = "lowonline_fuse_mode",
-        Title = "Fuse Mode",
-        Desc = "Each request contains exactly one validated rarity batch.",
-        Values = { "12 Basic", "8 Rare", "5 Epic" },
-        Value = "12 Basic",
-        Multi = false,
-        AllowNone = false,
-        Callback = function(value)
-            if value ~= "8 Rare" and value ~= "5 Epic" then value = "12 Basic" end
-            config.FuseMode = value
-            context.SetFuseStatus("Mode selected: " .. value
-                .. ". The next request will be rebuilt from a fresh Save.Pets snapshot.")
-        end,
-    })
-    fuse:Toggle({
-        Flag = "lowonline_auto_fuse",
-        Title = "Enable Auto Fuse",
-        Desc = "Uses Get Fuse Pets Info and Use Fuse Machine by stable Network names; no session index is stored.",
-        Value = false,
-        Callback = function(value)
-            config.AutoFuse = value == true
-            if config.AutoFuse then
-                context.SetFuseStatus("Enabled. Loading the protected Golden Spiked Egg fuse worker...")
-                task.spawn(function() context.StartMachine("Fuse") end)
-            else
-                context.StopMachine("Fuse")
-                context.SetFuseStatus("Disabled. No pets will be sent to the Fuse Machine.")
-            end
-        end,
-    })
+    local fuseModeToggles = {}
+    local function enabledFuseModes()
+        local modes = {}
+        if config.AutoFuseBasic then modes[#modes + 1] = "12 Basic" end
+        if config.AutoFuseRare then modes[#modes + 1] = "8 Rare" end
+        if config.AutoFuseEpic then modes[#modes + 1] = "5 Epic" end
+        return modes
+    end
+    local function reconcileFuseModes()
+        local modes = enabledFuseModes()
+        config.AutoFuse = #modes > 0
+        if config.AutoFuse then
+            context.SetFuseStatus("Enabled modes: " .. table.concat(modes, ", ")
+                .. ". Batches run serially from fresh Save.Pets snapshots.")
+            spawn(function() context.StartMachine("Fuse") end)
+        else
+            context.StopMachine("Fuse")
+            context.SetFuseStatus("Disabled. No pets will be sent to the Fuse Machine.")
+        end
+    end
+    for _, definition in ipairs({
+        { Flag = "lowonline_fuse_basic", Key = "AutoFuseBasic", Title = "Fuse 12 Basic" },
+        { Flag = "lowonline_fuse_rare", Key = "AutoFuseRare", Title = "Fuse 8 Rare" },
+        { Flag = "lowonline_fuse_epic", Key = "AutoFuseEpic", Title = "Fuse 5 Epic" },
+    }) do
+        local item = definition
+        fuseModeToggles[item.Key] = fuse:Toggle({
+            Flag = item.Flag,
+            Title = item.Title,
+            Desc = "May run together with the other rarity modes; each server request still contains one exact batch.",
+            Value = false,
+            Callback = function(value)
+                config[item.Key] = value == true
+                reconcileFuseModes()
+            end,
+        })
+    end
     statusViews.Fuse = fuse:Paragraph({
         Title = "Fuse Machine Status",
         Desc = "Disabled / no pet UIDs have been selected",
@@ -221,14 +251,14 @@ local function build(context)
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
         Flag = "auto_golden_galaxy_fox",
-        Title = "Auto Golden Target Pets",
-        Desc = "Normal targets; protects equipped and locked pets; enchants are not filtered.",
+        Title = "Auto Golden Domortuus",
+        Desc = "Normal Domortuus only; protects equipped and locked pets; enchants are not filtered.",
         Value = false,
         Callback = function(value)
             config.AutoGoldenGalaxyFox = value == true
             if config.AutoGoldenGalaxyFox then
                 context.SetGoldStatus("Enabled. Loading the protected worker in the serial lane...")
-                task.spawn(function() context.StartMachine("Gold") end)
+                spawn(function() context.StartMachine("Gold") end)
             else
                 context.StopMachine("Gold")
                 context.SetGoldStatus("Disabled. No pets will be sent to the Golden Machine.")
@@ -244,14 +274,14 @@ local function build(context)
     local rainbow = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
     rainbow:Toggle({
         Flag = "auto_rainbow_galaxy_fox",
-        Title = "Auto Rainbow Target Pets",
-        Desc = "Golden targets; protects equipped and locked pets; enchants are not filtered.",
+        Title = "Auto Rainbow Domortuus",
+        Desc = "Golden Domortuus only; protects equipped, locked and Coins IV/V pets.",
         Value = false,
         Callback = function(value)
             config.AutoRainbowGalaxyFox = value == true
             if config.AutoRainbowGalaxyFox then
                 context.SetRainbowStatus("Enabled. Loading the protected worker in the serial lane...")
-                task.spawn(function() context.StartMachine("Rainbow") end)
+                spawn(function() context.StartMachine("Rainbow") end)
             else
                 context.StopMachine("Rainbow")
                 context.SetRainbowStatus("Disabled. No pets will be sent to the Rainbow Machine.")
@@ -304,7 +334,7 @@ local function build(context)
             config.AutoDarkMatterGalaxyFox = value == true
             if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then
                 context.SetDarkMatterStatus("Enabled. Loading the Dark Matter worker in the serial lane...")
-                task.spawn(function() context.StartMachine("DarkMatter") end)
+                spawn(function() context.StartMachine("DarkMatter") end)
             else
                 context.StopMachine("DarkMatter")
                 context.SetDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
@@ -320,7 +350,7 @@ local function build(context)
             config.AutoClaimDarkMatter = value == true
             if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then
                 context.SetDarkMatterStatus("Enabled. Reading DarkMatterQueue and server time...")
-                task.spawn(function() context.StartMachine("DarkMatter") end)
+                spawn(function() context.StartMachine("DarkMatter") end)
             else
                 context.StopMachine("DarkMatter")
                 context.SetDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
@@ -348,6 +378,17 @@ local function build(context)
             config.BoostRenewBefore = math.clamp(math.floor(tonumber(value) or 5), 1, 15)
         end,
     })
+    boost:Slider({
+        Flag = "boost_purchase_lead",
+        Title = "Buy Missing Potion Before Expiration",
+        Desc = "When enabled stock is empty, opens the potion purchase window this many seconds before the active boost ends.",
+        Step = 5,
+        Value = { Min = 5, Max = 120, Default = 30 },
+        Callback = function(value)
+            config.BoostPurchaseLead =
+                math.clamp(math.floor(tonumber(value) or 30), 5, 120)
+        end,
+    })
     for _, definition in ipairs({
         { "auto_triple_coins", "AutoTripleCoins", "Auto Triple Coins" },
         { "auto_triple_damage", "AutoTripleDamage", "Auto Triple Damage" },
@@ -358,7 +399,7 @@ local function build(context)
         boost:Toggle({
             Flag = item[1],
             Title = item[3],
-            Desc = "Renews inside the selected window; an empty stock may request one bundle.",
+            Desc = "Renews inside the selected window; an empty stock may buy this exact potion.",
             Value = false,
             Callback = function(value)
                 config[item[2]] = value == true
@@ -368,37 +409,39 @@ local function build(context)
     end
     yieldUI("boost toggles")
 
-    local bundle = UI.BoostsTab:Section({ Title = "Boost Bundle Fallback", Box = true, Opened = true })
-    bundle:Toggle({
-        Flag = "auto_boost_bundle",
-        Title = "Auto Buy Boost Bundle",
-        Desc = "Costs 270k Diamonds and buys only when an enabled boost has zero stock.",
+    local potionShop = UI.BoostsTab:Section({ Title = "LowOnline Potion Shop", Box = true, Opened = true })
+    potionShop:Toggle({
+        Flag = "auto_buy_potions",
+        Title = "Auto Buy Missing Potions",
+        Desc = "Uses Purchase Boosts(name, false) only for enabled boosts with zero inventory stock.",
         Value = false,
         Callback = function(value)
-            config.AutoBoostBundle = value == true
+            config.AutoBuyPotions = value == true
             context.ReconcileBoost()
         end,
     })
-    bundle:Button({
+    potionShop:Button({
         Title = "CHECK BOOST ROUTES",
-        Desc = "Resolves boost routes locally without spending Diamonds.",
+        Desc = "Resolves Activate Boost and Purchase Boosts locally without buying.",
         Icon = "refresh-cw",
         Callback = function()
-            task.spawn(context.RefreshRoutes)
-            if context.BoostEnabled() then task.spawn(context.StartBoost) end
+            spawn(context.RefreshRoutes)
+            if context.BoostEnabled() then spawn(context.StartBoost) end
         end,
     })
-    statusViews.Boost = bundle:Paragraph({
+    statusViews.Boost = potionShop:Paragraph({
         Title = "Boost Automation Status",
-        Desc = "Disabled / no boost or bundle request is armed",
+        Desc = "Disabled / no boost activation or potion purchase is armed",
     })
-    yieldUI("boost bundle")
+    yieldUI("boost potion shop")
 
     return true, {
         AutoEggToggle = autoEggToggle,
         EggScopeDropdown = eggScope,
         EggDropdown = eggDropdown,
-        FuseModeDropdown = fuseModeDropdown,
+        EggPaceModeDropdown = eggPaceMode,
+        EggManualDelaySlider = eggManualDelay,
+        FuseModeToggles = fuseModeToggles,
     }
 end
 

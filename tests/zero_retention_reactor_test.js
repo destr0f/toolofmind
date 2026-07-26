@@ -230,7 +230,7 @@ assert(!farm.includes("nextZoneRefreshAt")
     "catalogs still have periodic refresh clocks");
 
 // Adaptive workers keep fast polling only while a request is pending.
-assert(egg.includes("if state.Pending then return 0.05 end")
+assert(egg.includes("if state.Pending then return 0.02 end")
     && egg.includes("workerDelay(state)")
     && egg.includes("PHYSICAL_RESCAN_COOLDOWN = 2"),
     "auto egg is not deadline-driven/invalidation-bounded");
@@ -246,7 +246,9 @@ for (const [name, source] of [
 }
 assert(boost.includes("IDLE_SAFETY_DELAY = 30")
     && boost.includes("state.NextWakeAt")
-    && boost.includes("remaining - renewBefore"),
+    && boost.includes("remaining - renewBefore")
+    && boost.includes('context.InvokeCommand("Purchase Boosts", freshName, false)')
+    && boost.includes('context.FireCommand("Activate Boost", freshName)'),
     "boost worker does not schedule the nearest renewal/retry");
 assert(farm.includes("MACHINE_PET_SNAPSHOT_TTL = 5")
     && farm.includes("GetPetSnapshot = getMachinePetSnapshot")

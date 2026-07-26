@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.1.3-lowonline"
+local MODULE_VERSION = "1.2.0-lowonline"
 
 local gate = {
     Owner = nil,
@@ -18,17 +18,10 @@ local catalogCache = {
 }
 
 local MACHINE_PET_NAMES = {
-    ["galaxy fox"] = "Galaxy Fox",
-    ["silver stag"] = "Silver Stag",
-    ["silver dragon"] = "Silver Dragon",
-    ["santa paws"] = "Santa Paws",
+    ["domortuus"] = "Domortuus",
 }
 
-local MACHINE_PET_IDS = {
-    ["263"] = "Santa Paws",
-    ["264"] = "Silver Stag",
-    ["265"] = "Silver Dragon",
-}
+local MACHINE_PET_IDS = {}
 
 local function normalize(value)
     value = string.lower(tostring(value or ""))
@@ -115,19 +108,14 @@ local function gateStatus(context)
 end
 
 local function definitionAllowed(definition, rawId)
-    -- Current event IDs are authoritative even when this place ships an older
-    -- Directory.Pets table that has no definition for the new pets yet.
-    if type(definition) ~= "table" then
-        return explicitMachinePet(nil, rawId)
-    end
+    if type(definition) ~= "table" then return false end
     local rarity = normalize(definition.rarity or definition.Rarity)
     if definition.isPremium == true or definition.huge == true or definition.isHuge == true
         or definition.isExclusive == true or definition.isVanity == true
         or rarity == "exclusive" or rarity == "secret" then
         return false
     end
-    if explicitMachinePet(definition, rawId) then return true end
-    return rarity == "legendary" or rarity == "mythical"
+    return explicitMachinePet(definition, rawId)
 end
 
 local function getCatalog(context, force)
@@ -139,15 +127,7 @@ local function getCatalog(context, force)
     local library = type(context) == "table" and context.Library or nil
     local directory = library and library.Directory or {}
     local pets = type(directory.Pets) == "table" and directory.Pets or {}
-    local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
-    local ids, eventEggs = {}, {}
-
-    -- Do not make the current Christmas trio depend on the live egg/directory
-    -- schema. Some worlds expose the pets in Save.Pets before Directory.Pets
-    -- is updated, which previously reduced the catalog to Galaxy Fox only.
-    for id in pairs(MACHINE_PET_IDS) do
-        ids[id] = true
-    end
+    local ids = {}
 
     local function petDefinition(rawId)
         if rawId == nil then return nil end
@@ -161,54 +141,6 @@ local function getCatalog(context, force)
         if definitionAllowed(definition, rawId) then ids[id] = true end
     end
 
-    local function addEggDrops(rawEgg, visiting)
-        local eggId = tostring(rawEgg or "")
-        if eggId == "" then return end
-        visiting = visiting or {}
-        if visiting[eggId] then return end
-        visiting[eggId] = true
-        local entry = eggs[eggId]
-        local drops = type(entry) == "table" and entry.drops or nil
-        if type(drops) == "string" then
-            addEggDrops(drops, visiting)
-        elseif type(drops) == "table" then
-            for dropKey, drop in pairs(drops) do
-                local petId
-                if type(drop) == "table" then
-                    petId = drop[1] or drop.id or drop.ID or drop.petId or drop.PetId
-                elseif petDefinition(drop) then
-                    petId = drop
-                elseif petDefinition(dropKey) then
-                    -- Some Directory.Eggs revisions store drops as [petId] = chance.
-                    petId = dropKey
-                end
-                addPet(petId)
-            end
-        end
-        visiting[eggId] = nil
-    end
-
-    for eggId, entry in pairs(eggs) do
-        if type(entry) == "table" then
-            local marker = normalize(table.concat({
-                tostring(eggId), tostring(entry.displayName or ""),
-                tostring(entry.currency or ""), tostring(entry.area or ""),
-                tostring(entry.event or entry.Event or entry.eventName or entry.EventName or ""),
-            }, " "))
-            if normalize(entry.currency) == "gingerbread"
-                or string.find(marker, "christmas", 1, true)
-                or string.find(marker, "holiday", 1, true)
-                or string.find(marker, "new year", 1, true)
-                or string.find(marker, "newyear", 1, true)
-                or string.find(marker, "xmas", 1, true)
-                or string.find(marker, "jolly", 1, true)
-                or string.find(marker, "many gifts", 1, true) then
-                eventEggs[#eventEggs + 1] = tostring(eggId)
-                addEggDrops(eggId)
-            end
-        end
-    end
-
     for id, definition in pairs(pets) do
         if explicitMachinePet(definition, id) then
             addPet(id)
@@ -216,14 +148,19 @@ local function getCatalog(context, force)
     end
 
     local names = {}
+    local seenNames = {}
     for id in pairs(ids) do
         local definition = petDefinition(id)
-        names[#names + 1] = tostring(definitionName(definition) or MACHINE_PET_IDS[id] or id)
+        local name = tostring(definitionName(definition) or MACHINE_PET_IDS[id] or id)
+        local key = normalize(name)
+        if not seenNames[key] then
+            seenNames[key] = true
+            names[#names + 1] = name
+        end
     end
     table.sort(names)
-    table.sort(eventEggs)
-    local summary = string.format("%d eligible species from %d live event egg(s): %s",
-        #names, #eventEggs, #names > 0 and table.concat(names, ", ") or "none")
+    local summary = string.format("LowOnline target species: %d (%s)",
+        #names, #names > 0 and table.concat(names, ", ") or "Domortuus not found in Directory.Pets")
     catalogCache = {
         ExpiresAt = now + 60,
         Ids = ids,
@@ -253,7 +190,7 @@ local function routeHealth(context)
         "Dark Matter: create=" .. invoke("Convert To Dark Matter")
             .. " | claim=" .. invoke("Redeem Dark Matter Pet"),
         "Fuse: use=" .. invoke("Use Fuse Machine") .. " | info=" .. invoke("Get Fuse Pets Info"),
-        "Boosts: activate=" .. fire("Activate Boost") .. " | bundle=" .. invoke("Buy Boost Bundle"),
+        "Boosts: activate=" .. fire("Activate Boost") .. " | shop=" .. invoke("Purchase Boosts"),
         "Rewards: VIP=" .. invoke("Redeem VIP Rewards") .. " | Rank=" .. invoke("Redeem Rank Rewards"),
         "Pet catalog: " .. tostring(catalogSummary),
         "Inventory gate: " .. tostring(owner) .. " | waiting workers: " .. tostring(waiting),

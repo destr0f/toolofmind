@@ -1,69 +1,42 @@
 local support = require("../automation_support_module")
 
-assert(support("version") == "1.1.3-lowonline")
+assert(support("version") == "1.2.0-lowonline")
 
 local context = {
     Library = {
         Directory = {
             Pets = {
+                ["131"] = { name = "Domortuus", rarity = "Mythical" },
+                ["132"] = { Name = "Domortuus", Rarity = "Mythical" },
+                [133] = { displayName = "Domortuus", rarity = "mythical" },
                 ["240"] = { name = "Galaxy Fox", rarity = "Mythical" },
-                ["264"] = { Name = "Silver Stag", Rarity = "Mythical" },
-                [265] = { displayName = "Silver Dragon", rarity = "mythical" },
-                ["263"] = { rarity = "MYTHICAL" },
                 ["266"] = {
-                    name = "Santa Paws",
+                    name = "Domortuus",
                     rarity = "Mythical",
                     huge = true,
                 },
-                ["245"] = {
-                    name = "Event Mythical Probe",
-                    rarity = "Mythical",
-                },
             },
-            Eggs = {
-                ["Christmas Tree Egg"] = {
-                    currency = "Gingerbread",
-                    -- Live Directory revisions may use [petId] = chance.
-                    drops = {
-                        ["245"] = 0.001,
-                    },
-                },
-            },
+            Eggs = {},
         },
     },
 }
 
 local ids, names, summary = support("catalog", context, true)
-for _, id in ipairs({ "240", "263", "264", "265", "245" }) do
+for _, id in ipairs({ "131", "132", "133" }) do
     assert(ids[id] == true, "machine catalog omitted pet id " .. id)
 end
 assert(ids["266"] == nil, "Huge pet bypassed the machine protection")
+assert(ids["240"] == nil, "non-Domortuus Mythical bypassed the machine catalog")
 
-local byName = {}
-for _, name in ipairs(names) do byName[name] = true end
-for _, name in ipairs({
-    "Galaxy Fox",
-    "Silver Stag",
-    "Silver Dragon",
-    "Santa Paws",
-    "Event Mythical Probe",
-}) do
-    assert(byName[name] == true, "machine catalog omitted " .. name)
-end
-
-assert(string.find(summary, "Silver Stag", 1, true))
-assert(string.find(summary, "Silver Dragon", 1, true))
-assert(string.find(summary, "Santa Paws", 1, true))
+assert(#names == 1 and names[1] == "Domortuus",
+    "machine catalog must expose exactly the Domortuus species")
+assert(string.find(summary, "Domortuus", 1, true))
 
 local sparseIds, sparseNames, sparseSummary = support("catalog", {
     Library = { Directory = { Pets = {}, Eggs = {} } },
 }, true)
-for _, id in ipairs({ "263", "264", "265" }) do
-    assert(sparseIds[id] == true, "pinned machine id depends on Directory.Pets: " .. id)
-end
-assert(#sparseNames == 3, "sparse catalog should contain exactly the pinned trio")
-assert(string.find(sparseSummary, "Santa Paws", 1, true))
-assert(string.find(sparseSummary, "Silver Stag", 1, true))
-assert(string.find(sparseSummary, "Silver Dragon", 1, true))
+assert(next(sparseIds) == nil, "machine catalog invented a pinned pet ID")
+assert(#sparseNames == 0, "empty Directory.Pets produced a fabricated species")
+assert(string.find(sparseSummary, "Domortuus not found", 1, true))
 
-print("PASS machine catalog resolves all Christmas Mythicals across live Directory schemas")
+print("PASS LowOnline machine catalog resolves only live Domortuus definitions")

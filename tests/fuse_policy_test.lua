@@ -1,8 +1,8 @@
 local fuse = require("../fuse_module")
 
-assert(fuse("version") == "1.0.0")
+assert(fuse("version") == "1.1.0-lowonline")
 
-local function exercise(mode, rarity, count)
+local function exercise(enabledModes, expectedMode, rarity, count)
     local worker
     local enabled = true
     local calls = {}
@@ -70,7 +70,7 @@ local function exercise(mode, rarity, count)
         Task = taskMock,
         Running = function() return true end,
         Enabled = function() return enabled end,
-        Mode = function() return mode end,
+        Modes = function() return enabledModes end,
         GetPetSnapshot = snapshot,
         InvalidatePetSnapshot = function() end,
         GetCommandRemote = function(command)
@@ -104,7 +104,7 @@ local function exercise(mode, rarity, count)
 
     assert(#calls == 1, table.concat(statuses, "\n"))
     assert(calls[1].Command == "Use Fuse Machine")
-    assert(#calls[1].Uids == count, "wrong batch size for " .. mode)
+    assert(#calls[1].Uids == count, "wrong batch size for " .. expectedMode)
     for _, uid in ipairs(calls[1].Uids) do
         assert(not string.find(uid, "equipped", 1, true), "equipped pet was selected")
         assert(not string.find(uid, "locked", 1, true), "locked pet was selected")
@@ -113,8 +113,16 @@ local function exercise(mode, rarity, count)
     fuse("stop")
 end
 
-exercise("12 Basic", "Basic", 12)
-exercise("8 Rare", "Rare", 8)
-exercise("5 Epic", "Epic", 5)
+exercise({ ["12 Basic"] = true }, "12 Basic", "Basic", 12)
+exercise({ ["8 Rare"] = true }, "8 Rare", "Rare", 8)
+exercise({ ["5 Epic"] = true }, "5 Epic", "Epic", 5)
 
-print("PASS LowOnline fuse modes select exact safe Golden Spiked Egg batches")
+-- All three toggles may be armed together. The worker deliberately emits only
+-- one exact batch per cycle so inventory mutations can be confirmed serially.
+exercise({
+    ["12 Basic"] = true,
+    ["8 Rare"] = true,
+    ["5 Epic"] = true,
+}, "12 Basic", "Basic", 12)
+
+print("PASS LowOnline fuse modes can be armed together and select one exact safe batch")
