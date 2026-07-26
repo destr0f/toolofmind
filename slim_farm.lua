@@ -606,25 +606,6 @@ local WorldAliases = {
     ["spawn world"] = "Spawn World",
 }
 
-local THINGS_ROOT_NAMES = { "__ITEMS", "__THINGS" }
-
-local function getThingsRoot()
-    local things = Library and Library.Things
-    if typeof(things) == "Instance" and things.Parent ~= nil then
-        return things
-    end
-    for _, rootName in ipairs(THINGS_ROOT_NAMES) do
-        local root = workspace:FindFirstChild(rootName)
-        if root then return root end
-    end
-    return nil
-end
-
-local function getCoinsFolder()
-    local things = getThingsRoot()
-    return things and things:FindFirstChild("Coins") or nil
-end
-
 local function readObjectValue(object, name)
     if not object then return nil end
     local ok, value = pcall(function()
@@ -1327,7 +1308,12 @@ function coinIndex:WatchFolder(folder)
 end
 
 local function refreshWorkspaceCoins()
-    local folder = getCoinsFolder()
+    local things = Library and Library.Things
+    if typeof(things) ~= "Instance" or things.Parent == nil then
+        things = workspace:FindFirstChild("__ITEMS")
+            or workspace:FindFirstChild("__THINGS")
+    end
+    local folder = things and things:FindFirstChild("Coins") or nil
     local folderChanged = coinIndex:WatchFolder(folder)
     if not folder then return end
     if not folderChanged and coinIndex.ScannedFolder == folder then return end
@@ -1550,29 +1536,8 @@ local function recordAlive(record)
     return true
 end
 
-local function classifyCoin(record)
-    local name = normalize(record and record.Name)
-    if BossChestNames[name] == true then return "Boss Chest" end
-    if string.find(name, "chest", 1, true) then return "Chest" end
-    if string.find(name, "vault", 1, true)
-        or string.find(name, "safe", 1, true) then
-        return "Vault"
-    end
-    if string.find(name, "gift", 1, true)
-        or string.find(name, "present", 1, true)
-        or string.find(name, "crate", 1, true) then
-        return "Breakable"
-    end
-    if string.find(name, "diamond", 1, true)
-        or string.find(name, "gem", 1, true) then
-        return "Diamonds"
-    end
-    if string.find(name, "coin", 1, true) then return "Coins" end
-    return "Unknown"
-end
-
 local function isBossChest(record)
-    return classifyCoin(record) == "Boss Chest"
+    return BossChestNames[normalize(record and record.Name)] == true
 end
 
 local function findZoneAnchor(zone)
@@ -3291,7 +3256,12 @@ local lootContext = {
     HeadlessCoins = function() return config.PotatoMode == true end,
     CoinCatalogReady = coinCatalogReady,
     GetThings = function()
-        return getThingsRoot()
+        local things = Library and Library.Things
+        if typeof(things) == "Instance" and things.Parent ~= nil then
+            return things
+        end
+        return workspace:FindFirstChild("__ITEMS")
+            or workspace:FindFirstChild("__THINGS")
     end,
     LocalLootOwner = localLootOwner,
     Fire = function(commandName, ...)

@@ -10,12 +10,19 @@ function check(condition, message) {
 }
 
 check(
-    source.includes('local THINGS_ROOT_NAMES = { "__ITEMS", "__THINGS" }'),
+    source.includes('workspace:FindFirstChild("__ITEMS")')
+        && source.includes('workspace:FindFirstChild("__THINGS")'),
     "the runtime must prefer the new __ITEMS root and retain __THINGS fallback"
 );
 check(
-    source.includes("local folder = getCoinsFolder()"),
-    "the workspace coin index must use the root adapter"
+    source.includes('local folder = things and things:FindFirstChild("Coins") or nil'),
+    "the workspace coin index must use the inlined register-safe root adapter"
+);
+check(
+    !source.includes("local function getThingsRoot")
+        && !source.includes("local function getCoinsFolder")
+        && !source.includes("local function classifyCoin"),
+    "the adapter must not spend additional top-level Luau registers"
 );
 check(
     source.includes('local WorldOrder = { "Spawn World" }'),
