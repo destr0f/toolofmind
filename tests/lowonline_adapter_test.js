@@ -57,6 +57,17 @@ check(
         && !autoEgg.includes('"Buy Egg Yay"'),
     "LowOnline auto egg must use the launch-build Buy Egg command"
 );
+check(
+    !autoEgg.includes("EGG_INTERACT_DISTANCE")
+        && !autoEgg.includes("maximum 15")
+        && !autoEgg.includes("within 15 studs"),
+    "LowOnline auto egg must not reject a loaded egg because of client distance"
+);
+check(
+    autoEgg.includes("distance is informational")
+        && autoEgg.includes("no client distance limit"),
+    "LowOnline auto egg status must clearly expose the range-free policy"
+);
 
 for (const forbidden of [
     "FireServer(",

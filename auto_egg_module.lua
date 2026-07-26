@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.0-lowonline"
+local MODULE_VERSION = "1.5.1-lowonline"
 local BUY_COMMAND = "Buy Egg"
 
 local ARM_DELAY = 0.65
@@ -15,7 +15,6 @@ local HEADLESS_REPLICATION_TIMEOUT = 4
 local HEADLESS_REPLICATION_POLL = 0.02
 local NATIVE_EVENT_TIMEOUT = 20
 local SUSPICIOUS_PAUSE = 60
-local EGG_INTERACT_DISTANCE = 15
 local AUTO_DELETE_SYNC_TIMEOUT = 2.5
 local AUTO_DELETE_POLL = 0.05
 local POST_PROCESS_TIMEOUT = 8
@@ -258,10 +257,6 @@ local function inspectEgg(context)
 
     local physical, distance = physicalEgg(context, eggId, false)
     if not physical then return false, "Selected egg is not present in the current world: " .. eggId end
-    if distance == nil or distance == math.huge then return false, "Character position is not ready" end
-    if distance > EGG_INTERACT_DISTANCE then
-        return false, string.format("Too far from %s: %.1f studs (maximum 15)", eggId, distance)
-    end
 
     local used, maxSlots = inventoryCount(save), tonumber(save.MaxSlots)
     if used == nil or maxSlots == nil then return false, "Pet inventory limits are not ready" end
@@ -294,17 +289,16 @@ local function buildCatalog(context)
     end
     scanPhysical(context, false)
     local entries, nearest, nearestDistance = {}, nil, math.huge
-    local loadedCount, nearbyCount = 0, 0
+    local loadedCount = 0
     for rawId, entry in pairs(directory) do
         if isHatchable(entry) then
             local eggId = tostring(rawId)
             local physical, distance = physicalEgg(context, eggId, false)
             local loaded = physical ~= nil
-            local nearby = loaded and distance and distance <= EGG_INTERACT_DISTANCE
+            local nearby = loaded
             if loaded then loadedCount = loadedCount + 1 end
-            if nearby then
-                nearbyCount = nearbyCount + 1
-                if distance < nearestDistance then nearest, nearestDistance = eggId, distance end
+            if nearby and distance and distance < nearestDistance then
+                nearest, nearestDistance = eggId, distance
             end
             entries[#entries + 1] = {
                 Id = eggId, Name = tostring(entry.displayName or entry.name or eggId),
@@ -344,17 +338,18 @@ local function buildCatalog(context)
     if context.PreserveSelected and selected ~= "" then
         for _, entry in ipairs(entries) do if entry.Id == selected then include(entry); break end end
     end
-    if #options == 0 then options[1] = "No hatchable eggs within 15 studs" end
+    if #options == 0 then options[1] = "No hatchable eggs loaded in the current world" end
 
-    local selectedDistance
-    if selected ~= "" then local _, distance = physicalEgg(context, selected, false); selectedDistance = distance end
+    local selectedPhysical, selectedDistance
+    if selected ~= "" then selectedPhysical, selectedDistance = physicalEgg(context, selected, false) end
     local selectedText = selected == "" and "No egg selected"
-        or selectedDistance and string.format("%s is %.1f studs away (%s)", selected,
-            selectedDistance, selectedDistance <= 15 and "in range" or "out of range")
+        or selectedPhysical and selectedDistance and selectedDistance < math.huge
+            and string.format("%s is %.1f studs away (distance is informational)", selected, selectedDistance)
+        or selectedPhysical and (selected .. " is loaded (no client distance limit)")
         or (selected .. " is not loaded in this world")
     local summary = string.format(
-        "Hatchable: %d | loaded in world: %d | within 15 studs: %d\n%s",
-        #entries, loadedCount, nearbyCount, selectedText
+        "Hatchable: %d | loaded in current world: %d | client range limit: disabled\n%s",
+        #entries, loadedCount, selectedText
     )
     return options, idToLabel[selected], selected, summary, labelToId
 end
@@ -1176,9 +1171,12 @@ local function beginRequest(state, context, options, inspection)
     state.Pending = pending
     state.Requests = state.Requests + 1
     if not headless then armNativeSkip(state, context, pending) end
+    local measuredDistance = tonumber(inspection.Distance)
+    local distanceText = measuredDistance and measuredDistance < math.huge
+        and string.format("%.1f studs", measuredDistance) or "unavailable"
     setStatus(state, context, string.format(
-        "Sending one " .. BUY_COMMAND .. " request: %s\nDistance: %.1f/15 | request #%d | dynamic Network route\n%s",
-        requestLabel(pending), tonumber(inspection.Distance) or 0, state.Requests,
+        "Sending one " .. BUY_COMMAND .. " request: %s\nDistance: %s (informational) | request #%d | dynamic Network route\n%s",
+        requestLabel(pending), distanceText, state.Requests,
         headless and "Headless gate armed before purchase"
             or tostring(pending.SkipPolicy or "Native skip watcher is preparing...")
     ))
@@ -1455,7 +1453,7 @@ return function(action, context)
         .. tostring(eventRoute) .. " [session index " .. tostring(eventIndex or "?") .. "]")
     setStatus(state, context,
         "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
-        .. "Waiting for a valid egg within 15 studs...")
+        .. "Waiting for a valid selected egg loaded in the current world; distance does not block purchases...")
 
     state.WorkerThread = task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
