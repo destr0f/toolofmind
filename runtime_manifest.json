@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "LowOnline Develop",
-    "version": "1.4.1-lite.2",
+    "version": "1.4.2-low.1",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-lite.2",
+    "compatibleSuite": "1.4.2-low.1",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -32,6 +32,7 @@
     "petFarmEngine",
     "lootReactor",
     "autoEgg",
+    "fuse",
     "goldMachine",
     "rainbowMachine",
     "darkMatter",
@@ -42,34 +43,34 @@
     "automationSupport": {
       "id": "automationSupport",
       "label": "Automation support coordinator",
-      "version": "1.1.2",
+      "version": "1.1.3-lowonline",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
       "path": "automation_support_module.lua",
-      "commit": "2b83dcaee8f8a616be6e492456b062af66b445ca",
-      "bytes": 10444,
-      "sha256": "1e44f07cab70f1a4af16a9fee59d22a538afb19c5e1b486974baa1cf02dd01f8",
-      "djb2": "04dc4458"
+      "commit": "7d239f2726cbaff98532d8c5656080c66119e8f7",
+      "bytes": 10548,
+      "sha256": "5fc8ede9f56873e8f89cff4bb75835f65695c495eed4728793fffa26ba082353",
+      "djb2": "e741d02a"
     },
     "automationUI": {
       "id": "automationUI",
       "label": "Automation UI",
-      "version": "1.2.1",
+      "version": "1.3.0-lowonline",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
       "path": "automation_ui_module.lua",
-      "commit": "2b83dcaee8f8a616be6e492456b062af66b445ca",
-      "bytes": 15498,
-      "sha256": "e500870d64661d9616bbd182f9453d21d98a8369a51665ebb60d359cfc11cf0f",
-      "djb2": "73dfeb90"
+      "commit": "7d239f2726cbaff98532d8c5656080c66119e8f7",
+      "bytes": 17414,
+      "sha256": "99ed3602de21b38742bceb0edef87dcc7d2dcaf83bfae23ca630129ae3ff5065",
+      "djb2": "309be72c"
     },
     "petFarmEngine": {
       "id": "petFarmEngine",
@@ -77,7 +78,7 @@
       "version": "1.0.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -93,7 +94,7 @@
       "version": "3.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -106,17 +107,33 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.4.0",
+      "version": "1.5.0-lowonline",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "d01575462a51a8614644c8029a75171d2b932840",
-      "bytes": 60973,
-      "sha256": "0187c5c54455238c24ff8b5381d8a73e947645c56a2c85fb51f65f84201c0564",
-      "djb2": "96c0c1e0"
+      "commit": "7d239f2726cbaff98532d8c5656080c66119e8f7",
+      "bytes": 61049,
+      "sha256": "af89de5bd788048623ad900d6fa6315b53ebba86dca1c6265343b76af6760d0b",
+      "djb2": "52bb4f64"
+    },
+    "fuse": {
+      "id": "fuse",
+      "label": "LowOnline Fuse Machine",
+      "version": "1.0.0",
+      "versionAuthority": "module-api",
+      "versionAction": "version",
+      "compatibleSuite": "1.4.2-low.1",
+      "required": false,
+      "load": "lazy",
+      "role": "golden-spiked-egg-rarity-fuse-worker",
+      "path": "fuse_module.lua",
+      "commit": "7d239f2726cbaff98532d8c5656080c66119e8f7",
+      "bytes": 17142,
+      "sha256": "4a62097b4817bef20400bfde383fd7e27782853d5587027ece507aa7f69c9294",
+      "djb2": "dcac47b7"
     },
     "goldMachine": {
       "id": "goldMachine",
@@ -124,7 +141,7 @@
       "version": "1.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -140,7 +157,7 @@
       "version": "1.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -156,7 +173,7 @@
       "version": "1.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -171,7 +188,7 @@
       "label": "Auto boost",
       "version": "1.1.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -187,7 +204,7 @@
       "version": "4.0.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-lite.2",
+      "compatibleSuite": "1.4.2-low.1",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -209,6 +226,7 @@
         "pet_farm_lite_engine.lua",
         "loot_reactor.lua",
         "auto_egg_module.lua",
+        "fuse_module.lua",
         "gold_machine_module.lua",
         "rainbow_machine_module.lua",
         "dark_matter_module.lua",
@@ -246,7 +264,8 @@
         "tests/rolling_currency_window_test.js",
         "tests/coalesced_queue_test.js",
         "tests/generation_cleanup_test.js",
-        "tests/lowonline_adapter_test.js"
+        "tests/lowonline_adapter_test.js",
+        "tests/fuse_policy_test.lua"
       ]
     },
     "documentation": {
@@ -274,32 +293,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "3cb2d591b6183bacd3c33f0072629e6f82228620",
+    "generatedFromCommit": "7d239f2726cbaff98532d8c5656080c66119e8f7",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 5295,
-      "sha256": "298804e94864ff0b166e4bfdefb7a56bf9a6bda1bcc15024e268e13b0ea07355",
-      "djb2": "b6bdfc16"
+      "bytes": 5744,
+      "sha256": "efbb1600bd31e827c72e274adbea02bf0dc744ddf4a599aef8f555ae6e3ed6dd",
+      "djb2": "4e8668af"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-lite.2",
-      "bytes": 162029,
-      "sha256": "56bbe893c12844c757bfae5ecfcdee1be478d47704ce83e1aa2982462ddcf5ea",
-      "djb2": "717f843b"
+      "version": "1.4.2-low.1",
+      "bytes": 162973,
+      "sha256": "0b6bda212f030a5a5fba8b3e7dd935dbb874841e33238b7136fe1424fc6c1af9",
+      "djb2": "927889a9"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 130689,
-        "sha256": "7e91b9106de6a54bb60f05c3fc5b8525bf8fa85bdc422201a21bf938f901d07f",
-        "djb2": "b1db9108"
+        "bytes": 131867,
+        "sha256": "8451bb00417ef5fb51976b61672e1f146a1181a3af4a216afc40be8755c6e907",
+        "djb2": "70c65157"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 130689,
-        "sha256": "7e91b9106de6a54bb60f05c3fc5b8525bf8fa85bdc422201a21bf938f901d07f",
-        "djb2": "b1db9108"
+        "bytes": 131867,
+        "sha256": "8451bb00417ef5fb51976b61672e1f146a1181a3af4a216afc40be8755c6e907",
+        "djb2": "70c65157"
       }
     }
   }

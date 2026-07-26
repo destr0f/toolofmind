@@ -1,6 +1,6 @@
 local support = require("../automation_support_module")
 
-assert(support("version") == "1.1.2")
+assert(support("version") == "1.1.3-lowonline")
 
 local context = {
     Library = {
