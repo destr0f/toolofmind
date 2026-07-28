@@ -1,14 +1,12 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.5.0-lowonline"
+local MODULE_VERSION = "1.6.0-lowonline"
 
-local gate = {
-    Owner = nil,
-    OwnerSince = 0,
-    Waiters = {},
-    Sequence = 0,
-}
+-- Every inventory producer owns one independent bounded lane. Auto Egg no
+-- longer waits behind Fuse/Gold/Rainbow/DarkMatter, while each producer still
+-- serializes its own requests and keeps stale-owner cleanup.
+local gates = {}
 
 local catalogCaches = {}
 
@@ -49,63 +47,93 @@ local function trace(context, stage, detail)
     end
 end
 
-local function cleanGate(context, now)
+local function operationIdentity(rawOwner, rawLane)
+    local owner = tostring(rawOwner or "unknown")
+    local lane = tostring(rawLane or owner)
+    return owner, lane
+end
+
+local function gateFor(lane)
+    local laneGate = gates[lane]
+    if laneGate then return laneGate end
+    laneGate = {
+        Owner = nil,
+        OwnerSince = 0,
+        Waiters = {},
+        Sequence = 0,
+    }
+    gates[lane] = laneGate
+    return laneGate
+end
+
+local function cleanGate(context, lane, laneGate, now)
     now = now or os.clock()
-    if gate.Owner and now - gate.OwnerSince > 45 then
-        trace(context, "operation gate", "expired stale owner " .. tostring(gate.Owner))
-        gate.Owner = nil
-        gate.OwnerSince = 0
+    if laneGate.Owner and now - laneGate.OwnerSince > 45 then
+        trace(context, "operation lane",
+            "expired stale owner " .. tostring(laneGate.Owner) .. " in " .. tostring(lane))
+        laneGate.Owner = nil
+        laneGate.OwnerSince = 0
     end
-    for owner, waiter in pairs(gate.Waiters) do
-        if now - (waiter.SeenAt or 0) > 10 then gate.Waiters[owner] = nil end
+    for owner, waiter in pairs(laneGate.Waiters) do
+        if now - (waiter.SeenAt or 0) > 10 then laneGate.Waiters[owner] = nil end
     end
 end
 
-local function acquire(context, rawOwner)
-    local owner = tostring(rawOwner or "unknown")
+local function acquire(context, rawOwner, rawLane)
+    local owner, lane = operationIdentity(rawOwner, rawLane)
+    local laneGate = gateFor(lane)
     local now = os.clock()
-    cleanGate(context, now)
-    if gate.Owner == owner then return true, owner end
+    cleanGate(context, lane, laneGate, now)
+    if laneGate.Owner == owner then return true, owner end
 
-    local waiter = gate.Waiters[owner]
+    local waiter = laneGate.Waiters[owner]
     if not waiter then
-        gate.Sequence = gate.Sequence + 1
-        waiter = { Sequence = gate.Sequence, SeenAt = now }
-        gate.Waiters[owner] = waiter
+        laneGate.Sequence = laneGate.Sequence + 1
+        waiter = { Sequence = laneGate.Sequence, SeenAt = now }
+        laneGate.Waiters[owner] = waiter
     else
         waiter.SeenAt = now
     end
-    if gate.Owner then return false, gate.Owner end
+    if laneGate.Owner then return false, laneGate.Owner end
 
     local nextOwner, nextSequence
-    for candidate, item in pairs(gate.Waiters) do
+    for candidate, item in pairs(laneGate.Waiters) do
         if nextSequence == nil or item.Sequence < nextSequence then
             nextOwner, nextSequence = candidate, item.Sequence
         end
     end
     if nextOwner ~= owner then return false, nextOwner end
 
-    gate.Waiters[owner] = nil
-    gate.Owner = owner
-    gate.OwnerSince = now
+    laneGate.Waiters[owner] = nil
+    laneGate.Owner = owner
+    laneGate.OwnerSince = now
     return true, owner
 end
 
-local function release(rawOwner)
-    local owner = tostring(rawOwner or "unknown")
-    gate.Waiters[owner] = nil
-    if gate.Owner == owner then
-        gate.Owner = nil
-        gate.OwnerSince = 0
+local function release(rawOwner, rawLane)
+    local owner, lane = operationIdentity(rawOwner, rawLane)
+    local laneGate = gates[lane]
+    if not laneGate then return true end
+    laneGate.Waiters[owner] = nil
+    if laneGate.Owner == owner then
+        laneGate.Owner = nil
+        laneGate.OwnerSince = 0
     end
+    if laneGate.Owner == nil and next(laneGate.Waiters) == nil then gates[lane] = nil end
     return true
 end
 
 local function gateStatus(context)
-    cleanGate(context)
-    local waiting = 0
-    for _ in pairs(gate.Waiters) do waiting = waiting + 1 end
-    return gate.Owner or "idle", waiting
+    local waiting, active = 0, {}
+    for lane, laneGate in pairs(gates) do
+        cleanGate(context, lane, laneGate)
+        for _ in pairs(laneGate.Waiters) do waiting = waiting + 1 end
+        if laneGate.Owner then
+            active[#active + 1] = tostring(lane) .. "=" .. tostring(laneGate.Owner)
+        end
+    end
+    table.sort(active)
+    return #active > 0 and table.concat(active, ", ") or "idle", waiting
 end
 
 local function definitionAllowed(definition, targetKey)
@@ -247,22 +275,21 @@ local function routeHealth(context)
         "Rewards: VIP=" .. invoke("Redeem VIP Rewards") .. " | Rank=" .. invoke("Redeem Rank Rewards"),
         "Gold/Rainbow catalog: " .. tostring(samuraiSummary),
         "Dark Matter catalog: " .. tostring(domortuusSummary),
-        "Inventory gate: " .. tostring(owner) .. " | waiting workers: " .. tostring(waiting),
+        "Independent inventory lanes: " .. tostring(owner)
+            .. " | waiting inside lanes: " .. tostring(waiting),
         "Manual local preflight only; no server request was sent.",
     }, "\n")
 end
 
 local function reset()
-    gate.Owner = nil
-    gate.OwnerSince = 0
-    table.clear(gate.Waiters)
+    table.clear(gates)
     table.clear(catalogCaches)
     return true
 end
 
-return function(action, context, value)
-    if action == "acquire" then return acquire(context, value) end
-    if action == "release" or action == "cancel" then return release(value) end
+return function(action, context, value, lane)
+    if action == "acquire" then return acquire(context, value, lane) end
+    if action == "release" or action == "cancel" then return release(value, lane) end
     if action == "status" then return gateStatus(context) end
     if action == "catalog" then return getCatalog(context, value) end
     if action == "route-health" then return routeHealth(context) end

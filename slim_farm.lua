@@ -2,7 +2,7 @@
 -- Launch content plus the first Fantasy World update: farming, hatch, enchant,
 -- conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.5.7-low.8"
+local VERSION = "1.5.8-low.9"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -2068,23 +2068,26 @@ local function ensureSupportModule()
     return supportController, nil
 end
 
-local function acquireOperation(owner)
+local function acquireOperation(owner, lane)
     local controller, problem = ensureSupportModule()
     if not controller then return false, "coordinator unavailable: " .. tostring(problem) end
-    local called, acquired, currentOwner = pcall(controller, "acquire", supportContext, owner)
+    local called, acquired, currentOwner =
+        pcall(controller, "acquire", supportContext, owner, lane or owner)
     if not called then return false, "coordinator error: " .. tostring(acquired) end
     return acquired, currentOwner
 end
 
-local function releaseOperation(owner)
+local function releaseOperation(owner, lane)
     if not supportController then return false end
-    local called, released = pcall(supportController, "release", supportContext, owner)
+    local called, released =
+        pcall(supportController, "release", supportContext, owner, lane or owner)
     return called and released == true
 end
 
-local function cancelOperation(owner)
+local function cancelOperation(owner, lane)
     if not supportController then return false end
-    local called, cancelled = pcall(supportController, "cancel", supportContext, owner)
+    local called, cancelled =
+        pcall(supportController, "cancel", supportContext, owner, lane or owner)
     return called and cancelled == true
 end
 
@@ -2639,9 +2642,9 @@ local function startAutoEggModule()
         InvokeCommand = invokeCommand,
         GetEventRemote = getEventRemote,
         RouteText = routeText,
-        AcquireOperation = acquireOperation,
-        ReleaseOperation = releaseOperation,
-        CancelOperation = cancelOperation,
+        AcquireOperation = function(owner) return acquireOperation(owner, "AutoEgg") end,
+        ReleaseOperation = function(owner) return releaseOperation(owner, "AutoEgg") end,
+        CancelOperation = function(owner) return cancelOperation(owner, "AutoEgg") end,
         OperationOwner = "AutoEgg",
         InventoryChanged = invalidateMachinePetSnapshot,
         SetStatus = statusSetters.Egg,
@@ -2842,9 +2845,15 @@ function machineModules:Start(kind)
         InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
         InvokeCommand = invokeCommand,
         RouteText = routeText,
-        AcquireOperation = acquireOperation,
-        ReleaseOperation = releaseOperation,
-        CancelOperation = cancelOperation,
+        AcquireOperation = function(owner)
+            return acquireOperation(owner, "Machine:" .. kind)
+        end,
+        ReleaseOperation = function(owner)
+            return releaseOperation(owner, "Machine:" .. kind)
+        end,
+        CancelOperation = function(owner)
+            return cancelOperation(owner, "Machine:" .. kind)
+        end,
         OperationOwner = kind .. "Machine",
         SetStatus = entry.SetStatus,
         Trace = trace,

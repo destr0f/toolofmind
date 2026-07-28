@@ -1,6 +1,6 @@
 local support = require("../automation_support_module")
 
-assert(support("version") == "1.5.0-lowonline")
+assert(support("version") == "1.6.0-lowonline")
 
 local context = {
     Library = {
@@ -80,4 +80,28 @@ assert(inferredIds["samurai-legendary"] == nil,
 assert(string.find(inferredSummary, "samurai-mythical", 1, true),
     "fallback catalog summary did not expose its resolved directory ID")
 
-print("PASS LowOnline machine catalogs isolate targets and infer Samurai Dragon from Samurai Egg")
+support("reset")
+local eggAcquired = support("acquire", context, "AutoEgg", "AutoEgg")
+local fuseAcquired = support("acquire", context, "FuseMachine", "Machine:Fuse")
+local goldAcquired = support("acquire", context, "GoldMachine", "Machine:Gold")
+assert(eggAcquired == true and fuseAcquired == true and goldAcquired == true,
+    "independent Egg/Fuse/Gold lanes blocked one another")
+
+local secondFuse, fuseOwner =
+    support("acquire", context, "OtherFuseWorker", "Machine:Fuse")
+assert(secondFuse == false and fuseOwner == "FuseMachine",
+    "the Fuse lane failed to serialize a second Fuse owner")
+
+local activeLanes, waiting = support("status", context)
+assert(string.find(activeLanes, "AutoEgg=AutoEgg", 1, true)
+    and string.find(activeLanes, "Machine:Fuse=FuseMachine", 1, true)
+    and string.find(activeLanes, "Machine:Gold=GoldMachine", 1, true),
+    "lane status omitted an active independent worker")
+assert(waiting == 1, "lane status did not count the blocked same-lane waiter")
+
+assert(support("release", context, "FuseMachine", "Machine:Fuse") == true)
+local resumedFuse = support("acquire", context, "OtherFuseWorker", "Machine:Fuse")
+assert(resumedFuse == true, "the next Fuse owner did not acquire its released lane")
+support("reset")
+
+print("PASS LowOnline catalogs and independent Egg/Fuse/Gold inventory lanes")
