@@ -2065,28 +2065,6 @@ local function getMachinePetCatalog(force)
     return ids, names, summary
 end
 
-local function getEnchantCatalog()
-    local powers = Library and Library.Directory and Library.Directory.Powers
-    local values, seen = {}, {}
-    for powerName, definition in pairs(type(powers) == "table" and powers or {}) do
-        if type(definition) == "table" and definition.canDrop ~= false then
-            local tiers = definition.tiers or definition.Tiers
-            for _, tier in ipairs(type(tiers) == "table" and tiers or {}) do
-                local title = type(tier) == "table"
-                    and (tier.title or tier.Title or tier.name or tier.Name) or nil
-                local label = tostring(title or powerName or "")
-                local key = normalize(label)
-                if key ~= "" and not seen[key] then
-                    seen[key] = true
-                    values[#values + 1] = label
-                end
-            end
-        end
-    end
-    table.sort(values)
-    return values
-end
-
 local function resetSupportCoordinator()
     if supportController then pcall(supportController, "reset", supportContext) end
 end
@@ -2668,6 +2646,28 @@ local machineModules = {
         SetStatus = statusSetters.Enchant,
     },
 }
+
+function machineModules:EnchantCatalog()
+    local powers = Library and Library.Directory and Library.Directory.Powers
+    local values, seen = {}, {}
+    for powerName, definition in pairs(type(powers) == "table" and powers or {}) do
+        if type(definition) == "table" and definition.canDrop ~= false then
+            local tiers = definition.tiers or definition.Tiers
+            for _, tier in ipairs(type(tiers) == "table" and tiers or {}) do
+                local title = type(tier) == "table"
+                    and (tier.title or tier.Title or tier.name or tier.Name) or nil
+                local label = tostring(title or powerName or "")
+                local key = normalize(label)
+                if key ~= "" and not seen[key] then
+                    seen[key] = true
+                    values[#values + 1] = label
+                end
+            end
+        end
+    end
+    table.sort(values)
+    return values
+end
 
 local MACHINE_PET_SNAPSHOT_TTL = 5
 local machinePetSnapshot = {
@@ -3798,7 +3798,7 @@ do
             SetRainbowStatus = statusSetters.Rainbow,
             SetDarkMatterStatus = statusSetters.DarkMatter,
             SetFuseStatus = statusSetters.Fuse,
-            GetEnchantCatalog = getEnchantCatalog,
+            GetEnchantCatalog = function() return machineModules:EnchantCatalog() end,
             SetEnchantStatus = statusSetters.Enchant,
             ReconcileBoost = reconcileBoostModule,
             BoostEnabled = boostAutomationEnabled,
