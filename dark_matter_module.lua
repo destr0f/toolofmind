@@ -2,7 +2,7 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0-lowonline"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 local IDLE_CHECK_DELAY = 5
@@ -672,7 +672,7 @@ end
 local function workerDelay(state)
     local remaining = (tonumber(state.NextCheck) or 0) - os.clock()
     if remaining <= 0 then return 0.05 end
-    return math.clamp(remaining, 0.05, READY_SAFETY_DELAY)
+    return math.clamp(remaining, 0.05, 0.25)
 end
 
 return function(action, context)
@@ -682,6 +682,10 @@ return function(action, context)
         return selectMachineTier(context.Info, context.BatchSize, context.MaxWaitSeconds)
     end
     if action == "stop" then return stop() end
+    if action == "wake" then
+        if activeState and activeState.Running then activeState.NextCheck = 0 end
+        return true
+    end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end

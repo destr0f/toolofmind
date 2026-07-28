@@ -2,7 +2,7 @@
 -- The parent supplies a live pet catalog and a shared inventory-operation gate.
 
 local activeState
-local MODULE_VERSION = "1.2.0-lowonline"
+local MODULE_VERSION = "1.3.0-lowonline"
 
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
@@ -410,12 +410,16 @@ end
 local function workerDelay(state)
     local remaining = (tonumber(state.NextCheck) or 0) - os.clock()
     if remaining <= 0 then return 0.05 end
-    return math.clamp(remaining, 0.05, IDLE_CHECK_DELAY)
+    return math.clamp(remaining, 0.05, 0.25)
 end
 
 return function(action, context)
     if action == "version" then return MODULE_VERSION end
     if action == "stop" then return stop() end
+    if action == "wake" then
+        if activeState and activeState.Running then activeState.NextCheck = 0 end
+        return true
+    end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end

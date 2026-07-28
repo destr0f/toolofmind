@@ -1,6 +1,6 @@
 local fuse = require("../fuse_module")
 
-assert(fuse("version") == "1.5.1-lowonline")
+assert(fuse("version") == "1.6.0-lowonline")
 
 local function exercise(
     enabledModes,

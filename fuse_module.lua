@@ -3,7 +3,7 @@
 -- before one Use Fuse Machine request.
 
 local activeState
-local MODULE_VERSION = "1.5.1-lowonline"
+local MODULE_VERSION = "1.6.0-lowonline"
 
 local TARGET_EGG = "Samurai Egg"
 local IDLE_CHECK_DELAY = 3
@@ -493,6 +493,10 @@ end
 return function(action, context)
     if action == "version" then return MODULE_VERSION end
     if action == "stop" then return stop() end
+    if action == "wake" then
+        if activeState and activeState.Running then activeState.NextCheck = 0 end
+        return true
+    end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end
@@ -540,7 +544,7 @@ return function(action, context)
             end
             if state.Running and activeState == state then
                 local remaining = state.NextCheck - os.clock()
-                state.Task.wait(math.clamp(remaining > 0 and remaining or 0.05, 0.05, IDLE_CHECK_DELAY))
+                state.Task.wait(math.clamp(remaining > 0 and remaining or 0.05, 0.05, 0.25))
             end
         end
         state.WorkerThread = nil

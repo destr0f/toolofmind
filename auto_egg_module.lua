@@ -2,13 +2,13 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.1-lowonline"
+local MODULE_VERSION = "1.7.0-lowonline"
 local BUY_COMMAND = "Buy Egg"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
 local INITIAL_REQUEST_DELAY = 0.35
-local MIN_REQUEST_DELAY = 0.08
+local MIN_REQUEST_DELAY = 0.05
 local MAX_REQUEST_DELAY = 8
 local HEADLESS_EVENT_TIMEOUT = 8
 local HEADLESS_REPLICATION_TIMEOUT = 4

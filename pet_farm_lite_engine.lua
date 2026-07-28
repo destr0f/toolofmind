@@ -2,8 +2,8 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.1.0-lowonline"
-local DEFAULT_DISPATCH_WIDTH = 8
+local MODULE_VERSION = "1.2.0-lowonline"
+local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
 local RETRY_DELAY = 0.25
@@ -524,6 +524,16 @@ local function start(context)
     return true
 end
 
+local function setLimit(value)
+    local requested = math.floor(tonumber(value) or run.Limit or 1)
+    local nextLimit = math.max(1, math.min(requested, DEFAULT_DISPATCH_WIDTH))
+    if run.Limit ~= nextLimit then
+        run.Limit = nextLimit
+        pump()
+    end
+    return run.Limit
+end
+
 local function dispatch(payload)
     if not run.Context then return false, "engine is not started" end
     if type(payload) ~= "table" or type(payload.Entries) ~= "table" then
@@ -593,6 +603,7 @@ return function(action, context, value)
     if action == "start" then return start(context) end
     if action == "dispatch" then return dispatch(value or context) end
     if action == "pump" then pump(); return true end
+    if action == "set-limit" then return true, setLimit(value or context) end
     if action == "reset" then resetQueue(); return true end
     if action == "stop" then resetQueue(); run.Context = nil; return true end
     if action == "stats" then return stats() end

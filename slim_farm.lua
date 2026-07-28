@@ -2,7 +2,7 @@
 -- Launch content plus the first Fantasy World update: farming, hatch, enchant,
 -- conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.5.6-low.7"
+local VERSION = "1.5.7-low.8"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -1746,7 +1746,7 @@ local petFarm = {
     RouteSummary = "resolving 0/4",
     EquippedCount = 0,
     TargetWindow = 0,
-    PolicyLanes = 8,
+    PolicyLanes = 16,
     LastTargetCount = 0,
     LastWorld = "unknown",
     LastZone = "unknown",
@@ -1758,7 +1758,7 @@ local petFarm = {
         Active = 0,
         Queued = 0,
         Limit = 0,
-        PolicyMaxLanes = 8,
+        PolicyMaxLanes = 16,
         Accepted = 0,
         Rejected = 0,
         Errors = 0,
@@ -2202,7 +2202,7 @@ function petFarm:EnsureEngine()
             pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
         end,
         Trace = trace,
-        DispatchWidth = 8,
+        DispatchWidth = 16,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
     self.Loading = false
@@ -2726,6 +2726,12 @@ local machinePetSnapshot = {
 
 invalidateMachinePetSnapshot = function()
     machinePetSnapshot.At = -math.huge
+    for _, kind in ipairs({ "Gold", "Rainbow", "DarkMatter", "Fuse" }) do
+        local entry = machineModules[kind]
+        if entry and entry.Controller and machineModules:Enabled(entry) then
+            pcall(entry.Controller, "wake")
+        end
+    end
 end
 
 local function getMachinePetSnapshot(force)
@@ -2907,10 +2913,12 @@ local function startBoostModule()
         InvokeCommand = invokeCommand,
         FireCommand = fireCommand,
         RouteText = routeText,
-        AcquireOperation = acquireOperation,
-        ReleaseOperation = releaseOperation,
-        CancelOperation = cancelOperation,
-        OperationStatus = operationGateStatus,
+        -- Boost inventory never mutates Save.Pets. Keep it in a separate serial
+        -- lane so a potion renewal cannot stall egg/fuse/machine hand-offs.
+        AcquireOperation = function(owner) return true, tostring(owner or "Boosts") end,
+        ReleaseOperation = function() return true end,
+        CancelOperation = function() return true end,
+        OperationStatus = function() return "boost lane", 0 end,
         OperationOwner = "Boosts",
         SetStatus = statusSetters.Boost,
         Trace = trace,
@@ -3179,6 +3187,8 @@ allocatorPass = function()
         local petIds = getEquippedPetIds()
         petFarm.EquippedCount = #petIds
         petFarm.LastEquippedIds = petIds
+        petFarm.PolicyLanes = math.max(1, math.min(#petIds, 16))
+        pcall(petFarm.Engine, "set-limit", petFarm.PolicyLanes)
         local equipped = {}
         for _, petId in ipairs(petIds) do equipped[petId] = true end
         if #petIds == 0 then return end
@@ -3215,7 +3225,7 @@ allocatorPass = function()
         end
         if #usable == 0 then
             petFarm.TargetWindow = 0
-            if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
+            if type(armFarmRecovery) == "function" then armFarmRecovery(0.2) end
             return
         end
 
@@ -3270,7 +3280,7 @@ allocatorPass = function()
         end
         for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
         if assignmentCount() < #petIds and type(armFarmRecovery) == "function" then
-            armFarmRecovery(1.05)
+            armFarmRecovery(0.2)
         end
     end)
     endProfile(profiled)
@@ -3354,7 +3364,7 @@ armFarmRecovery = function(delaySeconds)
     if farmWatch.RecoveryArmed or not running() or not config.PetFarm then return end
     farmWatch.RecoveryArmed = true
     local token = farmWatch.RecoveryToken
-    task.delay(math.max(tonumber(delaySeconds) or 1.05, 1), function()
+    task.delay(math.max(tonumber(delaySeconds) or 0.2, 0.15), function()
         farmWatch.RecoveryArmed = false
         if token ~= farmWatch.RecoveryToken or not running() or not config.PetFarm then return end
         local expected = tonumber(petFarm.EquippedCount) or 0
@@ -3369,7 +3379,7 @@ local function restartFarmWatchers()
     local token = farmWatch.ZoneToken
     if not running() or not config.PetFarm then return end
     if assignmentCount() < (tonumber(petFarm.EquippedCount) or 0) then
-        armFarmRecovery(1.05)
+        armFarmRecovery(0.2)
     end
     if config.Zone ~= "Player Zone" then return end
 

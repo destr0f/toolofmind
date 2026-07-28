@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.4.0-lowonline"
+local MODULE_VERSION = "1.5.0-lowonline"
 
 local gate = {
     Owner = nil,
@@ -57,7 +57,7 @@ local function cleanGate(context, now)
         gate.OwnerSince = 0
     end
     for owner, waiter in pairs(gate.Waiters) do
-        if now - (waiter.SeenAt or 0) > 2 then gate.Waiters[owner] = nil end
+        if now - (waiter.SeenAt or 0) > 10 then gate.Waiters[owner] = nil end
     end
 end
 
