@@ -3,7 +3,7 @@
 -- before one Use Fuse Machine request.
 
 local activeState
-local MODULE_VERSION = "1.4.0-lowonline"
+local MODULE_VERSION = "1.5.0-lowonline"
 
 local TARGET_EGG = "Samurai Egg"
 local IDLE_CHECK_DELAY = 3
@@ -23,8 +23,22 @@ local MODE_POLICY = {
         Count = 9,
         Names = { ["tiger"] = true, ["white tiger"] = true },
     },
+    ["7 Any Rare"] = {
+        Count = 7,
+        Rarity = "rare",
+    },
+    ["4 Any Epic"] = {
+        Count = 4,
+        Rarity = "epic",
+    },
 }
-local MODE_ORDER = { "11 Panda", "10 Axolotl", "9 Tiger" }
+local MODE_ORDER = {
+    "11 Panda",
+    "10 Axolotl",
+    "9 Tiger",
+    "7 Any Rare",
+    "4 Any Epic",
+}
 
 local function normalize(value)
     value = string.lower(tostring(value or ""))
@@ -41,8 +55,14 @@ local function definitionName(definition)
 end
 
 local function policyMatchesDefinition(policy, definition)
-    if type(policy) ~= "table" or type(policy.Names) ~= "table" then return false end
-    return policy.Names[normalize(definitionName(definition))] == true
+    if type(policy) ~= "table" or type(definition) ~= "table" then return false end
+    if type(policy.Names) == "table" then
+        return policy.Names[normalize(definitionName(definition))] == true
+    end
+    if policy.Rarity ~= nil then
+        return normalize(definition.rarity or definition.Rarity) == normalize(policy.Rarity)
+    end
+    return false
 end
 
 local function shortUID(uid)
@@ -189,7 +209,7 @@ end
 local function collectCandidateGroups(context, pets, targetIds, policy)
     local groups, stats = {}, {
         EggSpecies = 0,
-        MatchingRarity = 0,
+        MatchingPolicy = 0,
         Eligible = 0,
         Equipped = 0,
         Locked = 0,
@@ -203,7 +223,7 @@ local function collectCandidateGroups(context, pets, targetIds, policy)
             local rarity = type(definition) == "table"
                 and tostring(definition.rarity or definition.Rarity or "") or ""
             if policyMatchesDefinition(policy, definition) then
-                stats.MatchingRarity = stats.MatchingRarity + 1
+                stats.MatchingPolicy = stats.MatchingPolicy + 1
                 local equipped = pet.e == true
                 local locked = pet.l == true or pet.locked == true
                 local wrongForm = pet.g == true or pet.r == true or pet.dm == true
@@ -269,8 +289,8 @@ end
 
 local function statsText(stats)
     return string.format(
-        "egg species: %d | selected species: %d | eligible: %d | equipped: %d | locked: %d | wrong form: %d | blocked: %d",
-        stats.EggSpecies, stats.MatchingRarity, stats.Eligible, stats.Equipped,
+        "egg species: %d | matching mode: %d | eligible: %d | equipped: %d | locked: %d | wrong form: %d | blocked: %d",
+        stats.EggSpecies, stats.MatchingPolicy, stats.Eligible, stats.Equipped,
         stats.Locked, stats.WrongForm, stats.DirectoryBlocked
     )
 end
@@ -294,7 +314,7 @@ local function validateSelection(context, candidates, targetIds, policy, expecte
             return false, nil, nil, shortUID(uid) .. " is no longer a " .. TARGET_EGG .. " pet"
         end
         if not policyMatchesDefinition(policy, definition) then
-            return false, nil, nil, shortUID(uid) .. " is no longer the selected species"
+            return false, nil, nil, shortUID(uid) .. " no longer matches the selected mode"
         end
         if tostring(pet.id or "") ~= tostring(expectedId) then
             return false, nil, nil, shortUID(uid) .. " changed species before dispatch"
@@ -326,7 +346,7 @@ local function runCheck(state, context)
 
     local enabledModes = activeModes(context)
     if #enabledModes == 0 then
-        context.SetStatus("No Samurai Egg species mode is enabled; no request sent.")
+        context.SetStatus("No Samurai Egg fuse mode is enabled; no request sent.")
         finish(RETRY_DELAY)
         return
     end

@@ -1,7 +1,7 @@
 -- Lazy automation UI extension for LowOnline through the first Fantasy update.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.6.3-lowonline"
+local MODULE_VERSION = "1.6.4-lowonline"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -203,14 +203,16 @@ local function build(context)
     local fuse = UI.MachinesTab:Section({ Title = "Samurai Egg Fuse", Box = true, Opened = true })
     fuse:Paragraph({
         Title = "EXACT SPECIES BATCHES / LIVE DIRECTORY",
-        Desc = "Panda x11, Axolotl x10 and Tiger x9; equipped, locked and upgraded pets are protected.",
+        Desc = "Panda x11, Axolotl x10, Tiger x9, any Rare x7 and any Epic x4. Every request contains one exact Samurai Egg species.",
     })
     local fuseModeToggles = {}
     local function enabledFuseModes()
         local modes = {}
-        if config.AutoFuseBasic then modes[#modes + 1] = "11 Panda" end
-        if config.AutoFuseRare then modes[#modes + 1] = "10 Axolotl" end
-        if config.AutoFuseEpic then modes[#modes + 1] = "9 Tiger" end
+        if config.AutoFusePanda then modes[#modes + 1] = "11 Panda" end
+        if config.AutoFuseAxolotl then modes[#modes + 1] = "10 Axolotl" end
+        if config.AutoFuseTiger then modes[#modes + 1] = "9 Tiger" end
+        if config.AutoFuseRare then modes[#modes + 1] = "7 Any Rare" end
+        if config.AutoFuseEpic then modes[#modes + 1] = "4 Any Epic" end
         return modes
     end
     local function reconcileFuseModes()
@@ -227,22 +229,34 @@ local function build(context)
     end
     for _, definition in ipairs({
         {
-            Flag = "lowonline_fuse_basic",
-            Key = "AutoFuseBasic",
+            Flag = "lowonline_fuse_panda",
+            Key = "AutoFusePanda",
             Title = "Fuse 11 Panda",
             Desc = "Only exact Panda species from Samurai Egg; 11 normal pets per request.",
         },
         {
-            Flag = "lowonline_fuse_rare",
-            Key = "AutoFuseRare",
+            Flag = "lowonline_fuse_axolotl",
+            Key = "AutoFuseAxolotl",
             Title = "Fuse 10 Axolotl",
             Desc = "Only exact Axolotl species from Samurai Egg; 10 normal pets per request.",
         },
         {
-            Flag = "lowonline_fuse_epic",
-            Key = "AutoFuseEpic",
+            Flag = "lowonline_fuse_tiger",
+            Key = "AutoFuseTiger",
             Title = "Fuse 9 Tiger",
             Desc = "Exact Tiger or White Tiger species from Samurai Egg; 9 normal pets per request.",
+        },
+        {
+            Flag = "lowonline_fuse_rare",
+            Key = "AutoFuseRare",
+            Title = "Fuse 7 Any Rare",
+            Desc = "Any Rare from Samurai Egg; each request still uses 7 pets of one exact species.",
+        },
+        {
+            Flag = "lowonline_fuse_epic",
+            Key = "AutoFuseEpic",
+            Title = "Fuse 4 Any Epic",
+            Desc = "Any Epic from Samurai Egg; each request still uses 4 pets of one exact species.",
         },
     }) do
         local item = definition

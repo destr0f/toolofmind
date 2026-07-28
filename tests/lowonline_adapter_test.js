@@ -111,8 +111,13 @@ const fuse = fs.readFileSync(path.join(root, "fuse_module.lua"), "utf8");
 const support = fs.readFileSync(path.join(root, "automation_support_module.lua"), "utf8");
 check(
     fuse.includes('local TARGET_EGG = "Samurai Egg"')
+        && fuse.includes('["11 Panda"]')
+        && fuse.includes('["10 Axolotl"]')
+        && fuse.includes('["9 Tiger"]')
+        && fuse.includes('["7 Any Rare"]')
+        && fuse.includes('["4 Any Epic"]')
         && fuse.includes("pet.g == true or pet.r == true or pet.dm == true"),
-    "Fuse must select normal Basic/Rare/Epic pets from the live Samurai Egg catalog"
+    "Fuse must expose five protected modes from the live Samurai Egg catalog"
 );
 check(
     support.includes('local targetName = "Samurai Dragon"')

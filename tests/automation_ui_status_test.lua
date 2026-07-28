@@ -92,7 +92,7 @@ local accepted, controls = automationUI("build", {
 assert(accepted == true, tostring(controls))
 assert(type(controls) == "table", "automation controls were not returned")
 assert(uiYieldCount >= 8, "automation UI was not split into enough frame-sized stages")
-assert(automationUI("version") == "1.6.3-lowonline")
+assert(automationUI("version") == "1.6.4-lowonline")
 
 local countSlider = controlsByFlag.dark_matter_batch_size
 local timeSlider = controlsByFlag.dark_matter_max_wait_hours
@@ -112,22 +112,30 @@ manualDelay.Definition.Callback(75)
 assert(config.EggPaceMode == "Manual Delay", "AutoEgg pace mode did not update config")
 assert(config.EggManualDelayMs == 75, "AutoEgg manual delay did not update config")
 
-local basicFuse = controlsByFlag.lowonline_fuse_basic
+local pandaFuse = controlsByFlag.lowonline_fuse_panda
+local axolotlFuse = controlsByFlag.lowonline_fuse_axolotl
+local tigerFuse = controlsByFlag.lowonline_fuse_tiger
 local rareFuse = controlsByFlag.lowonline_fuse_rare
 local epicFuse = controlsByFlag.lowonline_fuse_epic
-assert(type(basicFuse) == "table", "LowOnline Basic fuse toggle is missing")
+assert(type(pandaFuse) == "table", "LowOnline Panda fuse toggle is missing")
+assert(type(axolotlFuse) == "table", "LowOnline Axolotl fuse toggle is missing")
+assert(type(tigerFuse) == "table", "LowOnline Tiger fuse toggle is missing")
 assert(type(rareFuse) == "table", "LowOnline Rare fuse toggle is missing")
 assert(type(epicFuse) == "table", "LowOnline Epic fuse toggle is missing")
-basicFuse.Definition.Callback(true)
+pandaFuse.Definition.Callback(true)
+axolotlFuse.Definition.Callback(true)
+tigerFuse.Definition.Callback(true)
 rareFuse.Definition.Callback(true)
 epicFuse.Definition.Callback(true)
-assert(config.AutoFuseBasic and config.AutoFuseRare and config.AutoFuseEpic,
-    "all three LowOnline fuse modes cannot stay enabled together")
+assert(config.AutoFusePanda and config.AutoFuseAxolotl and config.AutoFuseTiger
+    and config.AutoFuseRare and config.AutoFuseEpic,
+    "all five LowOnline fuse modes cannot stay enabled together")
 assert(config.AutoFuse == true, "combined Fuse worker was not armed")
-assert(#machineStarts == 3 and machineStarts[1] == "Fuse",
+assert(#machineStarts == 5 and machineStarts[1] == "Fuse",
     "Fuse worker was not reconciled after each mode change")
 rareFuse.Definition.Callback(false)
-assert(config.AutoFuseBasic and not config.AutoFuseRare and config.AutoFuseEpic,
+assert(config.AutoFusePanda and config.AutoFuseAxolotl and config.AutoFuseTiger
+    and not config.AutoFuseRare and config.AutoFuseEpic,
     "disabling one Fuse mode disabled the other active modes")
 
 local purchaseLead = controlsByFlag.boost_purchase_lead

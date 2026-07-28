@@ -2,7 +2,7 @@
 -- Launch content plus the first Fantasy World update: farming, hatch, enchant,
 -- conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.5.4-low.5"
+local VERSION = "1.5.5-low.6"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -183,6 +183,9 @@ local config = {
     AutoClaimDarkMatter = false,
     AutoFuse = false,
     AutoFuseBasic = false,
+    AutoFusePanda = false,
+    AutoFuseAxolotl = false,
+    AutoFuseTiger = false,
     AutoFuseRare = false,
     AutoFuseEpic = false,
     AutoEnchantEquipped = false,
@@ -2673,7 +2676,13 @@ local machineModules = {
     },
     Fuse = {
         Module = "fuse",
-        ConfigKeys = { "AutoFuseBasic", "AutoFuseRare", "AutoFuseEpic" },
+        ConfigKeys = {
+            "AutoFusePanda",
+            "AutoFuseAxolotl",
+            "AutoFuseTiger",
+            "AutoFuseRare",
+            "AutoFuseEpic",
+        },
         Label = "fuse machine",
         SetStatus = statusSetters.Fuse,
     },
@@ -2813,9 +2822,11 @@ function machineModules:Start(kind)
         end,
         Modes = function()
             return {
-                ["11 Panda"] = config.AutoFuseBasic == true,
-                ["10 Axolotl"] = config.AutoFuseRare == true,
-                ["9 Tiger"] = config.AutoFuseEpic == true,
+                ["11 Panda"] = config.AutoFusePanda == true,
+                ["10 Axolotl"] = config.AutoFuseAxolotl == true,
+                ["9 Tiger"] = config.AutoFuseTiger == true,
+                ["7 Any Rare"] = config.AutoFuseRare == true,
+                ["4 Any Epic"] = config.AutoFuseEpic == true,
             }
         end,
         Targets = function()
@@ -4097,7 +4108,9 @@ function UI.SaveProfile()
     UI.Profile:Set("selected_egg_scope", config.EggScope)
     UI.Profile:Set("lowonline_egg_pace_mode", config.EggPaceMode)
     UI.Profile:Set("lowonline_egg_manual_delay_ms", config.EggManualDelayMs)
-    UI.Profile:Set("lowonline_fuse_basic", config.AutoFuseBasic)
+    UI.Profile:Set("lowonline_fuse_panda", config.AutoFusePanda)
+    UI.Profile:Set("lowonline_fuse_axolotl", config.AutoFuseAxolotl)
+    UI.Profile:Set("lowonline_fuse_tiger", config.AutoFuseTiger)
     UI.Profile:Set("lowonline_fuse_rare", config.AutoFuseRare)
     UI.Profile:Set("lowonline_fuse_epic", config.AutoFuseEpic)
     UI.Profile:Set("profile_namespace", "LowOnline/v2")
@@ -4242,6 +4255,9 @@ local function shutdown(reason)
     config.AutoClaimDarkMatter = false
     config.AutoFuse = false
     config.AutoFuseBasic = false
+    config.AutoFusePanda = false
+    config.AutoFuseAxolotl = false
+    config.AutoFuseTiger = false
     config.AutoFuseRare = false
     config.AutoFuseEpic = false
     config.AutoEnchantEquipped = false
