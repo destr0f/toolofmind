@@ -38,7 +38,10 @@ end
 local statusViews = {}
 local statusSetters = {}
 local config = {}
-for _, key in ipairs({ "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMatter", "Fuse", "Boost" }) do
+for _, key in ipairs({
+    "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMatter",
+    "Fuse", "Enchant", "Boost",
+}) do
     statusSetters[key] = function(value)
         local view = statusViews[key]
         assert(type(view) == "table", key .. " view was not installed")
@@ -76,6 +79,10 @@ local accepted, controls = automationUI("build", {
     SetRainbowStatus = statusSetters.Rainbow,
     SetDarkMatterStatus = statusSetters.DarkMatter,
     SetFuseStatus = statusSetters.Fuse,
+    GetEnchantCatalog = function()
+        return { "Coins V", "Fantasy Coins V", "Super Teamwork" }
+    end,
+    SetEnchantStatus = statusSetters.Enchant,
     ReconcileBoost = noOp,
     BoostEnabled = function() return false end,
     StartBoost = noOp,
@@ -130,6 +137,19 @@ purchaseLead.Definition.Callback(45)
 autoBuyPotions.Definition.Callback(true)
 assert(config.BoostPurchaseLead == 45, "potion purchase lead did not update config")
 assert(config.AutoBuyPotions == true, "auto-buy potions did not update config")
+
+local enchantDropdown = controlsByFlag.equipped_enchant_targets
+local autoEnchant = controlsByFlag.auto_enchant_equipped
+assert(type(enchantDropdown) == "table", "equipped enchant multi-dropdown is missing")
+assert(type(autoEnchant) == "table", "equipped auto-enchant toggle is missing")
+enchantDropdown.Definition.Callback({ "Fantasy Coins V", "Super Teamwork" })
+assert(type(config.EnchantTargets) == "table" and #config.EnchantTargets == 2,
+    "multiple accepted enchant targets were not retained")
+autoEnchant.Definition.Callback(true)
+assert(config.AutoEnchantEquipped == true, "auto enchant did not update config")
+assert(machineStarts[#machineStarts] == "Enchant", "Enchant worker was not started")
+autoEnchant.Definition.Callback(false)
+assert(machineStops[#machineStops] == "Enchant", "Enchant worker was not stopped")
 
 for key, setter in pairs(statusSetters) do
     assert(type(setter) == "function", key .. " setter was overwritten")

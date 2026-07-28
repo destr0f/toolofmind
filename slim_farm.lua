@@ -1,7 +1,8 @@
 -- LowOnline Slim Farm
--- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
+-- Launch content plus the first Fantasy World update: farming, hatch, enchant,
+-- conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.3-low.1"
+local VERSION = "1.5.0-low.1"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -184,6 +185,8 @@ local config = {
     AutoFuseBasic = false,
     AutoFuseRare = false,
     AutoFuseEpic = false,
+    AutoEnchantEquipped = false,
+    EnchantTargets = {},
     MachineBatchSize = 6,
     DarkMatterBatchSize = 6,
     DarkMatterMaxWaitHours = 0,
@@ -586,9 +589,9 @@ end
 local eggLabelToId = {}
 local eggIdToLabel = {}
 
--- LowOnline is the launch/first-update game line. Keep its target catalog
--- deliberately small so the UI never exposes worlds that do not exist here.
-local WorldOrder = { "Spawn World" }
+-- LowOnline is pinned to the first Fantasy World update. Labels mirror the
+-- teleporter while aliases below map them to the compact launch-build Areas.
+local WorldOrder = { "Spawn World", "Fantasy World" }
 
 local CurrencyChoices = {
     "Active Balances", "Auto", "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
@@ -597,6 +600,7 @@ local CurrencyChoices = {
 
 local CurrencyByWorld = {
     ["Spawn World"] = "Coins",
+    ["Fantasy World"] = "Fantasy Coins",
 }
 
 local WorldZones = {
@@ -604,13 +608,30 @@ local WorldZones = {
         "Shop", "Town", "Forest", "Beach", "Mine", "Winter", "Glacier",
         "Desert", "Volcano", "Cave",
     },
+    ["Fantasy World"] = {
+        "Fantasy Shop", "Enchanted Forest", "Portals", "Ancient Island",
+        "Samurai Island", "Candy Island", "Haunted Island", "Hell Island",
+        "Heaven Island", "Heaven's Gate",
+    },
 }
 
-local ZoneAliases = {}
+local ZoneAliases = {
+    ["Fantasy Shop"] = "Shop",
+    ["Enchanted Forest"] = "Spawn",
+    ["Portals"] = "Teleports",
+    ["Ancient Island"] = "Temple",
+    ["Samurai Island"] = "Samurai",
+    ["Candy Island"] = "Candy",
+    ["Haunted Island"] = "Haunted",
+    ["Hell Island"] = "Hell",
+    ["Heaven Island"] = "Heaven",
+}
 
 local WorldAliases = {
     ["spawn"] = "Spawn World",
     ["spawn world"] = "Spawn World",
+    ["fantasy"] = "Fantasy World",
+    ["fantasy world"] = "Fantasy World",
 }
 
 local function readObjectValue(object, name)
@@ -864,6 +885,14 @@ local BossChestNames = {
 BossChestZones = {
     ["magma chest"] = "Volcano",
     ["volcano magma chest"] = "Volcano",
+    ["ancient chest"] = "Ancient Island",
+    ["ancient huge chest"] = "Ancient Island",
+    ["haunted chest"] = "Haunted Island",
+    ["huge haunted chest"] = "Haunted Island",
+    ["hell chest"] = "Hell Island",
+    ["huge hell chest"] = "Hell Island",
+    ["huge heaven chest"] = "Heaven Island",
+    ["giant heaven chest"] = "Heaven Island",
     ["giant tech chest"] = "Tech Entry",
     ["tech entry giant tech chest"] = "Tech Entry",
     ["grand heaven chest"] = "Heaven's Gate",
@@ -2036,6 +2065,28 @@ local function getMachinePetCatalog(force)
     return ids, names, summary
 end
 
+local function getEnchantCatalog()
+    local powers = Library and Library.Directory and Library.Directory.Powers
+    local values, seen = {}, {}
+    for powerName, definition in pairs(type(powers) == "table" and powers or {}) do
+        if type(definition) == "table" and definition.canDrop ~= false then
+            local tiers = definition.tiers or definition.Tiers
+            for _, tier in ipairs(type(tiers) == "table" and tiers or {}) do
+                local title = type(tier) == "table"
+                    and (tier.title or tier.Title or tier.name or tier.Name) or nil
+                local label = tostring(title or powerName or "")
+                local key = normalize(label)
+                if key ~= "" and not seen[key] then
+                    seen[key] = true
+                    values[#values + 1] = label
+                end
+            end
+        end
+    end
+    table.sort(values)
+    return values
+end
+
 local function resetSupportCoordinator()
     if supportController then pcall(supportController, "reset", supportContext) end
 end
@@ -2378,6 +2429,9 @@ end
 function statusSetters.Fuse(text)
     statusSetters.Set("Fuse", text)
 end
+function statusSetters.Enchant(text)
+    statusSetters.Set("Enchant", text)
+end
 function statusSetters.Egg(text)
     statusSetters.Set("Egg", text)
 end
@@ -2607,6 +2661,12 @@ local machineModules = {
         Label = "fuse machine",
         SetStatus = statusSetters.Fuse,
     },
+    Enchant = {
+        Module = "enchant",
+        ConfigKeys = { "AutoEnchantEquipped" },
+        Label = "enchant worker",
+        SetStatus = statusSetters.Enchant,
+    },
 }
 
 local MACHINE_PET_SNAPSHOT_TTL = 5
@@ -2665,6 +2725,7 @@ function machineModules:StopAll()
     self:Stop("Rainbow")
     self:Stop("DarkMatter")
     self:Stop("Fuse")
+    self:Stop("Enchant")
 end
 
 function machineModules:Start(kind)
@@ -2714,6 +2775,9 @@ function machineModules:Start(kind)
                 ["8 Rare"] = config.AutoFuseRare == true,
                 ["5 Epic"] = config.AutoFuseEpic == true,
             }
+        end,
+        Targets = function()
+            return kind == "Enchant" and config.EnchantTargets or {}
         end,
         GetCommandRemote = getCommandRemote,
         InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
@@ -3734,6 +3798,8 @@ do
             SetRainbowStatus = statusSetters.Rainbow,
             SetDarkMatterStatus = statusSetters.DarkMatter,
             SetFuseStatus = statusSetters.Fuse,
+            GetEnchantCatalog = getEnchantCatalog,
+            SetEnchantStatus = statusSetters.Enchant,
             ReconcileBoost = reconcileBoostModule,
             BoostEnabled = boostAutomationEnabled,
             StartBoost = startBoostModule,
@@ -3760,6 +3826,7 @@ do
     statusTabs.Rainbow = UI.MachinesTab
     statusTabs.DarkMatter = UI.MachinesTab
     statusTabs.Fuse = UI.MachinesTab
+    statusTabs.Enchant = UI.MachinesTab
     statusTabs.Boost = UI.BoostsTab
     refreshEggDropdown(true)
     trace("06B automation UI ready")
@@ -4135,6 +4202,8 @@ local function shutdown(reason)
     config.AutoFuseBasic = false
     config.AutoFuseRare = false
     config.AutoFuseEpic = false
+    config.AutoEnchantEquipped = false
+    config.EnchantTargets = {}
     config.AutoBuyPotions = false
     config.AutoTripleCoins = false
     config.AutoTripleDamage = false

@@ -1,7 +1,7 @@
--- Lazy UI extension for PSX OG Nova develop.
+-- Lazy automation UI extension for LowOnline through the first Fantasy update.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.4.0-lowonline"
+local MODULE_VERSION = "1.5.0-lowonline"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -18,7 +18,7 @@ local function build(context)
         "SetEggCatalogStatus",
         "RefreshRoutes", "SetRouteStatus", "GetMachinePetCatalog", "StartMachine",
         "StopMachine", "SetGoldStatus", "SetRainbowStatus", "SetDarkMatterStatus",
-        "SetFuseStatus",
+        "SetFuseStatus", "GetEnchantCatalog", "SetEnchantStatus",
         "ReconcileBoost", "BoostEnabled", "StartBoost",
     })
     if not valid then return false, problem end
@@ -248,6 +248,87 @@ local function build(context)
     })
     yieldUI("fuse machine")
 
+    local enchant = UI.MachinesTab:Section({
+        Title = "Equipped Pet Enchanting",
+        Box = true,
+        Opened = true,
+    })
+    enchant:Paragraph({
+        Title = "EQUIPPED ONLY / AUTHORITATIVE SAVE CONFIRMATION",
+        Desc = "Selected enchants are OR alternatives. Each eligible equipped pet is rerolled serially until it has any selected result.",
+    })
+    local enchantPlaceholder = "Enchant catalog unavailable"
+    local enchantValues = context.GetEnchantCatalog()
+    if type(enchantValues) ~= "table" or #enchantValues == 0 then
+        enchantValues = { enchantPlaceholder }
+    end
+    local enchantDropdown
+    enchantDropdown = enchant:Dropdown({
+        Flag = "equipped_enchant_targets",
+        Title = "Accepted Enchants",
+        Desc = "Choose one or more live Directory.Powers tier titles. No server request is sent while this list is empty.",
+        Values = enchantValues,
+        Value = {},
+        Multi = true,
+        AllowNone = true,
+        Callback = function(values)
+            local selected, seen = {}, {}
+            for _, value in ipairs(type(values) == "table" and values or {}) do
+                local label = type(value) == "table"
+                    and (value.Title or value.title or value.Name) or value
+                label = tostring(label or "")
+                if label ~= "" and label ~= enchantPlaceholder and not seen[label] then
+                    seen[label] = true
+                    selected[#selected + 1] = label
+                end
+            end
+            table.sort(selected)
+            config.EnchantTargets = selected
+            context.SetEnchantStatus(#selected > 0
+                and ("Accepted results updated: " .. table.concat(selected, ", ")
+                    .. ". The current pet is never interrupted.")
+                or "Select at least one enchant. No Enchant Pet request is being sent.")
+        end,
+    })
+    enchant:Button({
+        Title = "REFRESH ENCHANT CATALOG",
+        Desc = "Re-reads Library.Directory.Powers locally; no enchant request.",
+        Icon = "refresh-cw",
+        Callback = function()
+            local values = context.GetEnchantCatalog()
+            if type(values) == "table" and #values > 0 then
+                enchantDropdown:Refresh(values)
+                context.SetEnchantStatus("Catalog refreshed locally: "
+                    .. tostring(#values) .. " selectable enchant tier(s).")
+            else
+                context.SetEnchantStatus(
+                    "Library.Directory.Powers is unavailable; no enchant request was sent."
+                )
+            end
+        end,
+    })
+    enchant:Toggle({
+        Flag = "auto_enchant_equipped",
+        Title = "Auto Enchant Equipped Pets",
+        Desc = "Protects unequipped and locked pets; one equipped pet is rerolled at a time and confirmed from Save.Pets.",
+        Value = false,
+        Callback = function(value)
+            config.AutoEnchantEquipped = value == true
+            if config.AutoEnchantEquipped then
+                context.SetEnchantStatus("Enabled. Validating selected enchants and equipped pets...")
+                spawn(function() context.StartMachine("Enchant") end)
+            else
+                context.StopMachine("Enchant")
+                context.SetEnchantStatus("Disabled. No Enchant Pet request is active.")
+            end
+        end,
+    })
+    statusViews.Enchant = enchant:Paragraph({
+        Title = "Enchant Status",
+        Desc = "Disabled / waiting for selected accepted enchants",
+    })
+    yieldUI("enchant worker")
+
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
         Flag = "auto_golden_galaxy_fox",
@@ -442,6 +523,7 @@ local function build(context)
         EggPaceModeDropdown = eggPaceMode,
         EggManualDelaySlider = eggManualDelay,
         FuseModeToggles = fuseModeToggles,
+        EnchantDropdown = enchantDropdown,
     }
 end
 

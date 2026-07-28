@@ -27,6 +27,12 @@ modules are declared at startup but downloaded only when their feature is used.
 `loot_reactor.lua` owns the only orb/lootbag subscriptions. Lazy loading does
 not weaken identity checks.
 
+The LowOnline catalog is pinned to launch content plus the first Fantasy World
+update. Teleporter labels are mapped to the compact live `__MAP.Areas` names.
+`enchant_module.lua` rerolls only equipped, unlocked pets through the named
+`Enchant Pet` command, keeps one request in flight and accepts a roll only after
+`Save.Pets` changes. Multiple selected enchant tiers are OR alternatives.
+
 ## Runtime execution policy
 
 The active build has no global scheduler, profiler, timer heap or retained

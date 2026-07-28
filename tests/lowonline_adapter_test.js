@@ -25,12 +25,24 @@ check(
     "the adapter must not spend additional top-level Luau registers"
 );
 check(
-    source.includes('local WorldOrder = { "Spawn World" }'),
-    "the world selector must be restricted to the launch world"
+    source.includes('local WorldOrder = { "Spawn World", "Fantasy World" }'),
+    "the world selector must stop at the first Fantasy World update"
 );
 check(
     source.includes('"Desert", "Volcano", "Cave"'),
     "the early progression catalog must end at Volcano/Cave"
+);
+check(
+    source.includes('"Fantasy Shop", "Enchanted Forest", "Portals", "Ancient Island"')
+        && source.includes('"Heaven Island", "Heaven\'s Gate"')
+        && source.includes('["Fantasy World"] = "Fantasy Coins"'),
+    "the first Fantasy World teleporter zones/currency are incomplete"
+);
+check(
+    source.includes('["Enchanted Forest"] = "Spawn"')
+        && source.includes('["Ancient Island"] = "Temple"')
+        && source.includes('["Heaven Island"] = "Heaven"'),
+    "Fantasy display zones must map to the compact live Areas"
 );
 check(
     source.includes('currentZone = "Player Radius"'),
