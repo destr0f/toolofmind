@@ -117,7 +117,7 @@ check(
 check(
     support.includes('local targetName = "Samurai Dragon"')
         && support.includes('TargetName = "Domortuus"')
-        && source.includes('and "Samurai Dragon" or "Domortuus"'),
+        && /local targetSpecies\s*=\s*\(kind == "Gold" or kind == "Rainbow"\)\s*and "Samurai Dragon" or "Domortuus"/.test(source),
     "Gold/Rainbow and Dark Matter must use separate live species catalogs"
 );
 

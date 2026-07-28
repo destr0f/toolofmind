@@ -1,6 +1,6 @@
 local fuse = require("../fuse_module")
 
-assert(fuse("version") == "1.3.0-lowonline")
+assert(fuse("version") == "1.4.0-lowonline")
 
 local function exercise(enabledModes, expectedMode, rarity, count, speciesId, speciesName)
     speciesId = speciesId or rarity
@@ -109,17 +109,16 @@ local function exercise(enabledModes, expectedMode, rarity, count, speciesId, sp
     fuse("stop")
 end
 
-exercise({ ["10 Basic"] = true }, "10 Basic", "Basic", 10, "corgi", "Corgi")
-exercise({ ["10 Basic"] = true }, "10 Basic", "Basic", 11, "panda", "Panda")
-exercise({ ["7 Rare"] = true }, "7 Rare", "Rare", 7)
-exercise({ ["4 Epic"] = true }, "4 Epic", "Epic", 4)
+exercise({ ["11 Panda"] = true }, "11 Panda", "Basic", 11, "panda", "Panda")
+exercise({ ["10 Axolotl"] = true }, "10 Axolotl", "Rare", 10, "axolotl", "Axolotl")
+exercise({ ["9 Tiger"] = true }, "9 Tiger", "Epic", 9, "white-tiger", "White Tiger")
 
 -- All three toggles may be armed together. The worker deliberately emits only
 -- one exact batch per cycle so inventory mutations can be confirmed serially.
 exercise({
-    ["10 Basic"] = true,
-    ["7 Rare"] = true,
-    ["4 Epic"] = true,
-}, "10 Basic", "Basic", 10, "corgi", "Corgi")
+    ["11 Panda"] = true,
+    ["10 Axolotl"] = true,
+    ["9 Tiger"] = true,
+}, "11 Panda", "Basic", 11, "panda", "Panda")
 
-print("PASS LowOnline fuse uses Panda x11, other Basic x10, Rare x7 and Epic x4")
+print("PASS LowOnline fuse uses exact Panda x11, Axolotl x10 and Tiger x9 batches")

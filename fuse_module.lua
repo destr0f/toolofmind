@@ -3,7 +3,7 @@
 -- before one Use Fuse Machine request.
 
 local activeState
-local MODULE_VERSION = "1.3.0-lowonline"
+local MODULE_VERSION = "1.4.0-lowonline"
 
 local TARGET_EGG = "Samurai Egg"
 local IDLE_CHECK_DELAY = 3
@@ -11,11 +11,20 @@ local RETRY_DELAY = 8
 local PENDING_TIMEOUT = 12
 
 local MODE_POLICY = {
-    ["10 Basic"] = { Rarity = "Basic", Count = 10 },
-    ["7 Rare"] = { Rarity = "Rare", Count = 7 },
-    ["4 Epic"] = { Rarity = "Epic", Count = 4 },
+    ["11 Panda"] = {
+        Count = 11,
+        Names = { ["panda"] = true, ["basic panda"] = true },
+    },
+    ["10 Axolotl"] = {
+        Count = 10,
+        Names = { ["axolotl"] = true },
+    },
+    ["9 Tiger"] = {
+        Count = 9,
+        Names = { ["tiger"] = true, ["white tiger"] = true },
+    },
 }
-local MODE_ORDER = { "10 Basic", "7 Rare", "4 Epic" }
+local MODE_ORDER = { "11 Panda", "10 Axolotl", "9 Tiger" }
 
 local function normalize(value)
     value = string.lower(tostring(value or ""))
@@ -31,12 +40,9 @@ local function definitionName(definition)
         or definition.petName or definition.PetName
 end
 
-local function batchCountForSpecies(policy, definition)
-    if policy.Rarity == "Basic" then
-        local name = normalize(definitionName(definition))
-        if name == "panda" or name == "basic panda" then return 11 end
-    end
-    return policy.Count
+local function policyMatchesDefinition(policy, definition)
+    if type(policy) ~= "table" or type(policy.Names) ~= "table" then return false end
+    return policy.Names[normalize(definitionName(definition))] == true
 end
 
 local function shortUID(uid)
@@ -196,7 +202,7 @@ local function collectCandidateGroups(context, pets, targetIds, policy)
             local definition = petDefinition(context, pet)
             local rarity = type(definition) == "table"
                 and tostring(definition.rarity or definition.Rarity or "") or ""
-            if rarity == policy.Rarity then
+            if policyMatchesDefinition(policy, definition) then
                 stats.MatchingRarity = stats.MatchingRarity + 1
                 local equipped = pet.e == true
                 local locked = pet.l == true or pet.locked == true
@@ -219,7 +225,7 @@ local function collectCandidateGroups(context, pets, targetIds, policy)
                         group = {
                             Id = petId,
                             Name = tostring(definitionName(definition) or petId),
-                            Required = batchCountForSpecies(policy, definition),
+                            Required = policy.Count,
                             Candidates = {},
                         }
                         groups[petId] = group
@@ -263,7 +269,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "egg species: %d | rarity matches: %d | eligible: %d | equipped: %d | locked: %d | wrong form: %d | blocked: %d",
+        "egg species: %d | selected species: %d | eligible: %d | equipped: %d | locked: %d | wrong form: %d | blocked: %d",
         stats.EggSpecies, stats.MatchingRarity, stats.Eligible, stats.Equipped,
         stats.Locked, stats.WrongForm, stats.DirectoryBlocked
     )
@@ -287,8 +293,8 @@ local function validateSelection(context, candidates, targetIds, policy, expecte
         if not targetIds[tostring(pet.id or "")] then
             return false, nil, nil, shortUID(uid) .. " is no longer a " .. TARGET_EGG .. " pet"
         end
-        if rarity ~= policy.Rarity then
-            return false, nil, nil, shortUID(uid) .. " rarity changed to " .. rarity
+        if not policyMatchesDefinition(policy, definition) then
+            return false, nil, nil, shortUID(uid) .. " is no longer the selected species"
         end
         if tostring(pet.id or "") ~= tostring(expectedId) then
             return false, nil, nil, shortUID(uid) .. " changed species before dispatch"
@@ -320,7 +326,7 @@ local function runCheck(state, context)
 
     local enabledModes = activeModes(context)
     if #enabledModes == 0 then
-        context.SetStatus("No fuse rarity mode is enabled; no request sent.")
+        context.SetStatus("No Samurai Egg species mode is enabled; no request sent.")
         finish(RETRY_DELAY)
         return
     end

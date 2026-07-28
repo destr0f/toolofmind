@@ -2,7 +2,7 @@
 -- Launch content plus the first Fantasy World update: farming, hatch, enchant,
 -- conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.5.3-low.4"
+local VERSION = "1.5.4-low.5"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -2784,7 +2784,7 @@ function machineModules:Start(kind)
 
     entry.Loading = false
     if not self:Enabled(entry) or not running() then return end
-    local targetSpecies = kind == "Gold" or kind == "Rainbow"
+    local targetSpecies = (kind == "Gold" or kind == "Rainbow")
         and "Samurai Dragon" or "Domortuus"
     local context = {
         Library = Library,
@@ -2813,9 +2813,9 @@ function machineModules:Start(kind)
         end,
         Modes = function()
             return {
-                ["10 Basic"] = config.AutoFuseBasic == true,
-                ["7 Rare"] = config.AutoFuseRare == true,
-                ["4 Epic"] = config.AutoFuseEpic == true,
+                ["11 Panda"] = config.AutoFuseBasic == true,
+                ["10 Axolotl"] = config.AutoFuseRare == true,
+                ["9 Tiger"] = config.AutoFuseEpic == true,
             }
         end,
         Targets = function()
