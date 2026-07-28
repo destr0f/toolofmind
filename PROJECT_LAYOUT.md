@@ -35,8 +35,9 @@ update. Teleporter labels are mapped to the compact live `__MAP.Areas` names.
 The LowOnline machine catalog resolves names from the live
 `Library.Directory.Pets`: normal/golden Samurai Dragon feeds Gold/Rainbow,
 while Dark Matter deliberately keeps the existing Domortuus route. Fuse reads
-the live Samurai Egg drops and independently batches 10 Basic, 7 Rare and
-4 Epic normal pets while protecting equipped, locked and upgraded entries.
+the live Samurai Egg drops and independently batches Panda Basic by 11,
+other Basic species by 10, Rare by 7 and Epic by 4 while protecting equipped,
+locked and upgraded entries.
 
 ## Runtime execution policy
 

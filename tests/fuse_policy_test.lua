@@ -1,8 +1,10 @@
 local fuse = require("../fuse_module")
 
-assert(fuse("version") == "1.2.1-lowonline")
+assert(fuse("version") == "1.3.0-lowonline")
 
-local function exercise(enabledModes, expectedMode, rarity, count)
+local function exercise(enabledModes, expectedMode, rarity, count, speciesId, speciesName)
+    speciesId = speciesId or rarity
+    speciesName = speciesName or speciesId
     local worker
     local enabled = true
     local calls = {}
@@ -10,24 +12,24 @@ local function exercise(enabledModes, expectedMode, rarity, count)
     local pets = {}
     for index = 1, count do
         pets[#pets + 1] = {
-            id = rarity,
-            uid = string.lower(rarity) .. "-eligible-" .. tostring(index),
+            id = speciesId,
+            uid = string.lower(speciesId) .. "-eligible-" .. tostring(index),
             s = index,
         }
     end
     pets[#pets + 1] = {
-        id = rarity,
-        uid = string.lower(rarity) .. "-equipped",
+        id = speciesId,
+        uid = string.lower(speciesId) .. "-equipped",
         e = true,
     }
     pets[#pets + 1] = {
-        id = rarity,
-        uid = string.lower(rarity) .. "-locked",
+        id = speciesId,
+        uid = string.lower(speciesId) .. "-locked",
         l = true,
     }
     pets[#pets + 1] = {
-        id = rarity,
-        uid = string.lower(rarity) .. "-golden-form",
+        id = speciesId,
+        uid = string.lower(speciesId) .. "-golden-form",
         g = true,
     }
 
@@ -51,17 +53,11 @@ local function exercise(enabledModes, expectedMode, rarity, count)
             Directory = {
                 Eggs = {
                     ["Samurai Egg"] = {
-                        drops = {
-                            { "Basic", 40 },
-                            { "Rare", 16 },
-                            { "Epic", 4 },
-                        },
+                        drops = { { speciesId, 40 } },
                     },
                 },
                 Pets = {
-                    Basic = { rarity = "Basic" },
-                    Rare = { rarity = "Rare" },
-                    Epic = { rarity = "Epic" },
+                    [speciesId] = { name = speciesName, rarity = rarity },
                 },
             },
         },
@@ -103,6 +99,8 @@ local function exercise(enabledModes, expectedMode, rarity, count)
     assert(#calls == 1, table.concat(statuses, "\n"))
     assert(calls[1].Command == "Use Fuse Machine")
     assert(#calls[1].Uids == count, "wrong batch size for " .. expectedMode)
+    assert(string.find(statuses[#statuses] or "", expectedMode, 1, true),
+        "accepted status omitted mode " .. expectedMode)
     for _, uid in ipairs(calls[1].Uids) do
         assert(not string.find(uid, "equipped", 1, true), "equipped pet was selected")
         assert(not string.find(uid, "locked", 1, true), "locked pet was selected")
@@ -111,7 +109,8 @@ local function exercise(enabledModes, expectedMode, rarity, count)
     fuse("stop")
 end
 
-exercise({ ["10 Basic"] = true }, "10 Basic", "Basic", 10)
+exercise({ ["10 Basic"] = true }, "10 Basic", "Basic", 10, "corgi", "Corgi")
+exercise({ ["10 Basic"] = true }, "10 Basic", "Basic", 11, "panda", "Panda")
 exercise({ ["7 Rare"] = true }, "7 Rare", "Rare", 7)
 exercise({ ["4 Epic"] = true }, "4 Epic", "Epic", 4)
 
@@ -121,6 +120,6 @@ exercise({
     ["10 Basic"] = true,
     ["7 Rare"] = true,
     ["4 Epic"] = true,
-}, "10 Basic", "Basic", 10)
+}, "10 Basic", "Basic", 10, "corgi", "Corgi")
 
-print("PASS LowOnline fuse modes can be armed together and select one exact safe batch")
+print("PASS LowOnline fuse uses Panda x11, other Basic x10, Rare x7 and Epic x4")

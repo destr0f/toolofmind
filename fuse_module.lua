@@ -3,7 +3,7 @@
 -- before one Use Fuse Machine request.
 
 local activeState
-local MODULE_VERSION = "1.2.1-lowonline"
+local MODULE_VERSION = "1.3.0-lowonline"
 
 local TARGET_EGG = "Samurai Egg"
 local IDLE_CHECK_DELAY = 3
@@ -16,6 +16,28 @@ local MODE_POLICY = {
     ["4 Epic"] = { Rarity = "Epic", Count = 4 },
 }
 local MODE_ORDER = { "10 Basic", "7 Rare", "4 Epic" }
+
+local function normalize(value)
+    value = string.lower(tostring(value or ""))
+    value = string.gsub(value, "[%p_]+", " ")
+    value = string.gsub(value, "%s+", " ")
+    return string.match(value, "^%s*(.-)%s*$") or value
+end
+
+local function definitionName(definition)
+    if type(definition) ~= "table" then return nil end
+    return definition.name or definition.Name
+        or definition.displayName or definition.DisplayName
+        or definition.petName or definition.PetName
+end
+
+local function batchCountForSpecies(policy, definition)
+    if policy.Rarity == "Basic" then
+        local name = normalize(definitionName(definition))
+        if name == "panda" or name == "basic panda" then return 11 end
+    end
+    return policy.Count
+end
 
 local function shortUID(uid)
     uid = tostring(uid or "?")
@@ -158,8 +180,8 @@ local function readFuseInfo(state, context)
     return state.FuseInfo, nil
 end
 
-local function collectCandidates(context, pets, targetIds, policy)
-    local selected, stats = {}, {
+local function collectCandidateGroups(context, pets, targetIds, policy)
+    local groups, stats = {}, {
         EggSpecies = 0,
         MatchingRarity = 0,
         Eligible = 0,
@@ -191,20 +213,52 @@ local function collectCandidates(context, pets, targetIds, policy)
                     stats.DirectoryBlocked = stats.DirectoryBlocked + 1
                 elseif pet.uid ~= nil then
                     stats.Eligible = stats.Eligible + 1
-                    selected[#selected + 1] = {
+                    local petId = tostring(pet.id)
+                    local group = groups[petId]
+                    if not group then
+                        group = {
+                            Id = petId,
+                            Name = tostring(definitionName(definition) or petId),
+                            Required = batchCountForSpecies(policy, definition),
+                            Candidates = {},
+                        }
+                        groups[petId] = group
+                    end
+                    group.Candidates[#group.Candidates + 1] = {
                         Uid = tostring(pet.uid),
-                        Id = tostring(pet.id),
+                        Id = petId,
                         Strength = tonumber(pet.s) or 0,
                     }
                 end
             end
         end
     end
-    table.sort(selected, function(left, right)
-        if left.Strength == right.Strength then return left.Uid < right.Uid end
-        return left.Strength < right.Strength
-    end)
-    return selected, stats
+    local ordered = {}
+    for _, group in pairs(groups) do
+        table.sort(group.Candidates, function(left, right)
+            if left.Strength == right.Strength then return left.Uid < right.Uid end
+            return left.Strength < right.Strength
+        end)
+        ordered[#ordered + 1] = group
+    end
+    table.sort(ordered, function(left, right) return left.Id < right.Id end)
+    return ordered, stats
+end
+
+local function chooseCandidateGroup(state, modeName, groups, minimum, maximum)
+    local ready = {}
+    for _, group in ipairs(groups) do
+        if group.Required >= minimum and group.Required <= maximum
+            and #group.Candidates >= group.Required then
+            ready[#ready + 1] = group
+        end
+    end
+    if #ready == 0 then return nil end
+    local previous = state.LastSpeciesByMode[modeName]
+    for _, group in ipairs(ready) do
+        if previous == nil or group.Id > previous then return group end
+    end
+    return ready[1]
 end
 
 local function statsText(stats)
@@ -215,7 +269,7 @@ local function statsText(stats)
     )
 end
 
-local function validateSelection(context, candidates, targetIds, policy)
+local function validateSelection(context, candidates, targetIds, policy, expectedId)
     local snapshot = context.GetPetSnapshot(true)
     local save = snapshot and snapshot.Save
     if not save then return false, nil, nil, "fresh Save.Pets is unavailable" end
@@ -235,6 +289,9 @@ local function validateSelection(context, candidates, targetIds, policy)
         end
         if rarity ~= policy.Rarity then
             return false, nil, nil, shortUID(uid) .. " rarity changed to " .. rarity
+        end
+        if tostring(pet.id or "") ~= tostring(expectedId) then
+            return false, nil, nil, shortUID(uid) .. " changed species before dispatch"
         end
         if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then
@@ -294,26 +351,31 @@ local function runCheck(state, context)
         finish(0.4)
         return
     end
-    local modeName, policy, candidates, stats
+    local modeName, policy, candidates, stats, batchSize, speciesId, speciesName
     local summaries = {}
     local startIndex = math.clamp(math.floor(tonumber(state.NextModeIndex) or 1), 1, #enabledModes)
     for offset = 0, #enabledModes - 1 do
         local index = ((startIndex + offset - 1) % #enabledModes) + 1
         local candidateMode = enabledModes[index]
         local candidatePolicy = MODE_POLICY[candidateMode]
-        if candidatePolicy.Count >= info.Minimum and candidatePolicy.Count <= info.Maximum then
-            local modeCandidates, modeStats =
-                collectCandidates(context, snapshot.Pets, targetIds, candidatePolicy)
-            summaries[#summaries + 1] = candidateMode .. " "
-                .. tostring(#modeCandidates) .. "/" .. tostring(candidatePolicy.Count)
-            if not modeName and #modeCandidates >= candidatePolicy.Count then
-                modeName, policy, candidates, stats =
-                    candidateMode, candidatePolicy, modeCandidates, modeStats
-                state.NextModeIndex = (index % #enabledModes) + 1
-            end
-        else
-            summaries[#summaries + 1] = string.format(
-                "%s blocked by live limits %d-%d", candidateMode, info.Minimum, info.Maximum)
+        local groups, modeStats =
+            collectCandidateGroups(context, snapshot.Pets, targetIds, candidatePolicy)
+        local parts = {}
+        for _, group in ipairs(groups) do
+            parts[#parts + 1] = group.Name .. " "
+                .. tostring(#group.Candidates) .. "/" .. tostring(group.Required)
+        end
+        summaries[#summaries + 1] = candidateMode .. " ["
+            .. (#parts > 0 and table.concat(parts, ", ") or "none") .. "]"
+        local group = chooseCandidateGroup(
+            state, candidateMode, groups, info.Minimum, info.Maximum
+        )
+        if not modeName and group then
+            modeName, policy, candidates, stats = candidateMode, candidatePolicy,
+                group.Candidates, modeStats
+            batchSize, speciesId, speciesName =
+                group.Required, group.Id, group.Name
+            state.NextModeIndex = (index % #enabledModes) + 1
         end
     end
     if not modeName then
@@ -324,7 +386,7 @@ local function runCheck(state, context)
         return
     end
     local selected = {}
-    for index = 1, policy.Count do selected[index] = candidates[index] end
+    for index = 1, batchSize do selected[index] = candidates[index] end
     local acquired, owner = acquireOperation(state, context)
     if not acquired then
         context.SetStatus("A " .. modeName .. " fuse is ready, but inventory is reserved by "
@@ -333,7 +395,7 @@ local function runCheck(state, context)
         return
     end
     local safe, uids, audit, validationProblem =
-        validateSelection(context, selected, targetIds, policy)
+        validateSelection(context, selected, targetIds, policy, speciesId)
     if not safe then
         releaseOperation(state, context)
         context.SetStatus("Fuse safety recheck blocked the request: "
@@ -367,7 +429,9 @@ local function runCheck(state, context)
         clearPending(state)
         for _, uid in ipairs(uids) do state.Pending[uid] = true end
         state.PendingAt = os.clock()
-        state.PendingAudit = modeName .. " | " .. auditText
+        state.PendingAudit = modeName .. " | " .. speciesName .. " x"
+            .. tostring(batchSize) .. " | " .. auditText
+        state.LastSpeciesByMode[modeName] = speciesId
         state.Completed = state.Completed + 1
         context.SetStatus("Fuse accepted via " .. context.RouteText(sourceName, sessionIndex)
             .. " | mode: " .. modeName .. " | completed: " .. tostring(state.Completed)
@@ -424,6 +488,7 @@ return function(action, context)
         FuseInfo = nil,
         Completed = 0,
         NextModeIndex = 1,
+        LastSpeciesByMode = {},
         WorkerThread = nil,
         Task = context.Task or task,
     }

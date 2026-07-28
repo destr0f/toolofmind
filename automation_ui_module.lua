@@ -1,7 +1,7 @@
 -- Lazy automation UI extension for LowOnline through the first Fantasy update.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.6.1-lowonline"
+local MODULE_VERSION = "1.6.2-lowonline"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -226,7 +226,12 @@ local function build(context)
         end
     end
     for _, definition in ipairs({
-        { Flag = "lowonline_fuse_basic", Key = "AutoFuseBasic", Title = "Fuse 10 Basic" },
+        {
+            Flag = "lowonline_fuse_basic",
+            Key = "AutoFuseBasic",
+            Title = "Fuse Basic Species",
+            Desc = "Panda uses 11 per batch; every other Samurai Egg Basic species uses 10.",
+        },
         { Flag = "lowonline_fuse_rare", Key = "AutoFuseRare", Title = "Fuse 7 Rare" },
         { Flag = "lowonline_fuse_epic", Key = "AutoFuseEpic", Title = "Fuse 4 Epic" },
     }) do
@@ -234,7 +239,8 @@ local function build(context)
         fuseModeToggles[item.Key] = fuse:Toggle({
             Flag = item.Flag,
             Title = item.Title,
-            Desc = "May run together with the other rarity modes; each server request still contains one exact batch.",
+            Desc = item.Desc
+                or "May run together with the other rarity modes; each request contains one exact species batch.",
             Value = false,
             Callback = function(value)
                 config[item.Key] = value == true

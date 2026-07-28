@@ -1,6 +1,6 @@
 local support = require("../automation_support_module")
 
-assert(support("version") == "1.3.0-lowonline")
+assert(support("version") == "1.4.0-lowonline")
 
 local context = {
     Library = {
@@ -55,4 +55,29 @@ assert(next(sparseIds) == nil, "machine catalog invented a pinned pet ID")
 assert(#sparseNames == 0, "empty Directory.Pets produced a fabricated species")
 assert(string.find(sparseSummary, "Samurai Dragon not found", 1, true))
 
-print("PASS LowOnline machine catalogs isolate Samurai Dragon and Domortuus")
+local inferredIds, _, inferredSummary = support("catalog", {
+    Library = {
+        Directory = {
+            Pets = {
+                ["samurai-mythical"] = { rarity = "Mythical" },
+                ["samurai-legendary"] = { rarity = "Legendary" },
+            },
+            Eggs = {
+                ["Samurai Egg"] = {
+                    drops = {
+                        { "samurai-legendary", 0.19 },
+                        { "samurai-mythical", 0.01 },
+                    },
+                },
+            },
+        },
+    },
+}, { Force = true, TargetName = "Samurai Dragon" })
+assert(inferredIds["samurai-mythical"] == true,
+    "Samurai Egg Mythical fallback did not recover Samurai Dragon")
+assert(inferredIds["samurai-legendary"] == nil,
+    "Samurai Egg fallback leaked a non-Mythical species")
+assert(string.find(inferredSummary, "samurai-mythical", 1, true),
+    "fallback catalog summary did not expose its resolved directory ID")
+
+print("PASS LowOnline machine catalogs isolate targets and infer Samurai Dragon from Samurai Egg")

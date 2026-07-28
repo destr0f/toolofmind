@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.3.0-lowonline"
+local MODULE_VERSION = "1.4.0-lowonline"
 
 local gate = {
     Owner = nil,
@@ -23,11 +23,24 @@ local function definitionName(definition)
     if type(definition) ~= "table" then return nil end
     return definition.name or definition.Name
         or definition.displayName or definition.DisplayName
+        or definition.petName or definition.PetName
 end
 
 local function explicitMachinePet(definition, targetKey)
     local name = definitionName(definition)
     return name ~= nil and normalize(name) == targetKey
+end
+
+local function machineSafe(definition)
+    if type(definition) ~= "table" then return false end
+    local rarity = normalize(definition.rarity or definition.Rarity)
+    return definition.isPremium ~= true
+        and definition.huge ~= true
+        and definition.isHuge ~= true
+        and definition.isExclusive ~= true
+        and definition.isVanity ~= true
+        and rarity ~= "exclusive"
+        and rarity ~= "secret"
 end
 
 local function trace(context, stage, detail)
@@ -96,14 +109,7 @@ local function gateStatus(context)
 end
 
 local function definitionAllowed(definition, targetKey)
-    if type(definition) ~= "table" then return false end
-    local rarity = normalize(definition.rarity or definition.Rarity)
-    if definition.isPremium == true or definition.huge == true or definition.isHuge == true
-        or definition.isExclusive == true or definition.isVanity == true
-        or rarity == "exclusive" or rarity == "secret" then
-        return false
-    end
-    return explicitMachinePet(definition, targetKey)
+    return machineSafe(definition) and explicitMachinePet(definition, targetKey)
 end
 
 local function getCatalog(context, options)
@@ -141,9 +147,53 @@ local function getCatalog(context, options)
         if definitionAllowed(definition, targetKey) then ids[id] = true end
     end
 
+    local function eggDropIds(rawEgg)
+        local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
+        local found, visiting = {}, {}
+        local function scan(eggName)
+            eggName = tostring(eggName or "")
+            if eggName == "" or visiting[eggName] then return end
+            visiting[eggName] = true
+            local egg = eggs[eggName]
+            local drops = type(egg) == "table" and (egg.drops or egg.Drops) or nil
+            if type(drops) == "string" then
+                scan(drops)
+            elseif type(drops) == "table" then
+                for key, drop in pairs(drops) do
+                    local id
+                    if type(drop) == "table" then
+                        id = drop[1] or drop.id or drop.ID or drop.petId or drop.PetId
+                    elseif petDefinition(drop) then
+                        id = drop
+                    elseif petDefinition(key) then
+                        id = key
+                    end
+                    if id ~= nil then found[tostring(id)] = true end
+                end
+            end
+            visiting[eggName] = nil
+        end
+        scan(rawEgg)
+        return found
+    end
+
     for id, definition in pairs(pets) do
         if explicitMachinePet(definition, targetKey) then
             addPet(id)
+        end
+    end
+
+    -- Early LowOnline builds do not consistently expose a readable pet name.
+    -- Samurai Dragon is the sole normal Mythical drop in Samurai Egg, so the
+    -- live egg catalog is the authoritative fallback. No numeric ID is pinned.
+    if targetKey == "samurai dragon" and next(ids) == nil then
+        for id in pairs(eggDropIds("Samurai Egg")) do
+            local definition = petDefinition(id)
+            local rarity = type(definition) == "table"
+                and normalize(definition.rarity or definition.Rarity) or ""
+            if machineSafe(definition) and rarity == "mythical" then
+                ids[id] = true
+            end
         end
     end
 
