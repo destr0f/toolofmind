@@ -2,7 +2,7 @@
 -- Launch content plus the first Fantasy World update: farming, hatch, enchant,
 -- conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.5.1-low.2"
+local VERSION = "1.5.2-low.3"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -2813,9 +2813,9 @@ function machineModules:Start(kind)
         end,
         Modes = function()
             return {
-                ["12 Basic"] = config.AutoFuseBasic == true,
-                ["8 Rare"] = config.AutoFuseRare == true,
-                ["5 Epic"] = config.AutoFuseEpic == true,
+                ["10 Basic"] = config.AutoFuseBasic == true,
+                ["7 Rare"] = config.AutoFuseRare == true,
+                ["4 Epic"] = config.AutoFuseEpic == true,
             }
         end,
         Targets = function()

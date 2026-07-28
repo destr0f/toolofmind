@@ -1,6 +1,6 @@
 local fuse = require("../fuse_module")
 
-assert(fuse("version") == "1.2.0-lowonline")
+assert(fuse("version") == "1.2.1-lowonline")
 
 local function exercise(enabledModes, expectedMode, rarity, count)
     local worker
@@ -111,16 +111,16 @@ local function exercise(enabledModes, expectedMode, rarity, count)
     fuse("stop")
 end
 
-exercise({ ["12 Basic"] = true }, "12 Basic", "Basic", 12)
-exercise({ ["8 Rare"] = true }, "8 Rare", "Rare", 8)
-exercise({ ["5 Epic"] = true }, "5 Epic", "Epic", 5)
+exercise({ ["10 Basic"] = true }, "10 Basic", "Basic", 10)
+exercise({ ["7 Rare"] = true }, "7 Rare", "Rare", 7)
+exercise({ ["4 Epic"] = true }, "4 Epic", "Epic", 4)
 
 -- All three toggles may be armed together. The worker deliberately emits only
 -- one exact batch per cycle so inventory mutations can be confirmed serially.
 exercise({
-    ["12 Basic"] = true,
-    ["8 Rare"] = true,
-    ["5 Epic"] = true,
-}, "12 Basic", "Basic", 12)
+    ["10 Basic"] = true,
+    ["7 Rare"] = true,
+    ["4 Epic"] = true,
+}, "10 Basic", "Basic", 10)
 
 print("PASS LowOnline fuse modes can be armed together and select one exact safe batch")

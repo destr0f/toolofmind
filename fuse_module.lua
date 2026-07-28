@@ -3,7 +3,7 @@
 -- before one Use Fuse Machine request.
 
 local activeState
-local MODULE_VERSION = "1.2.0-lowonline"
+local MODULE_VERSION = "1.2.1-lowonline"
 
 local TARGET_EGG = "Samurai Egg"
 local IDLE_CHECK_DELAY = 3
@@ -11,11 +11,11 @@ local RETRY_DELAY = 8
 local PENDING_TIMEOUT = 12
 
 local MODE_POLICY = {
-    ["12 Basic"] = { Rarity = "Basic", Count = 12 },
-    ["8 Rare"] = { Rarity = "Rare", Count = 8 },
-    ["5 Epic"] = { Rarity = "Epic", Count = 5 },
+    ["10 Basic"] = { Rarity = "Basic", Count = 10 },
+    ["7 Rare"] = { Rarity = "Rare", Count = 7 },
+    ["4 Epic"] = { Rarity = "Epic", Count = 4 },
 }
-local MODE_ORDER = { "12 Basic", "8 Rare", "5 Epic" }
+local MODE_ORDER = { "10 Basic", "7 Rare", "4 Epic" }
 
 local function shortUID(uid)
     uid = tostring(uid or "?")
