@@ -51,7 +51,7 @@ assert(!/GetChildren\s*\(\s*\)\s*\[\s*\d+\s*\]/.test(activeText),
     "a fixed per-session remote index re-entered active source");
 
 for (const marker of [
-    "DEFAULT_DISPATCH_WIDTH = 8",
+    "DEFAULT_DISPATCH_WIDTH = 16",
     "MAX_QUEUED_JOBS = 32",
     "MAX_JOIN_ATTEMPTS = 2",
     "RETRY_DELAY = 0.25",
