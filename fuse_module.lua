@@ -3,7 +3,7 @@
 -- before one Use Fuse Machine request.
 
 local activeState
-local MODULE_VERSION = "1.5.0-lowonline"
+local MODULE_VERSION = "1.5.1-lowonline"
 
 local TARGET_EGG = "Samurai Egg"
 local IDLE_CHECK_DELAY = 3
@@ -451,6 +451,10 @@ local function runCheck(state, context)
             .. ": " .. reason .. "\nRejected: " .. auditText)
         finish(RETRY_DELAY)
     else
+        -- The inventory gate protects UID validation and the server transaction,
+        -- not the asynchronous Save.Pets replication that follows it. Pending
+        -- UIDs already prevent another Fuse batch from reusing these pets.
+        releaseOperation(state, context)
         context.InvalidatePetSnapshot()
         clearPending(state)
         for _, uid in ipairs(uids) do state.Pending[uid] = true end

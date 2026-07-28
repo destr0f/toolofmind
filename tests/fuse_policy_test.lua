@@ -1,6 +1,6 @@
 local fuse = require("../fuse_module")
 
-assert(fuse("version") == "1.5.0-lowonline")
+assert(fuse("version") == "1.5.1-lowonline")
 
 local function exercise(
     enabledModes,
@@ -19,6 +19,7 @@ local function exercise(
     local enabled = true
     local calls = {}
     local statuses = {}
+    local releaseCalls = 0
     local pets = {}
     for index = 1, count do
         pets[#pets + 1] = {
@@ -107,7 +108,10 @@ local function exercise(
             return tostring(source) .. " #" .. tostring(index)
         end,
         AcquireOperation = function() return true, "test" end,
-        ReleaseOperation = function() return true end,
+        ReleaseOperation = function()
+            releaseCalls = releaseCalls + 1
+            return true
+        end,
         CancelOperation = function() return true end,
         OperationOwner = "FuseMachine",
         SetStatus = function(text) statuses[#statuses + 1] = tostring(text) end,
@@ -122,6 +126,8 @@ local function exercise(
     assert(#calls == 1, table.concat(statuses, "\n"))
     assert(calls[1].Command == "Use Fuse Machine")
     assert(#calls[1].Uids == count, "wrong batch size for " .. expectedMode)
+    assert(releaseCalls == 1,
+        "Fuse retained its inventory lock while waiting for Save.Pets confirmation")
     assert(string.find(statuses[#statuses] or "", expectedMode, 1, true),
         "accepted status omitted mode " .. expectedMode)
     for _, uid in ipairs(calls[1].Uids) do

@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.0-lowonline"
+local MODULE_VERSION = "1.6.1-lowonline"
 local BUY_COMMAND = "Buy Egg"
 
 local ARM_DELAY = 0.65
@@ -1177,8 +1177,8 @@ local function beginRequest(state, context, options, inspection)
     local operationAcquired, operationOwner = acquireInventoryOperation(state, context)
     if not operationAcquired then
         state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
-        setStatus(state, context, "Ready, but the pet inventory is reserved by "
-            .. tostring(operationOwner) .. ".\nNo egg request was sent.")
+        setStatus(state, context, "Waiting for " .. tostring(operationOwner)
+            .. " to finish one inventory transaction.\nAuto hatch will retry automatically.")
         return
     end
 
