@@ -2,7 +2,7 @@
 -- Launch content plus the first Fantasy World update: farming, hatch, enchant,
 -- conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.5.8-low.9"
+local VERSION = "1.5.9-low.10"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 

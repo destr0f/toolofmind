@@ -92,7 +92,7 @@ local accepted, controls = automationUI("build", {
 assert(accepted == true, tostring(controls))
 assert(type(controls) == "table", "automation controls were not returned")
 assert(uiYieldCount >= 8, "automation UI was not split into enough frame-sized stages")
-assert(automationUI("version") == "1.6.4-lowonline")
+assert(automationUI("version") == "1.6.5-lowonline")
 
 local countSlider = controlsByFlag.dark_matter_batch_size
 local timeSlider = controlsByFlag.dark_matter_max_wait_hours

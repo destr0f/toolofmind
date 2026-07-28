@@ -2,7 +2,7 @@
 -- Converts verified golden pets through a user-selected server tier.
 
 local activeState
-local MODULE_VERSION = "1.3.0-lowonline"
+local MODULE_VERSION = "1.4.0-lowonline"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
 local IDLE_CHECK_DELAY = 5
@@ -52,26 +52,6 @@ local function auditLabel(pet)
     table.sort(labels)
     return shortUID(type(pet) == "table" and pet.uid or nil)
         .. "{" .. (#labels > 0 and table.concat(labels, ",") or "none") .. "}"
-end
-
-local function hasProtectedCoins(pet)
-    local powers = type(pet) == "table" and (pet.powers or pet.Powers) or nil
-    if type(powers) ~= "table" then return false end
-    for key, power in pairs(powers) do
-        local name, level = readPower(power)
-        if name == nil and type(key) == "string" then
-            name = key
-            level = tonumber(power)
-            if level == nil and power ~= nil then
-                level = ROMAN_LEVELS[string.upper(tostring(power))]
-            end
-        end
-        if string.lower(tostring(name or "")) == "coins"
-            and (tonumber(level) == 4 or tonumber(level) == 5) then
-            return true
-        end
-    end
-    return false
 end
 
 local function definitionFor(context, pet)
@@ -138,9 +118,9 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Domortuus: %d | golden: %d | eligible: %d | equipped: %d | locked: %d | Coins IV/V protected: %d | rainbow/DM: %d | normal: %d | pending: %d",
+        "Domortuus: %d | golden: %d | eligible: %d | equipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
         stats.All, stats.Golden, stats.Eligible, stats.Equipped,
-        stats.Locked, stats.ProtectedCoins, stats.Upgraded, stats.Normal, stats.Pending
+        stats.Locked, stats.Upgraded, stats.Normal, stats.Pending
     )
 end
 
@@ -149,7 +129,7 @@ local function collectCandidates(state, context, pets)
     local targetIds, _, catalogSummary = targetCatalog(context)
     local stats = {
         All = 0, Golden = 0, Eligible = 0, Equipped = 0,
-        Locked = 0, ProtectedCoins = 0, Upgraded = 0, Normal = 0, Pending = 0,
+        Locked = 0, Upgraded = 0, Normal = 0, Pending = 0,
     }
     for _, pet in pairs(pets or {}) do
         if type(pet) == "table" then
@@ -166,13 +146,11 @@ local function collectCandidates(state, context, pets)
                     local uid = pet.uid ~= nil and tostring(pet.uid) or nil
                     local equipped = pet.e == true
                     local locked = pet.l == true or pet.locked == true
-                    local protectedCoins = hasProtectedCoins(pet)
                     if equipped then stats.Equipped = stats.Equipped + 1 end
                     if locked then stats.Locked = stats.Locked + 1 end
-                    if protectedCoins then stats.ProtectedCoins = stats.ProtectedCoins + 1 end
                     local directoryBlocked = type(definition) == "table"
                         and (definition.isPremium or definition.rarity == "Exclusive")
-                    if equipped or locked or protectedCoins or uid == nil or directoryBlocked then
+                    if equipped or locked or uid == nil or directoryBlocked then
                         -- Deliberately excluded.
                     elseif state.Pending[uid] then
                         stats.Pending = stats.Pending + 1
@@ -205,9 +183,9 @@ local function collectCandidates(state, context, pets)
 end
 
 local function reportInventory(state, context, stats)
-    local signature = string.format("%d:%d:%d:%d:%d:%d:%d:%d:%d",
+    local signature = string.format("%d:%d:%d:%d:%d:%d:%d:%d",
         stats.All, stats.Golden, stats.Eligible, stats.Equipped,
-        stats.Locked, stats.ProtectedCoins, stats.Upgraded, stats.Normal, stats.Pending)
+        stats.Locked, stats.Upgraded, stats.Normal, stats.Pending)
     if signature ~= state.LastInventorySignature then
         state.LastInventorySignature = signature
         context.Trace("rainbow machine inventory", statsText(stats))
@@ -241,9 +219,6 @@ local function validateSelection(context, selectedCandidates)
         end
         if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then return false, nil, nil, shortUID(uid) .. " is locked" end
-        if hasProtectedCoins(pet) then
-            return false, nil, nil, shortUID(uid) .. " has protected Coins IV/V"
-        end
         if type(definition) == "table"
             and (definition.isPremium or definition.rarity == "Exclusive") then
             return false, nil, nil, shortUID(uid) .. " is not machine-eligible"

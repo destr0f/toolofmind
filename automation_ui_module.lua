@@ -1,7 +1,7 @@
 -- Lazy automation UI extension for LowOnline through the first Fantasy update.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.6.4-lowonline"
+local MODULE_VERSION = "1.6.5-lowonline"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -368,7 +368,7 @@ local function build(context)
         Callback = function(value)
             config.AutoGoldenGalaxyFox = value == true
             if config.AutoGoldenGalaxyFox then
-                context.SetGoldStatus("Enabled. Loading the protected worker in the serial lane...")
+                context.SetGoldStatus("Enabled. Loading the verified worker in the serial lane...")
                 spawn(function() context.StartMachine("Gold") end)
             else
                 context.StopMachine("Gold")
@@ -386,12 +386,12 @@ local function build(context)
     rainbow:Toggle({
         Flag = "auto_rainbow_galaxy_fox",
         Title = "Auto Rainbow Samurai Dragon",
-        Desc = "Golden Samurai Dragon only; protects equipped, locked and Coins IV/V pets.",
+        Desc = "Golden Samurai Dragon only; protects equipped and locked pets; enchants are not filtered.",
         Value = false,
         Callback = function(value)
             config.AutoRainbowGalaxyFox = value == true
             if config.AutoRainbowGalaxyFox then
-                context.SetRainbowStatus("Enabled. Loading the protected worker in the serial lane...")
+                context.SetRainbowStatus("Enabled. Loading the verified worker in the serial lane...")
                 spawn(function() context.StartMachine("Rainbow") end)
             else
                 context.StopMachine("Rainbow")
@@ -439,7 +439,7 @@ local function build(context)
     darkMatter:Toggle({
         Flag = "auto_dark_matter_galaxy_fox",
         Title = "Auto Dark Matter Target Pets",
-        Desc = "Rainbow targets; protects Tech Coins IV-V, equipped and locked pets.",
+        Desc = "Rainbow targets; protects equipped and locked pets; enchants are not filtered.",
         Value = false,
         Callback = function(value)
             config.AutoDarkMatterGalaxyFox = value == true

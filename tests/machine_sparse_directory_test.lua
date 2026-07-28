@@ -96,26 +96,33 @@ exercise("../rainbow_machine_module", {
     id = "samurai-dragon",
     uid = "samurai-dragon-golden",
     g = true,
-}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.3.0-lowonline")
+}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.4.0-lowonline")
 
 exercise("../dark_matter_module", {
     id = "114",
     uid = "domortuus-rainbow",
     r = true,
-}, "Get Dark Matter Machine Info", "Convert To Dark Matter", true, "1.2.0-lowonline")
+}, "Get Dark Matter Machine Info", "Convert To Dark Matter", true, "1.3.0-lowonline")
 
 exercise("../rainbow_machine_module", {
     id = "samurai-dragon",
     uid = "samurai-dragon-golden-coins-iv",
     g = true,
     powers = { { "Coins", "IV" } },
-}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.3.0-lowonline", false)
+}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.4.0-lowonline")
 
 exercise("../rainbow_machine_module", {
     id = "samurai-dragon",
     uid = "samurai-dragon-golden-coins-v",
     g = true,
     Powers = { Coins = "V" },
-}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.3.0-lowonline", false)
+}, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.4.0-lowonline")
+
+exercise("../dark_matter_module", {
+    id = "114",
+    uid = "domortuus-rainbow-tech-coins-v",
+    r = true,
+    powers = { { "Tech Coins", "V" } },
+}, "Get Dark Matter Machine Info", "Convert To Dark Matter", true, "1.3.0-lowonline")
 
 print("PASS Samurai Dragon Gold/Rainbow and Domortuus DM catalogs remain isolated")

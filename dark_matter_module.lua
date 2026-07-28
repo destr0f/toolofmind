@@ -2,7 +2,7 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.2.0-lowonline"
+local MODULE_VERSION = "1.3.0-lowonline"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 local IDLE_CHECK_DELAY = 5
@@ -25,18 +25,6 @@ local function readPower(power)
         level = ROMAN_LEVELS[string.upper(tostring(rawLevel))]
     end
     return name ~= nil and tostring(name) or nil, level
-end
-
-local function protectedTechCoins(pet)
-    local powers = type(pet) == "table" and (pet.powers or pet.Powers) or nil
-    if type(powers) ~= "table" then return false end
-    for _, power in pairs(powers) do
-        local name, level = readPower(power)
-        if string.lower(tostring(name or "")) == "tech coins" and level and level >= 4 then
-            return true, level
-        end
-    end
-    return false
 end
 
 local function abbreviate(name)
@@ -181,8 +169,8 @@ end
 
 local function statsText(stats)
     return string.format(
-        "target pets: %d | rainbow: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
-        stats.All, stats.Rainbow, stats.Eligible, stats.Protected,
+        "target pets: %d | rainbow: %d | eligible: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
+        stats.All, stats.Rainbow, stats.Eligible,
         stats.Equipped, stats.Locked, stats.Other, stats.Pending
     )
 end
@@ -310,7 +298,7 @@ local function collectCandidates(state, context, pets)
     local groups = {}
     local targetIds, _, catalogSummary = targetCatalog(context)
     local stats = {
-        All = 0, Rainbow = 0, Eligible = 0, Protected = 0,
+        All = 0, Rainbow = 0, Eligible = 0,
         Equipped = 0, Locked = 0, Other = 0, Pending = 0,
     }
     for _, pet in pairs(pets or {}) do
@@ -324,15 +312,13 @@ local function collectCandidates(state, context, pets)
                 else
                     stats.Rainbow = stats.Rainbow + 1
                     local uid = pet.uid ~= nil and tostring(pet.uid) or nil
-                    local protected = protectedTechCoins(pet)
                     local equipped = pet.e == true
                     local locked = pet.l == true or pet.locked == true
-                    if protected then stats.Protected = stats.Protected + 1 end
                     if equipped then stats.Equipped = stats.Equipped + 1 end
                     if locked then stats.Locked = stats.Locked + 1 end
                     local directoryBlocked = type(definition) == "table"
                         and (definition.isPremium or definition.rarity == "Exclusive")
-                    if protected or equipped or locked or uid == nil or directoryBlocked then
+                    if equipped or locked or uid == nil or directoryBlocked then
                         -- Deliberately excluded.
                     elseif state.PendingCreate[uid] then
                         stats.Pending = stats.Pending + 1
@@ -389,10 +375,6 @@ local function validateSelection(context, candidates)
         end
         if not pet.r or pet.g or pet.dm then
             return false, nil, nil, shortUID(uid) .. " is no longer an eligible rainbow pet"
-        end
-        local protected, level = protectedTechCoins(pet)
-        if protected then
-            return false, nil, nil, shortUID(uid) .. " has protected Tech Coins " .. tostring(level)
         end
         if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then
