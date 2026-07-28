@@ -2,7 +2,7 @@
 -- Launch content plus the first Fantasy World update: farming, hatch, enchant,
 -- conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.5.0-low.1"
+local VERSION = "1.5.1-low.2"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -848,6 +848,8 @@ local BossChestNames = {
     ["tech entry giant tech chest"] = true,
     ["ancient chest"] = true,
     ["ancient huge chest"] = true,
+    ["ancient island chest"] = true,
+    ["ancient island huge chest"] = true,
     ["haunted chest"] = true,
     ["huge haunted chest"] = true,
     ["hell chest"] = true,
@@ -887,6 +889,8 @@ BossChestZones = {
     ["volcano magma chest"] = "Volcano",
     ["ancient chest"] = "Ancient Island",
     ["ancient huge chest"] = "Ancient Island",
+    ["ancient island chest"] = "Ancient Island",
+    ["ancient island huge chest"] = "Ancient Island",
     ["haunted chest"] = "Haunted Island",
     ["huge haunted chest"] = "Haunted Island",
     ["hell chest"] = "Hell Island",
@@ -1603,7 +1607,10 @@ local function recordAlive(record)
 end
 
 local function isBossChest(record)
-    return BossChestNames[normalize(record and record.Name)] == true
+    local name = normalize(record and record.Name)
+    return BossChestNames[name] == true
+        or string.find(name, "ancient", 1, true) ~= nil
+            and string.find(name, "chest", 1, true) ~= nil
 end
 
 local function findZoneAnchor(zone)
@@ -1660,6 +1667,34 @@ local function orderedTargets(mode)
         local allowed = mode == "Boss Chest Only" and boss or mode ~= "Boss Chest Only" and not boss
         if allowed and worldMatches(record.World, world) and recordInZone(record, zone, zoneAnchor) then
             table.insert(targets, record)
+        end
+    end
+    if mode == "Boss Chest Only" and #targets == 0
+        and (namesMatch(zone, "Temple") or namesMatch(zone, "Ancient Island")) then
+        local candidate, candidateVisual, candidateHealth = nil, -1, -1
+        for _, record in pairs(coinRecords) do
+            if worldMatches(record.World, world) and recordInZone(record, zone, zoneAnchor) then
+                local health = tonumber(record.MaxHealth) or tonumber(record.Health) or 0
+                local visual = 0
+                if record.Model and record.Model.Parent ~= nil then
+                    local ok, size = pcall(function()
+                        if record.Model:IsA("Model") then return record.Model:GetExtentsSize() end
+                        if record.Model:IsA("BasePart") then return record.Model.Size end
+                        local coin = record.Model:FindFirstChild("Coin", true)
+                        return coin and coin:IsA("BasePart") and coin.Size or nil
+                    end)
+                    if ok and typeof(size) == "Vector3" then
+                        visual = size.X * size.Y * size.Z
+                    end
+                end
+                if visual > candidateVisual
+                    or visual == candidateVisual and health > candidateHealth then
+                    candidate, candidateVisual, candidateHealth = record, visual, health
+                end
+            end
+        end
+        if candidate and (candidateVisual > 0 or candidateHealth > 0) then
+            table.insert(targets, candidate)
         end
     end
     coinSync.TargetsValidated = #targets > 0
@@ -2057,10 +2092,13 @@ local function operationGateStatus()
     return owner, waiting
 end
 
-local function getMachinePetCatalog(force)
+local function getMachinePetCatalog(force, targetName)
     local controller, problem = ensureSupportModule()
     if not controller then return {}, {}, "catalog unavailable: " .. tostring(problem) end
-    local called, ids, names, summary = pcall(controller, "catalog", supportContext, force == true)
+    local called, ids, names, summary = pcall(controller, "catalog", supportContext, {
+        Force = force == true,
+        TargetName = targetName or "Samurai Dragon",
+    })
     if not called then return {}, {}, "catalog error: " .. tostring(ids) end
     return ids, names, summary
 end
@@ -2746,6 +2784,8 @@ function machineModules:Start(kind)
 
     entry.Loading = false
     if not self:Enabled(entry) or not running() then return end
+    local targetSpecies = kind == "Gold" or kind == "Rainbow"
+        and "Samurai Dragon" or "Domortuus"
     local context = {
         Library = Library,
         Running = running,
@@ -2760,7 +2800,9 @@ function machineModules:Start(kind)
             return getCurrentCurrency(currencyName, snapshot.Save, true, snapshot.At)
         end,
         FormatNumber = formatRateNumber,
-        GetMachinePetCatalog = getMachinePetCatalog,
+        GetMachinePetCatalog = function(force)
+            return getMachinePetCatalog(force, targetSpecies)
+        end,
         BatchSize = function()
             return kind == "DarkMatter" and config.DarkMatterBatchSize or config.MachineBatchSize
         end,

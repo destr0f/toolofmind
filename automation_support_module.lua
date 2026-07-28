@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.2.0-lowonline"
+local MODULE_VERSION = "1.3.0-lowonline"
 
 local gate = {
     Owner = nil,
@@ -10,18 +10,7 @@ local gate = {
     Sequence = 0,
 }
 
-local catalogCache = {
-    ExpiresAt = 0,
-    Ids = {},
-    Names = {},
-    Summary = "not scanned",
-}
-
-local MACHINE_PET_NAMES = {
-    ["domortuus"] = "Domortuus",
-}
-
-local MACHINE_PET_IDS = {}
+local catalogCaches = {}
 
 local function normalize(value)
     value = string.lower(tostring(value or ""))
@@ -36,10 +25,9 @@ local function definitionName(definition)
         or definition.displayName or definition.DisplayName
 end
 
-local function explicitMachinePet(definition, rawId)
-    if rawId ~= nil and MACHINE_PET_IDS[tostring(rawId)] ~= nil then return true end
+local function explicitMachinePet(definition, targetKey)
     local name = definitionName(definition)
-    return name ~= nil and MACHINE_PET_NAMES[normalize(name)] ~= nil
+    return name ~= nil and normalize(name) == targetKey
 end
 
 local function trace(context, stage, detail)
@@ -107,7 +95,7 @@ local function gateStatus(context)
     return gate.Owner or "idle", waiting
 end
 
-local function definitionAllowed(definition, rawId)
+local function definitionAllowed(definition, targetKey)
     if type(definition) ~= "table" then return false end
     local rarity = normalize(definition.rarity or definition.Rarity)
     if definition.isPremium == true or definition.huge == true or definition.isHuge == true
@@ -115,13 +103,25 @@ local function definitionAllowed(definition, rawId)
         or rarity == "exclusive" or rarity == "secret" then
         return false
     end
-    return explicitMachinePet(definition, rawId)
+    return explicitMachinePet(definition, targetKey)
 end
 
-local function getCatalog(context, force)
+local function getCatalog(context, options)
+    local force = options == true
+    local targetName = "Samurai Dragon"
+    if type(options) == "table" then
+        force = options.Force == true or options.force == true
+        targetName = options.TargetName or options.Target or options.targetName
+            or options.target or targetName
+    elseif type(options) == "string" and options ~= "" then
+        targetName = options
+    end
+    targetName = tostring(targetName)
+    local targetKey = normalize(targetName)
     local now = os.clock()
-    if not force and now < catalogCache.ExpiresAt then
-        return catalogCache.Ids, catalogCache.Names, catalogCache.Summary
+    local cached = catalogCaches[targetKey]
+    if not force and cached and now < cached.ExpiresAt then
+        return cached.Ids, cached.Names, cached.Summary
     end
 
     local library = type(context) == "table" and context.Library or nil
@@ -138,11 +138,11 @@ local function getCatalog(context, force)
         if rawId == nil then return end
         local id = tostring(rawId)
         local definition = petDefinition(rawId)
-        if definitionAllowed(definition, rawId) then ids[id] = true end
+        if definitionAllowed(definition, targetKey) then ids[id] = true end
     end
 
     for id, definition in pairs(pets) do
-        if explicitMachinePet(definition, id) then
+        if explicitMachinePet(definition, targetKey) then
             addPet(id)
         end
     end
@@ -151,7 +151,7 @@ local function getCatalog(context, force)
     local seenNames = {}
     for id in pairs(ids) do
         local definition = petDefinition(id)
-        local name = tostring(definitionName(definition) or MACHINE_PET_IDS[id] or id)
+        local name = tostring(definitionName(definition) or id)
         local key = normalize(name)
         if not seenNames[key] then
             seenNames[key] = true
@@ -159,14 +159,16 @@ local function getCatalog(context, force)
         end
     end
     table.sort(names)
-    local summary = string.format("LowOnline target species: %d (%s)",
-        #names, #names > 0 and table.concat(names, ", ") or "Domortuus not found in Directory.Pets")
-    catalogCache = {
+    local summary = string.format("LowOnline %s catalog: %d species (%s)", targetName,
+        #names, #names > 0 and table.concat(names, ", ")
+            or targetName .. " not found in Directory.Pets")
+    cached = {
         ExpiresAt = now + 60,
         Ids = ids,
         Names = names,
         Summary = summary,
     }
+    catalogCaches[targetKey] = cached
     return ids, names, summary
 end
 
@@ -181,7 +183,8 @@ end
 local function routeHealth(context)
     local invoke = function(command) return routeState(context.GetCommandRemote, command) end
     local fire = function(command) return routeState(context.GetFireRemote, command) end
-    local _, _, catalogSummary = getCatalog(context, false)
+    local _, _, samuraiSummary = getCatalog(context, { TargetName = "Samurai Dragon" })
+    local _, _, domortuusSummary = getCatalog(context, { TargetName = "Domortuus" })
     local owner, waiting = gateStatus(context)
     return table.concat({
         "Egg: Buy=" .. invoke("Buy Egg") .. " | Open event resolves only when Auto Egg starts",
@@ -192,7 +195,8 @@ local function routeHealth(context)
         "Fuse: use=" .. invoke("Use Fuse Machine") .. " | info=" .. invoke("Get Fuse Pets Info"),
         "Boosts: activate=" .. fire("Activate Boost") .. " | shop=" .. invoke("Purchase Boosts"),
         "Rewards: VIP=" .. invoke("Redeem VIP Rewards") .. " | Rank=" .. invoke("Redeem Rank Rewards"),
-        "Pet catalog: " .. tostring(catalogSummary),
+        "Gold/Rainbow catalog: " .. tostring(samuraiSummary),
+        "Dark Matter catalog: " .. tostring(domortuusSummary),
         "Inventory gate: " .. tostring(owner) .. " | waiting workers: " .. tostring(waiting),
         "Manual local preflight only; no server request was sent.",
     }, "\n")
@@ -202,10 +206,7 @@ local function reset()
     gate.Owner = nil
     gate.OwnerSince = 0
     table.clear(gate.Waiters)
-    catalogCache.ExpiresAt = 0
-    catalogCache.Ids = {}
-    catalogCache.Names = {}
-    catalogCache.Summary = "not scanned"
+    table.clear(catalogCaches)
     return true
 end
 
@@ -213,7 +214,7 @@ return function(action, context, value)
     if action == "acquire" then return acquire(context, value) end
     if action == "release" or action == "cancel" then return release(value) end
     if action == "status" then return gateStatus(context) end
-    if action == "catalog" then return getCatalog(context, value == true) end
+    if action == "catalog" then return getCatalog(context, value) end
     if action == "route-health" then return routeHealth(context) end
     if action == "reset" then return reset() end
     if action == "version" then return MODULE_VERSION end

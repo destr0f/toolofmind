@@ -1,11 +1,11 @@
--- LowOnline Golden Spiked Egg fuse worker.
+-- LowOnline Samurai Egg fuse worker.
 -- Resolves named Network routes at runtime and validates every UID immediately
 -- before one Use Fuse Machine request.
 
 local activeState
-local MODULE_VERSION = "1.1.0-lowonline"
+local MODULE_VERSION = "1.2.0-lowonline"
 
-local TARGET_EGG = "Golden Spiked Egg"
+local TARGET_EGG = "Samurai Egg"
 local IDLE_CHECK_DELAY = 3
 local RETRY_DELAY = 8
 local PENDING_TIMEOUT = 12
@@ -178,7 +178,7 @@ local function collectCandidates(context, pets, targetIds, policy)
                 stats.MatchingRarity = stats.MatchingRarity + 1
                 local equipped = pet.e == true
                 local locked = pet.l == true or pet.locked == true
-                local wrongForm = pet.g ~= true or pet.r == true or pet.dm == true
+                local wrongForm = pet.g == true or pet.r == true or pet.dm == true
                 local blocked = type(definition) ~= "table"
                     or definition.isPremium == true or rarity == "Exclusive"
                 if equipped then
@@ -240,15 +240,15 @@ local function validateSelection(context, candidates, targetIds, policy)
         if pet.l == true or pet.locked == true then
             return false, nil, nil, shortUID(uid) .. " is locked"
         end
-        if pet.g ~= true or pet.r == true or pet.dm == true then
-            return false, nil, nil, shortUID(uid) .. " is not a plain golden pet"
+        if pet.g == true or pet.r == true or pet.dm == true then
+            return false, nil, nil, shortUID(uid) .. " is not a plain normal pet"
         end
         if type(definition) ~= "table"
             or definition.isPremium == true or rarity == "Exclusive" then
             return false, nil, nil, shortUID(uid) .. " is not fuse-eligible"
         end
         uids[index] = uid
-        audit[index] = shortUID(uid) .. "{" .. tostring(pet.id) .. "," .. rarity .. ",G}"
+        audit[index] = shortUID(uid) .. "{" .. tostring(pet.id) .. "," .. rarity .. ",N}"
     end
     return true, uids, audit, nil
 end

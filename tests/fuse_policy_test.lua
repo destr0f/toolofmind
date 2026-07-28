@@ -1,6 +1,6 @@
 local fuse = require("../fuse_module")
 
-assert(fuse("version") == "1.1.0-lowonline")
+assert(fuse("version") == "1.2.0-lowonline")
 
 local function exercise(enabledModes, expectedMode, rarity, count)
     local worker
@@ -12,25 +12,23 @@ local function exercise(enabledModes, expectedMode, rarity, count)
         pets[#pets + 1] = {
             id = rarity,
             uid = string.lower(rarity) .. "-eligible-" .. tostring(index),
-            g = true,
             s = index,
         }
     end
     pets[#pets + 1] = {
         id = rarity,
         uid = string.lower(rarity) .. "-equipped",
-        g = true,
         e = true,
     }
     pets[#pets + 1] = {
         id = rarity,
         uid = string.lower(rarity) .. "-locked",
-        g = true,
         l = true,
     }
     pets[#pets + 1] = {
         id = rarity,
-        uid = string.lower(rarity) .. "-normal-form",
+        uid = string.lower(rarity) .. "-golden-form",
+        g = true,
     }
 
     local save = { Pets = pets }
@@ -52,7 +50,7 @@ local function exercise(enabledModes, expectedMode, rarity, count)
         Library = {
             Directory = {
                 Eggs = {
-                    ["Golden Spiked Egg"] = {
+                    ["Samurai Egg"] = {
                         drops = {
                             { "Basic", 40 },
                             { "Rare", 16 },
@@ -108,7 +106,7 @@ local function exercise(enabledModes, expectedMode, rarity, count)
     for _, uid in ipairs(calls[1].Uids) do
         assert(not string.find(uid, "equipped", 1, true), "equipped pet was selected")
         assert(not string.find(uid, "locked", 1, true), "locked pet was selected")
-        assert(not string.find(uid, "normal-form", 1, true), "non-golden pet was selected")
+        assert(not string.find(uid, "golden-form", 1, true), "upgraded pet was selected")
     end
     fuse("stop")
 end

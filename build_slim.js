@@ -378,6 +378,6 @@ process.stdout.write(
     + `  source identity: ${sourceIdentity.bytes} bytes | sha256=${sourceIdentity.sha256} | djb2=${sourceIdentity.djb2}\n`
     + `  runtime manifest: sha256=${embeddedManifest.fingerprint.sha256} | djb2=${embeddedManifest.fingerprint.djb2}\n`
     + `  artifact: ${artifactIdentity.bytes} bytes | sha256=${artifactIdentity.sha256} | djb2=${artifactIdentity.djb2}\n`
-    + `  features: pet farm through first Fantasy World, adaptive headless auto egg, equipped-pet auto enchant, concurrent fuse policies, Domortuus gold/rainbow machines, dark matter auto-claim, exact potion auto-buy and boost renewal, live route health, active balance rates, native zero-physics loot reactor, anti-AFK, isolated persistent profile, potato mode, FPS cap, timer-gated automation\n`
+    + `  features: pet farm through first Fantasy World, Ancient Chest fallback, adaptive headless auto egg, equipped-pet auto enchant, Samurai Egg fuse policies, Samurai Dragon gold/rainbow machines, Domortuus dark matter auto-claim, exact potion auto-buy and boost renewal, live route health, active balance rates, native zero-physics loot reactor, anti-AFK, isolated persistent profile, potato mode, FPS cap, timer-gated automation\n`
     + `  dependencies: ${manifest.moduleOrder.length} pinned modules + WindUI ${manifest.windUI.version}\n`
 );

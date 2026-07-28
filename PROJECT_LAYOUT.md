@@ -32,6 +32,11 @@ update. Teleporter labels are mapped to the compact live `__MAP.Areas` names.
 `enchant_module.lua` rerolls only equipped, unlocked pets through the named
 `Enchant Pet` command, keeps one request in flight and accepts a roll only after
 `Save.Pets` changes. Multiple selected enchant tiers are OR alternatives.
+The LowOnline machine catalog resolves names from the live
+`Library.Directory.Pets`: normal/golden Samurai Dragon feeds Gold/Rainbow,
+while Dark Matter deliberately keeps the existing Domortuus route. Fuse reads
+the live Samurai Egg drops and independently batches 12 Basic, 8 Rare and
+5 Epic normal pets while protecting equipped, locked and upgraded entries.
 
 ## Runtime execution policy
 

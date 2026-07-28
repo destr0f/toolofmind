@@ -18,11 +18,13 @@ local function exercise(
         DarkMatterQueue = {},
         DarkMatterSlots = 1,
     }
+    local catalogName = darkMatter and "Domortuus" or "Samurai Dragon"
+    local catalogId = tostring(pet.id)
     local context = {
         Library = {
             Directory = {
                 Pets = {
-                    ["114"] = { name = "Domortuus", rarity = "Mythical" },
+                    [catalogId] = { name = catalogName, rarity = "Mythical" },
                 },
             },
         },
@@ -35,9 +37,9 @@ local function exercise(
         GetCurrency = function() return 1e15 end,
         FormatNumber = tostring,
         GetMachinePetCatalog = function()
-            return { ["114"] = true },
-                { "Domortuus" },
-                "live Domortuus catalog"
+            return { [catalogId] = true },
+                { catalogName },
+                "live " .. catalogName .. " catalog"
         end,
         BatchSize = function() return 1 end,
         MaxWaitSeconds = function() return nil end,
@@ -86,13 +88,13 @@ local function exercise(
 end
 
 exercise("../gold_machine_module", {
-    id = "114",
-    uid = "domortuus-normal",
+    id = "samurai-dragon",
+    uid = "samurai-dragon-normal",
 }, "Get Golden Machine Info", "Use Golden Machine", false, "1.2.0-lowonline")
 
 exercise("../rainbow_machine_module", {
-    id = "114",
-    uid = "domortuus-golden",
+    id = "samurai-dragon",
+    uid = "samurai-dragon-golden",
     g = true,
 }, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.2.0-lowonline")
 
@@ -103,17 +105,17 @@ exercise("../dark_matter_module", {
 }, "Get Dark Matter Machine Info", "Convert To Dark Matter", true, "1.1.0")
 
 exercise("../rainbow_machine_module", {
-    id = "114",
-    uid = "domortuus-golden-coins-iv",
+    id = "samurai-dragon",
+    uid = "samurai-dragon-golden-coins-iv",
     g = true,
     powers = { { "Coins", "IV" } },
 }, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.2.0-lowonline", false)
 
 exercise("../rainbow_machine_module", {
-    id = "114",
-    uid = "domortuus-golden-coins-v",
+    id = "samurai-dragon",
+    uid = "samurai-dragon-golden-coins-v",
     g = true,
     Powers = { Coins = "V" },
 }, "Get Rainbow Machine Info", "Use Rainbow Machine", false, "1.2.0-lowonline", false)
 
-print("PASS Domortuus machine pipeline works and Rainbow protects Coins IV/V")
+print("PASS Samurai Dragon Gold/Rainbow and Domortuus DM catalogs remain isolated")

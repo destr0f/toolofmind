@@ -45,6 +45,13 @@ check(
     "Fantasy display zones must map to the compact live Areas"
 );
 check(
+    source.includes('["ancient island chest"] = true')
+        && source.includes('string.find(name, "ancient", 1, true)')
+        && source.includes('namesMatch(zone, "Temple")')
+        && source.includes("candidateVisual"),
+    "Ancient Island boss mode must retain aliases and a bounded strongest/largest Temple fallback"
+);
+check(
     source.includes('currentZone = "Player Radius"'),
     "Player Zone must have a bounded fallback when map areas are absent"
 );
@@ -99,6 +106,19 @@ check(
         && autoEgg.includes("restoreOpenEggConnections")
         && !autoEgg.includes('network.Fire("Opening Egg"'),
     "LowOnline headless hatch pacing/suppression contract is incomplete"
+);
+const fuse = fs.readFileSync(path.join(root, "fuse_module.lua"), "utf8");
+const support = fs.readFileSync(path.join(root, "automation_support_module.lua"), "utf8");
+check(
+    fuse.includes('local TARGET_EGG = "Samurai Egg"')
+        && fuse.includes("pet.g == true or pet.r == true or pet.dm == true"),
+    "Fuse must select normal Basic/Rare/Epic pets from the live Samurai Egg catalog"
+);
+check(
+    support.includes('local targetName = "Samurai Dragon"')
+        && support.includes('TargetName = "Domortuus"')
+        && source.includes('and "Samurai Dragon" or "Domortuus"'),
+    "Gold/Rainbow and Dark Matter must use separate live species catalogs"
 );
 
 for (const forbidden of [

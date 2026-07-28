@@ -1,7 +1,7 @@
 -- Lazy automation UI extension for LowOnline through the first Fantasy update.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.5.0-lowonline"
+local MODULE_VERSION = "1.6.0-lowonline"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -175,7 +175,7 @@ local function build(context)
     local machines = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
     machines:Paragraph({
         Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
-        Desc = "LowOnline Domortuus only; every batch is rebuilt and confirmed from a fresh Save snapshot.",
+        Desc = "Gold/Rainbow target Samurai Dragon; Dark Matter keeps Domortuus. Every batch is rebuilt from a fresh Save snapshot.",
     })
     machines:Slider({
         Flag = "machine_batch_size",
@@ -188,7 +188,7 @@ local function build(context)
         end,
     })
     machines:Button({
-        Title = "REFRESH DOMORTUUS CATALOG",
+        Title = "REFRESH SAMURAI DRAGON CATALOG",
         Desc = "Re-reads Directory.Pets locally; no machine request.",
         Icon = "refresh-cw",
         Callback = function()
@@ -200,10 +200,10 @@ local function build(context)
     })
     yieldUI("machine controls")
 
-    local fuse = UI.MachinesTab:Section({ Title = "Golden Spiked Egg Fuse", Box = true, Opened = true })
+    local fuse = UI.MachinesTab:Section({ Title = "Samurai Egg Fuse", Box = true, Opened = true })
     fuse:Paragraph({
         Title = "EXACT RARITY BATCHES / LIVE DIRECTORY",
-        Desc = "Selects species from Golden Spiked Egg drops; equipped, locked and upgraded pets are protected.",
+        Desc = "Selects Basic, Rare and Epic species from Samurai Egg drops; equipped, locked and upgraded pets are protected.",
     })
     local fuseModeToggles = {}
     local function enabledFuseModes()
@@ -332,8 +332,8 @@ local function build(context)
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
         Flag = "auto_golden_galaxy_fox",
-        Title = "Auto Golden Domortuus",
-        Desc = "Normal Domortuus only; protects equipped and locked pets; enchants are not filtered.",
+        Title = "Auto Golden Samurai Dragon",
+        Desc = "Normal Samurai Dragon only; protects equipped and locked pets; enchants are not filtered.",
         Value = false,
         Callback = function(value)
             config.AutoGoldenGalaxyFox = value == true
@@ -355,8 +355,8 @@ local function build(context)
     local rainbow = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
     rainbow:Toggle({
         Flag = "auto_rainbow_galaxy_fox",
-        Title = "Auto Rainbow Domortuus",
-        Desc = "Golden Domortuus only; protects equipped, locked and Coins IV/V pets.",
+        Title = "Auto Rainbow Samurai Dragon",
+        Desc = "Golden Samurai Dragon only; protects equipped, locked and Coins IV/V pets.",
         Value = false,
         Callback = function(value)
             config.AutoRainbowGalaxyFox = value == true
