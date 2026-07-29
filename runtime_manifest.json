@@ -58,7 +58,7 @@
     "automationUI": {
       "id": "automationUI",
       "label": "Automation UI",
-      "version": "1.2.2",
+      "version": "1.2.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-lite.3",
@@ -66,10 +66,10 @@
       "load": "startup",
       "role": "automation-ui-extension",
       "path": "automation_ui_module.lua",
-      "commit": "16e6dbef894c018aa9259baa67286e5ade6988af",
+      "commit": "2a1cc555714708fde11c342a7d41eb0ec7df2eb1",
       "bytes": 15541,
-      "sha256": "553bb1d9d872050c929c6469b82a05f2c3a4beb416cbe73cfe4a3af4702e30a9",
-      "djb2": "df82c40f"
+      "sha256": "aeaf260e89f9f2c31e7a501f96ce3c89508ee8559c41f3b37794c5e9e24bb332",
+      "djb2": "b4412810"
     },
     "petFarmEngine": {
       "id": "petFarmEngine",
@@ -106,17 +106,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.5.1",
+      "version": "1.5.2",
       "versionAuthority": "source-constant+content-hash",
       "compatibleSuite": "1.4.1-lite.3",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "7d6ab753b2d5703702c9668f2c747818d9a631e1",
-      "bytes": 72287,
-      "sha256": "9925979bd530f9922c2c018c554d18a13d965c72e3a2f3e9c67e715b2d2a8b12",
-      "djb2": "a15cbb21"
+      "commit": "2a1cc555714708fde11c342a7d41eb0ec7df2eb1",
+      "bytes": 72457,
+      "sha256": "9a63f4c3c7d0f0230a1fd49a84013bda27f554bed2666948ea2ca31395c21a82",
+      "djb2": "b8decd06"
     },
     "goldMachine": {
       "id": "goldMachine",
