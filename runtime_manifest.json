@@ -323,9 +323,9 @@
     "source": {
       "path": "slim_farm.lua",
       "version": "1.5.9-low.10",
-      "bytes": 171837,
-      "sha256": "4f130fbd237629f35a0ee4e9beee291a82a712aa81c091258eaf36c0538594e8",
-      "djb2": "7e151b6e"
+      "bytes": 171873,
+      "sha256": "6f88a4717ca2b293a7a608ba98eae707ddde3aa8f9cd0d660b28c3193549fcb5",
+      "djb2": "a72ef604"
     },
     "artifacts": {
       "loader": {
