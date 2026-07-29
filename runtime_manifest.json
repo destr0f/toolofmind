@@ -276,6 +276,7 @@
         "tests/dark_matter_policy_test.lua",
         "tests/machine_sparse_directory_test.lua",
         "tests/pet_farm_engine_policy_test.lua",
+        "tests/auto_egg_network_recovery_test.js",
         "tests/runtime_manifest_test.js",
         "tests/zero_retention_reactor_test.js",
         "tests/coin_catalog_fail_open_test.js",
