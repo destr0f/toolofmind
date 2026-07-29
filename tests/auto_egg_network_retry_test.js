@@ -18,6 +18,8 @@ function functionBody(name, nextName) {
 
 assert(source.includes("local MAX_NETWORK_ATTEMPTS = 12"),
     "poor-connection retry budget must remain 12 attempts");
+assert(source.includes('local MODULE_VERSION = "1.5.3"'),
+    "the cache-refresh build must expose Auto Egg v1.5.3");
 assert(source.includes("local NETWORK_RETRY_WINDOW = 600"),
     "poor-connection retry window must remain bounded at 600 seconds");
 assert(source.includes("local RESPONSE_WAIT_SLICE = 54"),
@@ -28,6 +30,10 @@ assert(source.includes("local MAX_RESPONSE_WAIT_SLICES = 12"),
     "a retained Invoke must have a bounded response-check budget");
 assert(source.includes("local MAX_POST_PROCESS_ATTEMPTS = 12"),
     "headless post-processing must have a bounded retry budget");
+assert(!source.includes("Game Auto Delete post-processing exceeded"),
+    "the legacy 8-second terminal Auto Delete path returned");
+assert(source.includes("Protected recovery window: up to %ds"),
+    "the active Auto Delete request does not expose its protected recovery window");
 
 const retryScheduleMatch = source.match(
     /local NETWORK_RETRY_DELAYS = \{([^}]+)\}/

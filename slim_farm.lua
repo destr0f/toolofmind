@@ -311,6 +311,7 @@ local function runtimeModuleURL(entry)
     return tostring(repository.rawBase) .. "/" .. tostring(repository.owner)
         .. "/" .. tostring(repository.name) .. "/" .. tostring(entry.commit)
         .. "/" .. tostring(entry.path)
+        .. "?psxv=" .. tostring(entry.djb2)
 end
 
 local function loadRemoteController(moduleKey, label, statusCallback)

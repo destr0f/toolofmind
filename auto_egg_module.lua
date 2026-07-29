@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.2"
+local MODULE_VERSION = "1.5.3"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -882,6 +882,11 @@ local function startHeadlessPostProcess(state, context, pending, pets)
     pending.PostProcessDeadlineAt = now + POST_PROCESS_TIMEOUT
     pending.PostProcessWaits = 0
     pending.PostProcessFailure = nil
+    setStatus(state, context, string.format(
+        "Auto Egg v%s | Game Auto Delete started for %s.\n"
+            .. "Protected recovery window: up to %ds | no second egg request can overlap it",
+        MODULE_VERSION, requestLabel(pending), NETWORK_RETRY_WINDOW
+    ))
     pending.PostProcessThread = task.spawn(function()
         if not state.Running or state.Pending ~= pending then return end
         local result = table.pack(pcall(runHeadlessAutoDelete, state, context, pending, pets))
@@ -1710,9 +1715,11 @@ return function(action, context)
         .. "s | Native OpeningEgg + Headless direct-event/inventory-delta acknowledgement | Open Egg: "
         .. tostring(eventRoute) .. " [session index " .. tostring(eventIndex or "?") .. "]")
     setStatus(state, context,
-        "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
+        "Auto Egg v" .. MODULE_VERSION
+        .. " armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
         .. "Waiting for a valid egg within 15 studs | poor-connection guard: "
-        .. tostring(MAX_NETWORK_ATTEMPTS) .. " bounded attempts...")
+        .. tostring(MAX_NETWORK_ATTEMPTS) .. " bounded attempts over "
+        .. tostring(NETWORK_RETRY_WINDOW) .. "s")
 
     state.WorkerThread = task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do

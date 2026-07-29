@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.2.3"
+local MODULE_VERSION = "1.2.4"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end

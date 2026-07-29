@@ -91,6 +91,8 @@ const sourceVersion = sourceText.match(/local\s+VERSION\s*=\s*["']([^"']+)["']/)
 assert(sourceVersion && sourceVersion[1] === manifest.suite.version, "source VERSION differs from manifest");
 assert(sourceText.includes("__PSX_RUNTIME_MANIFEST__"), "source manifest marker is absent");
 assert(!sourceText.includes("RAW_MODULE_BASE"), "source still has a second module URL registry");
+assert(sourceText.includes('"?psxv=" .. tostring(entry.djb2)'),
+    "pinned runtime module URLs are missing their identity cache-buster");
 verifyIdentity("source", source, manifest.build.source);
 if (process.env.PSX_ALLOW_DIRTY_MANIFEST !== "1") {
     assert(manifest.build.sourceTree === "clean", "release artifacts were built from a dirty source tree");
