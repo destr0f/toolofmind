@@ -94,7 +94,9 @@ for (const marker of [
     assert(graphics.includes(marker), `graphics STOP misses ${marker}`);
 }
 
-assert(egg.includes("if activeState and activeState.Running then return true end")
+assert(egg.includes("if activeState and activeState.Running then")
+    && egg.includes("evicted a stale worker before starting v")
+    && egg.includes("foreignState.Running = false")
     && egg.includes("clearPhysicalBindings(true)")
     && egg.includes("state.Connection = nil")
     && egg.includes("state.WorkerThread = nil")
