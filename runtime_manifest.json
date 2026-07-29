@@ -277,8 +277,8 @@
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 5297,
-      "sha256": "d8ed9e981c3d5f4e86777edc09d3f20b3868423952422c5774789a22bb79b23c",
-      "djb2": "7fd041a1"
+      "sha256": "6be019ab1f375f763e8820c5ed8a3d3abedcf30810e579ecea78d6aedea8080c",
+      "djb2": "8116ee9c"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -291,14 +291,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 131995,
-        "sha256": "9c7d7b4c5e60ab8bfd3d6e983c2ce188b98c9577bca87d2754591c9e20a3fd54",
-        "djb2": "54cac18e"
+        "sha256": "62c5e75d4915200088c6fadfa9c44423486157df13265ac4ca6959d904fc33db",
+        "djb2": "4073abd3"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 131995,
-        "sha256": "9c7d7b4c5e60ab8bfd3d6e983c2ce188b98c9577bca87d2754591c9e20a3fd54",
-        "djb2": "54cac18e"
+        "sha256": "62c5e75d4915200088c6fadfa9c44423486157df13265ac4ca6959d904fc33db",
+        "djb2": "4073abd3"
       }
     }
   }
