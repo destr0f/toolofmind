@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.2.1"
+local MODULE_VERSION = "1.2.2"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -111,7 +111,7 @@ local function build(context)
     local autoEggToggle = eggAutomation:Toggle({
         Flag = "auto_egg",
         Title = "Enable Auto Hatch",
-        Desc = "Requires the selected physical egg within 15 studs; failed preflight sends nothing.",
+        Desc = "Requires the selected egg within 15 studs; poor connections recover through 12 bounded attempts without overlapping purchases.",
         Value = false,
         Callback = function(value)
             local enabled = value == true
