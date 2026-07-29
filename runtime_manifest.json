@@ -106,17 +106,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "versionAuthority": "source-constant+content-hash",
       "compatibleSuite": "1.4.1-lite.3",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "16e6dbef894c018aa9259baa67286e5ade6988af",
-      "bytes": 71839,
-      "sha256": "035afa09cfe9e135bd4c7c4c7a1ede5ae27c1b6329aae0d522e9bf99a682a255",
-      "djb2": "99efd3fa"
+      "commit": "7d6ab753b2d5703702c9668f2c747818d9a631e1",
+      "bytes": 72287,
+      "sha256": "9925979bd530f9922c2c018c554d18a13d965c72e3a2f3e9c67e715b2d2a8b12",
+      "djb2": "a15cbb21"
     },
     "goldMachine": {
       "id": "goldMachine",
