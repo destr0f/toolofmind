@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.1"
+local MODULE_VERSION = "1.5.2"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -22,14 +22,16 @@ local NATIVE_SKIP_ARM_TIMEOUT = 8
 local NATIVE_SKIP_CONNECTION_WINDOW = 0.35
 local PHYSICAL_RESCAN_COOLDOWN = 2
 local MAX_NETWORK_ATTEMPTS = 12
-local NETWORK_RETRY_WINDOW = 120
+local NETWORK_RETRY_WINDOW = 600
+local NETWORK_RETRY_DELAYS = { 1, 2, 5, 10, 20, 40, 70, 90, 110, 120, 120 }
 local NETWORK_RETRY_BASE_DELAY = 0.6
 local NETWORK_RETRY_MAX_DELAY = 4
-local RESPONSE_WAIT_SLICE = 8
+local RESPONSE_WAIT_SLICE = 54
 local MAX_RESPONSE_WAIT_SLICES = 12
 local MAX_POST_PROCESS_ATTEMPTS = 12
 local POST_PROCESS_RETRY_BASE_DELAY = 0.35
 local POST_PROCESS_RETRY_MAX_DELAY = 3
+local POST_PROCESS_WAIT_SLICE = 54
 local MAX_POST_PROCESS_WAIT_SLICES = 12
 local physicalCache = {
     Root = nil,
@@ -1117,10 +1119,10 @@ local function finishTransportFailure(state, context, pending)
     state.NetworkAttempt = attempt + 1
     state.NetworkRetries = state.NetworkRetries + 1
     state.CleanSuccesses = 0
-    local delay = boundedRetryDelay(
-        state.NetworkAttempt,
-        NETWORK_RETRY_BASE_DELAY,
-        NETWORK_RETRY_MAX_DELAY
+    local remaining = math.max(0, NETWORK_RETRY_WINDOW - elapsed)
+    local delay = math.min(
+        tonumber(NETWORK_RETRY_DELAYS[attempt]) or NETWORK_RETRY_MAX_DELAY,
+        remaining
     )
     state.NextAction = now + delay
     setStatus(state, context, string.format(
@@ -1224,7 +1226,7 @@ local function handlePending(state, context, now)
         if pending.PostProcessWaits < MAX_POST_PROCESS_WAIT_SLICES
             and elapsed < NETWORK_RETRY_WINDOW then
             pending.PostProcessDeadlineAt = now
-                + math.min(POST_PROCESS_TIMEOUT, NETWORK_RETRY_WINDOW - elapsed)
+                + math.min(POST_PROCESS_WAIT_SLICE, NETWORK_RETRY_WINDOW - elapsed)
             setStatus(state, context, string.format(
                 "Poor connection recovery: Game Auto Delete is still processing %s.\n"
                     .. "Post-process check %d/%d | attempt %d/%d | no new egg request sent",

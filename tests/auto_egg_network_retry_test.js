@@ -18,12 +18,29 @@ function functionBody(name, nextName) {
 
 assert(source.includes("local MAX_NETWORK_ATTEMPTS = 12"),
     "poor-connection retry budget must remain 12 attempts");
-assert(source.includes("local NETWORK_RETRY_WINDOW = 120"),
-    "poor-connection retry window must remain bounded at 120 seconds");
+assert(source.includes("local NETWORK_RETRY_WINDOW = 600"),
+    "poor-connection retry window must remain bounded at 600 seconds");
+assert(source.includes("local RESPONSE_WAIT_SLICE = 54"),
+    "hung Buy Egg response checks do not span the ten-minute window");
+assert(source.includes("local POST_PROCESS_WAIT_SLICE = 54"),
+    "hung Auto Delete checks do not span the ten-minute window");
 assert(source.includes("local MAX_RESPONSE_WAIT_SLICES = 12"),
     "a retained Invoke must have a bounded response-check budget");
 assert(source.includes("local MAX_POST_PROCESS_ATTEMPTS = 12"),
     "headless post-processing must have a bounded retry budget");
+
+const retryScheduleMatch = source.match(
+    /local NETWORK_RETRY_DELAYS = \{([^}]+)\}/
+);
+assert(retryScheduleMatch, "network retry schedule is missing");
+const retrySchedule = retryScheduleMatch[1].split(",")
+    .map((value) => Number(value.trim()))
+    .filter(Number.isFinite);
+assert(retrySchedule.length === 11,
+    "12 attempts require exactly 11 retry delays");
+const retrySpan = retrySchedule.reduce((sum, delay) => sum + delay, 0);
+assert(retrySpan >= 540 && retrySpan <= 600,
+    `network retries span ${retrySpan}s instead of the ten-minute guard`);
 
 const transportFailure = functionBody("finishTransportFailure", "finishTimeout");
 assert(transportFailure.includes("pending.TransportOk")
@@ -89,5 +106,5 @@ assert(attempts === 2 && inFlight === 0,
 
 process.stdout.write(
     "Auto egg network retry policy OK"
-    + " | attempts=12 | window=120s | overlap=0 | responseChecks=12\n"
+    + " | attempts=12 | window=600s | overlap=0 | responseChecks=12\n"
 );
