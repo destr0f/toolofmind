@@ -119,6 +119,8 @@ if type(env.PSX_OG_LOADER_STATE) == "table" then
 end
 if type(env.PSX_OG_FastEggState) == "table" then
     local state = env.PSX_OG_FastEggState
+    state.Running = false
+    state.Generation = (tonumber(state.Generation) or 0) + 1
     if type(state.Stop) == "function" then
         pcall(state.Stop)
     else
@@ -129,6 +131,7 @@ if type(env.PSX_OG_FastEggState) == "table" then
     end
     env.PSX_OG_FastEggState = nil
 end
+env.PSX_OG_AutoEggBuild = nil
 for _, key in ipairs({
     "PSX_OG_RewardInvokeCaptureState",
     "PSX_OG_BoostRemoteCaptureState",

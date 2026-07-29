@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.8.0-lowonline"
+local MODULE_VERSION = "1.8.1-lowonline"
 local BUY_COMMAND = "Buy Egg"
 
 local ARM_DELAY = 0.65
@@ -1582,7 +1582,10 @@ local function stopState(state, context)
     end
     if activeState == state then activeState = nil end
     local env = type(getgenv) == "function" and getgenv() or _G
-    if env.PSX_OG_FastEggState == state then env.PSX_OG_FastEggState = nil end
+    if env.PSX_OG_FastEggState == state then
+        env.PSX_OG_FastEggState = nil
+        env.PSX_OG_AutoEggBuild = nil
+    end
     state.Stop = nil
     state.Context = nil
     return true
@@ -1602,6 +1605,7 @@ local function workerDelay(state)
 end
 
 return function(action, context)
+    if action == "version" then return MODULE_VERSION end
     if action == "stop" then return stop() end
     if action == "invalidate-catalog" then
         physicalCache.Dirty = true
@@ -1622,7 +1626,6 @@ return function(action, context)
         return inspectEgg(context)
     end
     if action ~= "start" then return false, "unknown action" end
-    if activeState and activeState.Running then return true end
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
         "Library", "Running", "Enabled", "GetOptions", "InspectEgg", "InvokeCommand",
@@ -1630,6 +1633,31 @@ return function(action, context)
         "OperationOwner", "SetStatus", "Trace", "Disable",
     }) do
         if context[key] == nil then return false, "module context is missing " .. key end
+    end
+
+    -- A suspended network invoke can keep a previous loader's worker alive.
+    -- Evict that state before this module becomes the sole Auto Egg owner.
+    local env = type(getgenv) == "function" and getgenv() or _G
+    local foreignState = env.PSX_OG_FastEggState
+    if type(foreignState) == "table" and foreignState ~= activeState then
+        foreignState.Running = false
+        foreignState.Generation = (tonumber(foreignState.Generation) or 0) + 1
+        if type(foreignState.Stop) == "function" then
+            pcall(foreignState.Stop)
+        elseif foreignState.Connection and type(foreignState.Connection.Disconnect) == "function" then
+            pcall(function() foreignState.Connection:Disconnect() end)
+        end
+        if env.PSX_OG_FastEggState == foreignState then env.PSX_OG_FastEggState = nil end
+        context.Trace("auto egg reload", "evicted a stale worker before starting v" .. MODULE_VERSION)
+    end
+    if activeState and activeState.Running then
+        setStatus(activeState, context,
+            "Auto Egg v" .. MODULE_VERSION .. " is already the active worker.\n"
+            .. "Poor-connection guard: " .. tostring(MAX_NETWORK_ATTEMPTS)
+            .. " bounded checks over " .. tostring(NETWORK_RETRY_WINDOW) .. "s")
+        return true
+    elseif activeState then
+        stopState(activeState, activeState.Context or context)
     end
 
     local network = context.Library and context.Library.Network
@@ -1669,6 +1697,7 @@ return function(action, context)
     local openEggConnections, canSuppress, suppressionNote =
         snapshotOpenEggConnections(signal)
     local state = {
+        ModuleVersion = MODULE_VERSION,
         Context = context,
         Running = true,
         Generation = 1,
@@ -1775,9 +1804,9 @@ return function(action, context)
     end
     state.Connection = connection
 
-    local env = type(getgenv) == "function" and getgenv() or _G
     state.Stop = function() return stopState(state, context) end
     env.PSX_OG_FastEggState = state
+    env.PSX_OG_AutoEggBuild = MODULE_VERSION
     context.Trace("auto egg module",
         "v" .. MODULE_VERSION
         .. " | bounded poor-connection recovery " .. tostring(MAX_NETWORK_ATTEMPTS)

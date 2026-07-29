@@ -8,8 +8,14 @@ function assert(condition, message) {
     if (!condition) throw new Error(`Auto Egg network recovery test failed: ${message}`);
 }
 
-assert(source.includes('local MODULE_VERSION = "1.8.0-lowonline"'),
-    "the LowOnline Auto Egg version was not bumped");
+assert(source.includes('local MODULE_VERSION = "1.8.1-lowonline"'),
+    "the LowOnline stale-worker recovery version was not bumped");
+assert(source.includes('if action == "version" then return MODULE_VERSION end'),
+    "Auto Egg does not expose its version to the manifest loader");
+assert(source.includes("evicted a stale worker before starting v"),
+    "Auto Egg does not evict a stale previous worker before starting");
+assert(source.includes("env.PSX_OG_AutoEggBuild = MODULE_VERSION"),
+    "Auto Egg does not expose the active live build identity");
 assert(source.includes('local BUY_COMMAND = "Buy Egg"')
     && !source.includes('"Buy Egg Yay"'),
     "the LowOnline Buy Egg route changed");
