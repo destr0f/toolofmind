@@ -108,17 +108,18 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.8.0-lowonline",
-      "versionAuthority": "source-constant+content-hash",
+      "version": "1.8.1-lowonline",
+      "versionAuthority": "module-api",
+      "versionAction": "version",
       "compatibleSuite": "1.5.9-low.10",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "8400993e49075bdadd90f52a21cdfa04cc5d9674",
-      "bytes": 75438,
-      "sha256": "919900c9a7179a6149b11403f907eaf24b966a510402669e94fff974c3f7a276",
-      "djb2": "a96dcc78"
+      "commit": "d79360cfe622d20bf0a827e5a3a2ff021771bc4d",
+      "bytes": 76882,
+      "sha256": "c25d0f5bfaa3633dc0d4286cf53cceaece3183ffd45e6c08685dbef532fd84f6",
+      "djb2": "ced6bdd3"
     },
     "fuse": {
       "id": "fuse",
