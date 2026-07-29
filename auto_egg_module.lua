@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.0"
+local MODULE_VERSION = "1.5.1"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1423,6 +1423,7 @@ local function beginRequest(state, context, options, inspection)
         if state.Pending ~= pending or not state.Running then return end
         local result = table.pack(context.InvokeCommand("Buy Egg Yay", pending.Egg, pending.Triple))
         if state.Pending ~= pending or not state.Running then return end
+        pending.RequestThread = nil
         pending.ResponseDone = true
         pending.TransportOk = result[1] == true
         pending.Accepted = pending.TransportOk and result[2] == true
@@ -1431,6 +1432,13 @@ local function beginRequest(state, context, options, inspection)
         if not pending.TransportOk then
             pending.Accepted = false
             pending.Message = "transport error: " .. tostring(result[3])
+        end
+        if pending.Headless and pending.Accepted and not pending.EventReceived
+            and pending.ReconcileRetryAt == math.huge then
+            -- The first inventory-delta pass may finish while InvokeServer is
+            -- still yielding. Re-arm it as soon as that same request returns;
+            -- this does not create another purchase.
+            pending.ReconcileRetryAt = os.clock()
         end
     end)
 end

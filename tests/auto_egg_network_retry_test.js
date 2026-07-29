@@ -60,6 +60,11 @@ assert(request.includes("state.Pending = pending")
     && request.indexOf("state.Pending = pending")
         < request.indexOf("context.InvokeCommand(\"Buy Egg Yay\""),
     "pending ownership must be installed before invoking Buy Egg Yay");
+assert(request.includes("pending.RequestThread = nil"),
+    "the completed Buy Egg request thread is still retained");
+assert(request.includes("pending.ReconcileRetryAt == math.huge")
+    && request.includes("pending.ReconcileRetryAt = os.clock()"),
+    "a late successful response does not re-arm inventory reconciliation");
 
 const cleanup = functionBody("clearPendingThreads", "resetNetworkRetry");
 for (const field of ["RequestThread", "ReconcileThread", "PostProcessThread"]) {
