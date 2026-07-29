@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.0-lowonline"
+local MODULE_VERSION = "1.8.0-lowonline"
 local BUY_COMMAND = "Buy Egg"
 
 local ARM_DELAY = 0.65
@@ -21,6 +21,18 @@ local POST_PROCESS_TIMEOUT = 8
 local NATIVE_SKIP_ARM_TIMEOUT = 8
 local NATIVE_SKIP_CONNECTION_WINDOW = 0.35
 local PHYSICAL_RESCAN_COOLDOWN = 2
+local MAX_NETWORK_ATTEMPTS = 12
+local NETWORK_RETRY_WINDOW = 600
+local NETWORK_RETRY_DELAYS = { 1, 2, 5, 10, 20, 40, 70, 90, 110, 120, 120 }
+local NETWORK_RETRY_BASE_DELAY = 0.6
+local NETWORK_RETRY_MAX_DELAY = 4
+local RESPONSE_WAIT_SLICE = 54
+local MAX_RESPONSE_WAIT_SLICES = 12
+local MAX_POST_PROCESS_ATTEMPTS = 12
+local POST_PROCESS_RETRY_BASE_DELAY = 0.35
+local POST_PROCESS_RETRY_MAX_DELAY = 3
+local POST_PROCESS_WAIT_SLICE = 54
+local MAX_POST_PROCESS_WAIT_SLICES = 12
 local physicalCache = {
     Root = nil,
     ById = {},
@@ -563,6 +575,48 @@ local function requestLabel(pending)
     return tostring(pending.Egg) .. " " .. (pending.Triple and "x3" or "x1")
 end
 
+local function requestRetryKey(eggName, count, animation)
+    return table.concat({
+        normalizedEggName(eggName),
+        tonumber(count) == 3 and "3" or "1",
+        tostring(animation or ""),
+    }, "|")
+end
+
+local function boundedRetryDelay(attempt, baseDelay, maxDelay)
+    local exponent = math.max(0, (tonumber(attempt) or 1) - 2)
+    return math.min(maxDelay, baseDelay * (1.55 ^ exponent))
+end
+
+local function cancelThread(thread)
+    if not thread or thread == coroutine.running() or type(task.cancel) ~= "function" then return end
+    pcall(task.cancel, thread)
+end
+
+local function clearPendingThreads(pending)
+    if type(pending) ~= "table" then return end
+    cancelThread(pending.RequestThread)
+    cancelThread(pending.ReconcileThread)
+    cancelThread(pending.PostProcessThread)
+    pending.RequestThread = nil
+    pending.ReconcileThread = nil
+    pending.PostProcessThread = nil
+end
+
+local function resetNetworkRetry(state)
+    state.NetworkAttempt = 1
+    state.NetworkRetryKey = nil
+    state.NetworkWindowStartedAt = 0
+end
+
+local function retryablePostProcessFailure(problem)
+    local text = lower(problem)
+    return string.find(text, "transport", 1, true)
+        or string.find(text, "timed out", 1, true)
+        or string.find(text, "replication", 1, true)
+        or string.find(text, "unavailable", 1, true)
+end
+
 local function petDefinition(context, pet)
     if type(pet) ~= "table" then return nil end
     local directory = context.Library and context.Library.Directory
@@ -887,29 +941,77 @@ end
 
 local function startHeadlessPostProcess(state, context, pending, pets)
     if pending.PostProcessStarted or not pending.Headless then return end
+    local now = os.clock()
+    if now < (tonumber(pending.PostProcessRetryAt) or 0) then return end
+    pending.PostProcessAttempt = (tonumber(pending.PostProcessAttempt) or 0) + 1
+    pending.PostProcessWindowStartedAt = tonumber(pending.PostProcessWindowStartedAt) or now
+    if pending.PostProcessWindowStartedAt <= 0 then pending.PostProcessWindowStartedAt = now end
     pending.PostProcessStarted = true
-    pending.PostProcessStartedAt = os.clock()
-    task.spawn(function()
+    pending.PostProcessStartedAt = now
+    pending.PostProcessDeadlineAt = now + POST_PROCESS_TIMEOUT
+    pending.PostProcessWaits = 0
+    pending.PostProcessFailure = nil
+    setStatus(state, context, string.format(
+        "Auto Egg v%s | Game Auto Delete started for %s.\n"
+            .. "Protected recovery window: up to %ds | no second egg request can overlap it",
+        MODULE_VERSION, requestLabel(pending), NETWORK_RETRY_WINDOW
+    ))
+    pending.PostProcessThread = task.spawn(function()
         if not state.Running or state.Pending ~= pending then return end
         local result = table.pack(pcall(runHeadlessAutoDelete, state, context, pending, pets))
         if not state.Running or state.Pending ~= pending then return end
+        pending.PostProcessThread = nil
+        local failure
         if not result[1] then
-            pending.PostProcessFailure = "Game Auto Delete bridge crashed locally: " .. tostring(result[2])
+            failure = "Game Auto Delete bridge crashed locally: " .. tostring(result[2])
         elseif not result[2] then
-            pending.PostProcessFailure = tostring(result[3])
+            failure = tostring(result[3])
         else
             pending.PostProcessNote = tostring(result[3])
         end
-        pending.PostProcessDone = true
+        if not failure then
+            pending.PostProcessDone = true
+            return
+        end
+
+        local elapsed = os.clock() - pending.PostProcessWindowStartedAt
+        if retryablePostProcessFailure(failure)
+            and pending.PostProcessAttempt < MAX_POST_PROCESS_ATTEMPTS
+            and elapsed < NETWORK_RETRY_WINDOW then
+            local delay = boundedRetryDelay(
+                pending.PostProcessAttempt + 1,
+                POST_PROCESS_RETRY_BASE_DELAY,
+                POST_PROCESS_RETRY_MAX_DELAY
+            )
+            pending.PostProcessStarted = false
+            pending.PostProcessRetryAt = os.clock() + delay
+            pending.PostProcessLastProblem = failure
+            state.PostProcessRetries = state.PostProcessRetries + 1
+            setStatus(state, context, string.format(
+                "Poor connection recovery: Game Auto Delete attempt %d/%d failed.\n"
+                    .. "Retrying the same hatch post-processing in %.2fs; no new egg request is allowed.",
+                pending.PostProcessAttempt, MAX_POST_PROCESS_ATTEMPTS, delay
+            ))
+            return
+        end
+
+        pending.PostProcessStarted = false
+        pending.PostProcessFailure = failure
     end)
 end
 
 local function startHeadlessReconcile(state, context, pending)
     if pending.ReconcileStarted or not pending.Headless or pending.EventReceived then return end
+    local now = os.clock()
+    if now < (tonumber(pending.ReconcileRetryAt) or 0) then return end
     pending.ReconcileStarted = true
-    pending.ReconcileStartedAt = os.clock()
+    pending.ReconcileDone = false
+    pending.ReconcileAttempt = (tonumber(pending.ReconcileAttempt) or 0) + 1
+    pending.ReconcileWindowStartedAt = tonumber(pending.ReconcileWindowStartedAt) or now
+    if pending.ReconcileWindowStartedAt <= 0 then pending.ReconcileWindowStartedAt = now end
+    pending.ReconcileStartedAt = now
 
-    task.spawn(function()
+    pending.ReconcileThread = task.spawn(function()
         local expected = pending.Triple and 3 or 1
         local deadline = os.clock() + HEADLESS_REPLICATION_TIMEOUT
         local lastObserved = 0
@@ -932,6 +1034,7 @@ local function startHeadlessReconcile(state, context, pending)
                 pending.MatchMode = "inventory delta auto-detection"
                 pending.Acknowledged = true
                 pending.ReconcileDone = true
+                pending.ReconcileThread = nil
                 state.AcknowledgedEvents[eventSignature(pending.Egg, pets)] = os.clock()
                 context.Trace("auto egg headless reconcile", string.format(
                     "%s | observed %d/%d new pet(s) | acknowledged directly from inventory delta",
@@ -944,11 +1047,33 @@ local function startHeadlessReconcile(state, context, pending)
         until os.clock() >= deadline
 
         if state.Running and state.Pending == pending and not pending.EventReceived then
-            pending.ReconcileFailure = string.format(
+            pending.ReconcileThread = nil
+            local problem = string.format(
                 "Server accepted %s, but only %d/%d new pet(s) appeared in the replicated inventory within %.1fs",
                 requestLabel(pending), lastObserved, expected, HEADLESS_REPLICATION_TIMEOUT
             )
             pending.ReconcileDone = true
+            pending.ReconcileStarted = false
+            if not pending.ResponseDone then
+                pending.ReconcileRetryAt = math.huge
+                pending.ReconcileLastProblem = problem
+                return
+            end
+
+            local elapsed = os.clock() - pending.ReconcileWindowStartedAt
+            if pending.ReconcileAttempt < MAX_NETWORK_ATTEMPTS
+                and elapsed < NETWORK_RETRY_WINDOW then
+                local delay = boundedRetryDelay(
+                    pending.ReconcileAttempt + 1,
+                    NETWORK_RETRY_BASE_DELAY,
+                    NETWORK_RETRY_MAX_DELAY
+                )
+                pending.ReconcileRetryAt = os.clock() + delay
+                pending.ReconcileLastProblem = problem
+                state.ReconcileRetries = state.ReconcileRetries + 1
+                return
+            end
+            pending.ReconcileFailure = problem
         end
     end)
 end
@@ -970,6 +1095,7 @@ end
 
 local function finishSuccess(state, context, pending, note)
     if state.Pending ~= pending then return end
+    clearPendingThreads(pending)
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     state.Pending = nil
@@ -979,6 +1105,7 @@ local function finishSuccess(state, context, pending, note)
     end
     state.ConsecutiveFailures = 0
     state.CleanSuccesses = state.CleanSuccesses + 1
+    resetNetworkRetry(state)
     local now = os.clock()
     local cycle = math.max(0, now - (tonumber(pending.StartedAt) or now))
     state.AverageCycle = state.AverageCycle == nil and cycle
@@ -1005,12 +1132,14 @@ end
 
 local function finishRejection(state, context, pending)
     if state.Pending ~= pending then return end
+    clearPendingThreads(pending)
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     state.Pending = nil
     state.Rejections = state.Rejections + 1
     state.ConsecutiveFailures = state.ConsecutiveFailures + 1
     state.CleanSuccesses = 0
+    resetNetworkRetry(state)
     state.RequestDelay = math.min(MAX_REQUEST_DELAY, math.max(1, state.RequestDelay * 1.65))
     local message = tostring(pending.Message or "server rejected the purchase")
     local suspicious = suspiciousReply(message)
@@ -1026,6 +1155,7 @@ end
 
 local function stopForSafety(state, context, pending, reason)
     if pending and state.Pending ~= pending then return end
+    clearPendingThreads(pending)
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     state.Pending = nil
@@ -1036,18 +1166,76 @@ local function stopForSafety(state, context, pending, reason)
     context.Disable(reason)
 end
 
-local function finishTimeout(state, context, pending)
+local function finishTransportFailure(state, context, pending)
     if state.Pending ~= pending then return end
+    local now = os.clock()
+    local attempt = tonumber(pending.Attempt) or tonumber(state.NetworkAttempt) or 1
+    local startedAt = tonumber(state.NetworkWindowStartedAt) or pending.StartedAt or now
+    local elapsed = now - startedAt
+    local problem = tostring(pending.Message or "transport error")
+
+    if attempt >= MAX_NETWORK_ATTEMPTS or elapsed >= NETWORK_RETRY_WINDOW then
+        state.NetworkFailures = state.NetworkFailures + 1
+        stopForSafety(state, context, pending, string.format(
+            "Auto hatch stopped after %d/%d connection attempts for %s.\n"
+                .. "Last transport error: %s | retry window: %.0fs",
+            attempt, MAX_NETWORK_ATTEMPTS, requestLabel(pending), problem, elapsed
+        ))
+        return
+    end
+
+    clearPendingThreads(pending)
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
+    state.Pending = nil
+    state.NetworkAttempt = attempt + 1
+    state.NetworkRetries = state.NetworkRetries + 1
+    state.CleanSuccesses = 0
+    local remaining = math.max(0, NETWORK_RETRY_WINDOW - elapsed)
+    local delay = math.min(
+        tonumber(NETWORK_RETRY_DELAYS[attempt]) or NETWORK_RETRY_MAX_DELAY,
+        remaining
+    )
+    state.NextAction = now + delay
+    setStatus(state, context, string.format(
+        "Poor connection recovery: %s attempt %d/%d ended with a transport error.\n"
+            .. "Retry %d/%d in %.2fs | one request in flight | no blind overlap\n%s",
+        requestLabel(pending), attempt, MAX_NETWORK_ATTEMPTS,
+        state.NetworkAttempt, MAX_NETWORK_ATTEMPTS, delay, problem
+    ))
+end
+
+local function finishTimeout(state, context, pending)
+    if state.Pending ~= pending then return end
     state.Timeouts = state.Timeouts + 1
     state.CleanSuccesses = 0
-    state.ConsecutiveFailures = state.ConsecutiveFailures + 1
 
     if not pending.ResponseDone then
-        local reason = BUY_COMMAND .. " did not return in " .. tostring(pending.TimeoutSeconds)
-            .. "s; auto hatch stopped so a second request cannot overlap it"
-        stopForSafety(state, context, pending, reason)
+        local now = os.clock()
+        pending.ResponseWaits = (tonumber(pending.ResponseWaits) or 0) + 1
+        local elapsed = now - pending.StartedAt
+        if pending.Headless and not pending.EventReceived and not pending.ReconcileStarted then
+            pending.ReconcileRetryAt = now
+            startHeadlessReconcile(state, context, pending)
+        end
+        if pending.ResponseWaits < MAX_RESPONSE_WAIT_SLICES
+            and elapsed < NETWORK_RETRY_WINDOW then
+            local remaining = NETWORK_RETRY_WINDOW - elapsed
+            pending.ResponseDeadlineAt = now + math.min(RESPONSE_WAIT_SLICE, remaining)
+            setStatus(state, context, string.format(
+                "Poor connection recovery: %s is still waiting for %s.\n"
+                    .. "Response check %d/%d | elapsed %.1fs/%.0fs | no duplicate request sent",
+                BUY_COMMAND, requestLabel(pending), pending.ResponseWaits,
+                MAX_RESPONSE_WAIT_SLICES, elapsed, NETWORK_RETRY_WINDOW
+            ))
+            return
+        end
+
+        stopForSafety(state, context, pending, string.format(
+            "%s did not return after %d response checks (%.1fs) for %s.\n"
+                .. "Auto hatch stopped after the bounded poor-connection window; no request overlapped it.",
+            BUY_COMMAND, pending.ResponseWaits, elapsed, requestLabel(pending)
+        ))
         return
     end
 
@@ -1095,11 +1283,36 @@ local function handlePending(state, context, now)
         return true
     end
 
+    if pending.Headless and pending.EventReceived and pending.Acknowledged and pending.Pets
+        and not pending.PostProcessDone and not pending.PostProcessStarted
+        and now >= (tonumber(pending.PostProcessRetryAt) or 0) then
+        startHeadlessPostProcess(state, context, pending, pending.Pets)
+    end
+
     if pending.PostProcessStarted and not pending.PostProcessDone
-        and now - pending.PostProcessStartedAt >= POST_PROCESS_TIMEOUT then
-        stopForSafety(state, context, pending,
-            "Auto hatch stopped: Game Auto Delete post-processing exceeded "
-            .. tostring(POST_PROCESS_TIMEOUT) .. "s; no second egg request was sent")
+        and now >= (tonumber(pending.PostProcessDeadlineAt)
+            or ((tonumber(pending.PostProcessStartedAt) or now) + POST_PROCESS_TIMEOUT)) then
+        pending.PostProcessWaits = (tonumber(pending.PostProcessWaits) or 0) + 1
+        local elapsed = now - (tonumber(pending.PostProcessWindowStartedAt)
+            or pending.PostProcessStartedAt or now)
+        if pending.PostProcessWaits < MAX_POST_PROCESS_WAIT_SLICES
+            and elapsed < NETWORK_RETRY_WINDOW then
+            pending.PostProcessDeadlineAt = now
+                + math.min(POST_PROCESS_WAIT_SLICE, NETWORK_RETRY_WINDOW - elapsed)
+            setStatus(state, context, string.format(
+                "Poor connection recovery: Game Auto Delete is still processing %s.\n"
+                    .. "Post-process check %d/%d | attempt %d/%d | no new egg request sent",
+                requestLabel(pending), pending.PostProcessWaits, MAX_POST_PROCESS_WAIT_SLICES,
+                tonumber(pending.PostProcessAttempt) or 1, MAX_POST_PROCESS_ATTEMPTS
+            ))
+            return true
+        end
+
+        stopForSafety(state, context, pending, string.format(
+            "Auto hatch stopped after %d bounded Game Auto Delete response checks for %s.\n"
+                .. "The post-processing call remained in flight; no second egg request was sent.",
+            pending.PostProcessWaits, requestLabel(pending)
+        ))
         return true
     end
 
@@ -1110,12 +1323,14 @@ local function handlePending(state, context, now)
     end
 
     if pending.Headless and pending.ResponseDone and pending.Accepted
-        and not pending.EventReceived and not pending.ReconcileStarted then
+        and not pending.EventReceived and not pending.ReconcileStarted
+        and now >= (tonumber(pending.ReconcileRetryAt) or 0) then
         startHeadlessReconcile(state, context, pending)
     end
 
-    if pending.ResponseDone and pending.EventReceived then
-        if pending.Accepted or pending.Acknowledged then
+    if pending.EventReceived then
+        if pending.Accepted or pending.Acknowledged or pending.NativeOpeningSeen
+            or not pending.Headless then
             if pending.Headless then
                 if pending.Acknowledged and not pending.PostProcessStarted and pending.Pets then
                     startHeadlessPostProcess(state, context, pending, pending.Pets)
@@ -1141,11 +1356,16 @@ local function handlePending(state, context, now)
 
     if pending.ResponseDone and not pending.Accepted and not pending.EventReceived
         and not pending.NativeOpeningSeen then
-        finishRejection(state, context, pending)
+        if pending.TransportOk == false then
+            finishTransportFailure(state, context, pending)
+        else
+            finishRejection(state, context, pending)
+        end
         return true
     end
 
-    if now - pending.StartedAt >= pending.TimeoutSeconds then
+    if now >= (tonumber(pending.ResponseDeadlineAt)
+        or (pending.StartedAt + pending.TimeoutSeconds)) then
         finishTimeout(state, context, pending)
         return true
     end
@@ -1174,6 +1394,7 @@ end
 
 local function beginRequest(state, context, options, inspection)
     local headless = options.Animation == "Headless (No Animation)"
+    local retryKey = requestRetryKey(options.Egg, options.Count, options.Animation)
     local operationAcquired, operationOwner = acquireInventoryOperation(state, context)
     if not operationAcquired then
         state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
@@ -1214,12 +1435,22 @@ local function beginRequest(state, context, options, inspection)
         return
     end
 
+    if state.NetworkRetryKey ~= retryKey then
+        resetNetworkRetry(state)
+        state.NetworkRetryKey = retryKey
+        state.NetworkWindowStartedAt = os.clock()
+    elseif (tonumber(state.NetworkWindowStartedAt) or 0) <= 0 then
+        state.NetworkWindowStartedAt = os.clock()
+    end
+
     local pending = {
         Egg = options.Egg,
         Triple = options.Count == 3,
         Headless = headless,
         StartedAt = os.clock(),
         TimeoutSeconds = headless and HEADLESS_EVENT_TIMEOUT or NATIVE_EVENT_TIMEOUT,
+        ResponseDeadlineAt = 0,
+        ResponseWaits = 0,
         ResponseDone = false,
         Accepted = false,
         EventReceived = false,
@@ -1236,11 +1467,23 @@ local function beginRequest(state, context, options, inspection)
         ReconcileStarted = false,
         ReconcileDone = false,
         ReconcileFailure = nil,
+        ReconcileAttempt = 0,
+        ReconcileRetryAt = 0,
+        ReconcileWindowStartedAt = 0,
+        ReconcileThread = nil,
+        PostProcessAttempt = 0,
+        PostProcessRetryAt = 0,
+        PostProcessWindowStartedAt = 0,
+        PostProcessWaits = 0,
+        PostProcessThread = nil,
+        RequestThread = nil,
+        Attempt = tonumber(state.NetworkAttempt) or 1,
         InputConnections = not headless and inputConnectionSnapshot(context) or nil,
         Inspection = inspection,
         PaceMode = options.PaceMode == "Manual Delay" and "Manual Delay" or "Adaptive (History)",
         ManualDelayMs = math.clamp(math.floor(tonumber(options.ManualDelayMs) or 100), 50, 3000),
     }
+    pending.ResponseDeadlineAt = pending.StartedAt + pending.TimeoutSeconds
     state.Pending = pending
     state.Requests = state.Requests + 1
     if not headless then armNativeSkip(state, context, pending) end
@@ -1248,16 +1491,18 @@ local function beginRequest(state, context, options, inspection)
     local distanceText = measuredDistance and measuredDistance < math.huge
         and string.format("%.1f studs", measuredDistance) or "unavailable"
     setStatus(state, context, string.format(
-        "Sending one " .. BUY_COMMAND .. " request: %s\nDistance: %s (informational) | request #%d | dynamic Network route\n%s",
-        requestLabel(pending), distanceText, state.Requests,
+        "Sending one " .. BUY_COMMAND .. " request: %s | connection attempt %d/%d\n"
+            .. "Distance: %s (informational) | request #%d | dynamic Network route\n%s",
+        requestLabel(pending), pending.Attempt, MAX_NETWORK_ATTEMPTS, distanceText, state.Requests,
         headless and "Headless gate armed before purchase"
             or tostring(pending.SkipPolicy or "Native skip watcher is preparing...")
     ))
 
-    task.spawn(function()
+    pending.RequestThread = task.spawn(function()
         if state.Pending ~= pending or not state.Running then return end
         local result = table.pack(context.InvokeCommand(BUY_COMMAND, pending.Egg, pending.Triple))
         if state.Pending ~= pending or not state.Running then return end
+        pending.RequestThread = nil
         pending.ResponseDone = true
         pending.TransportOk = result[1] == true
         pending.Accepted = pending.TransportOk and result[2] == true
@@ -1266,6 +1511,10 @@ local function beginRequest(state, context, options, inspection)
         if not pending.TransportOk then
             pending.Accepted = false
             pending.Message = "transport error: " .. tostring(result[3])
+        end
+        if pending.Headless and pending.Accepted and not pending.EventReceived
+            and pending.ReconcileRetryAt == math.huge then
+            pending.ReconcileRetryAt = os.clock()
         end
     end)
 end
@@ -1312,6 +1561,7 @@ local function stopState(state, context)
     local pending = state.Pending
     state.Pending = nil
     if type(pending) == "table" then
+        clearPendingThreads(pending)
         pending.PetSnapshot = nil
         pending.InputConnections = nil
         pending.Pets = nil
@@ -1439,6 +1689,13 @@ return function(action, context)
         OpenEvents = 0,
         CleanSuccesses = 0,
         ConsecutiveFailures = 0,
+        NetworkAttempt = 1,
+        NetworkRetryKey = nil,
+        NetworkWindowStartedAt = 0,
+        NetworkRetries = 0,
+        NetworkFailures = 0,
+        ReconcileRetries = 0,
+        PostProcessRetries = 0,
         EventRoute = eventRoute,
         EventIndex = eventIndex,
         OpenEggConnections = openEggConnections,
@@ -1523,12 +1780,17 @@ return function(action, context)
     env.PSX_OG_FastEggState = state
     context.Trace("auto egg module",
         "v" .. MODULE_VERSION
+        .. " | bounded poor-connection recovery " .. tostring(MAX_NETWORK_ATTEMPTS)
+        .. " attempts/" .. tostring(NETWORK_RETRY_WINDOW)
         .. " | direct Headless event/inventory acknowledgement; no synthetic Opening Egg callback | Open Egg: "
         .. tostring(eventRoute) .. " [session index " .. tostring(eventIndex or "?") .. "]")
     setStatus(state, context,
-        "Auto hatch armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
+        "Auto Egg v" .. MODULE_VERSION
+        .. " armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
         .. "Headless callback suppression: " .. tostring(suppressionNote)
-        .. "\nWaiting for a valid selected egg loaded in the current world; distance does not block purchases...")
+        .. "\nWaiting for a valid selected egg loaded in the current world; distance does not block purchases."
+        .. "\nPoor-connection guard: " .. tostring(MAX_NETWORK_ATTEMPTS)
+        .. " bounded attempts over " .. tostring(NETWORK_RETRY_WINDOW) .. "s")
 
     state.WorkerThread = task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
