@@ -2,8 +2,8 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.0.0"
-local DEFAULT_DISPATCH_WIDTH = 8
+local MODULE_VERSION = "1.1.0"
+local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
 local RETRY_DELAY = 0.25
@@ -457,7 +457,10 @@ local function process(job)
     if #rejectedEntries > 0 then
         run.Rejected = run.Rejected + #rejectedEntries
         run.LastProblem = "Join Coin rejected " .. tostring(#rejectedEntries) .. " pet(s)"
-        scheduleRetry(job, rejectedEntries, run.LastProblem, false)
+        -- A successful InvokeServer transport followed by a rejected UID means
+        -- the coin is stale or contended. Retrying the same coin only burns one
+        -- more RTT and lets the pet drift back toward the player.
+        failEntries(job, rejectedEntries, run.LastProblem)
     elseif #signalFailures == 0 then
         run.LastProblem = "none"
     end
@@ -518,6 +521,13 @@ local function start(context)
     local requested = math.floor(tonumber(context.DispatchWidth) or DEFAULT_DISPATCH_WIDTH)
     run.Limit = math.max(1, math.min(requested, DEFAULT_DISPATCH_WIDTH))
     return true
+end
+
+local function setLimit(value)
+    local requested = math.floor(tonumber(value) or DEFAULT_DISPATCH_WIDTH)
+    run.Limit = math.max(0, math.min(requested, DEFAULT_DISPATCH_WIDTH))
+    pump()
+    return run.Limit
 end
 
 local function dispatch(payload)
@@ -588,6 +598,7 @@ end
 return function(action, context, value)
     if action == "start" then return start(context) end
     if action == "dispatch" then return dispatch(value or context) end
+    if action == "limit" then return setLimit(context) end
     if action == "pump" then pump(); return true end
     if action == "reset" then resetQueue(); return true end
     if action == "stop" then resetQueue(); run.Context = nil; return true end

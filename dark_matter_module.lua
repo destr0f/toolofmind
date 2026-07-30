@@ -2,7 +2,7 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.2.0"
+local MODULE_VERSION = "1.3.0"
 local TARGET_PET_ID = "288"
 local TARGET_PET_NAME = "404 Demon"
 local RETRY_DELAY = 10
@@ -18,10 +18,21 @@ local ABBREVIATIONS = {
 }
 local ROMAN_LEVELS = { I = 1, II = 2, III = 3, IV = 4, V = 5 }
 
-local function readPower(power)
-    if type(power) ~= "table" then return nil, nil end
-    local name = power[1] or power.name or power.Name or power.power or power.Power
-    local rawLevel = power[2] or power.level or power.Level or power.tier or power.Tier
+local function readPower(power, key)
+    local name, rawLevel
+    if type(power) == "table" then
+        name = power[1] or power.name or power.Name or power.power or power.Power
+        rawLevel = power[2] or power.level or power.Level or power.tier or power.Tier
+    elseif type(key) == "string" and (type(power) == "number" or type(power) == "string") then
+        name, rawLevel = key, power
+    elseif type(power) == "string" then
+        local text = string.match(power, "^%s*(.-)%s*$")
+        local base, suffix = string.match(text, "^(.-)%s+([IVX]+)$")
+        if not base then base, suffix = string.match(text, "^(.-)%s+(%d+)$") end
+        name, rawLevel = base or text, suffix
+    else
+        return nil, nil
+    end
     local level = tonumber(rawLevel)
     if level == nil and rawLevel ~= nil then
         level = ROMAN_LEVELS[string.upper(tostring(rawLevel))]
@@ -32,9 +43,18 @@ end
 local function protectedTechCoins(pet)
     local powers = type(pet) == "table" and (pet.powers or pet.Powers) or nil
     if type(powers) ~= "table" then return false end
-    for _, power in pairs(powers) do
-        local name, level = readPower(power)
-        if string.lower(tostring(name or "")) == "tech coins" and level and level >= 4 then
+    local function inspect(power, key)
+        local name, level = readPower(power, key)
+        local compactName = string.lower(tostring(name or "")):gsub("%W", "")
+        return compactName == "techcoins" and level ~= nil and level >= 4, level
+    end
+    if powers.name or powers.Name or powers.power or powers.Power then
+        local protected, level = inspect(powers)
+        if protected then return true, level end
+    end
+    for key, power in pairs(powers) do
+        local protected, level = inspect(power, key)
+        if protected then
             return true, level
         end
     end
@@ -61,8 +81,8 @@ local function auditLabel(pet)
     local labels = {}
     local powers = type(pet) == "table" and (pet.powers or pet.Powers) or nil
     if type(powers) == "table" then
-        for _, power in pairs(powers) do
-            local name, level = readPower(power)
+        for key, power in pairs(powers) do
+            local name, level = readPower(power, key)
             if name then labels[#labels + 1] = abbreviate(name) .. tostring(level or "?") end
         end
     end
@@ -182,7 +202,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "target pets: %d | rainbow: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
+        "ID 288 found: %d | rainbow: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
         stats.All, stats.Rainbow, stats.Eligible, stats.Protected,
         stats.Equipped, stats.Locked, stats.Other, stats.Pending
     )
@@ -678,6 +698,7 @@ end
 
 return function(action, context)
     if action == "version" then return MODULE_VERSION end
+    if action == "protected-tech-coins" then return protectedTechCoins(context) end
     if action == "select-tier" then
         context = type(context) == "table" and context or {}
         return selectMachineTier(context.Info, context.BatchSize, context.MaxWaitSeconds)

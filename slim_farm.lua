@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.18"
+local VERSION = "1.4.1-dev.19"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -1551,8 +1551,11 @@ local function removeCoin(rawId, fromEvent)
     if model then coinIndex.IdByModel[model] = nil end
     coinIndex.Models[id] = nil
     coinIndex:Invalidate()
-    if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(id) end
-    if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+    local released = type(releaseAssignmentsForCoin) == "function"
+        and releaseAssignmentsForCoin(id) or 0
+    if released == 0 and type(requestAllocatorPulse) == "function" then
+        requestAllocatorPulse()
+    end
 end
 
 function coinIndex:DisconnectFolder()
@@ -1917,9 +1920,11 @@ local function orderedTargets(mode)
     end
     local zoneAnchor = findZoneAnchor(zone)
     local targets = {}
+    local hackerPortal = namesMatch(zone, "Hacker Portal")
     for _, record in pairs(coinRecords) do
         local boss = isBossChest(record)
-        local allowed = mode == "Boss Chest Only" and boss or mode ~= "Boss Chest Only" and not boss
+        local allowed = mode == "Boss Chest Only" and boss
+            or mode ~= "Boss Chest Only" and (hackerPortal or not boss)
         if allowed and worldMatches(record.World, world) and recordInZone(record, zone, zoneAnchor) then
             table.insert(targets, record)
         end
@@ -1970,7 +1975,7 @@ local petFarm = {
     RouteSummary = "resolving 0/4",
     EquippedCount = 0,
     TargetWindow = 0,
-    PolicyLanes = 8,
+    PolicyLanes = 16,
     LastTargetCount = 0,
     LastWorld = "unknown",
     LastZone = "unknown",
@@ -1982,7 +1987,7 @@ local petFarm = {
         Active = 0,
         Queued = 0,
         Limit = 0,
-        PolicyMaxLanes = 8,
+        PolicyMaxLanes = 16,
         Accepted = 0,
         Rejected = 0,
         Errors = 0,
@@ -1990,24 +1995,39 @@ local petFarm = {
         AverageRTT = 0,
         LastProblem = "none",
     },
+    FastPets = {},
+    FastScheduled = false,
+    FastToken = 0,
+    NextTargetByPet = {},
 }
 
 releaseAssignmentsForCoin = function(rawId)
     if rawId == nil then
         farmGeneration = farmGeneration + 1
+        petFarm.FastToken = petFarm.FastToken + 1
+        petFarm.FastScheduled = false
+        table.clear(petFarm.FastPets)
+        table.clear(petFarm.NextTargetByPet)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
         table.clear(petStates)
         table.clear(rejectedUntil)
-        return
+        return 0
     end
 
     local coinId = tostring(rawId)
+    local released = 0
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId then
             petStates[petId] = nil
+            petFarm.FastPets[petId] = true
+            released = released + 1
         end
     end
     rejectedUntil[coinId] = nil
+    if released > 0 and type(petFarm.QueueFastDispatch) == "function" then
+        petFarm:QueueFastDispatch()
+    end
+    return released
 end
 
 local function functionUpvalueAt(callback, index)
@@ -2068,7 +2088,8 @@ local commandRemoteSource = "Network.Invoke GetRemoteFunction upvalue #2"
 local function getCommandRemote(commandName)
     local cached = commandRemoteCache[commandName]
     local cachedRemote = type(cached) == "table" and cached.Remote or nil
-    if typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteFunction")
+    if type(cached) == "table" and cached.Command == commandName
+        and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteFunction")
         and cachedRemote:IsDescendantOf(ReplicatedStorage) then
         return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
@@ -2099,6 +2120,7 @@ local function getCommandRemote(commandName)
             local sourceName = commandRemoteSource .. " (" .. tostring(reader) .. ")"
             local sessionIndex = remoteSessionIndex(remote)
             commandRemoteCache[commandName] = {
+                Command = commandName,
                 Remote = remote,
                 Source = sourceName,
                 SessionIndex = sessionIndex,
@@ -2117,7 +2139,8 @@ local eventRemoteSource = "Network.Fired GetRemoteEvent upvalue"
 local function getEventRemote(commandName)
     local cached = eventRemoteCache[commandName]
     local cachedRemote = type(cached) == "table" and cached.Remote or nil
-    if typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
+    if type(cached) == "table" and cached.Command == commandName
+        and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
         and cachedRemote:IsDescendantOf(ReplicatedStorage) then
         return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
@@ -2170,6 +2193,7 @@ local function getEventRemote(commandName)
                             .. " (" .. tostring(reader) .. ")"
                         local sessionIndex = remoteSessionIndex(remote)
                         eventRemoteCache[commandName] = {
+                            Command = commandName,
                             Remote = remote,
                             Source = sourceName,
                             SessionIndex = sessionIndex,
@@ -2192,7 +2216,8 @@ local fireRemoteSource = "Network.Fire GetRemoteEvent upvalue #2"
 local function getFireRemote(commandName)
     local cached = fireRemoteCache[commandName]
     local cachedRemote = type(cached) == "table" and cached.Remote or nil
-    if typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
+    if type(cached) == "table" and cached.Command == commandName
+        and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
         and cachedRemote:IsDescendantOf(ReplicatedStorage) then
         return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
@@ -2218,6 +2243,7 @@ local function getFireRemote(commandName)
             local sourceName = fireRemoteSource .. " (" .. tostring(reader) .. ")"
             local sessionIndex = remoteSessionIndex(remote)
             fireRemoteCache[commandName] = {
+                Command = commandName,
                 Remote = remote,
                 Source = sourceName,
                 SessionIndex = sessionIndex,
@@ -2403,11 +2429,12 @@ function petFarm:EnsureEngine()
             local now = os.clock()
             petStates[petId] = nil
             if record then
-                rejectedUntil[tostring(record.Id)] = now + 1
+                rejectedUntil[tostring(record.Id)] = now + 0.75
             end
+            self.FastPets[petId] = true
             idleRecoveryCount = idleRecoveryCount + 1
             lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
-            driverStatus = "Lite join failed; selecting another live target"
+            driverStatus = "stale/contended target skipped; fast reroute queued"
             self.SuppressedFailures = self.SuppressedFailures + 1
             if now >= self.NextFailureTraceAt then
                 trace("pet dispatch recovery", tostring(reason)
@@ -2415,7 +2442,11 @@ function petFarm:EnsureEngine()
                 self.SuppressedFailures = 0
                 self.NextFailureTraceAt = now + 2
             end
-            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+            if type(self.QueueFastDispatch) == "function" then
+                self:QueueFastDispatch()
+            elseif type(requestAllocatorPulse) == "function" then
+                requestAllocatorPulse()
+            end
         end,
         OnStaleAccepted = function(record, petIds)
             local network = networkReady()
@@ -2423,7 +2454,7 @@ function petFarm:EnsureEngine()
             pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
         end,
         Trace = trace,
-        DispatchWidth = 8,
+        DispatchWidth = 16,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
     self.Loading = false
@@ -2479,6 +2510,10 @@ end
 
 local function clearAssignments(sendBack, callback)
     farmGeneration = farmGeneration + 1
+    petFarm.FastToken = petFarm.FastToken + 1
+    petFarm.FastScheduled = false
+    table.clear(petFarm.FastPets)
+    table.clear(petFarm.NextTargetByPet)
     if petFarm.Engine then pcall(petFarm.Engine, "reset") end
     local groups, allPets = collectAssignmentsForReset()
     local network = sendBack and networkReady() or nil
@@ -2574,16 +2609,19 @@ local function dispatchPlan(record, petIds)
     local entries = {}
     for _, petId in ipairs(petIds) do
         petId = tostring(petId)
-        local state = {
-            CoinId = coinId,
-            Phase = "joining",
-            Generation = farmGeneration,
-            RetryCount = 0,
-            StartedAt = os.clock(),
-        }
-        petStates[petId] = state
-        entries[#entries + 1] = { PetId = petId, State = state }
+        if not petStates[petId] then
+            local state = {
+                CoinId = coinId,
+                Phase = "joining",
+                Generation = farmGeneration,
+                RetryCount = 0,
+                StartedAt = os.clock(),
+            }
+            petStates[petId] = state
+            entries[#entries + 1] = { PetId = petId, State = state }
+        end
     end
+    if #entries == 0 then return end
 
     local called, accepted, problem = pcall(petFarm.Engine, "dispatch", {
         Record = record,
@@ -2604,6 +2642,160 @@ assignmentCount = function()
     local count = 0
     for _ in pairs(petStates) do count = count + 1 end
     return count
+end
+
+function petFarm:BuildDispatchPlans(freePets, usable, mode)
+    local plans, plansById = {}, {}
+    if type(freePets) ~= "table" or type(usable) ~= "table"
+        or #freePets == 0 or #usable == 0 then
+        return plans, 0
+    end
+
+    local usableById = {}
+    for _, record in ipairs(usable) do
+        usableById[tostring(record.Id)] = record
+    end
+
+    if mode == "All on Strongest Regular" or mode == "Boss Chest Only" then
+        local groupTarget
+        for _, state in pairs(petStates) do
+            local candidate = usableById[tostring(state.CoinId)]
+            if candidate and recordAlive(candidate) then
+                groupTarget = candidate
+                break
+            end
+        end
+        groupTarget = groupTarget or usable[1]
+        plans[1] = { Record = groupTarget, Pets = freePets }
+        for _, petId in ipairs(freePets) do
+            self.NextTargetByPet[tostring(petId)] = tostring(groupTarget.Id)
+        end
+        return plans, 1
+    end
+
+    local occupied, occupiedCount = {}, 0
+    for _, state in pairs(petStates) do
+        local coinId = tostring(state.CoinId)
+        if usableById[coinId] and not occupied[coinId] then
+            occupied[coinId] = true
+            occupiedCount = occupiedCount + 1
+        end
+    end
+
+    local targetWindow = math.min(#usable, math.max(#freePets + occupiedCount, 1))
+    local candidates, loads, candidateById = {}, {}, {}
+    for index = 1, targetWindow do
+        local record = usable[index]
+        local coinId = tostring(record.Id)
+        candidates[index] = record
+        candidateById[coinId] = record
+        loads[coinId] = 0
+    end
+    for _, state in pairs(petStates) do
+        local coinId = tostring(state.CoinId)
+        if loads[coinId] ~= nil then loads[coinId] = loads[coinId] + 1 end
+    end
+
+    local accountOffset = math.abs(tonumber(player.UserId) or 0) % targetWindow
+    for petIndex, rawPetId in ipairs(freePets) do
+        local petId = tostring(rawPetId)
+        local minimumLoad = math.huge
+        for _, record in ipairs(candidates) do
+            minimumLoad = math.min(minimumLoad, loads[tostring(record.Id)] or 0)
+        end
+
+        local chosen
+        local reservedId = self.NextTargetByPet[petId]
+        if reservedId and candidateById[reservedId]
+            and (loads[reservedId] or 0) == minimumLoad then
+            chosen = candidateById[reservedId]
+        end
+        if not chosen then
+            local start = ((accountOffset + petIndex - 2) % targetWindow) + 1
+            for step = 0, targetWindow - 1 do
+                local record = candidates[((start + step - 1) % targetWindow) + 1]
+                if (loads[tostring(record.Id)] or 0) == minimumLoad then
+                    chosen = record
+                    break
+                end
+            end
+        end
+
+        local coinId = tostring(chosen.Id)
+        local plan = plansById[coinId]
+        if not plan then
+            plan = { Record = chosen, Pets = {} }
+            plansById[coinId] = plan
+            plans[#plans + 1] = plan
+        end
+        plan.Pets[#plan.Pets + 1] = petId
+        loads[coinId] = (loads[coinId] or 0) + 1
+
+        local nextRecord, nextLoad
+        for step = 1, targetWindow do
+            local record = candidates[((accountOffset + petIndex + step - 2) % targetWindow) + 1]
+            local load = loads[tostring(record.Id)] or 0
+            if not nextRecord or load < nextLoad then
+                nextRecord, nextLoad = record, load
+            end
+        end
+        self.NextTargetByPet[petId] = nextRecord and tostring(nextRecord.Id) or nil
+    end
+    return plans, targetWindow
+end
+
+function petFarm:QueueFastDispatch(petId)
+    if petId ~= nil then self.FastPets[tostring(petId)] = true end
+    if self.FastScheduled or not running() then return end
+    self.FastScheduled = true
+    local token, generation = self.FastToken, farmGeneration
+    task.defer(function()
+        self.FastScheduled = false
+        if not running() or not config.PetFarm or farmResetRunning
+            or token ~= self.FastToken or generation ~= farmGeneration then
+            return
+        end
+        if allocatorBusy or not self.Engine then
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
+            return
+        end
+
+        local equipped, freePets = {}, {}
+        for _, equippedId in ipairs(self.LastEquippedIds or {}) do
+            equipped[tostring(equippedId)] = true
+        end
+        for queuedId in pairs(self.FastPets) do
+            self.FastPets[queuedId] = nil
+            if equipped[queuedId] and not petStates[queuedId] then
+                freePets[#freePets + 1] = queuedId
+            end
+        end
+        table.sort(freePets)
+        if #freePets == 0 then return end
+
+        local targets, selectedWorld, selectedZone = orderedTargets(config.Mode)
+        self.LastTargetCount = #targets
+        self.LastWorld = selectedWorld or "unknown"
+        self.LastZone = selectedZone or "unknown"
+        local usable, now = {}, os.clock()
+        for _, record in ipairs(targets) do
+            if now >= (rejectedUntil[tostring(record.Id)] or 0) then
+                usable[#usable + 1] = record
+            end
+        end
+        if #usable == 0 then
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
+            return
+        end
+
+        local plans, targetWindow = self:BuildDispatchPlans(freePets, usable, config.Mode)
+        self.TargetWindow = targetWindow
+        for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
+        if assignmentCount() < (tonumber(self.EquippedCount) or 0)
+            and type(requestAllocatorPulse) == "function" then
+            requestAllocatorPulse()
+        end
+    end)
 end
 
 function petFarm:PhaseCounts()
@@ -3338,9 +3530,13 @@ allocatorPass = function()
         local petIds = getEquippedPetIds()
         petFarm.EquippedCount = #petIds
         petFarm.LastEquippedIds = petIds
+        pcall(petFarm.Engine, "limit", math.min(#petIds, 16))
         local equipped = {}
         for _, petId in ipairs(petIds) do equipped[petId] = true end
-        if #petIds == 0 then return end
+        if #petIds == 0 then
+            petFarm.TargetWindow = 0
+            return
+        end
 
         for petId, state in pairs(petStates) do
             if not equipped[petId] or state.Generation ~= farmGeneration
@@ -3378,55 +3574,8 @@ allocatorPass = function()
             return
         end
 
-        local plans, plansById = {}, {}
-        if config.Mode == "All on Strongest Regular" or config.Mode == "Boss Chest Only" then
-            petFarm.TargetWindow = math.min(#usable, 1)
-            local groupTarget
-            for _, state in pairs(petStates) do
-                local coinId = tostring(state.CoinId)
-                local record = coinRecords[coinId]
-                local matchesMode = config.Mode == "Boss Chest Only" and isBossChest(record)
-                    or config.Mode == "All on Strongest Regular" and not isBossChest(record)
-                if matchesMode and recordAlive(record) then
-                    groupTarget = record
-                    break
-                end
-            end
-            groupTarget = groupTarget or usable[1]
-            plans[1] = { Record = groupTarget, Pets = freePets }
-        else
-            local claimed = {}
-            for _, state in pairs(petStates) do
-                local coinId = tostring(state.CoinId)
-                if recordAlive(coinRecords[coinId]) then claimed[coinId] = true end
-            end
-            petFarm.TargetWindow = math.min(#usable, #freePets)
-            local uniqueIndex, sharedIndex = 1, 1
-            for _, petId in ipairs(freePets) do
-                local record
-                while uniqueIndex <= #usable do
-                    local candidate = usable[uniqueIndex]
-                    uniqueIndex = uniqueIndex + 1
-                    if not claimed[tostring(candidate.Id)] then
-                        record = candidate
-                        break
-                    end
-                end
-                if not record then
-                    record = usable[((sharedIndex - 1) % #usable) + 1]
-                    sharedIndex = sharedIndex + 1
-                end
-                local recordId = tostring(record.Id)
-                local plan = plansById[recordId]
-                if not plan then
-                    plan = { Record = record, Pets = {} }
-                    plansById[recordId] = plan
-                    plans[#plans + 1] = plan
-                end
-                table.insert(plan.Pets, petId)
-                claimed[recordId] = true
-            end
-        end
+        local plans, targetWindow = petFarm:BuildDispatchPlans(freePets, usable, config.Mode)
+        petFarm.TargetWindow = targetWindow
         for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
         if assignmentCount() < #petIds and type(armFarmRecovery) == "function" then
             armFarmRecovery(1.05)

@@ -1,6 +1,6 @@
 local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local machine = require(modulePath)
-    assert(machine("version") == "1.2.0")
+    assert(machine("version") == "1.3.0")
 
     local callback
     local calls = {}
