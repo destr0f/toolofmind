@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.3"
+local MODULE_VERSION = "1.5.4"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -380,6 +380,97 @@ end
 local function openingFlag(context)
     local variables = context.Library and context.Library.Variables
     return variables and variables.OpeningEgg == true
+end
+
+local function openEggScriptFor(context)
+    local player = context.Player
+    if not player then
+        local players = game:GetService("Players")
+        player = players and players.LocalPlayer
+    end
+    local playerScripts = player and player:FindFirstChild("PlayerScripts")
+    local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
+    local gameScripts = scripts and scripts:FindFirstChild("Game")
+    local openEggScript = gameScripts and gameScripts:FindFirstChild("Open Eggs")
+    if openEggScript and openEggScript:IsA("LocalScript") then return openEggScript end
+    return nil
+end
+
+local function restoreHeadlessProducerGate(state)
+    if not state then return end
+    local scriptEnvironment = state.OpenEggEnvironment
+    local wrapper = state.OpenEggWrapper
+    local original = state.OpenEggOriginal
+    if type(scriptEnvironment) == "table" and type(wrapper) == "function"
+        and type(original) == "function" and scriptEnvironment.OpenEgg == wrapper then
+        pcall(function() scriptEnvironment.OpenEgg = original end)
+    end
+    state.OpenEggEnvironment = nil
+    state.OpenEggWrapper = nil
+    state.OpenEggOriginal = nil
+    state.OpenEggScript = nil
+    state.OpenEggGateRoute = nil
+end
+
+local function ensureHeadlessProducerGate(state, context)
+    local openEggScript = openEggScriptFor(context)
+    if not openEggScript then
+        return false, "PlayerScripts/Scripts/Game/Open Eggs is unavailable"
+    end
+    if type(getsenv) ~= "function" then
+        return false, "getsenv is unavailable; Headless refuses to fall back to visible animation"
+    end
+
+    local environmentOk, scriptEnvironment = pcall(getsenv, openEggScript)
+    if not environmentOk or type(scriptEnvironment) ~= "table" then
+        return false, "Open Eggs environment is unavailable: " .. tostring(scriptEnvironment)
+    end
+    if state.OpenEggScript == openEggScript
+        and state.OpenEggEnvironment == scriptEnvironment
+        and type(state.OpenEggWrapper) == "function"
+        and scriptEnvironment.OpenEgg == state.OpenEggWrapper then
+        return true, state.OpenEggGateRoute
+    end
+
+    restoreHeadlessProducerGate(state)
+    local original = scriptEnvironment.OpenEgg
+    if type(original) ~= "function" then
+        return false, "Open Eggs.OpenEgg is not a callable function"
+    end
+
+    local wrapper
+    wrapper = function(eggName, pets)
+        local pending = state.Pending
+        if state.Running and state.GateOwned and pending and pending.Headless then
+            pending.VisualSuppressed = true
+            pending.VisualSuppressedAt = os.clock()
+            pending.NativeOpenEggSeen = true
+            pending.ActualEgg = pending.ActualEgg or tostring(eggName)
+            state.HeadlessVisualsSuppressed = state.HeadlessVisualsSuppressed + 1
+            return nil
+        end
+        return original(eggName, pets)
+    end
+
+    local writeOk, writeProblem = pcall(function()
+        scriptEnvironment.OpenEgg = wrapper
+    end)
+    if not writeOk or scriptEnvironment.OpenEgg ~= wrapper then
+        pcall(function()
+            if scriptEnvironment.OpenEgg == wrapper then scriptEnvironment.OpenEgg = original end
+        end)
+        return false, "Open Eggs.OpenEgg producer gate could not be installed: "
+            .. tostring(writeProblem or "assignment was not retained")
+    end
+
+    state.OpenEggScript = openEggScript
+    state.OpenEggEnvironment = scriptEnvironment
+    state.OpenEggOriginal = original
+    state.OpenEggWrapper = wrapper
+    state.OpenEggGateRoute = "getsenv(Open Eggs).OpenEgg"
+    context.Trace("auto egg headless gate",
+        "installed before native DepthOfField/model/GUI allocation via " .. state.OpenEggGateRoute)
+    return true, state.OpenEggGateRoute
 end
 
 local function acquireHeadlessGate(state, context)
@@ -1026,6 +1117,9 @@ local function completionNote(pending)
     if pending.Route and pending.Route ~= "" then notes[#notes + 1] = pending.Route end
     if pending.Headless then
         notes[#notes + 1] = "Egg Skip: immediate headless acknowledgement"
+        notes[#notes + 1] = pending.VisualSuppressed
+            and "Headless visuals: OpenEgg producer suppressed"
+            or "Headless visuals: producer gate armed; native callback was not observed"
         if pending.MatchMode then notes[#notes + 1] = pending.MatchMode end
         if pending.PostProcessNote then notes[#notes + 1] = pending.PostProcessNote end
     else
@@ -1327,6 +1421,15 @@ end
 local function beginRequest(state, context, options, inspection)
     local headless = options.Animation == "Headless (No Animation)"
     local retryKey = requestRetryKey(options.Egg, options.Count, options.Animation)
+    if headless then
+        local producerReady, producerProblem = ensureHeadlessProducerGate(state, context)
+        if not producerReady then
+            state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
+            setStatus(state, context, "Headless preflight is waiting locally: "
+                .. tostring(producerProblem) .. "\nNo purchase request was sent.")
+            return
+        end
+    end
     local operationAcquired, operationOwner = acquireInventoryOperation(state, context)
     if not operationAcquired then
         state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
@@ -1412,6 +1515,8 @@ local function beginRequest(state, context, options, inspection)
         Attempt = tonumber(state.NetworkAttempt) or 1,
         InputConnections = not headless and inputConnectionSnapshot(context) or nil,
         Inspection = inspection,
+        VisualSuppressed = false,
+        NativeOpenEggSeen = false,
     }
     pending.ResponseDeadlineAt = pending.StartedAt + pending.TimeoutSeconds
     state.Pending = pending
@@ -1422,7 +1527,7 @@ local function beginRequest(state, context, options, inspection)
             .. "Distance: %.1f/15 | request #%d | one request in flight | dynamic Network route\n%s",
         requestLabel(pending), pending.Attempt, MAX_NETWORK_ATTEMPTS,
         tonumber(inspection.Distance) or 0, state.Requests,
-        headless and "Headless gate armed before purchase"
+        headless and "Headless OpenEgg producer gate armed before purchase"
             or tostring(pending.SkipPolicy or "Native skip watcher is preparing...")
     ))
 
@@ -1499,6 +1604,7 @@ local function stopState(state, context)
     end
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
+    restoreHeadlessProducerGate(state)
     pcall(context.CancelOperation, context.OperationOwner)
     if state.Connection and type(state.Connection.Disconnect) == "function" then
         pcall(function() state.Connection:Disconnect() end)
@@ -1628,6 +1734,12 @@ return function(action, context)
         EventRoute = eventRoute,
         EventIndex = eventIndex,
         WorkerThread = nil,
+        OpenEggScript = nil,
+        OpenEggEnvironment = nil,
+        OpenEggOriginal = nil,
+        OpenEggWrapper = nil,
+        OpenEggGateRoute = nil,
+        HeadlessVisualsSuppressed = 0,
     }
     activeState = state
 
@@ -1712,7 +1824,7 @@ return function(action, context)
         "v" .. MODULE_VERSION
         .. " | bounded poor-connection recovery " .. tostring(MAX_NETWORK_ATTEMPTS)
         .. " attempts/" .. tostring(NETWORK_RETRY_WINDOW)
-        .. "s | Native OpeningEgg + Headless direct-event/inventory-delta acknowledgement | Open Egg: "
+        .. "s | Native OpeningEgg + producer-gated Headless acknowledgement | Open Egg: "
         .. tostring(eventRoute) .. " [session index " .. tostring(eventIndex or "?") .. "]")
     setStatus(state, context,
         "Auto Egg v" .. MODULE_VERSION
