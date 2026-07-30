@@ -106,17 +106,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.5.3",
+      "version": "1.5.4",
       "versionAuthority": "source-constant+content-hash",
       "compatibleSuite": "1.4.1-lite.3",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "06b4b8351ae83103cf449814f35edc0c0740baad",
-      "bytes": 72815,
-      "sha256": "f551e29602673a81aede99742c3db7eb4db5e428cdd8269ce640fdca7dbfbf67",
-      "djb2": "c780da4f"
+      "commit": "afd600d732fea7574e97e087cdffb8f2f9bd1f4a",
+      "bytes": 77503,
+      "sha256": "7fdf0cff15bb0699eedd4fa56b45581bce2f82ba0be537e9512483197ee0276a",
+      "djb2": "9041c9e9"
     },
     "goldMachine": {
       "id": "goldMachine",
@@ -245,7 +245,8 @@
         "tests/rolling_currency_window_test.js",
         "tests/coalesced_queue_test.js",
         "tests/generation_cleanup_test.js",
-        "tests/auto_egg_network_retry_test.js"
+        "tests/auto_egg_network_retry_test.js",
+        "tests/auto_egg_headless_producer_gate_test.js"
       ]
     },
     "documentation": {
