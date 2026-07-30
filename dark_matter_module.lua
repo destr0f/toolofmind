@@ -2,7 +2,9 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0"
+local TARGET_PET_ID = "288"
+local TARGET_PET_NAME = "404 Demon"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 local IDLE_CHECK_DELAY = 5
@@ -75,10 +77,9 @@ local function definitionFor(context, pet)
     return directory[pet.id] or directory[tostring(pet.id)]
 end
 
-local function targetCatalog(context)
-    local ids, names, summary = context.GetMachinePetCatalog()
-    return type(ids) == "table" and ids or {}, type(names) == "table" and names or {},
-        tostring(summary or "event pet catalog unavailable")
+local function targetCatalog(_context)
+    return { [TARGET_PET_ID] = true }, { TARGET_PET_NAME },
+        TARGET_PET_NAME .. " (ID " .. TARGET_PET_ID .. ")"
 end
 
 local function acquireOperation(state, context)

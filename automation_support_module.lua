@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.1.2"
+local MODULE_VERSION = "1.2.0"
 
 local gate = {
     Owner = nil,
@@ -18,16 +18,11 @@ local catalogCache = {
 }
 
 local MACHINE_PET_NAMES = {
-    ["galaxy fox"] = "Galaxy Fox",
-    ["silver stag"] = "Silver Stag",
-    ["silver dragon"] = "Silver Dragon",
-    ["santa paws"] = "Santa Paws",
+    ["404 demon"] = "404 Demon",
 }
 
 local MACHINE_PET_IDS = {
-    ["263"] = "Santa Paws",
-    ["264"] = "Silver Stag",
-    ["265"] = "Silver Dragon",
+    ["288"] = "404 Demon",
 }
 
 local function normalize(value)
@@ -115,19 +110,9 @@ local function gateStatus(context)
 end
 
 local function definitionAllowed(definition, rawId)
-    -- Current event IDs are authoritative even when this place ships an older
-    -- Directory.Pets table that has no definition for the new pets yet.
-    if type(definition) ~= "table" then
-        return explicitMachinePet(nil, rawId)
-    end
-    local rarity = normalize(definition.rarity or definition.Rarity)
-    if definition.isPremium == true or definition.huge == true or definition.isHuge == true
-        or definition.isExclusive == true or definition.isVanity == true
-        or rarity == "exclusive" or rarity == "secret" then
-        return false
-    end
-    if explicitMachinePet(definition, rawId) then return true end
-    return rarity == "legendary" or rarity == "mythical"
+    -- Develop machines are intentionally hard-pinned to 404 Demon. Directory
+    -- rarity and live event eggs must never broaden this catalog.
+    return explicitMachinePet(definition, rawId)
 end
 
 local function getCatalog(context, force)
@@ -142,9 +127,7 @@ local function getCatalog(context, force)
     local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
     local ids, eventEggs = {}, {}
 
-    -- Do not make the current Christmas trio depend on the live egg/directory
-    -- schema. Some worlds expose the pets in Save.Pets before Directory.Pets
-    -- is updated, which previously reduced the catalog to Galaxy Fox only.
+    -- ID 288 is authoritative even if Directory.Pets has not replicated yet.
     for id in pairs(MACHINE_PET_IDS) do
         ids[id] = true
     end

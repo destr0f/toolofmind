@@ -1,6 +1,6 @@
 local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local machine = require(modulePath)
-    assert(machine("version") == "1.1.0")
+    assert(machine("version") == "1.2.0")
 
     local callback
     local calls = {}
@@ -27,9 +27,11 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         GetCurrency = function() return 1e15 end,
         FormatNumber = tostring,
         GetMachinePetCatalog = function()
-            return { ["263"] = true, ["264"] = true, ["265"] = true },
-                { "Santa Paws", "Silver Stag", "Silver Dragon" },
-                "pinned current Christmas trio"
+            -- Deliberately broad/stale parent data: each worker must still
+            -- enforce its own ID 288 policy.
+            return { ["263"] = true, ["264"] = true, ["265"] = true, ["288"] = true },
+                { "stale catalog", "404 Demon" },
+                "stale parent catalog"
         end,
         BatchSize = function() return 1 end,
         MaxWaitSeconds = function() return nil end,
@@ -73,20 +75,20 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
 end
 
 exercise("../gold_machine_module", {
-    id = "263",
-    uid = "santa-paws-normal",
+    id = "288",
+    uid = "404-demon-normal",
 }, "Get Golden Machine Info", "Use Golden Machine", false)
 
 exercise("../rainbow_machine_module", {
-    id = "264",
-    uid = "silver-stag-golden",
+    id = "288",
+    uid = "404-demon-golden",
     g = true,
 }, "Get Rainbow Machine Info", "Use Rainbow Machine", false)
 
 exercise("../dark_matter_module", {
-    id = "265",
-    uid = "silver-dragon-rainbow",
+    id = "288",
+    uid = "404-demon-rainbow",
     r = true,
 }, "Get Dark Matter Machine Info", "Convert To Dark Matter", true)
 
-print("PASS Gold, Rainbow and Dark Matter accept pinned IDs without Directory.Pets definitions")
+print("PASS Gold, Rainbow and Dark Matter hard-pin 404 Demon ID 288 without Directory.Pets")

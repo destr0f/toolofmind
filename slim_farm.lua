@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-lite.3"
+local VERSION = "1.4.1-dev.18"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -103,32 +103,80 @@ end
 
 validateRuntimeManifest()
 
+env.PSX_OG_RUNTIME_GENERATION = (tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0) + 1
+env.PSX_OG_RunToken = nil
+env.PSX_OG_SLIM_TOKEN = nil
+env.PSX_OG_Running = false
+_G.AutoFarm = false
+_G.AutoPetCoins = false
+_G.AutoOrbs = false
+_G.AutoLootbags = false
+_G.AutoEgg = false
+_G.AutoBoosts = false
+
+do
+local function stopLegacyState(state)
+    if type(state) ~= "table" then return end
+    state.active = false
+    state.Running = false
+    state.Enabled = false
+    state.Superseded = true
+    state.remote = nil
+
+    for _, methodName in ipairs({ "Stop", "Cleanup", "Destroy" }) do
+        local method = state[methodName]
+        if type(method) == "function" then pcall(method, state) end
+    end
+    for _, fieldName in ipairs({ "Connection", "RenderConnection", "HeartbeatConnection" }) do
+        local connection = state[fieldName]
+        if connection and type(connection.Disconnect) == "function" then
+            pcall(function() connection:Disconnect() end)
+        end
+        state[fieldName] = nil
+    end
+    if type(state.Connections) == "table" then
+        for _, connection in pairs(state.Connections) do
+            if connection and type(connection.Disconnect) == "function" then
+                pcall(function() connection:Disconnect() end)
+            end
+        end
+        table.clear(state.Connections)
+    end
+    if type(task.cancel) == "function" then
+        for _, fieldName in ipairs({ "Thread", "WorkerThread", "Task" }) do
+            local thread = state[fieldName]
+            if type(thread) == "thread" and thread ~= coroutine.running() then
+                pcall(task.cancel, thread)
+            end
+            state[fieldName] = nil
+        end
+    end
+end
+
 if type(env.PSX_OG_SLIM_CLEANUP) == "function" then
     pcall(env.PSX_OG_SLIM_CLEANUP)
+    env.PSX_OG_SLIM_CLEANUP = nil
 end
 if type(env.PSX_OG_MENU_TEST_CLEANUP) == "function" then
     pcall(env.PSX_OG_MENU_TEST_CLEANUP)
     env.PSX_OG_MENU_TEST_CLEANUP = nil
 end
-env.PSX_OG_RunToken = nil
-env.PSX_OG_Running = false
 if type(env.PSX_OG_LOADER_STATE) == "table" then
     env.PSX_OG_LOADER_STATE.Running = false
     env.PSX_OG_LOADER_STATE.Superseded = true
 end
 if type(env.PSX_OG_FastEggState) == "table" then
-    local state = env.PSX_OG_FastEggState
-    if type(state.Stop) == "function" then
-        pcall(state.Stop)
-    else
-        local connection = state.Connection
-        if connection and type(connection.Disconnect) == "function" then
-            pcall(function() connection:Disconnect() end)
-        end
-    end
+    stopLegacyState(env.PSX_OG_FastEggState)
     env.PSX_OG_FastEggState = nil
 end
+if type(env.PSX_OG_QuickHUDRuntime) == "table" then
+    stopLegacyState(env.PSX_OG_QuickHUDRuntime)
+    env.PSX_OG_QuickHUDRuntime = nil
+end
 for _, key in ipairs({
+    "PSX_OG_PROFILER",
+    "PSX_OG_RUNTIME_KERNEL",
+    "PSX_OG_AutoEggBuild",
     "PSX_OG_RewardInvokeCaptureState",
     "PSX_OG_BoostRemoteCaptureState",
     "PSX_OG_DiamondInvokeCaptureState",
@@ -136,9 +184,17 @@ for _, key in ipairs({
 }) do
     local state = env[key]
     if type(state) == "table" then
-        state.active = false
-        state.remote = nil
+        stopLegacyState(state)
     end
+    env[key] = nil
+end
+if type(env.StopPSXPotatoMode) == "function" then
+    pcall(env.StopPSXPotatoMode)
+    env.StopPSXPotatoMode = nil
+end
+if type(env.PSX_POTATO_STATE) == "table" then
+    stopLegacyState(env.PSX_POTATO_STATE)
+    env.PSX_POTATO_STATE = nil
 end
 if type(env.PSX_OG_UI_CLEANUP) == "function" then
     pcall(env.PSX_OG_UI_CLEANUP)
@@ -149,6 +205,25 @@ if type(env.PSX_OG_RunConnections) == "table" then
         pcall(function() connection:Disconnect() end)
     end
     env.PSX_OG_RunConnections = {}
+end
+pcall(function()
+    local roots = { game:GetService("CoreGui") }
+    local localPlayer = game:GetService("Players").LocalPlayer
+    if localPlayer then
+        local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui then roots[#roots + 1] = playerGui end
+    end
+    if type(gethui) == "function" then
+        local ok, hiddenRoot = pcall(gethui)
+        if ok and hiddenRoot then roots[#roots + 1] = hiddenRoot end
+    end
+    for _, root in ipairs(roots) do
+        for _, guiName in ipairs({ "PSX_OG_NativeUI", "PSX_OG_QuickHUD" }) do
+            local stale = root:FindFirstChild(guiName)
+            if stale then pcall(function() stale:Destroy() end) end
+        end
+    end
+end)
 end
 
 local Players = game:GetService("Players")
@@ -194,10 +269,17 @@ local config = {
     EggName = nil,
     EggCount = 1,
     EggAnimation = "Headless (No Animation)",
+    QuickHUD = true,
+    QuickHUDPing = true,
+    QuickHUDFarmRate = true,
+    QuickHUDFarmState = true,
+    QuickHUDAutomation = true,
 }
 
 local DIAMOND_PACK_TIER = 4
-local DIAMOND_PACK_MINIMUM = 1e12
+local DIAMOND_PACK_PRICE = 25e12
+local DIAMOND_PACK_RESERVE = 500e9
+local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE
 local DIAMOND_PACK_INTERVAL = 180
 local diamondPackNextCheck = 0
 local diamondPackBusy = false
@@ -219,6 +301,227 @@ local rewardStates = {
         NextAttempt = 0,
     },
 }
+
+do
+local hud = {
+    Token = token,
+    Gui = nil,
+    Frame = nil,
+    Rows = {},
+    Last = {},
+    Collapsed = false,
+}
+
+function hud:Destroy()
+    local gui = self.Gui
+    self.Gui = nil
+    self.Frame = nil
+    self.Rows = {}
+    self.Last = {}
+    if gui then pcall(function() gui:Destroy() end) end
+end
+
+function hud:ApplyVisibility()
+    if not self.Gui or not self.Frame then return end
+    self.Gui.Enabled = config.QuickHUD == true
+    if not self.Gui.Enabled then return end
+
+    local definitions = {
+        { "Ping", config.QuickHUDPing },
+        { "Rate", config.QuickHUDFarmRate },
+        { "Farm", config.QuickHUDFarmState },
+        { "Automation", config.QuickHUDAutomation },
+    }
+    local y = 34
+    for _, definition in ipairs(definitions) do
+        local row = self.Rows[definition[1]]
+        local visible = not self.Collapsed and definition[2] == true
+        if row then
+            row.Visible = visible
+            if visible then
+                row.Position = UDim2.fromOffset(8, y)
+                y = y + 27
+            end
+        end
+    end
+    self.Frame.Size = UDim2.fromOffset(350, self.Collapsed and 34 or y + 6)
+end
+
+function hud:SetRow(key, text)
+    local row = self.Rows[key]
+    text = tostring(text or "")
+    if not row or self.Last[key] == text then return end
+    self.Last[key] = text
+    row.Text = text
+end
+
+function hud:Create()
+    self:Destroy()
+    local parent
+    if type(gethui) == "function" then
+        local ok, hiddenRoot = pcall(gethui)
+        if ok then parent = hiddenRoot end
+    end
+    parent = parent or player:FindFirstChildOfClass("PlayerGui")
+    if not parent then
+        local ok, playerGui = pcall(function() return player:WaitForChild("PlayerGui", 5) end)
+        if ok then parent = playerGui end
+    end
+    if not parent then
+        trace("quick hud", "PlayerGui/gethui unavailable")
+        return false
+    end
+
+    local ok, problem = pcall(function()
+        local previous = parent:FindFirstChild("PSX_OG_QuickHUD")
+        if previous then previous:Destroy() end
+
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "PSX_OG_QuickHUD"
+        gui.ResetOnSpawn = false
+        gui.IgnoreGuiInset = false
+        gui.DisplayOrder = 999998
+        gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+        local frame = Instance.new("Frame")
+        frame.Name = "Panel"
+        frame.AnchorPoint = Vector2.new(1, 0)
+        frame.Position = UDim2.new(1, -18, 0, 18)
+        frame.Size = UDim2.fromOffset(350, 148)
+        frame.BackgroundColor3 = Color3.fromRGB(7, 12, 23)
+        frame.BackgroundTransparency = 0.12
+        frame.BorderSizePixel = 0
+        frame.Active = true
+        frame.Draggable = true
+        frame.Parent = gui
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 9)
+        corner.Parent = frame
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(45, 212, 191)
+        stroke.Transparency = 0.42
+        stroke.Thickness = 1
+        stroke.Parent = frame
+
+        local title = Instance.new("TextLabel")
+        title.Name = "Title"
+        title.Position = UDim2.fromOffset(10, 3)
+        title.Size = UDim2.new(1, -44, 0, 28)
+        title.BackgroundTransparency = 1
+        title.Font = Enum.Font.GothamBold
+        title.Text = "PSX QUICK  •  v" .. VERSION
+        title.TextColor3 = Color3.fromRGB(248, 250, 252)
+        title.TextSize = 13
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.Parent = frame
+
+        local collapse = Instance.new("TextButton")
+        collapse.Name = "Collapse"
+        collapse.AnchorPoint = Vector2.new(1, 0)
+        collapse.Position = UDim2.new(1, -5, 0, 4)
+        collapse.Size = UDim2.fromOffset(27, 25)
+        collapse.BackgroundColor3 = Color3.fromRGB(18, 29, 48)
+        collapse.BorderSizePixel = 0
+        collapse.Font = Enum.Font.GothamBold
+        collapse.Text = "—"
+        collapse.TextColor3 = Color3.fromRGB(45, 212, 191)
+        collapse.TextSize = 15
+        collapse.Parent = frame
+        local collapseCorner = Instance.new("UICorner")
+        collapseCorner.CornerRadius = UDim.new(0, 6)
+        collapseCorner.Parent = collapse
+
+        for _, key in ipairs({ "Ping", "Rate", "Farm", "Automation" }) do
+            local row = Instance.new("TextLabel")
+            row.Name = key
+            row.Size = UDim2.new(1, -16, 0, 24)
+            row.BackgroundColor3 = Color3.fromRGB(18, 29, 48)
+            row.BackgroundTransparency = 0.2
+            row.BorderSizePixel = 0
+            row.Font = Enum.Font.Code
+            row.Text = key .. ": waiting..."
+            row.TextColor3 = Color3.fromRGB(226, 232, 240)
+            row.TextSize = 12
+            row.TextTruncate = Enum.TextTruncate.AtEnd
+            row.TextXAlignment = Enum.TextXAlignment.Left
+            row.Parent = frame
+            local rowCorner = Instance.new("UICorner")
+            rowCorner.CornerRadius = UDim.new(0, 5)
+            rowCorner.Parent = row
+            local padding = Instance.new("UIPadding")
+            padding.PaddingLeft = UDim.new(0, 7)
+            padding.PaddingRight = UDim.new(0, 7)
+            padding.Parent = row
+            self.Rows[key] = row
+        end
+
+        collapse.Activated:Connect(function()
+            self.Collapsed = not self.Collapsed
+            collapse.Text = self.Collapsed and "+" or "—"
+            self:ApplyVisibility()
+        end)
+
+        gui.Parent = parent
+        self.Gui = gui
+        self.Frame = frame
+        self:ApplyVisibility()
+    end)
+    if not ok then
+        self:Destroy()
+        trace("quick hud", "creation failed: " .. tostring(problem))
+        return false
+    end
+    return true
+end
+
+function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
+    if not self.Gui then return end
+
+    local pingText = "Ping: unavailable"
+    local pingOk, ping = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if pingOk and tonumber(ping) then
+        pingText = "Ping: " .. tostring(math.floor(tonumber(ping) + 0.5)) .. " ms"
+    end
+    self:SetRow("Ping", pingText)
+
+    local compactRate = tostring(rateText or "waiting for exact balance changes")
+    compactRate = string.match(compactRate, "^[^\n]+") or compactRate
+    self:SetRow("Rate", "Coins: " .. compactRate)
+
+    local farmText
+    if config.PetFarm then
+        farmText = string.format(
+            "Farm: ON • %d/%d working • %d joining • %s",
+            tonumber(workingCount) or 0,
+            tonumber(equippedCount) or 0,
+            tonumber(joiningCount) or 0,
+            tostring(zone or config.Zone or "?")
+        )
+    else
+        farmText = "Farm: OFF"
+    end
+    self:SetRow("Farm", farmText)
+
+    local active = {}
+    if config.AutoEgg then active[#active + 1] = "Egg" end
+    if config.AutoGoldenGalaxyFox then active[#active + 1] = "Gold" end
+    if config.AutoRainbowGalaxyFox then active[#active + 1] = "RB" end
+    if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then active[#active + 1] = "DM" end
+    if config.AutoTechDiamondPack then active[#active + 1] = "25T Pack" end
+    if config.AutoVIPRewards or config.AutoRankRewards then active[#active + 1] = "Rewards" end
+    if config.AutoTripleCoins or config.AutoTripleDamage
+        or config.AutoSuperLucky or config.AutoUltraLucky then active[#active + 1] = "Boosts" end
+    if config.Orbs or config.Lootbags then active[#active + 1] = "Loot" end
+    self:SetRow("Automation", "Auto: " .. (#active > 0 and table.concat(active, ", ") or "none"))
+
+    self:ApplyVisibility()
+end
+env.PSX_OG_QuickHUDRuntime = hud
+end
 
 env.PSX_OG_SLIM_TOKEN = token
 
@@ -2840,7 +3143,7 @@ local function runDiamondPackCheck()
         status = "Local check: Tech Coins balance was not found; no request sent."
     elseif balance < DIAMOND_PACK_MINIMUM then
         status = "Local threshold hold: " .. balanceText
-            .. " is below 1T Tech Coins; no server request sent."
+            .. " is below 25.5T Tech Coins (25T pack + 500B reserve); no server request sent."
     else
         local transportOk, accepted, serverMessage, sourceName, sessionIndex =
             invokeCommand("Buy DiamondPack", DIAMOND_PACK_TIER)
@@ -2849,11 +3152,14 @@ local function runDiamondPackCheck()
         elseif accepted then
             status = "Tier 4 purchase succeeded via " .. routeText(sourceName, sessionIndex)
                 .. " | balance before: " .. balanceText
+                .. " | protected reserve: " .. formatRateNumber(DIAMOND_PACK_RESERVE)
         else
             local reason = serverMessage ~= nil and tostring(serverMessage)
                 or "request rejected"
             status = "Server reached via " .. routeText(sourceName, sessionIndex) .. ": "
-                .. reason .. " | balance: " .. balanceText .. " | configured floor: 1T"
+                .. reason .. " | balance: " .. balanceText
+                .. " | pack: " .. formatRateNumber(DIAMOND_PACK_PRICE)
+                .. " | reserve: " .. formatRateNumber(DIAMOND_PACK_RESERVE)
         end
     end
 
@@ -3665,6 +3971,67 @@ statusViews.Rate = UI.PerformanceSection:Paragraph({
 statusTabs.Farm = UI.MonitorTab
 statusTabs.Health = UI.MonitorTab
 statusTabs.Rate = UI.MonitorTab
+
+UI.QuickHUDSection = UI.MonitorTab:Section({ Title = "Quick HUD", Box = true, Opened = false })
+UI.QuickHUDSection:Paragraph({
+    Title = "LIGHTWEIGHT ALWAYS-ON SUMMARY",
+    Desc = "Uses the existing one-second telemetry tick; no additional polling worker is created.",
+})
+UI.QuickHUDSection:Toggle({
+    Flag = "quick_hud_enabled",
+    Title = "Show Quick HUD",
+    Desc = "Displays a small independent panel while the main window is hidden.",
+    Value = true,
+    Callback = function(value)
+        config.QuickHUD = value == true
+        local hud = env.PSX_OG_QuickHUDRuntime
+        if type(hud) == "table" then hud:ApplyVisibility() end
+    end,
+})
+UI.QuickHUDSection:Toggle({
+    Flag = "quick_hud_ping",
+    Title = "Quick HUD: Ping",
+    Desc = "Show or hide ping without stopping any automation.",
+    Value = true,
+    Callback = function(value)
+        config.QuickHUDPing = value == true
+        local hud = env.PSX_OG_QuickHUDRuntime
+        if type(hud) == "table" then hud:ApplyVisibility() end
+    end,
+})
+UI.QuickHUDSection:Toggle({
+    Flag = "quick_hud_rate",
+    Title = "Quick HUD: Farm Coins",
+    Desc = "Show or hide the exact balance-derived farm rate.",
+    Value = true,
+    Callback = function(value)
+        config.QuickHUDFarmRate = value == true
+        local hud = env.PSX_OG_QuickHUDRuntime
+        if type(hud) == "table" then hud:ApplyVisibility() end
+    end,
+})
+UI.QuickHUDSection:Toggle({
+    Flag = "quick_hud_farm",
+    Title = "Quick HUD: Auto Farm",
+    Desc = "Show or hide pet-farm occupancy and current zone.",
+    Value = true,
+    Callback = function(value)
+        config.QuickHUDFarmState = value == true
+        local hud = env.PSX_OG_QuickHUDRuntime
+        if type(hud) == "table" then hud:ApplyVisibility() end
+    end,
+})
+UI.QuickHUDSection:Toggle({
+    Flag = "quick_hud_automation",
+    Title = "Quick HUD: Automation",
+    Desc = "Show or hide the active eggs, machines, boosts, rewards and loot summary.",
+    Value = true,
+    Callback = function(value)
+        config.QuickHUDAutomation = value == true
+        local hud = env.PSX_OG_QuickHUDRuntime
+        if type(hud) == "table" then hud:ApplyVisibility() end
+    end,
+})
 uiStageYield("monitor controls")
 
 do
@@ -3732,12 +4099,12 @@ UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Bo
 UI.DiamondSection:Toggle({
     Flag = "auto_tech_diamond_pack",
     Title = "Auto Best Tech Diamond Pack",
-    Desc = "Tier 4 only / checks every 3 minutes / requires at least 1T Tech Coins",
+    Desc = "Tier 4 costs 25T / checks every 3 minutes / buys only at 25.5T to preserve 500B",
     Value = false,
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
         if config.AutoTechDiamondPack then
-            statusSetters.Diamond("Enabled. A local balance check will run now; below 1T no request is sent.")
+            statusSetters.Diamond("Enabled. A local balance check will run now; below 25.5T no request is sent.")
         else
             statusSetters.Diamond("Disabled. No purchase requests will be sent.")
         end
@@ -4137,6 +4504,11 @@ local function shutdown(reason)
     table.clear(statusViews)
     farmResetScheduled = false
     farmResetRunning = false
+    local activeHUD = env.PSX_OG_QuickHUDRuntime
+    if type(activeHUD) == "table" and activeHUD.Token == token then
+        activeHUD:Destroy()
+        env.PSX_OG_QuickHUDRuntime = nil
+    end
     if env.PSX_OG_SLIM_CLEANUP == shutdown then env.PSX_OG_SLIM_CLEANUP = nil end
     if env.PSX_OG_UI_CLEANUP == shutdown then env.PSX_OG_UI_CLEANUP = nil end
 
@@ -4241,6 +4613,7 @@ local function updateCurrencyMonitorStatus(publish)
         lastRateText = rateText
         statusSetters.Rate(rateText)
     end
+    return rateText or lastRateText
 end
 
 local function updateRuntimeTelemetry()
@@ -4250,7 +4623,13 @@ local function updateRuntimeTelemetry()
         local interfaceVisible = interfaceIsVisible()
         local monitorVisible = interfaceVisible and UI.MonitorTab
             and UI.MonitorTab.Selected == true
-        updateCurrencyMonitorStatus(monitorVisible)
+        local quickHUD = env.PSX_OG_QuickHUDRuntime
+        local quickVisible = config.QuickHUD == true
+            and type(quickHUD) == "table"
+            and quickHUD.Gui ~= nil
+        local rateText = updateCurrencyMonitorStatus(
+            monitorVisible or (quickVisible and config.QuickHUDFarmRate == true)
+        )
 
         if interfaceVisible and UI.FarmTab and UI.FarmTab.Selected == true
             and zoneCatalogDirty then
@@ -4261,12 +4640,16 @@ local function updateRuntimeTelemetry()
             refreshEggDropdown(false)
         end
 
-        if monitorVisible then
+        local equippedCount, assignedCount, workingCount, joiningCount, dispatchStats
+        if monitorVisible or (quickVisible and config.QuickHUDFarmState == true) then
             local equippedIds = petFarm.LastEquippedIds or {}
-            local equippedCount = tonumber(petFarm.EquippedCount) or #equippedIds
-            local assignedCount = assignmentCount()
-            local workingCount, joiningCount = petFarm:PhaseCounts()
-            local dispatchStats = petFarm:RefreshStats()
+            equippedCount = tonumber(petFarm.EquippedCount) or #equippedIds
+            assignedCount = assignmentCount()
+            workingCount, joiningCount = petFarm:PhaseCounts()
+            dispatchStats = petFarm:RefreshStats()
+        end
+
+        if monitorVisible then
             local networkState = networkReady() and "ready" or "waiting"
             statusSetters.Farm(string.format(
                 "%s  >  %s\nTargets: %d | locked: %d/%d | working: %d | joining: %d | true idle: %d\nCached target window: %d | coin catalog: %s",
@@ -4301,12 +4684,26 @@ local function updateRuntimeTelemetry()
                 driverStatus
             ))
         end
+        if quickVisible then
+            quickHUD:Update(
+                rateText,
+                equippedCount,
+                workingCount,
+                joiningCount,
+                petFarm.LastZone
+            )
+        elseif type(quickHUD) == "table" then
+            quickHUD:ApplyVisibility()
+        end
         statusSetters.Flush()
         task.delay(1, tick)
     end
     task.delay(1, tick)
 end
 
+if type(env.PSX_OG_QuickHUDRuntime) == "table" then
+    env.PSX_OG_QuickHUDRuntime:Create()
+end
 updateRuntimeTelemetry()
 
 pcall(function() UI.FarmTab:Select() end)

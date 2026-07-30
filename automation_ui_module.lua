@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.2.4"
+local MODULE_VERSION = "1.2.5"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -150,7 +150,7 @@ local function build(context)
     local machines = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
     machines:Paragraph({
         Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
-        Desc = "Galaxy Fox + Silver Stag + Silver Dragon + Santa Paws; every batch is validated and confirmed from Save.",
+        Desc = "404 Demon only (pet ID 288); every batch is revalidated from Save immediately before dispatch.",
     })
     machines:Slider({
         Flag = "machine_batch_size",
@@ -163,8 +163,8 @@ local function build(context)
         end,
     })
     machines:Button({
-        Title = "REFRESH EVENT PET CATALOG",
-        Desc = "Re-reads Directory.Eggs/Pets locally; no machine request.",
+        Title = "VERIFY 404 DEMON CATALOG",
+        Desc = "Confirms the pinned ID 288 policy locally; no machine request.",
         Icon = "refresh-cw",
         Callback = function()
             task.spawn(function()
@@ -178,8 +178,8 @@ local function build(context)
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
         Flag = "auto_golden_galaxy_fox",
-        Title = "Auto Golden Target Pets",
-        Desc = "Normal targets; protects equipped and locked pets; enchants are not filtered.",
+        Title = "Auto Golden 404 Demon",
+        Desc = "Only normal pet ID 288; protects equipped and locked pets; enchants are not filtered.",
         Value = false,
         Callback = function(value)
             config.AutoGoldenGalaxyFox = value == true
@@ -201,8 +201,8 @@ local function build(context)
     local rainbow = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
     rainbow:Toggle({
         Flag = "auto_rainbow_galaxy_fox",
-        Title = "Auto Rainbow Target Pets",
-        Desc = "Golden targets; protects equipped and locked pets; enchants are not filtered.",
+        Title = "Auto Rainbow 404 Demon",
+        Desc = "Only golden pet ID 288; protects equipped and locked pets; enchants are not filtered.",
         Value = false,
         Callback = function(value)
             config.AutoRainbowGalaxyFox = value == true
@@ -254,8 +254,8 @@ local function build(context)
     })
     darkMatter:Toggle({
         Flag = "auto_dark_matter_galaxy_fox",
-        Title = "Auto Dark Matter Target Pets",
-        Desc = "Rainbow targets; protects Tech Coins IV-V, equipped and locked pets.",
+        Title = "Auto Dark Matter 404 Demon",
+        Desc = "Only rainbow pet ID 288; protects Tech Coins IV-V, equipped and locked pets.",
         Value = false,
         Callback = function(value)
             config.AutoDarkMatterGalaxyFox = value == true
