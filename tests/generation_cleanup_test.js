@@ -100,6 +100,8 @@ assert(egg.includes("if activeState and activeState.Running then return true end
     && egg.includes("state.Connection = nil")
     && egg.includes("state.WorkerThread = nil")
     && egg.includes("pcall(task.cancel, worker)")
+    && egg.includes("restoreEggWorldVisualGate(state, context, false)")
+    && egg.includes("if environment[name] == wrapper")
     && egg.includes("if activeState == state then activeState = nil end"),
     "auto egg can retain a duplicate worker or physical bindings");
 assert(boost.includes("if activeState and activeState.Running then return true end")

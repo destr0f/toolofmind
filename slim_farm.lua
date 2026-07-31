@@ -3040,6 +3040,7 @@ local function startAutoEggModule()
                 Animation = config.EggAnimation,
             }
         end,
+        PotatoEnabled = function() return config.PotatoMode == true end,
         InspectEgg = inspectEggThroughModule,
         InvokeCommand = invokeCommand,
         GetEventRemote = getEventRemote,

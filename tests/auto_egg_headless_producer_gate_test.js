@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.5.6"',
+requireText('local MODULE_VERSION = "1.6.0"',
     "auto egg module version was not advanced");
 requireText('FindFirstChild("Open Eggs")',
     "headless gate does not locate the live Open Eggs LocalScript");
@@ -26,10 +26,26 @@ requireText('callConnectionMethod(state.EventGateConnection, "Enable")',
     "direct headless route cannot restore the native visual dispatcher");
 requireText('state.Running and state.GateOwned and pending and pending.Headless',
     "producer wrapper is not scoped to an owned headless request");
+requireText('profileBegin("PSX_EggOpenGate")',
+    "OpenEgg producer gate is missing its MicroProfiler marker");
 requireText('return original(eggName, pets)',
     "native animation path is not preserved outside headless requests");
 requireText('restoreHeadlessProducerGate(state)',
     "producer wrapper does not have a cleanup path");
+requireText('restoreEggWorldVisualGate(state, context, false)',
+    "world egg producer wrappers do not have a STOP cleanup path");
+requireText('FindFirstChild("Eggs")',
+    "world egg gate does not locate the separate Game/Eggs LocalScript");
+requireText('environment.UpdateEgg = record.Wrappers.UpdateEgg',
+    "world egg model producer is not gated before allocation");
+requireText('environment.UpdateAllEggs = record.Wrappers.UpdateAllEggs',
+    "world egg refresh producer is not coalesced behind the gate");
+requireText('pcall(originalSetupEgg, egg)',
+    "world egg gate does not preserve one-time manual input setup");
+requireText('profileBegin("PSX_EggWorldGate")',
+    "world egg gate is missing its MicroProfiler marker");
+requireText('Game/Eggs visual gate assignment was not retained',
+    "world egg gate does not fail open after assignment readback failure");
 requireText('Headless refuses to fall back to visible animation',
     "unsupported executors do not fail closed");
 requireText('local HEADLESS_INVENTORY_FALLBACK = "exact inventory-delta compatibility fallback"',

@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.6"
+local MODULE_VERSION = "1.6.0"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -43,6 +43,18 @@ local physicalCache = {
     LastScanAt = -math.huge,
     Connections = {},
 }
+
+local function profileBegin(label)
+    local callback = debug and debug.profilebegin
+    if type(callback) ~= "function" then return false end
+    return pcall(callback, label) == true
+end
+
+local function profileEnd(started)
+    if not started then return end
+    local callback = debug and debug.profileend
+    if type(callback) == "function" then pcall(callback) end
+end
 
 local function clearPhysicalBindings(clearRoot)
     for index = 1, #physicalCache.Connections do
@@ -399,6 +411,208 @@ local function openEggScriptFor(context)
     return nil
 end
 
+local function eggWorldScriptFor(context)
+    local player = context.Player
+    if not player then
+        local players = game:GetService("Players")
+        player = players and players.LocalPlayer
+    end
+    local playerScripts = player and player:FindFirstChild("PlayerScripts")
+    local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
+    local gameScripts = scripts and scripts:FindFirstChild("Game")
+    local eggWorldScript = gameScripts and gameScripts:FindFirstChild("Eggs")
+    if eggWorldScript and eggWorldScript:IsA("LocalScript") then return eggWorldScript end
+    return nil
+end
+
+local function eggWorldGateWanted(state, context)
+    local optionsOk, options = pcall(context.GetOptions)
+    local headless = optionsOk and type(options) == "table"
+        and options.Animation == "Headless (No Animation)"
+    local potato = false
+    if type(context.PotatoEnabled) == "function" then
+        local potatoOk, enabled = pcall(context.PotatoEnabled)
+        potato = potatoOk and enabled == true
+    end
+    state.EggWorldGateWanted = headless or potato
+    return state.EggWorldGateWanted
+end
+
+local function restoreEggWorldVisualGate(state, context, rebuildVisuals)
+    if not state then return end
+    local record = state.EggWorldGateRecord
+    state.EggWorldGateRecord = nil
+    state.EggWorldGateWanted = false
+    state.EggWorldGateRoute = "visual"
+    if type(record) ~= "table" then return end
+
+    record.Active = false
+    local environment = record.Environment
+    if type(environment) == "table" then
+        for name, wrapper in pairs(record.Wrappers or {}) do
+            if environment[name] == wrapper then
+                pcall(function() environment[name] = record.Originals[name] end)
+            end
+        end
+    end
+
+    local refresh = record.Originals and record.Originals.UpdateAllEggs
+    record.Environment = nil
+    record.Script = nil
+    record.Setup = nil
+    table.clear(record.Wrappers or {})
+    table.clear(record.Originals or {})
+
+    if rebuildVisuals and type(refresh) == "function" and state.Running then
+        local generation = state.Generation
+        task.defer(function()
+            if state.Running and state.Generation == generation
+                and context.Running() and context.Enabled() then
+                pcall(refresh)
+            end
+        end)
+    end
+end
+
+local function ensureEggWorldVisualGate(state, context)
+    if not eggWorldGateWanted(state, context) then
+        if state.EggWorldGateRecord then
+            restoreEggWorldVisualGate(state, context, true)
+        end
+        return true, "visual"
+    end
+
+    local eggWorldScript = eggWorldScriptFor(context)
+    if not eggWorldScript then
+        state.EggWorldGateRoute = "unavailable"
+        return false, "PlayerScripts/Scripts/Game/Eggs is unavailable"
+    end
+    if type(getsenv) ~= "function" then
+        state.EggWorldGateRoute = "unavailable"
+        return false, "getsenv is unavailable; the world egg renderer remains visual"
+    end
+    local environmentOk, environment = pcall(getsenv, eggWorldScript)
+    if not environmentOk or type(environment) ~= "table" then
+        state.EggWorldGateRoute = "unavailable"
+        return false, "Game/Eggs environment is unavailable; the renderer remains visual"
+    end
+
+    local current = state.EggWorldGateRecord
+    if type(current) == "table" and current.Active
+        and current.Generation == state.Generation
+        and current.Script == eggWorldScript
+        and current.Environment == environment
+        and environment.UpdateEgg == current.Wrappers.UpdateEgg
+        and environment.UpdateAllEggs == current.Wrappers.UpdateAllEggs then
+        state.EggWorldGateRoute = "gated"
+        return true, "gated"
+    end
+
+    restoreEggWorldVisualGate(state, context, false)
+    state.EggWorldGateWanted = true
+    for _, name in ipairs({ "SetupEgg", "UpdateEgg", "UpdateAllEggs" }) do
+        if type(environment[name]) ~= "function" then
+            state.EggWorldGateRoute = "unavailable"
+            return false, "Game/Eggs." .. name .. " is not a callable export; renderer remains visual"
+        end
+    end
+
+    local record = {
+        Active = true,
+        Generation = state.Generation,
+        Script = eggWorldScript,
+        Environment = environment,
+        Originals = {
+            SetupEgg = environment.SetupEgg,
+            UpdateEgg = environment.UpdateEgg,
+            UpdateAllEggs = environment.UpdateAllEggs,
+        },
+        Wrappers = {},
+        Setup = setmetatable({}, { __mode = "k" }),
+    }
+
+    local originalSetupEgg = record.Originals.SetupEgg
+    local originalUpdateEgg = record.Originals.UpdateEgg
+    local originalUpdateAllEggs = record.Originals.UpdateAllEggs
+    record.Wrappers.UpdateEgg = function(egg, ...)
+        if record.Active and record.Generation == state.Generation
+            and state.Running and state.EggWorldGateWanted then
+            local profiled = profileBegin("PSX_EggWorldGate")
+            local setupOk = true
+            if typeof(egg) == "Instance" and egg.Parent and not record.Setup[egg] then
+                setupOk = pcall(originalSetupEgg, egg)
+                if setupOk then record.Setup[egg] = true end
+            end
+            if setupOk then
+                state.EggWorldVisualsSuppressed = state.EggWorldVisualsSuppressed + 1
+                profileEnd(profiled)
+                return nil
+            end
+            profileEnd(profiled)
+            -- Event-level fail-open: if interaction setup cannot be preserved,
+            -- let the game's original renderer handle this egg.
+        end
+        return originalUpdateEgg(egg, ...)
+    end
+    record.Wrappers.UpdateAllEggs = function(...)
+        if record.Active and record.Generation == state.Generation
+            and state.Running and state.EggWorldGateWanted then
+            local profiled = profileBegin("PSX_EggWorldGate")
+            -- The original enumerator calls the wrapped UpdateEgg global. It
+            -- therefore initializes input once without allocating Egg models.
+            local result = table.pack(pcall(originalUpdateAllEggs, ...))
+            profileEnd(profiled)
+            if result[1] then return table.unpack(result, 2, result.n) end
+            -- A changed game implementation must remain functional.
+            record.Active = false
+            return originalUpdateAllEggs(...)
+        end
+        return originalUpdateAllEggs(...)
+    end
+
+    local installed, installProblem = pcall(function()
+        environment.UpdateEgg = record.Wrappers.UpdateEgg
+        environment.UpdateAllEggs = record.Wrappers.UpdateAllEggs
+    end)
+    local retained = installed
+        and environment.UpdateEgg == record.Wrappers.UpdateEgg
+        and environment.UpdateAllEggs == record.Wrappers.UpdateAllEggs
+    if not retained then
+        record.Active = false
+        for name, wrapper in pairs(record.Wrappers) do
+            if environment[name] == wrapper then
+                pcall(function() environment[name] = record.Originals[name] end)
+            end
+        end
+        state.EggWorldGateRoute = "unavailable"
+        return false, "Game/Eggs visual gate assignment was not retained: "
+            .. tostring(installProblem or "readback mismatch")
+    end
+
+    state.EggWorldGateRecord = record
+    state.EggWorldGateRoute = "gated"
+    pcall(originalUpdateAllEggs)
+    return true, "gated"
+end
+
+local function reconcileEggWorldVisualGate(state, context, immediate)
+    local now = os.clock()
+    if not immediate and now < (tonumber(state.NextEggWorldGateCheck) or 0) then return end
+    state.NextEggWorldGateCheck = now + 0.5
+    local ready, problem = ensureEggWorldVisualGate(state, context)
+    if ready then
+        state.EggWorldGateProblem = nil
+        return
+    end
+    local text = tostring(problem)
+    local changed = state.EggWorldGateProblem ~= text
+    state.EggWorldGateProblem = text
+    if changed or now >= (tonumber(state.NextEggWorldGateTrace) or 0) then
+        state.NextEggWorldGateTrace = now + 10
+        context.Trace("auto egg world gate", text)
+    end
+end
+
 local function connectionMethod(connection, methodName)
     if connection == nil then return nil end
     local ok, method = pcall(function() return connection[methodName] end)
@@ -553,11 +767,13 @@ local function ensureHeadlessProducerGate(state, context)
     wrapper = function(eggName, pets)
         local pending = state.Pending
         if state.Running and state.GateOwned and pending and pending.Headless then
+            local profiled = profileBegin("PSX_EggOpenGate")
             pending.VisualSuppressed = true
             pending.VisualSuppressedAt = os.clock()
             pending.NativeOpenEggSeen = true
             pending.ActualEgg = pending.ActualEgg or tostring(eggName)
             state.HeadlessVisualsSuppressed = state.HeadlessVisualsSuppressed + 1
+            profileEnd(profiled)
             return nil
         end
         return original(eggName, pets)
@@ -1655,6 +1871,7 @@ local function beginRequest(state, context, options, inspection)
     local headless = options.Animation == "Headless (No Animation)"
     local retryKey = requestRetryKey(options.Egg, options.Count, options.Animation)
     if headless then
+        reconcileEggWorldVisualGate(state, context, true)
         local producerReady, producerProblem = ensureHeadlessProducerGate(state, context)
         if not producerReady then
             state.NextAction = os.clock() + LOCAL_RECHECK_DELAY
@@ -1797,6 +2014,7 @@ end
 
 local function runCycle(state, context)
     local now = os.clock()
+    reconcileEggWorldVisualGate(state, context, false)
     if handlePending(state, context, now) then return end
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
@@ -1845,6 +2063,7 @@ local function stopState(state, context)
     releaseHeadlessGate(state, context)
     releaseInventoryOperation(state, context)
     restoreHeadlessProducerGate(state)
+    restoreEggWorldVisualGate(state, context, false)
     pcall(context.CancelOperation, context.OperationOwner)
     if state.Connection and type(state.Connection.Disconnect) == "function" then
         pcall(function() state.Connection:Disconnect() end)
@@ -1988,6 +2207,13 @@ return function(action, context)
         EventGateProblem = eventGateProblem,
         EventGateDisabled = false,
         HeadlessVisualsSuppressed = 0,
+        EggWorldVisualsSuppressed = 0,
+        EggWorldGateRecord = nil,
+        EggWorldGateWanted = false,
+        EggWorldGateRoute = "visual",
+        EggWorldGateProblem = nil,
+        NextEggWorldGateCheck = 0,
+        NextEggWorldGateTrace = 0,
     }
     activeState = state
 
@@ -2077,6 +2303,7 @@ return function(action, context)
         return false, "Open Egg listener failed: " .. tostring(connection)
     end
     state.Connection = connection
+    reconcileEggWorldVisualGate(state, context, true)
 
     local env = type(getgenv) == "function" and getgenv() or _G
     state.Stop = function() return stopState(state, context) end
@@ -2092,7 +2319,8 @@ return function(action, context)
         .. " armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"
         .. "Waiting for a valid egg within 15 studs | poor-connection guard: "
         .. tostring(MAX_NETWORK_ATTEMPTS) .. " bounded attempts over "
-        .. tostring(NETWORK_RETRY_WINDOW) .. "s")
+        .. tostring(NETWORK_RETRY_WINDOW) .. "s | Egg World: "
+        .. tostring(state.EggWorldGateRoute))
 
     state.WorkerThread = task.spawn(function()
         while state.Running and activeState == state and context.Running() and context.Enabled() do
