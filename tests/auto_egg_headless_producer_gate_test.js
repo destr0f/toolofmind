@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.5.5"',
+requireText('local MODULE_VERSION = "1.5.6"',
     "auto egg module version was not advanced");
 requireText('FindFirstChild("Open Eggs")',
     "headless gate does not locate the live Open Eggs LocalScript");
@@ -16,6 +16,14 @@ requireText('if type(getsenv) ~= "function" then',
     "getsenv capability is not guarded");
 requireText('scriptEnvironment.OpenEgg = wrapper',
     "native OpenEgg producer is not replaced");
+requireText('local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer gate"',
+    "missing OpenEgg exports do not have a direct RemoteEvent producer gate");
+requireText('captureHeadlessEventGate(signal, eventRoute)',
+    "native Open Egg dispatcher is not captured before the module listener");
+requireText('callConnectionMethod(state.EventGateConnection, "Disable")',
+    "direct headless route does not pause the native visual dispatcher");
+requireText('callConnectionMethod(state.EventGateConnection, "Enable")',
+    "direct headless route cannot restore the native visual dispatcher");
 requireText('state.Running and state.GateOwned and pending and pending.Headless',
     "producer wrapper is not scoped to an owned headless request");
 requireText('return original(eggName, pets)',
@@ -32,6 +40,16 @@ requireText('return true, state.OpenEggGateRoute',
     "a missing OpenEgg export still blocks the exact inventory-delta fallback");
 requireText('ProducerGateRoute = headless and state.OpenEggGateRoute or nil',
     "the selected headless acknowledgement route is not retained per request");
+requireText('local exactMatch = pending and not pending.EventReceived',
+    "a duplicate/manual event can still replace an owned pending payload");
+requireText('pending.ProducerGateRoute == HEADLESS_EVENT_GATE',
+    "acknowledgement ownership is not scoped to the direct producer gate");
+requireText('allCandidateUidsAbsent(context, candidates)',
+    "Auto Delete rejection is not idempotent after a native/manual delete race");
+
+if (source.includes('local gateFallback =')) {
+    throw new Error("broad owned-gate event matching can still steal a manual hatch");
+}
 
 const beginRequest = source.indexOf("local function beginRequest");
 const producerPreflight = source.indexOf("ensureHeadlessProducerGate(state, context)", beginRequest);

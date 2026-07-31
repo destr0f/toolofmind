@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.5"
+local MODULE_VERSION = "1.5.6"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -33,7 +33,9 @@ local POST_PROCESS_RETRY_BASE_DELAY = 0.35
 local POST_PROCESS_RETRY_MAX_DELAY = 3
 local POST_PROCESS_WAIT_SLICE = 54
 local MAX_POST_PROCESS_WAIT_SLICES = 12
+local HEADLESS_EVENT_SETTLE_DELAY = 0.35
 local HEADLESS_INVENTORY_FALLBACK = "exact inventory-delta compatibility fallback"
+local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer gate"
 local physicalCache = {
     Root = nil,
     ById = {},
@@ -397,8 +399,94 @@ local function openEggScriptFor(context)
     return nil
 end
 
+local function connectionMethod(connection, methodName)
+    if connection == nil then return nil end
+    local ok, method = pcall(function() return connection[methodName] end)
+    return ok and type(method) == "function" and method or nil
+end
+
+local function callConnectionMethod(connection, methodName)
+    local method = connectionMethod(connection, methodName)
+    if not method then return false, methodName .. " is unavailable" end
+    local ok, problem = pcall(method, connection)
+    return ok, ok and nil or tostring(problem)
+end
+
+local function connectionSource(connection)
+    local ok, callback = pcall(function() return connection.Function end)
+    if not ok or type(callback) ~= "function" or not debug or type(debug.info) ~= "function" then
+        return ""
+    end
+    local sourceOk, source = pcall(debug.info, callback, "s")
+    return sourceOk and lower(source) or ""
+end
+
+local function captureHeadlessEventGate(signal, eventRoute)
+    if typeof(signal) ~= "RBXScriptSignal" then
+        return nil, "Open Egg is using a custom Signal rather than a direct RemoteEvent"
+    end
+    local route = lower(eventRoute)
+    if not string.find(route, "getremoteevent", 1, true)
+        and not string.find(route, "remoteevent map", 1, true) then
+        return nil, "the resolved Open Egg RemoteEvent is not command-specific"
+    end
+    if type(getconnections) ~= "function" then
+        return nil, "getconnections is unavailable"
+    end
+
+    local ok, connections = pcall(getconnections, signal)
+    if not ok or type(connections) ~= "table" then
+        return nil, "Open Egg RemoteEvent connections are unavailable: " .. tostring(connections)
+    end
+
+    local candidates, networkCandidates = {}, {}
+    for _, connection in pairs(connections) do
+        if connectionMethod(connection, "Disable") and connectionMethod(connection, "Enable") then
+            candidates[#candidates + 1] = connection
+            local source = connectionSource(connection)
+            if string.find(source, "network", 1, true)
+                or string.find(source, "framework", 1, true) then
+                networkCandidates[#networkCandidates + 1] = connection
+            end
+        end
+    end
+
+    local selected = #networkCandidates == 1 and networkCandidates[1]
+        or (#networkCandidates == 0 and #candidates == 1 and candidates[1] or nil)
+    if not selected then
+        return nil, string.format(
+            "Open Egg native dispatcher is ambiguous (%d compatible, %d network-labelled)",
+            #candidates, #networkCandidates
+        )
+    end
+
+    -- Verify that the executor can restore the exact dispatcher before the
+    -- first purchase. Enable on an already-enabled connection is a safe no-op.
+    local restorable, restoreProblem = callConnectionMethod(selected, "Enable")
+    if not restorable then
+        return nil, "Open Egg native dispatcher cannot be restored: " .. tostring(restoreProblem)
+    end
+    return selected
+end
+
+local function restoreHeadlessEventGate(state)
+    if not state or not state.EventGateDisabled then return true end
+    local restored, problem = callConnectionMethod(state.EventGateConnection, "Enable")
+    if restored then state.EventGateDisabled = false end
+    return restored, problem
+end
+
+local function disableHeadlessEventGate(state)
+    if not state or state.OpenEggGateRoute ~= HEADLESS_EVENT_GATE then return true end
+    if state.EventGateDisabled then return true end
+    local disabled, problem = callConnectionMethod(state.EventGateConnection, "Disable")
+    if disabled then state.EventGateDisabled = true end
+    return disabled, problem
+end
+
 local function restoreHeadlessProducerGate(state)
     if not state then return end
+    restoreHeadlessEventGate(state)
     local scriptEnvironment = state.OpenEggEnvironment
     local wrapper = state.OpenEggWrapper
     local original = state.OpenEggOriginal
@@ -419,11 +507,21 @@ local function ensureHeadlessProducerGate(state, context)
         return false, "PlayerScripts/Scripts/Game/Open Eggs is unavailable"
     end
     if type(getsenv) ~= "function" then
+        if state.EventGateConnection then
+            state.OpenEggScript = openEggScript
+            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
+            return true, state.OpenEggGateRoute
+        end
         return false, "getsenv is unavailable; Headless refuses to fall back to visible animation"
     end
 
     local environmentOk, scriptEnvironment = pcall(getsenv, openEggScript)
     if not environmentOk or type(scriptEnvironment) ~= "table" then
+        if state.EventGateConnection then
+            state.OpenEggScript = openEggScript
+            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
+            return true, state.OpenEggGateRoute
+        end
         return false, "Open Eggs environment is unavailable: " .. tostring(scriptEnvironment)
     end
     if state.OpenEggScript == openEggScript
@@ -436,6 +534,13 @@ local function ensureHeadlessProducerGate(state, context)
     restoreHeadlessProducerGate(state)
     local original = scriptEnvironment.OpenEgg
     if type(original) ~= "function" then
+        if state.EventGateConnection then
+            state.OpenEggScript = openEggScript
+            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
+            context.Trace("auto egg headless gate",
+                "Open Eggs.OpenEgg is not exported; using the exact command-specific RemoteEvent dispatcher gate")
+            return true, state.OpenEggGateRoute
+        end
         state.OpenEggScript = openEggScript
         state.OpenEggGateRoute = HEADLESS_INVENTORY_FALLBACK
         context.Trace("auto egg headless gate",
@@ -485,17 +590,28 @@ local function acquireHeadlessGate(state, context)
     if variables.OpeningEgg == true and not state.GateOwned then
         return false, "another egg animation is still active"
     end
+    local dispatcherDisabled, dispatcherProblem = disableHeadlessEventGate(state)
+    if not dispatcherDisabled then
+        return false, "Open Egg native dispatcher could not be paused: " .. tostring(dispatcherProblem)
+    end
     local ok, problem = pcall(function() variables.OpeningEgg = true end)
-    if not ok then return false, tostring(problem) end
+    if not ok then
+        restoreHeadlessEventGate(state)
+        return false, tostring(problem)
+    end
     state.GateOwned = true
     return true
 end
 
 local function releaseHeadlessGate(state, context)
-    if not state.GateOwned then return end
+    if not state.GateOwned and not state.EventGateDisabled then return end
     state.GateOwned = false
     local variables = context.Library and context.Library.Variables
     if variables then pcall(function() variables.OpeningEgg = false end) end
+    local restored, problem = restoreHeadlessEventGate(state)
+    if not restored and context and type(context.Trace) == "function" then
+        context.Trace("auto egg headless gate", "failed to restore native Open Egg dispatcher: " .. tostring(problem))
+    end
 end
 
 local function acquireInventoryOperation(state, context)
@@ -629,6 +745,8 @@ local function clearPendingThreads(pending)
     pending.RequestThread = nil
     pending.ReconcileThread = nil
     pending.PostProcessThread = nil
+    if type(pending.PostProcessQueue) == "table" then table.clear(pending.PostProcessQueue) end
+    if type(pending.PostProcessSignatures) == "table" then table.clear(pending.PostProcessSignatures) end
 end
 
 local function resetNetworkRetry(state)
@@ -918,6 +1036,25 @@ local function verifyOwnedPet(context, candidate)
     return true
 end
 
+local function allCandidateUidsAbsent(context, candidates)
+    local save = saveFor(context)
+    local pets = save and save.Pets
+    if type(pets) ~= "table" then return false end
+
+    local present = {}
+    for key, pet in pairs(pets) do
+        if type(pet) == "table" then
+            local uid = pet.uid or pet.UID
+            if uid == nil and type(key) == "string" then uid = key end
+            if uid ~= nil then present[tostring(uid)] = true end
+        end
+    end
+    for _, candidate in ipairs(candidates) do
+        if present[candidate.Uid] then return false end
+    end
+    return true
+end
+
 local function waitForAutoDeleteOwnership(state, context, pending, candidates)
     local deadline = os.clock() + AUTO_DELETE_SYNC_TIMEOUT
     local lastProblem = "waiting for local pet replication"
@@ -946,16 +1083,43 @@ local function runHeadlessAutoDelete(state, context, pending, pets)
     if not candidates then return false, plan end
     if #candidates == 0 then return true, plan end
 
+    if pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK then
+        return true, "Game Auto Delete: owned by the native Open Eggs callback (no duplicate request)"
+    end
+
     local ready, syncProblem = waitForAutoDeleteOwnership(state, context, pending, candidates)
-    if not ready then return false, "Game Auto Delete: " .. tostring(syncProblem) end
+    if not ready then
+        if allCandidateUidsAbsent(context, candidates) then
+            state.AutoDeleted = state.AutoDeleted + #candidates
+            return true, string.format(
+                "Game Auto Delete: %d selected pet(s) were already absent; duplicate deletion skipped",
+                #candidates
+            )
+        end
+        return false, "Game Auto Delete: " .. tostring(syncProblem)
+    end
 
     local uids = {}
     for _, candidate in ipairs(candidates) do uids[#uids + 1] = candidate.Uid end
     local result = table.pack(context.InvokeCommand("Delete Several Pets", uids))
     if not result[1] then
+        if allCandidateUidsAbsent(context, candidates) then
+            state.AutoDeleted = state.AutoDeleted + #uids
+            return true, string.format(
+                "Game Auto Delete: %d pet(s) were already removed after an uncertain transport reply",
+                #uids
+            )
+        end
         return false, "Delete Several Pets transport failed: " .. tostring(result[3])
     end
     if not result[2] then
+        if allCandidateUidsAbsent(context, candidates) then
+            state.AutoDeleted = state.AutoDeleted + #uids
+            return true, string.format(
+                "Game Auto Delete: %d pet(s) were already removed; server rejection treated as idempotent success",
+                #uids
+            )
+        end
         return false, "Delete Several Pets was rejected: " .. tostring(result[3] or "unknown reason")
     end
 
@@ -967,8 +1131,26 @@ local function runHeadlessAutoDelete(state, context, pending, pets)
     )
 end
 
-local function startHeadlessPostProcess(state, context, pending, pets)
+local function queueHeadlessPostProcess(pending, eggName, pets)
+    if type(pending) ~= "table" or type(pets) ~= "table" then return false end
+    pending.LastHeadlessEventAt = os.clock()
+    pending.PostProcessQueue = pending.PostProcessQueue or {}
+    pending.PostProcessSignatures = pending.PostProcessSignatures or {}
+    local signature = eventSignature(eggName, pets)
+    if pending.PostProcessSignatures[signature] then return false end
+    pending.PostProcessSignatures[signature] = true
+    pending.PostProcessQueue[#pending.PostProcessQueue + 1] = {
+        Egg = tostring(eggName or pending.Egg),
+        Pets = pets,
+        Signature = signature,
+    }
+    pending.PostProcessDone = false
+    return true
+end
+
+local function startHeadlessPostProcess(state, context, pending)
     if pending.PostProcessStarted or not pending.Headless then return end
+    if type(pending.PostProcessQueue) ~= "table" or #pending.PostProcessQueue == 0 then return end
     local now = os.clock()
     if now < (tonumber(pending.PostProcessRetryAt) or 0) then return end
     pending.PostProcessAttempt = (tonumber(pending.PostProcessAttempt) or 0) + 1
@@ -986,18 +1168,29 @@ local function startHeadlessPostProcess(state, context, pending, pets)
     ))
     pending.PostProcessThread = task.spawn(function()
         if not state.Running or state.Pending ~= pending then return end
-        local result = table.pack(pcall(runHeadlessAutoDelete, state, context, pending, pets))
-        if not state.Running or state.Pending ~= pending then return end
-        pending.PostProcessThread = nil
         local failure
-        if not result[1] then
-            failure = "Game Auto Delete bridge crashed locally: " .. tostring(result[2])
-        elseif not result[2] then
-            failure = tostring(result[3])
-        else
-            pending.PostProcessNote = tostring(result[3])
+        local notes = {}
+        while state.Running and state.Pending == pending do
+            local batch = table.remove(pending.PostProcessQueue, 1)
+            if not batch then break end
+            local result = table.pack(pcall(runHeadlessAutoDelete, state, context, pending, batch.Pets))
+            if not state.Running or state.Pending ~= pending then return end
+            if not result[1] then
+                failure = "Game Auto Delete bridge crashed locally: " .. tostring(result[2])
+            elseif not result[2] then
+                failure = tostring(result[3])
+            else
+                notes[#notes + 1] = tostring(result[3])
+            end
+            if failure then
+                table.insert(pending.PostProcessQueue, 1, batch)
+                break
+            end
         end
+        pending.PostProcessThread = nil
         if not failure then
+            pending.PostProcessNote = table.concat(notes, " | ")
+            pending.PostProcessStarted = false
             pending.PostProcessDone = true
             return
         end
@@ -1080,7 +1273,8 @@ local function startHeadlessReconcile(state, context, pending)
                     "%s | observed %d/%d new pet(s) | Opening Egg acknowledged from inventory delta",
                     requestLabel(pending), lastObserved, expected
                 ))
-                startHeadlessPostProcess(state, context, pending, pets)
+                queueHeadlessPostProcess(pending, pending.Egg, pets)
+                startHeadlessPostProcess(state, context, pending)
                 return
             end
             task.wait(HEADLESS_REPLICATION_POLL)
@@ -1131,6 +1325,12 @@ local function completionNote(pending)
                 or "Headless visuals: producer gate armed; native callback was not observed"
         end
         if pending.MatchMode then notes[#notes + 1] = pending.MatchMode end
+        if (tonumber(pending.OverlapEvents) or 0) > 0 then
+            notes[#notes + 1] = string.format(
+                "manual/overlap events serialized: %d",
+                tonumber(pending.OverlapEvents) or 0
+            )
+        end
         if pending.PostProcessNote then notes[#notes + 1] = pending.PostProcessNote end
     else
         notes[#notes + 1] = pending.SkipResult or pending.SkipPolicy
@@ -1157,7 +1357,12 @@ local function finishSuccess(state, context, pending, note)
         state.CleanSuccesses = 0
         state.RequestDelay = math.max(MIN_REQUEST_DELAY, state.RequestDelay - 0.025)
     end
-    state.NextAction = os.clock() + state.RequestDelay
+    local pacingAnchor = math.max(
+        tonumber(pending.ResponseAt) or 0,
+        tonumber(pending.EventAt) or 0,
+        tonumber(pending.StartedAt) or 0
+    )
+    state.NextAction = math.max(os.clock(), pacingAnchor + state.RequestDelay)
     setStatus(state, context, string.format(
         "Hatched %s | completed: %d\n%s | adaptive delay: %.2fs | one request in flight",
         requestLabel(pending),
@@ -1165,6 +1370,15 @@ local function finishSuccess(state, context, pending, note)
         tostring(note or pending.Route or "Open Egg event confirmed"),
         state.RequestDelay
     ))
+end
+
+local function headlessEventsSettled(pending, now)
+    local anchor = math.max(
+        tonumber(pending.LastHeadlessEventAt) or 0,
+        tonumber(pending.ResponseAt) or 0,
+        tonumber(pending.EventAt) or 0
+    )
+    return anchor <= 0 or now - anchor >= HEADLESS_EVENT_SETTLE_DELAY
 end
 
 local function finishRejection(state, context, pending)
@@ -1323,7 +1537,7 @@ local function handlePending(state, context, now)
     if pending.Headless and pending.EventReceived and pending.Acknowledged and pending.Pets
         and not pending.PostProcessDone and not pending.PostProcessStarted
         and now >= (tonumber(pending.PostProcessRetryAt) or 0) then
-        startHeadlessPostProcess(state, context, pending, pending.Pets)
+        startHeadlessPostProcess(state, context, pending)
     end
 
     if pending.PostProcessStarted and not pending.PostProcessDone
@@ -1369,10 +1583,19 @@ local function handlePending(state, context, now)
             or not pending.Headless then
             if pending.Headless then
                 if pending.Acknowledged and not pending.PostProcessStarted and pending.Pets then
-                    startHeadlessPostProcess(state, context, pending, pending.Pets)
+                    startHeadlessPostProcess(state, context, pending)
                 end
                 if pending.Acknowledged and pending.PostProcessDone then
-                    finishSuccess(state, context, pending, completionNote(pending))
+                    if pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK and openingNow then
+                        setStatus(state, context, "Native compatibility callback is finishing for "
+                            .. requestLabel(pending)
+                            .. "; acknowledgement and Auto Delete are not being duplicated...")
+                    elseif not headlessEventsSettled(pending, now) then
+                        setStatus(state, context, "Headless hatch completed for " .. requestLabel(pending)
+                            .. "; holding the producer gate briefly for a manual/duplicate event...")
+                    else
+                        finishSuccess(state, context, pending, completionNote(pending))
+                    end
                 elseif pending.Acknowledged then
                     setStatus(state, context, "Headless hatch acknowledged for " .. requestLabel(pending)
                         .. "; applying the game's Auto Delete settings before the next purchase...")
@@ -1521,6 +1744,10 @@ local function beginRequest(state, context, options, inspection)
         PostProcessWindowStartedAt = 0,
         PostProcessWaits = 0,
         PostProcessThread = nil,
+        PostProcessQueue = {},
+        PostProcessSignatures = {},
+        OverlapEvents = 0,
+        LastHeadlessEventAt = 0,
         RequestThread = nil,
         Attempt = tonumber(state.NetworkAttempt) or 1,
         InputConnections = not headless and inputConnectionSnapshot(context) or nil,
@@ -1549,6 +1776,7 @@ local function beginRequest(state, context, options, inspection)
         if state.Pending ~= pending or not state.Running then return end
         pending.RequestThread = nil
         pending.ResponseDone = true
+        pending.ResponseAt = os.clock()
         pending.TransportOk = result[1] == true
         pending.Accepted = pending.TransportOk and result[2] == true
         pending.Message = result[3]
@@ -1715,6 +1943,11 @@ return function(action, context)
         eventRoute = "Library.Network.Fired fallback"
     end
 
+    -- Capture the game's exact dispatcher before this module adds its own
+    -- listener. When OpenEgg is not exported by getsenv, this lets Headless
+    -- pause only the native visual producer for the duration of one purchase.
+    local eventGateConnection, eventGateProblem = captureHeadlessEventGate(signal, eventRoute)
+
     local state = {
         Context = context,
         Running = true,
@@ -1751,6 +1984,9 @@ return function(action, context)
         OpenEggOriginal = nil,
         OpenEggWrapper = nil,
         OpenEggGateRoute = nil,
+        EventGateConnection = eventGateConnection,
+        EventGateProblem = eventGateProblem,
+        EventGateDisabled = false,
         HeadlessVisualsSuppressed = 0,
     }
     activeState = state
@@ -1762,11 +1998,9 @@ return function(action, context)
             state.OpenEvents = state.OpenEvents + 1
             if pending then pending.OpenEventsSeen = pending.OpenEventsSeen + 1 end
 
-            local exactMatch = pending
+            local exactMatch = pending and not pending.EventReceived
                 and normalizedEggName(pending.Egg) == normalizedEggName(eggName)
-            local gateFallback = pending and pending.Headless and state.GateOwned
-                and not pending.EventReceived
-            local matching = exactMatch or gateFallback
+            local matching = exactMatch == true
             local age = pending and (os.clock() - pending.StartedAt) or -1
             local payloadCount = 0
             if type(pets) == "table" then
@@ -1777,25 +2011,22 @@ return function(action, context)
                 end
             end
             context.Trace("auto egg Open Egg", string.format(
-                "event #%d | expected=%s | actual=%s | match=%s | gateFallback=%s | pets=%d | age=%.2fs",
+                "event #%d | expected=%s | actual=%s | firstExactMatch=%s | pets=%d | age=%.2fs",
                 state.OpenEvents,
                 pending and tostring(pending.Egg) or "none",
                 tostring(eggName),
                 tostring(matching == true),
-                tostring(gateFallback == true and not exactMatch),
                 payloadCount,
                 age
             ))
-            if matching and gateFallback and not exactMatch then
-                pending.MatchMode = "owned headless gate auto-detection"
-                pending.ActualEgg = tostring(eggName)
-            end
 
             if state.GateOwned then
                 local now = os.clock()
                 cleanEventCache(state, now)
                 local signature = eventSignature(eggName, pets)
-                if not state.AcknowledgedEvents[signature] then
+                local ownsAcknowledgement = pending and pending.Headless
+                    and pending.ProducerGateRoute == HEADLESS_EVENT_GATE
+                if ownsAcknowledgement and not state.AcknowledgedEvents[signature] then
                     local ackOk, ackProblem = pcall(network.Fire, "Opening Egg", eggName, pets)
                     if ackOk then
                         state.AcknowledgedEvents[signature] = now
@@ -1803,8 +2034,23 @@ return function(action, context)
                     elseif matching then
                         pending.AckFailure = tostring(ackProblem)
                     end
-                elseif matching then
+                elseif ownsAcknowledgement and matching then
                     pending.Acknowledged = true
+                elseif matching then
+                    -- The native callback owns this acknowledgement on the
+                    -- getsenv wrapper and compatibility routes. Sending it a
+                    -- second time races the game's Auto Delete pipeline.
+                    pending.Acknowledged = true
+                end
+            end
+
+            local queuedPostProcess = false
+            if pending and pending.Headless and state.GateOwned and payloadCount > 0 then
+                if matching or pending.ProducerGateRoute ~= HEADLESS_INVENTORY_FALLBACK then
+                    queuedPostProcess = queueHeadlessPostProcess(pending, eggName, pets)
+                    if queuedPostProcess and not matching then
+                        pending.OverlapEvents = (tonumber(pending.OverlapEvents) or 0) + 1
+                    end
                 end
             end
 
@@ -1814,12 +2060,15 @@ return function(action, context)
                 pending.Pets = pets
                 if pending.Headless then
                     if pending.Acknowledged and not pending.AckFailure then
-                        startHeadlessPostProcess(state, context, pending, pets)
+                        startHeadlessPostProcess(state, context, pending)
                     end
                 end
             elseif state.GateOwned then
-                context.Trace("auto egg", "acknowledged an unexpected Open Egg while the headless gate was owned: "
+                context.Trace("auto egg", "ignored an unrelated/duplicate Open Egg without replacing pending: "
                     .. tostring(eggName))
+            end
+            if queuedPostProcess and not pending.PostProcessStarted then
+                startHeadlessPostProcess(state, context, pending)
             end
         end)
     end)
