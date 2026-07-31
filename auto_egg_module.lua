@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.5.4"
+local MODULE_VERSION = "1.5.5"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -33,6 +33,7 @@ local POST_PROCESS_RETRY_BASE_DELAY = 0.35
 local POST_PROCESS_RETRY_MAX_DELAY = 3
 local POST_PROCESS_WAIT_SLICE = 54
 local MAX_POST_PROCESS_WAIT_SLICES = 12
+local HEADLESS_INVENTORY_FALLBACK = "exact inventory-delta compatibility fallback"
 local physicalCache = {
     Root = nil,
     ById = {},
@@ -435,7 +436,12 @@ local function ensureHeadlessProducerGate(state, context)
     restoreHeadlessProducerGate(state)
     local original = scriptEnvironment.OpenEgg
     if type(original) ~= "function" then
-        return false, "Open Eggs.OpenEgg is not a callable function"
+        state.OpenEggScript = openEggScript
+        state.OpenEggGateRoute = HEADLESS_INVENTORY_FALLBACK
+        context.Trace("auto egg headless gate",
+            "Open Eggs.OpenEgg is not exported as a callable function; "
+                .. "continuing without overlapping requests and confirming through the exact inventory delta")
+        return true, state.OpenEggGateRoute
     end
 
     local wrapper
@@ -1117,9 +1123,13 @@ local function completionNote(pending)
     if pending.Route and pending.Route ~= "" then notes[#notes + 1] = pending.Route end
     if pending.Headless then
         notes[#notes + 1] = "Egg Skip: immediate headless acknowledgement"
-        notes[#notes + 1] = pending.VisualSuppressed
-            and "Headless visuals: OpenEgg producer suppressed"
-            or "Headless visuals: producer gate armed; native callback was not observed"
+        if pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK then
+            notes[#notes + 1] = "Headless visuals: native OpenEgg was not exported; inventory-delta fallback used"
+        else
+            notes[#notes + 1] = pending.VisualSuppressed
+                and "Headless visuals: OpenEgg producer suppressed"
+                or "Headless visuals: producer gate armed; native callback was not observed"
+        end
         if pending.MatchMode then notes[#notes + 1] = pending.MatchMode end
         if pending.PostProcessNote then notes[#notes + 1] = pending.PostProcessNote end
     else
@@ -1517,6 +1527,7 @@ local function beginRequest(state, context, options, inspection)
         Inspection = inspection,
         VisualSuppressed = false,
         NativeOpenEggSeen = false,
+        ProducerGateRoute = headless and state.OpenEggGateRoute or nil,
     }
     pending.ResponseDeadlineAt = pending.StartedAt + pending.TimeoutSeconds
     state.Pending = pending
@@ -1527,7 +1538,8 @@ local function beginRequest(state, context, options, inspection)
             .. "Distance: %.1f/15 | request #%d | one request in flight | dynamic Network route\n%s",
         requestLabel(pending), pending.Attempt, MAX_NETWORK_ATTEMPTS,
         tonumber(inspection.Distance) or 0, state.Requests,
-        headless and "Headless OpenEgg producer gate armed before purchase"
+        headless and ("Headless acknowledgement route: "
+            .. tostring(pending.ProducerGateRoute or "exact inventory delta"))
             or tostring(pending.SkipPolicy or "Native skip watcher is preparing...")
     ))
 
