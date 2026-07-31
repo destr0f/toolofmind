@@ -2,7 +2,7 @@
 -- High-rate Coins/Orbs producers are owned by loot_reactor.lua. This module
 -- never destroys, reparents, teleports, anchors, or otherwise moves game data.
 
-local MODULE_VERSION = "4.0.0"
+local MODULE_VERSION = "4.0.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
@@ -53,7 +53,7 @@ end
 local function beginProfile()
     local callback = debug and debug.profilebegin
     if type(callback) ~= "function" then return false end
-    return pcall(callback, "PSX.GraphicsQueue") == true
+    return pcall(callback, "PSX_GraphicsQueue") == true
 end
 
 local function endProfile(started)

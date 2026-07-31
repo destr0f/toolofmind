@@ -360,17 +360,17 @@ armOrbFlush = function()
 end
 
 local function queueOrb(itemOrId, fromEvent)
-    if not orbsEnabled() then return end
+    if not orbsEnabled() then return false end
     local isObject = typeof(itemOrId) == "Instance"
     local orbId = isObject and objectId(itemOrId)
         or (itemOrId ~= nil and tostring(itemOrId) or nil)
-    if not orbId or orbId == "" then return end
+    if not orbId or orbId == "" then return false end
 
     if not run.PendingOrbIds[orbId] then
         if run.PendingOrbCount >= MAX_PENDING_ORBS then
             run.OrbOverflow = run.OrbOverflow + 1
             armStatus()
-            return
+            return false
         end
         if run.PendingOrbCount == 0 then run.OrbRetrySpent = false end
         run.PendingOrbIds[orbId] = true
@@ -379,6 +379,7 @@ local function queueOrb(itemOrId, fromEvent)
     if fromEvent then run.OrbEvents = run.OrbEvents + 1 end
     armOrbFlush()
     armStatus()
+    return true
 end
 
 local function removeQueuedOrb(id)
@@ -784,14 +785,14 @@ local function installOrbProducer()
         if record.Active and record.Generation == run.Generation
             and orbsEnabled() then
             local profiled = profileBegin("PSX_LootProducerGate")
-            local queued = pcall(queueOrb, id, true)
-            if queued then
+            local queued, accepted = pcall(queueOrb, id, true)
+            if queued and accepted == true then
                 run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
-            else
-                run.OrbErrors = run.OrbErrors + 1
+                profileEnd(profiled)
+                return nil
             end
+            run.OrbErrors = run.OrbErrors + 1
             profileEnd(profiled)
-            return nil
         end
         return originalAddOrb(id, ...)
     end
@@ -813,6 +814,11 @@ local function installOrbProducer()
     local installed, installProblem = pcall(function()
         for name, wrapper in pairs(record.Wrappers) do
             environment[name] = wrapper
+        end
+        for name, wrapper in pairs(record.Wrappers) do
+            if environment[name] ~= wrapper then
+                error("Orbs." .. name .. " assignment was rejected")
+            end
         end
     end)
     if not installed then
@@ -882,6 +888,11 @@ local function installCoinProducer()
     local installed, installProblem = pcall(function()
         for name, wrapper in pairs(record.Wrappers) do
             environment[name] = wrapper
+        end
+        for name, wrapper in pairs(record.Wrappers) do
+            if environment[name] ~= wrapper then
+                error("Coins." .. name .. " assignment was rejected")
+            end
         end
     end)
     if not installed then

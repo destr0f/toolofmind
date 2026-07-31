@@ -90,6 +90,8 @@ for (const marker of [
     "BAG_FIRST_ATTEMPT_DELAY = 0.08",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
+    "local queued, accepted = pcall(queueOrb, id, true)",
+    "if queued and accepted == true then",
     "BagProducerRecord = nil",
     "InstantCoinLandings = 0",
     'networkSignal("Remove Lootbag")',
@@ -109,6 +111,8 @@ for (const marker of [
     'profileBegin("PSX_OrbClaimBatch")',
     'profileBegin("PSX_CoinVisualGate")',
     'profileBegin("PSX_LootFallback")',
+    'error("Orbs." .. name .. " assignment was rejected")',
+    'error("Coins." .. name .. " assignment was rejected")',
     "restoreProducerRecord(run.OrbProducerRecord)",
     "restoreProducerRecord(run.BagProducerRecord)",
     "restoreProducerRecord(run.CoinProducerRecord)",
@@ -126,6 +130,10 @@ assert(!loot.includes("FastTween")
     && !loot.includes("TweenService")
     && !loot.includes("task.wait(0.05)"),
     "instant coin landing copied or reimplemented the game's visual tween");
+assert(loot.includes("return originalAddOrb(id, ...)")
+    && loot.includes("return false")
+    && loot.includes("return true"),
+    "Orb producer can suppress a visual after a failed bounded enqueue");
 assert(!loot.includes("disableScriptConnections(")
     && !loot.includes("restoreDisabled(")
     && !loot.includes("getconnections"),
@@ -184,7 +192,7 @@ for (const marker of [
     "object:GetChildren()",
     "active.QueueObjects[index] = nil",
     'debug.profilebegin',
-    '"PSX.GraphicsQueue"',
+    '"PSX_GraphicsQueue"',
 ]) {
     assert(graphics.includes(marker), `missing coalesced graphics marker: ${marker}`);
 }
