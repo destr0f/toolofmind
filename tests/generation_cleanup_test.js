@@ -64,6 +64,7 @@ assert(loot.includes("run.Generation = run.Generation + 1")
 assert(loot.includes("if environment[name] == wrapper")
     && loot.includes("environment[name] = record.Originals[name]")
     && loot.includes("restoreProducerRecord(run.OrbProducerRecord)")
+    && loot.includes("restoreProducerRecord(run.BagProducerRecord)")
     && loot.includes("restoreProducerRecord(run.CoinProducerRecord)"),
     "producer gates do not restore only their own live wrappers");
 const statusCallback = loot.slice(

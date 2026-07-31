@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.1.0"
+local MODULE_VERSION = "3.2.0"
 local ORB_FLUSH_INTERVAL = 0.25
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
@@ -28,7 +28,6 @@ local run = {
     ProducerConnections = {},
     PlayerScriptConnections = {},
     RecordConnections = {},
-    DisabledBags = {},
     Things = nil,
     OrbFolder = nil,
     LootbagFolder = nil,
@@ -39,9 +38,11 @@ local run = {
     OrbGateReason = "not armed",
     BagGateReason = "not armed",
     OrbsProducer = "unavailable",
+    LootbagsProducer = "unavailable",
     CoinsProducer = "visual",
     CoinGateReason = "headless disabled",
     OrbProducerRecord = nil,
+    BagProducerRecord = nil,
     CoinProducerRecord = nil,
     PlayerScripts = nil,
     ProducerRebindArmed = false,
@@ -228,7 +229,7 @@ local function statusText()
         run.OrbGateReason,
         coinProducer,
         coinReason,
-        run.BagGate and "direct" or "fallback",
+        run.LootbagsProducer,
         run.BagGateReason,
         run.GateGeneration,
         run.LastRebindReason,
@@ -281,137 +282,6 @@ local function fire(command, ...)
     return sent == true, problem, tostring(route or "unavailable")
 end
 
-local function safeField(object, key)
-    local ok, value = pcall(function() return object[key] end)
-    return ok and value or nil
-end
-
-local function connectionFunction(connection)
-    for _, key in ipairs({ "Function", "Callback" }) do
-        local value = safeField(connection, key)
-        if type(value) == "function" then return value end
-    end
-    return nil
-end
-
-local function functionEnvironment(func)
-    local getter = type(getfenv) == "function" and getfenv
-        or (debug and type(debug.getfenv) == "function" and debug.getfenv)
-    if type(getter) ~= "function" then return nil end
-    local ok, environment = pcall(getter, func)
-    return ok and type(environment) == "table" and environment or nil
-end
-
-local function functionSource(func)
-    if debug and type(debug.info) == "function" then
-        local ok, source = pcall(debug.info, func, "s")
-        if ok and type(source) == "string" then return source end
-    end
-    if debug and type(debug.getinfo) == "function" then
-        local ok, info = pcall(debug.getinfo, func, "S")
-        if ok and type(info) == "table" then
-            return tostring(info.source or info.short_src or "")
-        end
-    end
-    return ""
-end
-
-local function functionUpvalues(func)
-    local getter = type(getupvalues) == "function" and getupvalues
-        or (debug and type(debug.getupvalues) == "function" and debug.getupvalues)
-    if type(getter) ~= "function" then return nil end
-    local ok, values = pcall(getter, func)
-    return ok and type(values) == "table" and values or nil
-end
-
-local function textMatchesScript(text, scriptName)
-    text = string.lower(tostring(text or ""))
-    local target = string.lower(tostring(scriptName or ""))
-    if text == target then return true end
-    return string.find(text, "scripts.game." .. target, 1, true) ~= nil
-        or string.find(text, "/game/" .. target, 1, true) ~= nil
-        or string.find(text, "\\game\\" .. target, 1, true) ~= nil
-        or string.find(text, "." .. target, 1, true) ~= nil
-end
-
-local function functionBelongsToScript(func, scriptName, depth, seen)
-    if type(func) ~= "function" then return false end
-    depth = tonumber(depth) or 0
-    seen = seen or {}
-    if seen[func] then return false end
-    seen[func] = true
-
-    local environment = functionEnvironment(func)
-    local sourceScript = environment and environment.script
-    if typeof(sourceScript) == "Instance" then
-        if sourceScript.Name == scriptName then return true end
-        local ok, fullName = pcall(function() return sourceScript:GetFullName() end)
-        if ok and textMatchesScript(fullName, scriptName) then return true end
-    end
-    if textMatchesScript(functionSource(func), scriptName) then return true end
-    if depth >= 1 then return false end
-
-    local upvalues = functionUpvalues(func)
-    if upvalues then
-        for _, value in pairs(upvalues) do
-            if type(value) == "function"
-                and functionBelongsToScript(value, scriptName, depth + 1, seen) then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-local function setConnectionEnabled(connection, enabled)
-    local methodName = enabled and "Enable" or "Disable"
-    local method = safeField(connection, methodName)
-    if type(method) ~= "function" then return false end
-    local ok = pcall(method, connection)
-    return ok == true
-end
-
-local function connectionWasEnabled(connection)
-    local enabled = safeField(connection, "Enabled")
-    return enabled == nil or enabled == true
-end
-
-local function restoreDisabled(list)
-    for index = #list, 1, -1 do
-        local entry = list[index]
-        list[index] = nil
-        if entry and entry.Connection and entry.WasEnabled then
-            setConnectionEnabled(entry.Connection, true)
-        end
-    end
-end
-
-local function disableScriptConnections(signal, scriptName, output)
-    if not signal or type(getconnections) ~= "function" then
-        return 0, "getconnections unavailable"
-    end
-    local ok, connections = pcall(getconnections, signal)
-    if not ok or type(connections) ~= "table" then
-        return 0, "connection enumeration failed"
-    end
-    local disabled = 0
-    for _, connection in ipairs(connections) do
-        local func = connectionFunction(connection)
-        if func and functionBelongsToScript(func, scriptName) then
-            local wasEnabled = connectionWasEnabled(connection)
-            if wasEnabled and setConnectionEnabled(connection, false) then
-                output[#output + 1] = {
-                    Connection = connection,
-                    WasEnabled = true,
-                }
-                disabled = disabled + 1
-            end
-        end
-    end
-    if disabled > 0 then return disabled, nil end
-    return 0, "matching game callback not found"
-end
-
 local function networkSignal(name)
     local context = run.Context
     local network = context and context.Library and context.Library.Network
@@ -430,6 +300,7 @@ local armOrbFlush
 local function flushOrbs()
     run.OrbFlushArmed = false
     if not orbsEnabled() or run.PendingOrbCount == 0 then return end
+    local profiled = profileBegin("PSX_OrbClaimBatch")
 
     local ids = {}
     for orbId in pairs(run.PendingOrbIds) do
@@ -439,6 +310,7 @@ local function flushOrbs()
     if #ids == 0 then
         table.clear(run.PendingOrbIds)
         run.PendingOrbCount = 0
+        profileEnd(profiled)
         return
     end
 
@@ -472,6 +344,7 @@ local function flushOrbs()
             if run.PendingOrbCount > 0 then armOrbFlush() end
         end
     end
+    profileEnd(profiled)
     armStatus()
 end
 
@@ -741,20 +614,21 @@ local function watchBag(item)
 end
 
 local function queueBagEvent(id, payload)
-    if not bagsEnabled() then return end
+    if not bagsEnabled() then return false end
     id = id ~= nil and tostring(id) or nil
-    if not id or id == "" or run.WaitingBags[id] then return end
+    if not id or id == "" then return false end
+    if run.WaitingBags[id] then return true end
     if not payloadWorldAllowed(payload) or not payloadOwnerAllowed(payload) then
         run.BagSkipped = run.BagSkipped + 1
         armStatus()
-        return
+        return true
     end
     local position = type(payload) == "table"
         and normalizePosition(payload.position or payload.pos or payload.Position) or nil
     if not position then
         run.BagErrors = run.BagErrors + 1
         armStatus()
-        return
+        return false
     end
 
     local record = {
@@ -769,6 +643,7 @@ local function queueBagEvent(id, payload)
     run.BagEvents = run.BagEvents + 1
     armBagWake(BAG_FIRST_ATTEMPT_DELAY)
     armStatus()
+    return true
 end
 
 local function acknowledgeBag(id)
@@ -859,7 +734,7 @@ local function coinProducerCall(record, original, producerName, ...)
         end
     end
     if shouldPrevent then
-        local profiled = profileBegin("PSX.ProducerGate")
+        local profiled = profileBegin("PSX_CoinVisualGate")
         run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
         profileEnd(profiled)
         return nil
@@ -908,7 +783,7 @@ local function installOrbProducer()
     record.Wrappers.AddOrb = function(id, ...)
         if record.Active and record.Generation == run.Generation
             and orbsEnabled() then
-            local profiled = profileBegin("PSX.ProducerGate")
+            local profiled = profileBegin("PSX_LootProducerGate")
             local queued = pcall(queueOrb, id, true)
             if queued then
                 run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
@@ -1022,6 +897,113 @@ local function installCoinProducer()
     return true
 end
 
+local function installBagProducer()
+    restoreProducerRecord(run.BagProducerRecord)
+    run.BagProducerRecord = nil
+    run.BagGate = false
+    run.LootbagsProducer = "fallback"
+
+    if not bagsEnabled() then
+        run.LootbagsProducer = "disabled"
+        run.BagGateReason = "collection disabled"
+        return false
+    end
+
+    local scriptObject = findGameScript("Lootbags")
+    local environment, problem = scriptEnvironment(scriptObject)
+    if not environment then
+        run.BagGateReason = problem
+        return false
+    end
+    for _, name in ipairs({ "Add", "ScanForCollection", "Remove" }) do
+        if type(environment[name]) ~= "function" then
+            run.BagGateReason = "Lootbags." .. name .. " is unavailable"
+            return false
+        end
+    end
+
+    local record = {
+        Active = true,
+        FailOpen = false,
+        Generation = run.Generation,
+        Script = scriptObject,
+        Environment = environment,
+        Originals = {},
+        Wrappers = {},
+    }
+    for _, name in ipairs({ "Add", "ScanForCollection", "Remove" }) do
+        record.Originals[name] = environment[name]
+    end
+
+    local originalAdd = record.Originals.Add
+    record.Wrappers.Add = function(id, payload, ...)
+        if record.Active and not record.FailOpen
+            and record.Generation == run.Generation and bagsEnabled() then
+            local profiled = profileBegin("PSX_LootProducerGate")
+            local ok, accepted = pcall(queueBagEvent, id, payload)
+            if ok and accepted == true then
+                run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
+                profileEnd(profiled)
+                return nil
+            end
+            record.FailOpen = true
+            run.BagGate = false
+            run.LootbagsProducer = "fallback"
+            run.BagGateReason = ok and "loot payload was not claimable"
+                or "producer callback failed: " .. tostring(accepted)
+            if not ok then run.BagErrors = run.BagErrors + 1 end
+            profileEnd(profiled)
+            armStatus()
+        end
+        return originalAdd(id, payload, ...)
+    end
+
+    local originalScan = record.Originals.ScanForCollection
+    record.Wrappers.ScanForCollection = function(...)
+        if record.Active and not record.FailOpen
+            and record.Generation == run.Generation and bagsEnabled() then
+            return nil
+        end
+        return originalScan(...)
+    end
+
+    local originalRemove = record.Originals.Remove
+    record.Wrappers.Remove = function(id, ...)
+        if record.Active and record.Generation == run.Generation then
+            pcall(acknowledgeBag, id)
+        end
+        return originalRemove(id, ...)
+    end
+
+    local installed, installProblem = pcall(function()
+        for name, wrapper in pairs(record.Wrappers) do
+            environment[name] = wrapper
+        end
+        for name, wrapper in pairs(record.Wrappers) do
+            if environment[name] ~= wrapper then
+                error("Lootbags." .. name .. " assignment was rejected")
+            end
+        end
+    end)
+    if not installed then
+        restoreProducerRecord(record)
+        run.BagGateReason = "producer install failed: " .. tostring(installProblem)
+        return false
+    end
+
+    run.BagProducerRecord = record
+    run.BagGate = true
+    run.LootbagsProducer = "producer-gated"
+    run.BagGateReason = "getsenv Add/ScanForCollection/Remove gate"
+
+    local removeSignal = networkSignal("Remove Lootbag")
+    if removeSignal then
+        run.BagGateConnections[#run.BagGateConnections + 1] =
+            removeSignal:Connect(acknowledgeBag)
+    end
+    return true
+end
+
 local function restoreOrbGate()
     clearConnections(run.OrbGateConnections)
     restoreProducerRecord(run.OrbProducerRecord)
@@ -1040,8 +1022,12 @@ end
 
 local function restoreBagGate()
     clearConnections(run.BagGateConnections)
-    restoreDisabled(run.DisabledBags)
+    restoreProducerRecord(run.BagProducerRecord)
+    run.BagProducerRecord = nil
     run.BagGate = false
+    run.LootbagsProducer = run.BagsOn and "fallback" or "disabled"
+    run.BagGateReason = run.BagsOn
+        and "producer gate unavailable" or "collection disabled"
 end
 
 local function clearWorld()
@@ -1063,40 +1049,15 @@ end
 
 local function bindBagGate()
     restoreBagGate()
-    run.BagGateReason = "disabled"
-    if not bagsEnabled() then return false end
-
-    local spawnSignal, signalProblem = networkSignal("Spawn Lootbag")
-    if not spawnSignal then
-        run.BagGateReason = signalProblem
-        return false
-    end
-    local removeSignal = networkSignal("Remove Lootbag")
-    local disabled, disableProblem = disableScriptConnections(
-        spawnSignal, "Lootbags", run.DisabledBags
-    )
-    if disabled == 0 then
-        restoreDisabled(run.DisabledBags)
-        run.BagGateReason = disableProblem or "Spawn Lootbag callback not isolated"
-        return false
-    end
-
-    run.BagGateConnections[#run.BagGateConnections + 1] =
-        spawnSignal:Connect(queueBagEvent)
-    if removeSignal then
-        run.BagGateConnections[#run.BagGateConnections + 1] =
-            removeSignal:Connect(acknowledgeBag)
-    end
-    run.BagGate = true
-    run.BagGateReason = string.format("%d visual producer gated", disabled)
-    return true
+    return installBagProducer()
 end
 
 local bindRoots
 
 local function producerScriptRelevant(object)
     if typeof(object) ~= "Instance" then return false end
-    if object.Name ~= "Orbs" and object.Name ~= "Coins" then return false end
+    if object.Name ~= "Orbs" and object.Name ~= "Coins"
+        and object.Name ~= "Lootbags" then return false end
     local scripts = object:FindFirstAncestor("Scripts")
     local gameFolder = object.Parent
     return scripts ~= nil and gameFolder ~= nil and gameFolder.Name == "Game"
@@ -1106,6 +1067,7 @@ local function reconcileProducerGates()
     if not contextRunning() then return end
     run.GateGeneration = run.GateGeneration + 1
     bindOrbGate()
+    bindBagGate()
     restoreCoinGate()
     installCoinProducer()
 end
@@ -1126,7 +1088,7 @@ local function scheduleProducerRebind(reason)
             return
         end
         reconcileProducerGates()
-        bindRoots(false, true, false)
+        bindRoots(false, true, true)
         armStatus()
     end)
 end
@@ -1165,6 +1127,7 @@ local function bindPlayerScriptWatchers()
         run.ProducerConnections[#run.ProducerConnections + 1] =
             playerScripts.DescendantRemoving:Connect(function(object)
                 if object == (run.OrbProducerRecord and run.OrbProducerRecord.Script)
+                    or object == (run.BagProducerRecord and run.BagProducerRecord.Script)
                     or object == (run.CoinProducerRecord and run.CoinProducerRecord.Script)
                     or producerScriptRelevant(object) then
                     scheduleProducerRebind(object.Name .. " removed")
@@ -1174,14 +1137,14 @@ local function bindPlayerScriptWatchers()
 end
 
 local function queueOrbFallback(item)
-    local profiled = profileBegin("PSX.LootFallback")
+    local profiled = profileBegin("PSX_LootFallback")
     local ok = pcall(queueOrb, item, false)
     profileEnd(profiled)
     if not ok then run.OrbErrors = run.OrbErrors + 1 end
 end
 
 local function watchBagFallback(item)
-    local profiled = profileBegin("PSX.LootFallback")
+    local profiled = profileBegin("PSX_LootFallback")
     local ok = pcall(watchBag, item)
     profileEnd(profiled)
     if not ok then run.BagErrors = run.BagErrors + 1 end

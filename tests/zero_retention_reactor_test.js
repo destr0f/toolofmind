@@ -90,26 +90,30 @@ for (const marker of [
     "BAG_FIRST_ATTEMPT_DELAY = 0.08",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
-    "DisabledBags = {}",
+    "BagProducerRecord = nil",
     "InstantCoinLandings = 0",
-    'networkSignal("Spawn Lootbag")',
     'networkSignal("Remove Lootbag")',
     "type(getsenv)",
     'findGameScript("Orbs")',
+    'findGameScript("Lootbags")',
     'findGameScript("Coins")',
     "environment.AddOrb",
+    '{ "Add", "ScanForCollection", "Remove" }',
+    "record.Wrappers.ScanForCollection",
+    "record.Wrappers.Remove",
     '"DamageAnimation", "PetDamageAnimation", "AddCoin", "UpdateCoin"',
     'producerName == "UpdateCoin"',
     'writeValue(recordFolder, "HasLanded", true)',
     'writeValue(recordFolder, "IsFalling", false)',
-    'profileBegin("PSX.ProducerGate")',
-    'profileBegin("PSX.LootFallback")',
+    'profileBegin("PSX_LootProducerGate")',
+    'profileBegin("PSX_OrbClaimBatch")',
+    'profileBegin("PSX_CoinVisualGate")',
+    'profileBegin("PSX_LootFallback")',
     "restoreProducerRecord(run.OrbProducerRecord)",
+    "restoreProducerRecord(run.BagProducerRecord)",
     "restoreProducerRecord(run.CoinProducerRecord)",
     "playerScripts.DescendantAdded:Connect",
     "playerScripts.DescendantRemoving:Connect",
-    "disableScriptConnections(",
-    "restoreDisabled(run.DisabledBags)",
     'fire("Claim Orbs", ids)',
     'fire("Collect Lootbag", record.Id, position)',
     "folder.ChildAdded:Connect(queueOrbFallback)",
@@ -122,6 +126,10 @@ assert(!loot.includes("FastTween")
     && !loot.includes("TweenService")
     && !loot.includes("task.wait(0.05)"),
     "instant coin landing copied or reimplemented the game's visual tween");
+assert(!loot.includes("disableScriptConnections(")
+    && !loot.includes("restoreDisabled(")
+    && !loot.includes("getconnections"),
+    "Lootbags still enumerate or disable another script's connections");
 for (const forbidden of [
     "firetouchinterest",
     "CFrame =",
@@ -146,6 +154,15 @@ const orbGate = loot.slice(
 assert(!orbGate.includes("getconnections")
     && !orbGate.includes('networkSignal("Orb Added")'),
     "Orbs still enumerate or intercept the named event instead of gating AddOrb");
+const bagGate = loot.slice(
+    loot.indexOf("local function installBagProducer"),
+    loot.indexOf("local function restoreOrbGate")
+);
+assert(bagGate.includes("queueBagEvent")
+    && bagGate.includes("return originalAdd(id, payload, ...)")
+    && bagGate.includes("return originalScan(...)")
+    && bagGate.includes("return originalRemove(id, ...)"),
+    "Lootbags producer gate is not fail-open or does not preserve Remove");
 assert(!loot.includes("AssemblyLinearVelocity")
     && !loot.includes("AssemblyAngularVelocity")
     && !loot.includes("object.Anchored")
