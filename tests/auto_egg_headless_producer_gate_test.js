@@ -8,8 +8,10 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.0"',
+requireText('local MODULE_VERSION = "1.6.1"',
     "auto egg module version was not advanced");
+requireText('"\\nRoutes: Open Eggs %s | Egg World %s | prevented open/world %d/%d"',
+    "the hatch controller does not expose both visual gate routes and counters");
 requireText('FindFirstChild("Open Eggs")',
     "headless gate does not locate the live Open Eggs LocalScript");
 requireText('if type(getsenv) ~= "function" then',

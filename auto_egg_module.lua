@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.0"
+local MODULE_VERSION = "1.6.1"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -386,7 +386,19 @@ local function buildCatalog(context)
 end
 
 local function setStatus(state, context, text)
-    text = tostring(text or "")
+    local pending = state.Pending
+    local openRoute = "native"
+    if state.HeadlessModeSelected or (type(pending) == "table" and pending.Headless) then
+        openRoute = state.OpenEggGateRoute == HEADLESS_INVENTORY_FALLBACK
+            and "headless-fallback" or "headless-gated"
+    end
+    text = tostring(text or "") .. string.format(
+        "\nRoutes: Open Eggs %s | Egg World %s | prevented open/world %d/%d",
+        openRoute,
+        tostring(state.EggWorldGateRoute or "visual"),
+        tonumber(state.HeadlessVisualsSuppressed) or 0,
+        tonumber(state.EggWorldVisualsSuppressed) or 0
+    )
     if state.LastStatus == text then return end
     state.LastStatus = text
     context.SetStatus(text)
@@ -434,6 +446,7 @@ local function eggWorldGateWanted(state, context)
         local potatoOk, enabled = pcall(context.PotatoEnabled)
         potato = potatoOk and enabled == true
     end
+    state.HeadlessModeSelected = headless
     state.EggWorldGateWanted = headless or potato
     return state.EggWorldGateWanted
 end
@@ -2209,6 +2222,7 @@ return function(action, context)
         HeadlessVisualsSuppressed = 0,
         EggWorldVisualsSuppressed = 0,
         EggWorldGateRecord = nil,
+        HeadlessModeSelected = false,
         EggWorldGateWanted = false,
         EggWorldGateRoute = "visual",
         EggWorldGateProblem = nil,
