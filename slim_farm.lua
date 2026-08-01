@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.23"
+local VERSION = "1.4.1-dev.24"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -3969,6 +3969,25 @@ lootCollector.Context = {
     EnabledLootbags = function() return config.Lootbags == true end,
     HeadlessCoins = function() return config.PotatoMode == true end,
     CoinCatalogReady = coinCatalogReady,
+    CoinRecordReady = function(rawId)
+        local record = rawId ~= nil and coinRecords[tostring(rawId)] or nil
+        return record ~= nil and not record.Removed
+            and (tonumber(record.Health) or 0) > 0
+            and typeof(record.Position) == "Vector3"
+            and record.Name ~= nil
+    end,
+    RecoverCoinRecord = function(rawId)
+        if rawId == nil then return false end
+        local things = workspace:FindFirstChild("__THINGS")
+        local folder = things and things:FindFirstChild("Coins")
+        local model = folder and folder:FindFirstChild(tostring(rawId))
+        if not model then return false end
+        local _, record = coinIndex:IndexModel(model, true)
+        if record and type(requestAllocatorPulse) == "function" then
+            requestAllocatorPulse()
+        end
+        return record ~= nil
+    end,
     GetThings = function()
         local things = Library and Library.Things
         if typeof(things) == "Instance" then return things end

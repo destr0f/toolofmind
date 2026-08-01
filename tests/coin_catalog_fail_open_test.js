@@ -44,6 +44,12 @@ assert(farm.includes("local function coinCatalogReady()")
     "producer readiness is not tied to a live non-empty catalog");
 assert(farm.includes("CoinCatalogReady = coinCatalogReady"),
     "loot reactor does not receive the catalog readiness guard");
+assert(farm.includes("CoinRecordReady = function(rawId)")
+    && farm.includes('typeof(record.Position) == "Vector3"')
+    && farm.includes("RecoverCoinRecord = function(rawId)")
+    && farm.includes('folder:FindFirstChild(tostring(rawId))')
+    && farm.includes("coinIndex:IndexModel(model, true)"),
+    "per-ID readiness/recovery is missing from the farm context");
 
 // Empty/failed/raced responses never replace live state. A world transition
 // clears old records and explicitly re-arms the bounded three-attempt probe.
@@ -61,9 +67,16 @@ assert(farm.includes('resetCoinSnapshot("world changed; awaiting fresh catalog")
 // tween/CFrame/physics fallback is introduced when producer interception fails.
 assert(loot.includes('producerName == "DamageAnimation"')
     && loot.includes('or producerName == "PetDamageAnimation"')
-    && loot.includes("shouldPrevent = coinCatalogReady()")
+    && loot.includes("data = coinDataFromProducer(record, rawId)")
+    && loot.includes("CoinDataTables = readFunctionUpvalueTables(environment.AddCoin)")
+    && loot.includes("shouldPrevent = coinCatalogReady() and coinRecordReady(rawId)")
+    && loot.includes('if producerName == "AddCoin" then recoverCoinRecord(rawId) end')
     && loot.includes("return original(...)"),
-    "coin producer does not separate harmless visual suppression from fail-open models");
+    "coin producer does not separate harmless visual suppression from per-ID fail-open models");
+assert(loot.includes("table.clear(record.CoinDataTables or {})"),
+    "coin producer upvalue references are retained after cleanup");
+assert(!loot.includes("shouldPrevent = coinCatalogReady()\n"),
+    "catalog-wide readiness can still suppress an unknown coin ID");
 for (const forbidden of [
     "instantLandCoin",
     "object.CFrame",
@@ -76,5 +89,5 @@ for (const forbidden of [
 
 process.stdout.write(
     "Coin catalog fail-open OK | max attempts=3 | deltas=3"
-    + " | world reset bounded | no physics fallback\n"
+    + " | per-ID model recovery | no physics fallback\n"
 );

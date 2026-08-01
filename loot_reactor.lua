@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.3.0"
+local MODULE_VERSION = "3.3.1"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
 local BAG_LANES = 4
@@ -139,6 +139,67 @@ local function coinCatalogReady()
     end
     local ok, ready = pcall(context.CoinCatalogReady)
     return ok and ready == true
+end
+
+local function coinRecordReady(rawId)
+    local context = run.Context
+    if rawId == nil or not contextRunning() or not context
+        or type(context.CoinRecordReady) ~= "function" then
+        return false
+    end
+    local ok, ready = pcall(context.CoinRecordReady, rawId)
+    return ok and ready == true
+end
+
+local function recoverCoinRecord(rawId)
+    local context = run.Context
+    if rawId == nil or not contextRunning() or not context
+        or type(context.RecoverCoinRecord) ~= "function" then
+        return false
+    end
+    local ok, recovered = pcall(context.RecoverCoinRecord, rawId)
+    return ok and recovered == true
+end
+
+local function readFunctionUpvalueTables(callback)
+    local tables = {}
+    if type(callback) ~= "function" then return tables end
+    local reader = type(getupvalues) == "function" and getupvalues
+        or (debug and type(debug.getupvalues) == "function" and debug.getupvalues)
+    if type(reader) == "function" then
+        local ok, values = pcall(reader, callback)
+        if ok and type(values) == "table" then
+            for _, value in pairs(values) do
+                if type(value) == "table" then tables[#tables + 1] = value end
+            end
+        end
+        return tables
+    end
+    local indexedReader = debug and debug.getupvalue
+    if type(indexedReader) ~= "function" then return tables end
+    for index = 1, 32 do
+        local ok, first, second = pcall(indexedReader, callback, index)
+        if not ok or first == nil then break end
+        local value = second ~= nil and second or first
+        if type(value) == "table" then tables[#tables + 1] = value end
+    end
+    return tables
+end
+
+local function coinDataFromProducer(record, rawId)
+    if rawId == nil then return nil end
+    local textId = tostring(rawId)
+    local numericId = tonumber(rawId)
+    for _, candidate in ipairs(record.CoinDataTables or {}) do
+        local data = rawget(candidate, rawId) or rawget(candidate, textId)
+        if data == nil and numericId ~= nil then data = rawget(candidate, numericId) end
+        if type(data) == "table"
+            and (data.p ~= nil or data.Position ~= nil or data.position ~= nil)
+            and (data.n ~= nil or data.Name ~= nil or data.name ~= nil) then
+            return data
+        end
+    end
+    return nil
 end
 
 local function profileBegin(label)
@@ -716,6 +777,7 @@ local function restoreProducerRecord(record)
     end
     record.Environment = nil
     record.Script = nil
+    table.clear(record.CoinDataTables or {})
     table.clear(record.Wrappers or {})
     table.clear(record.Originals or {})
 end
@@ -731,11 +793,25 @@ local function coinProducerCall(record, original, producerName, ...)
             else
                 local context = run.Context
                 local rawId, data = ...
+                if type(data) ~= "table" then
+                    data = coinDataFromProducer(record, rawId)
+                end
                 if context and type(context.ObserveCoin) == "function"
                     and type(data) == "table" then
                     pcall(context.ObserveCoin, rawId, data)
                 end
-                shouldPrevent = coinCatalogReady()
+                -- The catalog-wide guard is insufficient here: one stale or
+                -- out-of-zone record must never suppress a newly spawned ID.
+                -- Only gate the visual producer after this exact coin has a
+                -- complete live registry record. Otherwise let the game's
+                -- original producer create its tiny data folder, then recover
+                -- that one ID without scanning Workspace.
+                shouldPrevent = coinCatalogReady() and coinRecordReady(rawId)
+                if not shouldPrevent then
+                    local results = table.pack(original(...))
+                    if producerName == "AddCoin" then recoverCoinRecord(rawId) end
+                    return table.unpack(results, 1, results.n)
+                end
             end
         end
     end
@@ -776,6 +852,7 @@ local function installOrbProducer()
         Environment = environment,
         Originals = {},
         Wrappers = {},
+        CoinDataTables = readFunctionUpvalueTables(environment.AddCoin),
     }
     for _, name in ipairs({ "AddOrb", "OrbLoop", "PlaySounds" }) do
         if type(environment[name]) == "function" then
@@ -904,7 +981,7 @@ local function installCoinProducer()
 
     run.CoinProducerRecord = record
     run.CoinsProducer = "producer-gated"
-    run.CoinGateReason = "effects gated; models require verified catalog"
+    run.CoinGateReason = "effects gated per verified coin ID; missing IDs fail open"
     return true
 end
 
