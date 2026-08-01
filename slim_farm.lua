@@ -3968,9 +3968,8 @@ local lootContext = {
     end,
     LocalLootOwner = localLootOwner,
     Fire = function(commandName, ...)
-        local arguments = table.pack(...)
         local fired, problem, sourceName, sessionIndex =
-            fireCommand(commandName, table.unpack(arguments, 1, arguments.n))
+            fireCommand(commandName, ...)
         if fired then
             return true, nil, routeText(sourceName, sessionIndex)
         end
@@ -3979,7 +3978,7 @@ local lootContext = {
             local fallback, fallbackProblem = pcall(
                 network.Fire,
                 commandName,
-                table.unpack(arguments, 1, arguments.n)
+                ...
             )
             if fallback then return true, nil, "Library.Network.Fire" end
             problem = fallbackProblem

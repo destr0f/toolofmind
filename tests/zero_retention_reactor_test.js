@@ -82,18 +82,28 @@ assert(!farm.includes("runtimePetCounts")
     && !farm.includes("teleportPet"),
     "visual pet mirroring returned to the farm hot path");
 
-// Loot owns Orbs/Lootbags and gates the game producers before Instance creation.
+// Loot owns Orbs/Lootbags and gates game producers before Instance creation.
+// The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    "ORB_FLUSH_INTERVAL = 0.25",
+    'local MODULE_VERSION = "3.3.0"',
     "ORB_BATCH_SIZE = 2048",
     "MAX_PENDING_ORBS = 8192",
-    "BAG_FIRST_ATTEMPT_DELAY = 0.08",
+    "BAG_LANES = 4",
+    "MAX_PENDING_BAGS = 4096",
+    "BAG_TRANSPORT_RETRY_DELAY = 0.10",
+    "BAG_SENT_TTL = 1.25",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
-    "local queued, accepted = pcall(queueOrb, id, true)",
-    "if queued and accepted == true then",
-    "BagProducerRecord = nil",
-    "InstantCoinLandings = 0",
+    "OrbBatch = table.create(ORB_BATCH_SIZE)",
+    "BagById = {}",
+    "BagQueue = {}",
+    "BagDelayed = {}",
+    "BagPool = {}",
+    'profileBegin("PSX_OrbFlush")',
+    'profileBegin("PSX_LootbagFlush")',
+    'fire("Claim Orbs", ids)',
+    'fire("Collect Lootbag", record.Id, record.Position)',
+    "task.defer(function()",
     'networkSignal("Remove Lootbag")',
     "type(getsenv)",
     'findGameScript("Orbs")',
@@ -104,82 +114,54 @@ for (const marker of [
     "record.Wrappers.ScanForCollection",
     "record.Wrappers.Remove",
     '"DamageAnimation", "PetDamageAnimation", "AddCoin", "UpdateCoin"',
-    'producerName == "UpdateCoin"',
-    'writeValue(recordFolder, "HasLanded", true)',
-    'writeValue(recordFolder, "IsFalling", false)',
-    'profileBegin("PSX_LootProducerGate")',
-    'profileBegin("PSX_OrbClaimBatch")',
-    'profileBegin("PSX_CoinVisualGate")',
-    'profileBegin("PSX_LootFallback")',
-    'error("Orbs." .. name .. " assignment was rejected")',
-    'error("Coins." .. name .. " assignment was rejected")',
     "restoreProducerRecord(run.OrbProducerRecord)",
     "restoreProducerRecord(run.BagProducerRecord)",
     "restoreProducerRecord(run.CoinProducerRecord)",
-    "playerScripts.DescendantAdded:Connect",
-    "playerScripts.DescendantRemoving:Connect",
-    'fire("Claim Orbs", ids)',
-    'fire("Collect Lootbag", record.Id, position)',
+    "playerScripts.ChildAdded:Connect",
     "folder.ChildAdded:Connect(queueOrbFallback)",
     "folder.ChildAdded:Connect(watchBagFallback)",
+    "record.Attempts < 2",
+    "record.Retired = true",
     "OrbDropped",
+    "BagOverflow",
 ]) {
     assert(loot.includes(marker), `missing native loot marker: ${marker}`);
 }
-assert(!loot.includes("FastTween")
-    && !loot.includes("TweenService")
-    && !loot.includes("task.wait(0.05)"),
-    "instant coin landing copied or reimplemented the game's visual tween");
+assert(loot.includes("run.PendingOrbIds[orbId] = nil")
+    && loot.includes("run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)"),
+    "successful orb batches do not evict acknowledged IDs");
+assert(loot.includes("record.State = \"sent\"")
+    && loot.includes("enqueueDelayedBag(record, now + BAG_SENT_TTL)"),
+    "successful bag sends remain in the retry queue or have no bounded ack wait");
 assert(loot.includes("return originalAddOrb(id, ...)")
-    && loot.includes("return false")
-    && loot.includes("return true"),
-    "Orb producer can suppress a visual after a failed bounded enqueue");
-assert(!loot.includes("disableScriptConnections(")
-    && !loot.includes("restoreDisabled(")
-    && !loot.includes("getconnections"),
-    "Lootbags still enumerate or disable another script's connections");
+    && loot.includes("return originalAdd(id, payload, ...)")
+    && loot.includes("return originalScan(...)")
+    && loot.includes("return originalRemove(id, ...)"),
+    "producer gates are not fail-open on unsupported payloads/executors");
 for (const forbidden of [
     "firetouchinterest",
     "CFrame =",
+    "AssemblyLinearVelocity",
+    "AssemblyAngularVelocity",
     "RunService.Heartbeat:Connect",
     "RunService.Stepped:Connect",
     "RenderStepped",
     "task.spawn",
     "GetDescendants",
+    "DescendantAdded",
     "AckHistory",
+    "getconnections",
+    "record.Instance",
     ":Destroy()",
     "Parent = nil",
 ]) {
     assert(!loot.includes(forbidden), `forbidden loot behavior returned: ${forbidden}`);
 }
-assert(loot.includes("if not run.OrbGate then")
-    && loot.includes("if not run.BagGate then"),
-    "workspace ChildAdded fallback is not gated behind capability detection");
-const orbGate = loot.slice(
-    loot.indexOf("local function bindOrbGate"),
-    loot.indexOf("local function bindBagGate")
-);
-assert(!orbGate.includes("getconnections")
-    && !orbGate.includes('networkSignal("Orb Added")'),
-    "Orbs still enumerate or intercept the named event instead of gating AddOrb");
-const bagGate = loot.slice(
-    loot.indexOf("local function installBagProducer"),
-    loot.indexOf("local function restoreOrbGate")
-);
-assert(bagGate.includes("queueBagEvent")
-    && bagGate.includes("return originalAdd(id, payload, ...)")
-    && bagGate.includes("return originalScan(...)")
-    && bagGate.includes("return originalRemove(id, ...)"),
-    "Lootbags producer gate is not fail-open or does not preserve Remove");
-assert(!loot.includes("AssemblyLinearVelocity")
-    && !loot.includes("AssemblyAngularVelocity")
-    && !loot.includes("object.Anchored")
-    && !loot.includes("object.CFrame"),
-    "loot fallback mutates physics or transforms");
-assert(loot.includes("record.Attempts >= 2")
-    && loot.includes("BAG_ACK_TIMEOUT")
-    && loot.includes("BAG_FINAL_ACK_TIMEOUT"),
-    "direct lootbag collection lacks a bounded acknowledgement policy");
+const profileLabels = [...loot.matchAll(/profileBegin\("([^"]+)"\)/g)].map((match) => match[1]);
+assert(profileLabels.length === 2
+    && profileLabels.includes("PSX_OrbFlush")
+    && profileLabels.includes("PSX_LootbagFlush"),
+    `unexpected loot profiler labels: ${profileLabels.join(", ")}`);
 
 // Graphics uses one temporary one-pass drain and no high-rate descendants.
 for (const marker of [
@@ -281,9 +263,9 @@ assert(farm.includes("MACHINE_PET_SNAPSHOT_TTL = 5")
 for (const marker of [
     "coinIndex:DisconnectFolder()",
     "table.clear(coinRecords)",
-    "table.clear(commandRemoteCache)",
-    "table.clear(eventRemoteCache)",
-    "table.clear(fireRemoteCache)",
+    "table.clear(coinSync.RemoteCaches.Command)",
+    "table.clear(coinSync.RemoteCaches.Event)",
+    "table.clear(coinSync.RemoteCaches.Fire)",
     'pcall(petFarm.Engine, "stop")',
     "lootCollector:StopWorker()",
     "table.clear(moduleLoadState.Cache)",

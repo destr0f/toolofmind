@@ -4,13 +4,15 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.2.0"
-local ORB_FLUSH_INTERVAL = 0.25
+local MODULE_VERSION = "3.3.0"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
-local BAG_FIRST_ATTEMPT_DELAY = 0.08
-local BAG_ACK_TIMEOUT = 0.9
-local BAG_FINAL_ACK_TIMEOUT = 1.5
+local BAG_LANES = 4
+local MAX_PENDING_BAGS = 4096
+local BAG_FIRST_ATTEMPT_DELAY = 0.05
+local BAG_TRANSPORT_RETRY_DELAY = 0.10
+local BAG_SENT_TTL = 1.25
+local MAX_BAG_POOL = 256
 local STATUS_INTERVAL = 1
 
 local Players = game:GetService("Players")
@@ -27,7 +29,6 @@ local run = {
     BagGateConnections = {},
     ProducerConnections = {},
     PlayerScriptConnections = {},
-    RecordConnections = {},
     Things = nil,
     OrbFolder = nil,
     LootbagFolder = nil,
@@ -50,15 +51,19 @@ local run = {
     GateGeneration = 0,
     LastRebindReason = "startup",
     VisualInstancesPrevented = 0,
-    InstantCoinLandings = 0,
     OrbToken = 0,
     BagToken = 0,
     BagWakeSerial = 0,
     PendingOrbIds = {},
     PendingOrbCount = 0,
+    OrbBatch = table.create(ORB_BATCH_SIZE),
     OrbFlushArmed = false,
-    OrbRetrySpent = false,
-    WaitingBags = {},
+    OrbRetryArmed = false,
+    BagById = {},
+    BagQueue = {},
+    BagQueueHead = 1,
+    BagDelayed = {},
+    BagPool = {},
     WaitingBagCount = 0,
     BagWakeArmed = false,
     BagWakeAt = nil,
@@ -78,6 +83,7 @@ local run = {
     BagRetried = 0,
     BagSkipped = 0,
     BagErrors = 0,
+    BagOverflow = 0,
 }
 
 local function disconnect(connection)
@@ -159,32 +165,6 @@ local function readValue(object, name)
     return ok and value or nil
 end
 
-local function writeValue(object, name, value)
-    if not object then return false end
-    local child = object:FindFirstChild(name .. "_Attr") or object:FindFirstChild(name)
-    if child and child:IsA("ValueBase") then
-        local ok = pcall(function() child.Value = value end)
-        return ok
-    end
-    return pcall(function() object:SetAttribute(name, value) end)
-end
-
-local function instantLandCoin(rawId)
-    if rawId == nil then return false end
-    local things = run.Things or workspace:FindFirstChild("__THINGS")
-    local coins = things and things:FindFirstChild("Coins")
-    local recordFolder = coins and coins:FindFirstChild(tostring(rawId))
-    if not recordFolder or readValue(recordFolder, "HasLanded") == true then
-        return false
-    end
-    local landed = writeValue(recordFolder, "HasLanded", true)
-    writeValue(recordFolder, "IsFalling", false)
-    if landed then
-        run.InstantCoinLandings = run.InstantCoinLandings + 1
-    end
-    return landed
-end
-
 local function objectId(object)
     if not object then return nil end
     local value = readValue(object, "ID")
@@ -211,24 +191,18 @@ local function objectPosition(object)
 end
 
 local function statusText()
-    local coinProducer = run.CoinsProducer
-    local coinReason = run.CoinGateReason
-    if run.CoinProducerRecord and coinsHeadlessEnabled() and not coinCatalogReady() then
-        coinProducer = "instant visual fail-open"
-        coinReason = "catalog unavailable; native models skip the 0.9s landing tween"
-    end
     return string.format(
         "Orbs producer: %s (%s) | Coins producer: %s (%s)\n"
             .. "Lootbags producer: %s (%s) | gate generation %d | last rebind: %s\n"
             .. "Native routes: Claim Orbs %s | Collect Lootbag %s\n"
-            .. "Prevented visual calls: %d | instant coin landings: %d | Claim IDs sent: %d\n"
+            .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
             .. "Orbs: pending %d/%d | events/batches %d/%d | error/overflow/drop %d/%d/%d\n"
-            .. "Lootbags: waiting %d | events/sent/ack/retry/skip/error %d/%d/%d/%d/%d/%d\n"
-            .. "Retention: unsent orb IDs + unacknowledged bag IDs only",
+            .. "Lootbags: waiting %d/%d | lanes %d | events/sent/ack/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d\n"
+            .. "Retention: unsent orb IDs + scalar queued/sent bag records only",
         run.OrbsProducer,
         run.OrbGateReason,
-        coinProducer,
-        coinReason,
+        run.CoinsProducer,
+        run.CoinGateReason,
         run.LootbagsProducer,
         run.BagGateReason,
         run.GateGeneration,
@@ -236,7 +210,6 @@ local function statusText()
         run.RouteOrbs,
         run.RouteLootbags,
         run.VisualInstancesPrevented,
-        run.InstantCoinLandings,
         run.OrbIdsSent,
         run.PendingOrbCount,
         MAX_PENDING_ORBS,
@@ -246,23 +219,34 @@ local function statusText()
         run.OrbOverflow,
         run.OrbDropped,
         run.WaitingBagCount,
+        MAX_PENDING_BAGS,
+        BAG_LANES,
         run.BagEvents,
         run.BagSent,
         run.BagAcked,
         run.BagRetried,
         run.BagSkipped,
-        run.BagErrors
+        run.BagErrors,
+        run.BagOverflow
     )
 end
 
+local function statusVisible()
+    local context = run.Context
+    if not context or type(context.StatusVisible) ~= "function" then return true end
+    local ok, visible = pcall(context.StatusVisible)
+    return ok and visible == true
+end
+
 local function armStatus()
-    if run.StatusArmed then return end
+    if run.StatusArmed or not statusVisible() then return end
     run.StatusArmed = true
     local generation = run.Generation
     task.delay(STATUS_INTERVAL, function()
         if generation ~= run.Generation then return end
         run.StatusArmed = false
         local context = run.Context
+        if not statusVisible() then return end
         local text = statusText()
         if text ~= run.LastStatusText and context
             and type(context.Status) == "function" then
@@ -300,12 +284,12 @@ local armOrbFlush
 local function flushOrbs()
     run.OrbFlushArmed = false
     if not orbsEnabled() or run.PendingOrbCount == 0 then return end
-    local profiled = profileBegin("PSX_OrbClaimBatch")
-
-    local ids = {}
+    local profiled = profileBegin("PSX_OrbFlush")
+    local ids = run.OrbBatch
+    table.clear(ids)
     for orbId in pairs(run.PendingOrbIds) do
         ids[#ids + 1] = orbId
-        if #ids >= ORB_BATCH_SIZE then break end
+        if #ids == ORB_BATCH_SIZE then break end
     end
     if #ids == 0 then
         table.clear(run.PendingOrbIds)
@@ -317,7 +301,8 @@ local function flushOrbs()
     local sent, _, route = fire("Claim Orbs", ids)
     run.RouteOrbs = route
     if sent then
-        for _, orbId in ipairs(ids) do
+        for index = 1, #ids do
+            local orbId = ids[index]
             if run.PendingOrbIds[orbId] then
                 run.PendingOrbIds[orbId] = nil
                 run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
@@ -325,25 +310,37 @@ local function flushOrbs()
         end
         run.OrbBatches = run.OrbBatches + 1
         run.OrbIdsSent = run.OrbIdsSent + #ids
-        run.OrbRetrySpent = false
         if run.PendingOrbCount > 0 then armOrbFlush() end
     else
         run.OrbErrors = run.OrbErrors + 1
-        if not run.OrbRetrySpent then
-            run.OrbRetrySpent = true
-            armOrbFlush()
-        else
-            for _, orbId in ipairs(ids) do
-                if run.PendingOrbIds[orbId] then
+        local needsRetry = false
+        for index = 1, #ids do
+            local orbId = ids[index]
+            local attempts = run.PendingOrbIds[orbId]
+            if attempts ~= nil then
+                if attempts < 1 then
+                    run.PendingOrbIds[orbId] = 1
+                    needsRetry = true
+                else
                     run.PendingOrbIds[orbId] = nil
                     run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
                     run.OrbDropped = run.OrbDropped + 1
                 end
             end
-            run.OrbRetrySpent = false
-            if run.PendingOrbCount > 0 then armOrbFlush() end
+        end
+        if needsRetry and not run.OrbRetryArmed then
+            run.OrbRetryArmed = true
+            local generation, token = run.Generation, run.OrbToken
+            task.delay(0.08, function()
+                if generation ~= run.Generation or token ~= run.OrbToken then return end
+                run.OrbRetryArmed = false
+                armOrbFlush()
+            end)
+        elseif run.PendingOrbCount > 0 then
+            armOrbFlush()
         end
     end
+    table.clear(ids)
     profileEnd(profiled)
     armStatus()
 end
@@ -353,7 +350,7 @@ armOrbFlush = function()
     run.OrbFlushArmed = true
     local generation = run.Generation
     local token = run.OrbToken
-    task.delay(ORB_FLUSH_INTERVAL, function()
+    task.defer(function()
         if generation ~= run.Generation or token ~= run.OrbToken then return end
         flushOrbs()
     end)
@@ -372,8 +369,7 @@ local function queueOrb(itemOrId, fromEvent)
             armStatus()
             return false
         end
-        if run.PendingOrbCount == 0 then run.OrbRetrySpent = false end
-        run.PendingOrbIds[orbId] = true
+        run.PendingOrbIds[orbId] = 0
         run.PendingOrbCount = run.PendingOrbCount + 1
     end
     if fromEvent then run.OrbEvents = run.OrbEvents + 1 end
@@ -390,24 +386,6 @@ local function removeQueuedOrb(id)
     end
 end
 
-local function disconnectRecord(id)
-    local list = run.RecordConnections[id]
-    if list then clearConnections(list) end
-    run.RecordConnections[id] = nil
-end
-
-local function closeBag(record, acknowledged)
-    if not record or run.WaitingBags[record.Id] ~= record then return end
-    disconnectRecord(record.Id)
-    run.WaitingBags[record.Id] = nil
-    run.WaitingBagCount = math.max(run.WaitingBagCount - 1, 0)
-    if acknowledged then run.BagAcked = run.BagAcked + 1 end
-    record.Item = nil
-end
-
-local function bagReady(item)
-    return readValue(item, "ReadyForCollection") == true
-end
 
 local function payloadWorldAllowed(payload)
     if type(payload) ~= "table" or payload.world == nil then return true end
@@ -420,11 +398,14 @@ local function payloadWorldAllowed(payload)
         or data.World == nil or data.World == payload.world
 end
 
+local BAG_OWNER_KEYS = { "OwnerUserId", "UserId", "Owner", "Player", "User" }
+
 local function payloadOwnerAllowed(payload)
     if type(payload) ~= "table" then return true end
     local localPlayer = Players.LocalPlayer
     if not localPlayer then return true end
-    for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
+    for index = 1, #BAG_OWNER_KEYS do
+        local key = BAG_OWNER_KEYS[index]
         local value = payload[key]
         if typeof(value) == "Instance" and value:IsA("Player") then
             return value == localPlayer
@@ -449,6 +430,56 @@ end
 
 local processBagWake
 
+local function acquireBagRecord()
+    local pool = run.BagPool
+    local record = pool[#pool]
+    if record then
+        pool[#pool] = nil
+        return record
+    end
+    return {}
+end
+
+local function releaseBagRecord(record)
+    record.Id = nil
+    record.Position = nil
+    record.Attempts = nil
+    record.Due = nil
+    record.State = nil
+    record.Queued = nil
+    record.Delayed = nil
+    record.Retired = nil
+    if #run.BagPool < MAX_BAG_POOL then
+        run.BagPool[#run.BagPool + 1] = record
+    end
+end
+
+local function closeBag(record, acknowledged)
+    if not record or run.BagById[record.Id] ~= record then return end
+    run.BagById[record.Id] = nil
+    run.WaitingBagCount = math.max(run.WaitingBagCount - 1, 0)
+    if acknowledged then run.BagAcked = run.BagAcked + 1 end
+    -- A queued/delayed array can still hold this record. Do not return it to
+    -- the pool until that final scalar reference has been consumed; otherwise
+    -- a newly spawned bag could reuse the same table and inherit stale work.
+    record.Retired = true
+    record.State = "retired"
+    if not record.Queued and not record.Delayed then releaseBagRecord(record) end
+end
+
+local function compactBagQueue()
+    local queue, head = run.BagQueue, run.BagQueueHead
+    if head <= 64 and head <= (#queue / 2) then return end
+    local write = 1
+    for index = head, #queue do
+        queue[write] = queue[index]
+        if write ~= index then queue[index] = nil end
+        write = write + 1
+    end
+    for index = write, #queue do queue[index] = nil end
+    run.BagQueueHead = 1
+end
+
 local function armBagWake(delaySeconds)
     if not bagsEnabled() or run.WaitingBagCount == 0 then return end
     local target = os.clock() + math.max(tonumber(delaySeconds) or 0, 0)
@@ -469,187 +500,156 @@ local function armBagWake(delaySeconds)
     end)
 end
 
-local function tryCollectBag(record)
-    if not record or run.WaitingBags[record.Id] ~= record or not bagsEnabled() then return end
-    local now = os.clock()
-
-    if record.EventOnly then
-        if now < (record.NextAttempt or 0) then
-            armBagWake(record.NextAttempt - now)
-            return
-        end
-        if record.Attempts >= 2 then
-            run.BagErrors = run.BagErrors + 1
-            closeBag(record, false)
-            armStatus()
-            return
-        end
-    else
-        local item = record.Item
-        if not item or not item.Parent then
-            closeBag(record, false)
-            armStatus()
-            return
-        end
-        if not bagReady(item) then return end
-        record.Position = objectPosition(item)
-    end
-
-    local position = normalizePosition(record.Position)
-    if not position then
-        run.BagErrors = run.BagErrors + 1
-        closeBag(record, false)
-        armStatus()
-        return
-    end
-
-    local sent, _, route = fire("Collect Lootbag", record.Id, position)
-    run.RouteLootbags = route or "unavailable"
-    record.Attempts = record.Attempts + 1
-    if record.EventOnly and record.Attempts == 2 then
-        run.BagRetried = run.BagRetried + 1
-    end
-    if sent then
-        run.BagSent = run.BagSent + 1
-        if record.EventOnly then
-            record.NextAttempt = now + (record.Attempts == 1
-                and BAG_ACK_TIMEOUT or BAG_FINAL_ACK_TIMEOUT)
-            armBagWake(record.NextAttempt - now)
-        else
-            closeBag(record, false)
-        end
-    elseif record.EventOnly and record.Attempts < 2 then
-        record.NextAttempt = now + 0.2
-        armBagWake(0.2)
-    else
-        run.BagErrors = run.BagErrors + 1
-        closeBag(record, false)
-    end
-    armStatus()
+local function enqueueReadyBag(record)
+    if not record or record.Queued or run.BagById[record.Id] ~= record then return end
+    record.Queued = true
+    run.BagQueue[#run.BagQueue + 1] = record
+    armBagWake(0)
 end
 
-processBagWake = function()
-    if not bagsEnabled() then return end
-    local now = os.clock()
-    local due = {}
-    local nextAt
-    for _, record in pairs(run.WaitingBags) do
-        if record.EventOnly then
-            local at = tonumber(record.NextAttempt) or now
-            if at <= now then
-                due[#due + 1] = record
-            elseif not nextAt or at < nextAt then
-                nextAt = at
+local function enqueueDelayedBag(record, due)
+    if not record or run.BagById[record.Id] ~= record then return end
+    record.Due = due
+    if not record.Delayed then
+        record.Delayed = true
+        run.BagDelayed[#run.BagDelayed + 1] = record
+    end
+    armBagWake(math.max(due - os.clock(), 0))
+end
+
+local function processDelayedBags(now)
+    local delayed = run.BagDelayed
+    local write, nextAt = 1, nil
+    for index = 1, #delayed do
+        local record = delayed[index]
+        if record and record.Delayed then
+            local due = tonumber(record.Due) or now
+            if run.BagById[record.Id] ~= record then
+                record.Delayed = false
+                if not record.Queued then releaseBagRecord(record) end
+            elseif due <= now then
+                record.Delayed = false
+                if record.State == "sent" then
+                    closeBag(record, false)
+                else
+                    enqueueReadyBag(record)
+                end
+            else
+                delayed[write] = record
+                write = write + 1
+                if not nextAt or due < nextAt then nextAt = due end
             end
         end
     end
-    for _, record in ipairs(due) do tryCollectBag(record) end
-    if nextAt and run.WaitingBagCount > 0 then
-        armBagWake(math.max(nextAt - os.clock(), 0))
-    end
+    for index = write, #delayed do delayed[index] = nil end
+    return nextAt
 end
 
-local function watchReadyChild(record, child)
-    if not child or (child.Name ~= "ReadyForCollection"
-        and child.Name ~= "ReadyForCollection_Attr") then return end
-    if child:IsA("ValueBase") then
-        local list = run.RecordConnections[record.Id]
-        if list then
-            list[#list + 1] = child.Changed:Connect(function()
-                tryCollectBag(record)
-            end)
-        end
-    end
-    tryCollectBag(record)
-end
-
-local function watchBag(item)
-    if not bagsEnabled() or not item then return end
-    local context = run.Context
-    if context and type(context.LocalLootOwner) == "function" then
-        local checked, allowed, resolved = pcall(context.LocalLootOwner, item)
-        if checked and resolved == true and allowed ~= true then
-            run.BagSkipped = run.BagSkipped + 1
-            armStatus()
-            return
-        end
-    end
-
-    local id = objectId(item)
-    if not id or run.WaitingBags[id] then return end
-    local record = {
-        Id = id,
-        Item = item,
-        Position = objectPosition(item),
-        EventOnly = false,
-        Attempts = 0,
-    }
-    run.WaitingBags[id] = record
-    run.WaitingBagCount = run.WaitingBagCount + 1
-
-    if bagReady(item) then
-        tryCollectBag(record)
-        return
-    end
-
-    local list = {}
-    run.RecordConnections[id] = list
-    local readyValue = item:FindFirstChild("ReadyForCollection_Attr")
-        or item:FindFirstChild("ReadyForCollection")
-    if readyValue then
-        watchReadyChild(record, readyValue)
+local function collectBag(record, now)
+    local profiled = profileBegin("PSX_LootbagFlush")
+    local sent, _, route = fire("Collect Lootbag", record.Id, record.Position)
+    profileEnd(profiled)
+    run.RouteLootbags = route or "unavailable"
+    record.Attempts = (record.Attempts or 0) + 1
+    if sent then
+        run.BagSent = run.BagSent + 1
+        record.State = "sent"
+        enqueueDelayedBag(record, now + BAG_SENT_TTL)
+    elseif record.Attempts < 2 then
+        run.BagRetried = run.BagRetried + 1
+        record.State = "retry"
+        enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)
     else
-        list[#list + 1] = item.ChildAdded:Connect(function(child)
-            watchReadyChild(record, child)
-        end)
-        list[#list + 1] = item:GetAttributeChangedSignal(
-            "ReadyForCollection"):Connect(function()
-                tryCollectBag(record)
-            end)
-        list[#list + 1] = item:GetAttributeChangedSignal(
-            "ReadyForCollection_Attr"):Connect(function()
-                tryCollectBag(record)
-            end)
+        run.BagErrors = run.BagErrors + 1
+        closeBag(record, false)
     end
-    armStatus()
 end
 
-local function queueBagEvent(id, payload)
+local function queueBagEvent(id, payload, explicitPosition)
     if not bagsEnabled() then return false end
     id = id ~= nil and tostring(id) or nil
     if not id or id == "" then return false end
-    if run.WaitingBags[id] then return true end
+    if run.BagById[id] then return true end
+    if run.WaitingBagCount >= MAX_PENDING_BAGS then
+        run.BagOverflow = run.BagOverflow + 1
+        armStatus()
+        return false
+    end
     if not payloadWorldAllowed(payload) or not payloadOwnerAllowed(payload) then
         run.BagSkipped = run.BagSkipped + 1
         armStatus()
         return true
     end
-    local position = type(payload) == "table"
+    local position = normalizePosition(explicitPosition) or (type(payload) == "table"
         and normalizePosition(payload.position or payload.pos or payload.Position) or nil
+    )
     if not position then
         run.BagErrors = run.BagErrors + 1
         armStatus()
         return false
     end
 
-    local record = {
-        Id = id,
-        Position = position,
-        EventOnly = true,
-        Attempts = 0,
-        NextAttempt = os.clock() + BAG_FIRST_ATTEMPT_DELAY,
-    }
-    run.WaitingBags[id] = record
+    local record = acquireBagRecord()
+    record.Id = id
+    record.Position = position
+    record.Attempts = 0
+    record.State = "queued"
+    run.BagById[id] = record
     run.WaitingBagCount = run.WaitingBagCount + 1
     run.BagEvents = run.BagEvents + 1
-    armBagWake(BAG_FIRST_ATTEMPT_DELAY)
+    enqueueDelayedBag(record, os.clock() + BAG_FIRST_ATTEMPT_DELAY)
     armStatus()
     return true
 end
 
+local function queueBagObject(item)
+    if not bagsEnabled() or not item then return false end
+    local context = run.Context
+    if context and type(context.LocalLootOwner) == "function" then
+        local checked, allowed, resolved = pcall(context.LocalLootOwner, item)
+        if checked and resolved == true and allowed ~= true then
+            run.BagSkipped = run.BagSkipped + 1
+            armStatus()
+            return true
+        end
+    end
+    local id = objectId(item)
+    local position = objectPosition(item)
+    if not id or not position then return false end
+    return queueBagEvent(id, nil, position)
+end
+
 local function acknowledgeBag(id)
     id = id ~= nil and tostring(id) or nil
-    if id then closeBag(run.WaitingBags[id], true) end
+    if id then closeBag(run.BagById[id], true) end
+    armStatus()
+end
+
+processBagWake = function()
+    if not bagsEnabled() then return end
+    local now = os.clock()
+    local nextAt = processDelayedBags(now)
+    local queue = run.BagQueue
+    local processed = 0
+    while processed < BAG_LANES and run.BagQueueHead <= #queue do
+        local index = run.BagQueueHead
+        local record = queue[index]
+        queue[index] = false
+        run.BagQueueHead = index + 1
+        if record then record.Queued = false end
+        if record and run.BagById[record.Id] == record and record.State ~= "sent" then
+            collectBag(record, now)
+            processed = processed + 1
+        elseif record and record.Retired and not record.Delayed then
+            releaseBagRecord(record)
+        end
+    end
+    compactBagQueue()
+    if run.BagQueueHead <= #run.BagQueue then
+        armBagWake(0)
+    elseif nextAt then
+        armBagWake(math.max(nextAt - os.clock(), 0))
+    end
     armStatus()
 end
 
@@ -658,18 +658,21 @@ local function clearOrbBinding()
     clearConnections(run.OrbConnections)
     run.OrbFolder = nil
     table.clear(run.PendingOrbIds)
+    table.clear(run.OrbBatch)
     run.PendingOrbCount = 0
     run.OrbFlushArmed = false
-    run.OrbRetrySpent = false
+    run.OrbRetryArmed = false
 end
 
 local function clearBagBinding()
     run.BagToken = run.BagToken + 1
     run.BagWakeSerial = run.BagWakeSerial + 1
     clearConnections(run.BagConnections)
-    for _, list in pairs(run.RecordConnections) do clearConnections(list) end
-    table.clear(run.RecordConnections)
-    table.clear(run.WaitingBags)
+    for _, record in pairs(run.BagById) do releaseBagRecord(record) end
+    table.clear(run.BagById)
+    table.clear(run.BagQueue)
+    table.clear(run.BagDelayed)
+    run.BagQueueHead = 1
     run.WaitingBagCount = 0
     run.BagWakeArmed = false
     run.BagWakeAt = nil
@@ -726,18 +729,18 @@ local function coinProducerCall(record, original, producerName, ...)
                 or producerName == "PetDamageAnimation" then
                 shouldPrevent = true
             else
-                local catalogReady = coinCatalogReady()
-                shouldPrevent = catalogReady
-                if not catalogReady and producerName == "UpdateCoin" then
-                    instantLandCoin((...))
+                local context = run.Context
+                local rawId, data = ...
+                if context and type(context.ObserveCoin) == "function"
+                    and type(data) == "table" then
+                    pcall(context.ObserveCoin, rawId, data)
                 end
+                shouldPrevent = coinCatalogReady()
             end
         end
     end
     if shouldPrevent then
-        local profiled = profileBegin("PSX_CoinVisualGate")
         run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
-        profileEnd(profiled)
         return nil
     end
     return original(...)
@@ -784,15 +787,12 @@ local function installOrbProducer()
     record.Wrappers.AddOrb = function(id, ...)
         if record.Active and record.Generation == run.Generation
             and orbsEnabled() then
-            local profiled = profileBegin("PSX_LootProducerGate")
             local queued, accepted = pcall(queueOrb, id, true)
             if queued and accepted == true then
                 run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
-                profileEnd(profiled)
                 return nil
             end
             run.OrbErrors = run.OrbErrors + 1
-            profileEnd(profiled)
         end
         return originalAddOrb(id, ...)
     end
@@ -950,11 +950,9 @@ local function installBagProducer()
     record.Wrappers.Add = function(id, payload, ...)
         if record.Active and not record.FailOpen
             and record.Generation == run.Generation and bagsEnabled() then
-            local profiled = profileBegin("PSX_LootProducerGate")
             local ok, accepted = pcall(queueBagEvent, id, payload)
             if ok and accepted == true then
                 run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
-                profileEnd(profiled)
                 return nil
             end
             record.FailOpen = true
@@ -963,7 +961,6 @@ local function installBagProducer()
             run.BagGateReason = ok and "loot payload was not claimable"
                 or "producer callback failed: " .. tostring(accepted)
             if not ok then run.BagErrors = run.BagErrors + 1 end
-            profileEnd(profiled)
             armStatus()
         end
         return originalAdd(id, payload, ...)
@@ -982,6 +979,7 @@ local function installBagProducer()
     record.Wrappers.Remove = function(id, ...)
         if record.Active and record.Generation == run.Generation then
             pcall(acknowledgeBag, id)
+            if bagsEnabled() and not record.FailOpen then return nil end
         end
         return originalRemove(id, ...)
     end
@@ -1065,15 +1063,6 @@ end
 
 local bindRoots
 
-local function producerScriptRelevant(object)
-    if typeof(object) ~= "Instance" then return false end
-    if object.Name ~= "Orbs" and object.Name ~= "Coins"
-        and object.Name ~= "Lootbags" then return false end
-    local scripts = object:FindFirstAncestor("Scripts")
-    local gameFolder = object.Parent
-    return scripts ~= nil and gameFolder ~= nil and gameFolder.Name == "Game"
-end
-
 local function reconcileProducerGates()
     if not contextRunning() then return end
     run.GateGeneration = run.GateGeneration + 1
@@ -1130,34 +1119,65 @@ local function bindPlayerScriptWatchers()
     end
     if playerScripts then
         run.ProducerConnections[#run.ProducerConnections + 1] =
-            playerScripts.DescendantAdded:Connect(function(object)
-                if producerScriptRelevant(object) then
-                    scheduleProducerRebind(object.Name .. " added")
+            playerScripts.ChildAdded:Connect(function(child)
+                if child.Name == "Scripts" then
+                    bindPlayerScriptWatchers()
+                    scheduleProducerRebind("Scripts added")
                 end
             end)
         run.ProducerConnections[#run.ProducerConnections + 1] =
-            playerScripts.DescendantRemoving:Connect(function(object)
-                if object == (run.OrbProducerRecord and run.OrbProducerRecord.Script)
-                    or object == (run.BagProducerRecord and run.BagProducerRecord.Script)
-                    or object == (run.CoinProducerRecord and run.CoinProducerRecord.Script)
-                    or producerScriptRelevant(object) then
-                    scheduleProducerRebind(object.Name .. " removed")
+            playerScripts.ChildRemoved:Connect(function(child)
+                if child.Name == "Scripts" then
+                    bindPlayerScriptWatchers()
+                    scheduleProducerRebind("Scripts removed")
+                end
+            end)
+    end
+
+    local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
+    if scripts then
+        run.ProducerConnections[#run.ProducerConnections + 1] =
+            scripts.ChildAdded:Connect(function(child)
+                if child.Name == "Game" then
+                    bindPlayerScriptWatchers()
+                    scheduleProducerRebind("Game scripts added")
+                end
+            end)
+        run.ProducerConnections[#run.ProducerConnections + 1] =
+            scripts.ChildRemoved:Connect(function(child)
+                if child.Name == "Game" then
+                    bindPlayerScriptWatchers()
+                    scheduleProducerRebind("Game scripts removed")
+                end
+            end)
+    end
+
+    local gameFolder = scripts and scripts:FindFirstChild("Game")
+    if gameFolder then
+        run.ProducerConnections[#run.ProducerConnections + 1] =
+            gameFolder.ChildAdded:Connect(function(child)
+                if child.Name == "Orbs" or child.Name == "Coins"
+                    or child.Name == "Lootbags" then
+                    scheduleProducerRebind(child.Name .. " added")
+                end
+            end)
+        run.ProducerConnections[#run.ProducerConnections + 1] =
+            gameFolder.ChildRemoved:Connect(function(child)
+                if child.Name == "Orbs" or child.Name == "Coins"
+                    or child.Name == "Lootbags" then
+                    scheduleProducerRebind(child.Name .. " removed")
                 end
             end)
     end
 end
 
 local function queueOrbFallback(item)
-    local profiled = profileBegin("PSX_LootFallback")
     local ok = pcall(queueOrb, item, false)
-    profileEnd(profiled)
     if not ok then run.OrbErrors = run.OrbErrors + 1 end
 end
 
 local function watchBagFallback(item)
-    local profiled = profileBegin("PSX_LootFallback")
-    local ok = pcall(watchBag, item)
-    profileEnd(profiled)
+    local ok = pcall(queueBagObject, item)
     if not ok then run.BagErrors = run.BagErrors + 1 end
 end
 
@@ -1185,7 +1205,7 @@ local function bindLootbagFolder(folder)
             local id = objectId(item)
             if id then acknowledgeBag(id) end
         end)
-    scanFolder(folder, run.BagGate and watchBag or watchBagFallback)
+    scanFolder(folder, watchBagFallback)
 end
 
 local function resolveThings()
@@ -1247,6 +1267,7 @@ local function resetStats()
     run.BagRetried = 0
     run.BagSkipped = 0
     run.BagErrors = 0
+    run.BagOverflow = 0
     run.VisualInstancesPrevented = 0
     run.GateGeneration = 0
     run.LastRebindReason = "startup"
@@ -1351,7 +1372,6 @@ local function stats()
         GateGeneration = run.GateGeneration,
         LastRebindReason = run.LastRebindReason,
         VisualInstancesPrevented = run.VisualInstancesPrevented,
-        InstantCoinLandings = run.InstantCoinLandings,
         PendingOrbs = run.PendingOrbCount,
         WaitingBags = run.WaitingBagCount,
         OrbEvents = run.OrbEvents,
@@ -1366,6 +1386,7 @@ local function stats()
         BagRetried = run.BagRetried,
         BagSkipped = run.BagSkipped,
         BagErrors = run.BagErrors,
+        BagOverflow = run.BagOverflow,
     }
 end
 
