@@ -106,3 +106,51 @@ dependency differs from its release identity, or a generated artifact is stale.
 The zero-retention test also checks the removed scheduler cannot re-enter the
 active graph, validates the native loot/pet boundaries and models a
 100,000-event burst with no retained backlog.
+
+## Develop performance wishlist
+
+### Remote farming and reward-settlement parity
+
+Observed on `1.4.1-dev.22` with the same Tech Coins farm:
+
+- standing in the farm location: approximately `+3.79T` over the last 60 seconds;
+- standing at the egg location while auto hatch is active: approximately
+  `+3.04T` over the last 60 seconds;
+- measured short-window deficit: approximately `0.75T/min`, or `19.8%` relative
+  to the in-zone sample.
+
+Treat the measurements as a reproducible lead, not a confirmed constant. The
+desired outcome is location-independent pet dispatch and complete server-side
+reward settlement without reintroducing orb physics, visual teleportation or
+unbounded retries. The investigation must separate:
+
+1. player distance from the target zone;
+2. auto-hatch and inventory/delete request contention;
+3. pet free-to-dispatch and dispatch-to-working latency;
+4. delayed, rejected, expired or unclaimed orb IDs;
+5. streamed-out targets versus the named server coin catalog.
+
+The comparison matrix is: in-zone/no eggs, remote/no eggs, remote/Native eggs,
+remote/Headless eggs, then each remote case with direct loot disabled and
+enabled. Each case should run for at least ten minutes and record balance delta,
+working/joining pets, target gaps, Join Coin rejects, route RTT and orb
+queued/sent/rejected/expired counts. Do not optimize against one rolling
+60-second boundary.
+
+Candidate improvements, only after the matrix identifies the loss stage:
+
+- preserve a server-fed target-ID cache when the farm zone is streamed out;
+- hand a freed pet directly to its next cached target before it can return to
+  the player;
+- keep farm dispatch independent from egg and inventory post-processing lanes;
+- coalesce Claim Orbs adaptively with one request in flight and a bounded
+  catch-up batch;
+- distinguish accepted reward IDs, stale IDs and transport failures so only
+  genuine transport failures can retry;
+- expose settled-value rate alongside raw target destruction rate.
+
+Acceptance requires remote Headless farming to remain within 5% of the in-zone
+ten-minute baseline with zero dropped loot IDs, no live-target switching and no
+regression in FPS, memory or producer-gate health. The longer-term upside target
+is recovering the observed 20-30% loss before considering separate damage or
+farm-strength upgrades.
