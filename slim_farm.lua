@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.22"
+local VERSION = "1.4.1-dev.23"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -303,12 +303,24 @@ local rewardStates = {
 }
 
 do
+local Stats = game:GetService("Stats")
+local QUICK_HUD_ROW_KEYS = { "Ping", "Rate", "Farm", "Automation" }
+
+local function quickHUDRowEnabled(key)
+    if key == "Ping" then return config.QuickHUDPing == true end
+    if key == "Rate" then return config.QuickHUDFarmRate == true end
+    if key == "Farm" then return config.QuickHUDFarmState == true end
+    if key == "Automation" then return config.QuickHUDAutomation == true end
+    return false
+end
+
 local hud = {
     Token = token,
     Gui = nil,
     Frame = nil,
     Rows = {},
     Last = {},
+    ActiveLabels = {},
     Collapsed = false,
 }
 
@@ -318,6 +330,7 @@ function hud:Destroy()
     self.Frame = nil
     self.Rows = {}
     self.Last = {}
+    table.clear(self.ActiveLabels)
     if gui then pcall(function() gui:Destroy() end) end
 end
 
@@ -326,16 +339,10 @@ function hud:ApplyVisibility()
     self.Gui.Enabled = config.QuickHUD == true
     if not self.Gui.Enabled then return end
 
-    local definitions = {
-        { "Ping", config.QuickHUDPing },
-        { "Rate", config.QuickHUDFarmRate },
-        { "Farm", config.QuickHUDFarmState },
-        { "Automation", config.QuickHUDAutomation },
-    }
     local y = 34
-    for _, definition in ipairs(definitions) do
-        local row = self.Rows[definition[1]]
-        local visible = not self.Collapsed and definition[2] == true
+    for _, key in ipairs(QUICK_HUD_ROW_KEYS) do
+        local row = self.Rows[key]
+        local visible = not self.Collapsed and quickHUDRowEnabled(key)
         if row then
             row.Visible = visible
             if visible then
@@ -433,7 +440,7 @@ function hud:Create()
         collapseCorner.CornerRadius = UDim.new(0, 6)
         collapseCorner.Parent = collapse
 
-        for _, key in ipairs({ "Ping", "Rate", "Farm", "Automation" }) do
+        for _, key in ipairs(QUICK_HUD_ROW_KEYS) do
             local row = Instance.new("TextLabel")
             row.Name = key
             row.Size = UDim2.new(1, -16, 0, 24)
@@ -481,7 +488,7 @@ function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
 
     local pingText = "Ping: unavailable"
     local pingOk, ping = pcall(function()
-        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+        return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
     end)
     if pingOk and tonumber(ping) then
         pingText = "Ping: " .. tostring(math.floor(tonumber(ping) + 0.5)) .. " ms"
@@ -506,7 +513,8 @@ function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
     end
     self:SetRow("Farm", farmText)
 
-    local active = {}
+    local active = self.ActiveLabels
+    table.clear(active)
     if config.AutoEgg then active[#active + 1] = "Egg" end
     if config.AutoGoldenGalaxyFox then active[#active + 1] = "Gold" end
     if config.AutoRainbowGalaxyFox then active[#active + 1] = "RB" end
@@ -816,12 +824,18 @@ local currencyFallback = {
     Values = {},
 }
 
-local function buildCurrencyMap(save, currencyNames)
-    local wanted = {}
-    for _, currencyName in ipairs(currencyNames or {}) do
-        wanted[normalizeCurrencyName(currencyName)] = true
+local function buildCurrencyMap(save, currencyNames, wanted, values)
+    wanted = wanted or {}
+    values = values or {}
+    table.clear(wanted)
+    table.clear(values)
+    if type(currencyNames) == "string" then
+        wanted[normalizeCurrencyName(currencyNames)] = true
+    else
+        for _, currencyName in ipairs(currencyNames or {}) do
+            wanted[normalizeCurrencyName(currencyName)] = true
+        end
     end
-    local values = {}
     local function scan(container)
         if type(container) ~= "table" then return end
         for key, value in pairs(container) do
@@ -872,7 +886,7 @@ local function getCurrentCurrency(currencyName, save, allowFallback, now)
         pcall(function() save = Library.Save.Get() end)
     end
     local normalized = normalizeCurrencyName(currencyName)
-    local mapped = buildCurrencyMap(save, { currencyName })
+    local mapped = buildCurrencyMap(save, currencyName)
     if mapped[normalized] ~= nil then return mapped[normalized] end
     if allowFallback == false then return nil end
     local fallback = refreshCurrencyFallback(now)
@@ -1287,6 +1301,12 @@ end
 
 local currencyMonitor = {
     Samples = {},
+    Tracked = {},
+    Balances = {},
+    WantedMap = {},
+    MappedValues = {},
+    ActiveNames = {},
+    RateLines = {},
     Names = {
         "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
         "Rainbow Coins", "Cartoon Coins", "Gingerbread",
@@ -1337,22 +1357,35 @@ end
 
 function currencyMonitor:Reset()
     table.clear(self.Samples)
+    table.clear(self.Tracked)
+    table.clear(self.Balances)
+    table.clear(self.WantedMap)
+    table.clear(self.MappedValues)
+    table.clear(self.ActiveNames)
+    table.clear(self.RateLines)
     self.StartedAt = os.clock()
 end
 
 function currencyMonitor:TrackedNames()
     if config.TrackedCurrency == "Active Balances" then return self.Names end
+    local tracked = self.Tracked
+    table.clear(tracked)
     local selected = getTrackedCurrencyName()
-    return selected and { selected } or {}
+    if selected then tracked[#tracked + 1] = selected end
+    if config.TrackedCurrency == "Auto" and selected ~= "Diamonds" then
+        tracked[#tracked + 1] = "Diamonds"
+    end
+    return tracked
 end
 
 function currencyMonitor:GetBalances(currencyNames, now)
-    local balances = {}
+    local balances = self.Balances
+    table.clear(balances)
     local save
     if Library.Save and type(Library.Save.Get) == "function" then
         pcall(function() save = Library.Save.Get() end)
     end
-    local mapped = buildCurrencyMap(save, currencyNames)
+    local mapped = buildCurrencyMap(save, currencyNames, self.WantedMap, self.MappedValues)
     local allowFallback = #currencyNames == 1
     local fallback
     for _, currencyName in ipairs(currencyNames) do
@@ -4902,6 +4935,12 @@ local function shutdown(reason)
     lootCollector:StopWorker()
     lootCollector.Controller = nil
     table.clear(currencyMonitor.Samples)
+    table.clear(currencyMonitor.Tracked)
+    table.clear(currencyMonitor.Balances)
+    table.clear(currencyMonitor.WantedMap)
+    table.clear(currencyMonitor.MappedValues)
+    table.clear(currencyMonitor.ActiveNames)
+    table.clear(currencyMonitor.RateLines)
     currencyMonitor.StartedAt = nil
     currencyFallback.At = -math.huge
     table.clear(currencyFallback.Values)
@@ -4951,6 +4990,15 @@ UI.SessionSection:Button({
 
 local lastCurrencySelection, lastRateText = nil, nil
 
+local function sortTrackedCurrencyNames(leftName, rightName)
+    local left = currencyMonitor.Samples[leftName]
+    local right = currencyMonitor.Samples[rightName]
+    local leftGain = left and left.PerMinute or 0
+    local rightGain = right and right.PerMinute or 0
+    if leftGain == rightGain then return leftName < rightName end
+    return leftGain > rightGain
+end
+
 local function updateCurrencyMonitorStatus(publish)
     local farmEnabled = config.PetFarm == true
     local selection = config.TrackedCurrency
@@ -4978,21 +5026,17 @@ local function updateCurrencyMonitorStatus(publish)
         if not farmEnabled then
             rateText = "Balance farm rate: pet farm disabled\nBalances remain rebased; the rolling/session totals are preserved."
         else
-            local active = {}
+            local active = currencyMonitor.ActiveNames
+            table.clear(active)
             for _, currencyName in ipairs(currencyNames) do
                 local sample = balances[currencyName] ~= nil
                     and currencyMonitor.Samples[currencyName] or nil
                 if sample and (config.TrackedCurrency ~= "Active Balances"
                     or sample.TotalEarned > 0) then
-                    active[#active + 1] = { Name = currencyName, Sample = sample }
+                    active[#active + 1] = currencyName
                 end
             end
-            table.sort(active, function(left, right)
-                local leftGain = left.Sample.PerMinute or 0
-                local rightGain = right.Sample.PerMinute or 0
-                if leftGain == rightGain then return left.Name < right.Name end
-                return leftGain > rightGain
-            end)
+            table.sort(active, sortTrackedCurrencyNames)
 
             if available == 0 then
                 rateText = "Balance farm rate: currencies were not found in Library.Save"
@@ -5004,11 +5048,16 @@ local function updateCurrencyMonitorStatus(publish)
                     math.floor(elapsed + 0.5)
                 )
             else
-                local lines = {}
+                local lines = currencyMonitor.RateLines
+                table.clear(lines)
                 local limit = math.min(#active, 4)
                 for index = 1, limit do
-                    local entry = active[index]
-                    lines[#lines + 1] = currencyMonitor:RateLine(entry.Name, entry.Sample, now)
+                    local currencyName = active[index]
+                    lines[#lines + 1] = currencyMonitor:RateLine(
+                        currencyName,
+                        currencyMonitor.Samples[currencyName],
+                        now
+                    )
                 end
                 if #active > limit then
                     lines[#lines + 1] = "+" .. tostring(#active - limit) .. " more active balance(s)"

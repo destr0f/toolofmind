@@ -117,7 +117,11 @@ for (const marker of [
     "CURRENCY_WINDOW_CAPACITY = 128",
     "sample.RollingEarned",
     "sample.TotalSpent",
-    "buildCurrencyMap(save, currencyNames)",
+    "buildCurrencyMap(save, currencyNames, self.WantedMap, self.MappedValues)",
+    "tracked[#tracked + 1] = \"Diamonds\"",
+    "local balances = self.Balances",
+    "local active = currencyMonitor.ActiveNames",
+    "local lines = currencyMonitor.RateLines",
 ]) {
     assert(source.includes(marker), `missing rolling-window marker: ${marker}`);
 }
@@ -130,6 +134,8 @@ const balancesFunction = source.slice(
 );
 assert((balancesFunction.match(/Library\.Save\.Get\(\)/g) || []).length === 1,
     "telemetry reads Library.Save more than once per sample");
+assert(!balancesFunction.includes("local balances = {}"),
+    "telemetry allocates a new balance map for every sample");
 
 process.stdout.write(
     "Rolling currency window OK | boundaries=3 | gross/spend=separate | 999M=1.00B\n"
