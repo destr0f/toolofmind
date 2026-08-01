@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.24"
+local VERSION = "1.4.1-dev.25"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -176,6 +176,7 @@ end
 for _, key in ipairs({
     "PSX_OG_PROFILER",
     "PSX_OG_RUNTIME_KERNEL",
+    "PSX_OG_NETWORK_ROUTE_GOVERNOR",
     "PSX_OG_AutoEggBuild",
     "PSX_OG_RewardInvokeCaptureState",
     "PSX_OG_BoostRemoteCaptureState",
@@ -274,6 +275,7 @@ local config = {
     QuickHUDFarmRate = true,
     QuickHUDFarmState = true,
     QuickHUDAutomation = true,
+    QuickHUDNetwork = true,
 }
 
 local DIAMOND_PACK_TIER = 4
@@ -302,15 +304,23 @@ local rewardStates = {
     },
 }
 
+-- Forward declarations keep early snapshot/event workers on the same
+-- session-safe route used by every lazy automation module.
+local networkGovernor
+local invokeCommand
+local fireCommand
+local routeText
+
 do
 local Stats = game:GetService("Stats")
-local QUICK_HUD_ROW_KEYS = { "Ping", "Rate", "Farm", "Automation" }
+local QUICK_HUD_ROW_KEYS = { "Ping", "Rate", "Farm", "Automation", "Network" }
 
 local function quickHUDRowEnabled(key)
     if key == "Ping" then return config.QuickHUDPing == true end
     if key == "Rate" then return config.QuickHUDFarmRate == true end
     if key == "Farm" then return config.QuickHUDFarmState == true end
     if key == "Automation" then return config.QuickHUDAutomation == true end
+    if key == "Network" then return config.QuickHUDNetwork == true end
     return false
 end
 
@@ -483,7 +493,7 @@ function hud:Create()
     return true
 end
 
-function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
+function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone, networkText)
     if not self.Gui then return end
 
     local pingText = "Ping: unavailable"
@@ -525,6 +535,7 @@ function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
         or config.AutoSuperLucky or config.AutoUltraLucky then active[#active + 1] = "Boosts" end
     if config.Orbs or config.Lootbags then active[#active + 1] = "Loot" end
     self:SetRow("Automation", "Auto: " .. (#active > 0 and table.concat(active, ", ") or "none"))
+    self:SetRow("Network", tostring(networkText or "Net: waiting for route activity"))
 
     self:ApplyVisibility()
 end
@@ -1830,8 +1841,7 @@ refreshCoinSnapshot = function()
     if coinSync.SnapshotBusy or coinSync.SnapshotPrimed or coinSync.SnapshotFailOpen
         or coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then return end
     coinSync.SnapshotAttempts = coinSync.SnapshotAttempts + 1
-    local network = networkReady()
-    if not network then
+    if type(invokeCommand) ~= "function" then
         coinSync.LastProblem = "Library.Network is not ready"
         if coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then
             coinSync.SnapshotFailOpen = true
@@ -1847,7 +1857,7 @@ refreshCoinSnapshot = function()
     coinSync.SnapshotBusy = true
     local generation = coinGeneration
     local serialAtStart = coinMutationSerial
-    local ok, response = pcall(network.Invoke, "Get Coins")
+    local ok, _, invokeProblem, _, _, _, response = invokeCommand("Get Coins")
     if generation ~= coinGeneration then
         coinSync.SnapshotBusy = false
         return
@@ -1885,7 +1895,7 @@ refreshCoinSnapshot = function()
     if responseAccepted then
         coinSync.LastProblem = string.format("ready with %d records", validCount)
     elseif not ok then
-        coinSync.LastProblem = "Get Coins failed: " .. tostring(response)
+        coinSync.LastProblem = "Get Coins failed: " .. tostring(invokeProblem)
     elseif type(response) ~= "table" then
         coinSync.LastProblem = "Get Coins returned " .. typeof(response)
     elseif validCount == 0 then
@@ -2459,10 +2469,430 @@ local function getFireRemote(commandName)
         tostring(commandName) .. " did not resolve to a live RemoteEvent"
 end
 
-local function invokeCommand(commandName, ...)
+-- One bounded control plane for every outgoing named route. It retains only
+-- active semantic keys and a 32-sample latency ring per command; payloads and
+-- completed UID histories are never stored.
+networkGovernor = {
+    Running = true,
+    Generation = env.PSX_OG_RUNTIME_GENERATION,
+    Routes = {},
+    Active = {},
+    InFlight = 0,
+    WindowStarted = os.clock(),
+    LastSnapshotAt = -math.huge,
+    RecentP95 = 0,
+    BackpressureUntil = 0,
+    TotalCoalesced = 0,
+    TotalRejected = 0,
+    TotalTransport = 0,
+    TotalTimeouts = 0,
+    TotalStale = 0,
+    CategoryCalls = { Farm = 0, Loot = 0, Egg = 0, Background = 0 },
+    Cache = {
+        Compact = "Net: warming up",
+        Detailed = "Network route governor is warming up.",
+        Queue = 0,
+        Backpressure = false,
+    },
+}
+
+do
+local LATENCY_WINDOW = 32
+local SNAPSHOT_INTERVAL = 5
+local INVOKE_TIMEOUT = 8
+local LOW_PRIORITY_INFLIGHT_LIMIT = 12
+local LOW_PRIORITY_P95_LIMIT = 0.75
+
+local function routeRateLimit(priority)
+    if priority <= 0 then return 256 end
+    if priority == 1 then return 48 end
+    if priority == 2 then return 8 end
+    if priority == 3 then return 3 end
+    return 2
+end
+
+local function routePolicy(commandName)
+    local name = tostring(commandName or "")
+    if name == "Join Coin" or name == "Leave Coin"
+        or name == "Change Pet Target" or name == "Farm Coin"
+        or name == "Get Coins" then
+        return 0, "Farm"
+    end
+    if name == "Claim Orbs" or name == "Collect Lootbag" then
+        return 1, "Loot"
+    end
+    if name == "Buy Egg Yay" or name == "Opening Egg"
+        or name == "Delete Several Pets" then
+        return 2, "Egg"
+    end
+    if string.find(name, "Golden", 1, true)
+        or string.find(name, "Rainbow", 1, true)
+        or string.find(name, "Dark Matter", 1, true)
+        or string.find(name, "Boost", 1, true)
+        or string.find(name, "Redeem", 1, true)
+        or name == "Get OSTime" or name == "Buy DiamondPack" then
+        return 3, "Background"
+    end
+    return 4, "Background"
+end
+
+local function compactValue(value)
+    local kind = type(value)
+    if kind ~= "table" then return tostring(value) end
+    local size = #value
+    if size > 0 then
+        local parts = table.create(math.min(size, 32) + 1)
+        parts[1] = tostring(size)
+        local limit = math.min(size, 32)
+        for index = 1, limit do
+            local item = value[index]
+            if type(item) == "table" then
+                item = item.uid or item.id or item.PetId or item.petId or index
+            end
+            parts[index + 1] = tostring(item)
+        end
+        return table.concat(parts, ",")
+    end
+    return "table"
+end
+
+local function semanticKey(kind, commandName, arguments)
+    local command = tostring(commandName)
+    if command == "Claim Orbs" then
+        -- The loot reactor owns per-orb deduplication and permits one native
+        -- batch at a time. A command-wide key prevents a second producer.
+        return tostring(kind) .. ":" .. command
+    end
+    if command == "Join Coin" or command == "Leave Coin" then
+        return tostring(kind) .. ":" .. command .. ":"
+            .. compactValue(arguments[1]) .. ":" .. compactValue(arguments[2])
+    end
+    if command == "Change Pet Target" then
+        -- Change Pet Target is (petUID, "Coin"|"Player", coinID?). The third
+        -- value is part of the identity; omitting it coalesces different live
+        -- targets for the same pet and silently drops a valid reassignment.
+        return tostring(kind) .. ":" .. command .. ":"
+            .. compactValue(arguments[1]) .. ":" .. compactValue(arguments[2])
+            .. ":" .. compactValue(arguments[3])
+    end
+    if command == "Farm Coin" then
+        return tostring(kind) .. ":" .. command .. ":"
+            .. compactValue(arguments[1]) .. ":" .. compactValue(arguments[2])
+    end
+    if command == "Collect Lootbag" or command == "Buy Egg Yay"
+        or command == "Opening Egg" or command == "Activate Boost"
+        or command == "Redeem VIP Rewards" or command == "Redeem Rank Rewards" then
+        return tostring(kind) .. ":" .. command .. ":"
+            .. compactValue(arguments[1]) .. ":" .. compactValue(arguments[2])
+    end
+    return tostring(kind) .. ":" .. command .. ":"
+        .. compactValue(arguments[1])
+end
+
+local function routeFor(governor, commandName)
+    local name = tostring(commandName)
+    local route = governor.Routes[name]
+    if route then return route end
+    local priority, category = routePolicy(name)
+    local userId = tonumber(player and player.UserId) or 0
+    local hash = 0
+    for index = 1, #name do hash = (hash * 33 + string.byte(name, index)) % 997 end
+    route = {
+        Name = name,
+        Priority = priority,
+        Category = category,
+        Calls = 0,
+        CallsWindow = 0,
+        Accepted = 0,
+        Rejected = 0,
+        Transport = 0,
+        Timeouts = 0,
+        InFlight = 0,
+        Coalesced = 0,
+        Stale = 0,
+        Latencies = table.create(LATENCY_WINDOW),
+        LatencyCursor = 0,
+        LatencyCount = 0,
+        P50 = 0,
+        P95 = 0,
+        Max = 0,
+        MaxCallsPerSecond = routeRateLimit(priority),
+        RateWindowAt = governor.WindowStarted,
+        RateWindowCalls = 0,
+        PhaseAt = priority >= 3
+            and (governor.WindowStarted + 0.05 + ((userId + hash) % 451) / 1000)
+            or governor.WindowStarted,
+        PhasePassed = priority < 3,
+    }
+    governor.Routes[name] = route
+    return route
+end
+
+function networkGovernor:Begin(kind, commandName, arguments)
+    if not self.Running then return nil, nil, nil, "governor stopped" end
+    local route = routeFor(self, commandName)
+    local now = os.clock()
+    local key = semanticKey(kind, commandName, arguments)
+    if self.Active[key] then
+        route.Coalesced = route.Coalesced + 1
+        self.TotalCoalesced = self.TotalCoalesced + 1
+        return nil, nil, nil, "coalesced duplicate"
+    end
+    -- Reserve before phase/rate waits so simultaneous P3/P4 workers cannot
+    -- accumulate as duplicate sleepers and all wake into the same route.
+    self.Active[key] = true
+    local function abort(reason, countAsStale)
+        self.Active[key] = nil
+        if countAsStale then
+            route.Stale = route.Stale + 1
+            self.TotalStale = self.TotalStale + 1
+        end
+        return nil, nil, nil, reason
+    end
+    if not route.PhasePassed then
+        if now < route.PhaseAt then
+            task.wait(route.PhaseAt - now)
+            if not self.Running then return abort("governor stopped", false) end
+            now = os.clock()
+        end
+        route.PhasePassed = true
+    end
+
+    -- P3/P4 workers are deferred rather than failed. This keeps their
+    -- existing retry/disable semantics untouched while P0-P2 remain instant.
+    if route.Priority >= 3 then
+        local pressureDeadline = now + 1
+        while self.Running and os.clock() < pressureDeadline
+            and (self.InFlight >= LOW_PRIORITY_INFLIGHT_LIMIT
+                or os.clock() < self.BackpressureUntil) do
+            task.wait(0.05)
+        end
+        if not self.Running then return abort("governor stopped", false) end
+        now = os.clock()
+    end
+
+    if now - route.RateWindowAt >= 1 then
+        route.RateWindowAt = now
+        route.RateWindowCalls = 0
+    end
+    if route.RateWindowCalls >= route.MaxCallsPerSecond then
+        if route.Priority >= 3 then
+            task.wait(math.max(1 - (now - route.RateWindowAt), 0.01))
+            if not self.Running then return abort("governor stopped", false) end
+            now = os.clock()
+            route.RateWindowAt = now
+            route.RateWindowCalls = 0
+        else
+            return abort("route rate limit", true)
+        end
+    end
+
+    self.InFlight = self.InFlight + 1
+    route.InFlight = route.InFlight + 1
+    route.Calls = route.Calls + 1
+    route.CallsWindow = route.CallsWindow + 1
+    route.RateWindowCalls = route.RateWindowCalls + 1
+    self.CategoryCalls[route.Category] = (self.CategoryCalls[route.Category] or 0) + 1
+    return route, key, now, nil
+end
+
+function networkGovernor:Finish(route, key, startedAt, transportOk, accepted)
+    if key ~= nil then self.Active[key] = nil end
+    if type(route) ~= "table" then return end
+    if not self.Running then
+        route.InFlight = 0
+        return
+    end
+    self.InFlight = math.max(self.InFlight - 1, 0)
+    route.InFlight = math.max(route.InFlight - 1, 0)
+    local elapsed = math.max(os.clock() - (tonumber(startedAt) or os.clock()), 0)
+    if elapsed >= LOW_PRIORITY_P95_LIMIT then
+        -- This is a short pressure window, not a historical latch. A single
+        -- slow reward/machine request must never throttle P3/P4 forever.
+        self.BackpressureUntil = math.max(self.BackpressureUntil, os.clock() + 3)
+    end
+    route.LatencyCursor = route.LatencyCursor % LATENCY_WINDOW + 1
+    route.Latencies[route.LatencyCursor] = elapsed
+    route.LatencyCount = math.min(route.LatencyCount + 1, LATENCY_WINDOW)
+    route.Max = math.max(route.Max, elapsed)
+    if elapsed >= INVOKE_TIMEOUT then
+        route.Timeouts = route.Timeouts + 1
+        self.TotalTimeouts = self.TotalTimeouts + 1
+    end
+    if transportOk ~= true then
+        route.Transport = route.Transport + 1
+        self.TotalTransport = self.TotalTransport + 1
+    elseif accepted == false then
+        route.Rejected = route.Rejected + 1
+        self.TotalRejected = self.TotalRejected + 1
+    else
+        route.Accepted = route.Accepted + 1
+    end
+end
+
+function networkGovernor:MarkStale(commandName, amount)
+    local count = math.max(math.floor(tonumber(amount) or 1), 1)
+    local route = routeFor(self, commandName)
+    route.Stale = route.Stale + count
+    self.TotalStale = self.TotalStale + count
+end
+
+function networkGovernor:SetLootStats(stats)
+    if type(stats) ~= "table" then
+        self.Cache.LootStats = nil
+        return
+    end
+    -- Copy scalars only. Never retain module tables or payload/UID histories.
+    self.Cache.LootStats = {
+        PendingOrbs = tonumber(stats.PendingOrbs) or 0,
+        AwaitingOrbs = tonumber(stats.AwaitingOrbs) or 0,
+        OrbInFlight = stats.OrbInFlight == true,
+        WaitingBags = tonumber(stats.WaitingBags) or 0,
+        BagInFlight = tonumber(stats.BagInFlight) or 0,
+    }
+end
+
+function networkGovernor:Snapshot(force)
+    local now = os.clock()
+    if force ~= true and now - self.LastSnapshotAt < SNAPSHOT_INTERVAL then
+        return self.Cache
+    end
+    local elapsed = math.max(now - self.WindowStarted, 0.001)
+    local top = {}
+    local highestP95 = 0
+    for _, route in pairs(self.Routes) do
+        local samples = table.create(route.LatencyCount)
+        for index = 1, route.LatencyCount do samples[index] = route.Latencies[index] or 0 end
+        if #samples > 0 then
+            table.sort(samples)
+            route.P50 = samples[math.max(1, math.ceil(#samples * 0.50))] or 0
+            route.P95 = samples[math.max(1, math.ceil(#samples * 0.95))] or 0
+            highestP95 = math.max(highestP95, route.P95)
+        end
+        local calls = route.CallsWindow
+        if calls > 0 then
+            local inserted = false
+            for index = 1, #top do
+                if calls > top[index].Calls then
+                    table.insert(top, index, { Route = route, Calls = calls })
+                    inserted = true
+                    break
+                end
+            end
+            if not inserted then top[#top + 1] = { Route = route, Calls = calls } end
+            if #top > 5 then top[6] = nil end
+        end
+    end
+    self.RecentP95 = highestP95
+
+    local farmRate = (self.CategoryCalls.Farm or 0) / elapsed
+    local lootRate = (self.CategoryCalls.Loot or 0) / elapsed
+    local eggRate = (self.CategoryCalls.Egg or 0) / elapsed
+    local backgroundRate = (self.CategoryCalls.Background or 0) / elapsed
+    local pressure = self.InFlight >= LOW_PRIORITY_INFLIGHT_LIMIT
+        or now < self.BackpressureUntil
+    local topLines = {}
+    local topCompact = {}
+    for index = 1, #top do
+        local route = top[index].Route
+        topLines[index] = string.format(
+            "%s %.1f/s p50/p95/max %d/%d/%dms q%d a/r/t/o/c/s %d/%d/%d/%d/%d/%d",
+            route.Name,
+            top[index].Calls / elapsed,
+            math.floor(route.P50 * 1000 + 0.5),
+            math.floor(route.P95 * 1000 + 0.5),
+            math.floor(route.Max * 1000 + 0.5),
+            route.InFlight,
+            route.Accepted,
+            route.Rejected,
+            route.Transport,
+            route.Timeouts,
+            route.Coalesced,
+            route.Stale
+        )
+        topCompact[index] = string.format("%s %.1f/s", route.Name, top[index].Calls / elapsed)
+        route.CallsWindow = 0
+    end
+    for _, route in pairs(self.Routes) do route.CallsWindow = 0 end
+    self.CategoryCalls.Farm = 0
+    self.CategoryCalls.Loot = 0
+    self.CategoryCalls.Egg = 0
+    self.CategoryCalls.Background = 0
+    self.WindowStarted = now
+    self.LastSnapshotAt = now
+
+    local loot = self.Cache.LootStats or {}
+    local lootCompact = string.format(
+        "O p/a/i %d/%d/%d | B p/i %d/%d",
+        tonumber(loot.PendingOrbs) or 0,
+        tonumber(loot.AwaitingOrbs) or 0,
+        loot.OrbInFlight and 1 or 0,
+        tonumber(loot.WaitingBags) or 0,
+        tonumber(loot.BagInFlight) or 0
+    )
+    self.Cache.Compact = string.format(
+        "Net: q%d | F/L/E/B %.1f/%.1f/%.1f/%.1f/s | c/r/t %d/%d/%d | %s\nTop: %s\n%s",
+        self.InFlight,
+        farmRate,
+        lootRate,
+        eggRate,
+        backgroundRate,
+        self.TotalCoalesced,
+        self.TotalRejected,
+        self.TotalTransport,
+        pressure and "P3/P4 held" or "normal",
+        #topCompact > 0 and table.concat(topCompact, " | ") or "idle",
+        lootCompact
+    )
+    self.Cache.Detailed = string.format(
+        "Governor queue: %d | calls/s Farm %.1f, Loot %.1f, Egg %.1f, Background %.1f\n"
+            .. "coalesced/rejected/transport/timeout/stale: %d/%d/%d/%d/%d | backpressure: %s\nTop routes: %s",
+        self.InFlight,
+        farmRate,
+        lootRate,
+        eggRate,
+        backgroundRate,
+        self.TotalCoalesced,
+        self.TotalRejected,
+        self.TotalTransport,
+        self.TotalTimeouts,
+        self.TotalStale,
+        pressure and "P3-P4 only" or "off",
+        #topLines > 0 and table.concat(topLines, " | ") or "idle"
+    )
+    self.Cache.Queue = self.InFlight
+    self.Cache.Backpressure = pressure
+    return self.Cache
+end
+
+function networkGovernor:Stop()
+    self.Running = false
+    table.clear(self.Active)
+    self.InFlight = 0
+    self.BackpressureUntil = 0
+    for _, route in pairs(self.Routes) do
+        route.InFlight = 0
+        table.clear(route.Latencies)
+    end
+    table.clear(self.Routes)
+    self.Cache.Compact = "Net: stopped"
+    self.Cache.Detailed = "Network route governor stopped and cleared."
+    self.Cache.LootStats = nil
+end
+end
+
+env.PSX_OG_NETWORK_ROUTE_GOVERNOR = networkGovernor
+
+invokeCommand = function(commandName, ...)
     local arguments = table.pack(...)
+    local governedRoute, semanticKey, startedAt, gateProblem =
+        networkGovernor:Begin("Invoke", commandName, arguments)
+    if not governedRoute then
+        return false, false, gateProblem, "NetworkRouteGovernor", nil
+    end
     local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
     if not remote then
+        networkGovernor:Finish(governedRoute, semanticKey, startedAt, false, false)
         return false, false, resolveProblem, sourceName, sessionIndex
     end
 
@@ -2471,22 +2901,36 @@ local function invokeCommand(commandName, ...)
     end))
     if not result[1] then
         coinSync.RemoteCaches.Command[commandName] = nil
+        networkGovernor:Finish(governedRoute, semanticKey, startedAt, false, false)
         return false, false, tostring(result[2]), sourceName, sessionIndex
     end
-    return true, result[2] == true, result[3], sourceName, sessionIndex, result[4]
+    local metricAccepted = result[2] ~= false and result[2] ~= nil
+    networkGovernor:Finish(governedRoute, semanticKey, startedAt, true, metricAccepted)
+    return true, result[2] == true, result[3], sourceName, sessionIndex,
+        result[4], result[2]
 end
 
-local function fireCommand(commandName, ...)
+fireCommand = function(commandName, ...)
     local arguments = table.pack(...)
+    local governedRoute, semanticKey, startedAt, gateProblem =
+        networkGovernor:Begin("Fire", commandName, arguments)
+    if not governedRoute then
+        return false, gateProblem, "NetworkRouteGovernor", nil
+    end
     local remote, sourceName, sessionIndex, resolveProblem = getFireRemote(commandName)
-    if not remote then return false, resolveProblem, sourceName, sessionIndex end
+    if not remote then
+        networkGovernor:Finish(governedRoute, semanticKey, startedAt, false, false)
+        return false, resolveProblem, sourceName, sessionIndex
+    end
     local ok, problem = pcall(function()
         remote:FireServer(table.unpack(arguments, 1, arguments.n))
     end)
     if not ok then
         coinSync.RemoteCaches.Fire[commandName] = nil
+        networkGovernor:Finish(governedRoute, semanticKey, startedAt, false, false)
         return false, tostring(problem), sourceName, sessionIndex
     end
+    networkGovernor:Finish(governedRoute, semanticKey, startedAt, true, true)
     return true, nil, sourceName, sessionIndex
 end
 
@@ -2594,6 +3038,9 @@ function petFarm:EnsureEngine()
         NetworkReady = networkReady,
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
+        InvokeCommand = invokeCommand,
+        FireCommand = fireCommand,
+        RouteText = routeText,
         InvalidateCommand = function(commandName, remote)
             local cached = coinSync.RemoteCaches.Command[commandName]
             if not remote or (type(cached) == "table" and cached.Remote == remote) then
@@ -2657,9 +3104,11 @@ function petFarm:EnsureEngine()
             end
         end,
         OnStaleAccepted = function(record, petIds)
-            local network = networkReady()
-            if not network or not record then return end
-            pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
+            if not record then return end
+            invokeCommand("Leave Coin", tostring(record.Id), petIds)
+        end,
+        MarkStale = function(commandName, count)
+            networkGovernor:MarkStale(commandName, count)
         end,
         Trace = trace,
         DispatchWidth = 16,
@@ -2744,7 +3193,7 @@ local function clearAssignments(sendBack, callback)
         end
     end
     for petId in pairs(allPets) do
-        pcall(network.Fire, "Change Pet Target", petId, "Player")
+        pcall(fireCommand, "Change Pet Target", petId, "Player")
     end
 
     -- Reset traffic uses one tiny fixed-width drain instead of launching one
@@ -2764,7 +3213,7 @@ local function clearAssignments(sendBack, callback)
             head = head + 1
             active = active + 1
             local thread = coroutine.create(function()
-                pcall(network.Invoke, "Leave Coin", job.CoinId, job.PetIds)
+                pcall(invokeCommand, "Leave Coin", job.CoinId, job.PetIds)
                 active = math.max(active - 1, 0)
                 if head > #jobs and active == 0 then finish() else pumpReset() end
             end)
@@ -3142,20 +3591,12 @@ local function getRewardServerTime()
         return nil, rewardClockProblem or "server clock retry pending"
     end
 
-    local remote, _, _, resolveProblem = getCommandRemote("Get OSTime")
-    if not remote then
-        rewardClockRetryAt = os.clock() + 10
-        rewardClockProblem = resolveProblem
-        return nil, resolveProblem
-    end
-
-    local ok, rawValue = pcall(function() return remote:InvokeServer() end)
+    local ok, _, invokeProblem, _, _, _, rawValue = invokeCommand("Get OSTime")
     local value = ok and tonumber(rawValue) or nil
     if value == nil then
-        coinSync.RemoteCaches.Command["Get OSTime"] = nil
         rewardClockRetryAt = os.clock() + 10
         rewardClockProblem = ok and "Get OSTime returned a non-number"
-            or ("Get OSTime transport error: " .. tostring(rawValue))
+            or ("Get OSTime transport error: " .. tostring(invokeProblem))
         return nil, rewardClockProblem
     end
 
@@ -3200,7 +3641,7 @@ local function getRewardTiming(kind)
     return math.max(0, cooldown - (serverTime - rankTimer)), cooldown, nil
 end
 
-local function routeText(sourceName, sessionIndex)
+routeText = function(sourceName, sessionIndex)
     return tostring(sourceName or commandRemoteSource)
         .. " [session index " .. tostring(sessionIndex or "?") .. "]"
 end
@@ -3297,6 +3738,7 @@ local function startAutoEggModule()
         PotatoEnabled = function() return config.PotatoMode == true end,
         InspectEgg = inspectEggThroughModule,
         InvokeCommand = invokeCommand,
+        FireCommand = fireCommand,
         GetEventRemote = getEventRemote,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
@@ -4022,17 +4464,11 @@ lootCollector.Context = {
         if fired then
             return true, nil, routeText(sourceName, sessionIndex)
         end
-        local network = networkReady()
-        if network and type(network.Fire) == "function" then
-            local fallback, fallbackProblem = pcall(
-                network.Fire,
-                commandName,
-                ...
-            )
-            if fallback then return true, nil, "Library.Network.Fire" end
-            problem = fallbackProblem
-        end
         return false, tostring(problem or "no live route"), "unavailable"
+    end,
+    CanFire = function(commandName)
+        local remote = getFireRemote(commandName)
+        return typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
     end,
     Status = function(text) statusSetters.Set("Loot", text) end,
     StatusVisible = function() return statusSetters.IsVisible("Loot") end,
@@ -4467,6 +4903,17 @@ UI.QuickHUDSection:Toggle({
     Value = true,
     Callback = function(value)
         config.QuickHUDAutomation = value == true
+        local hud = env.PSX_OG_QuickHUDRuntime
+        if type(hud) == "table" then hud:ApplyVisibility() end
+    end,
+})
+UI.QuickHUDSection:Toggle({
+    Flag = "quick_hud_network",
+    Title = "Quick HUD: Network",
+    Desc = "Shows the bounded route queue, category rates and aggregate failures.",
+    Value = true,
+    Callback = function(value)
+        config.QuickHUDNetwork = value == true
         local hud = env.PSX_OG_QuickHUDRuntime
         if type(hud) == "table" then hud:ApplyVisibility() end
     end,
@@ -4950,6 +5397,12 @@ local function shutdown(reason)
     stopGraphics()
     lootCollector:StopWorker()
     lootCollector.Controller = nil
+    if networkGovernor then
+        networkGovernor:Stop()
+        if env.PSX_OG_NETWORK_ROUTE_GOVERNOR == networkGovernor then
+            env.PSX_OG_NETWORK_ROUTE_GOVERNOR = nil
+        end
+    end
     table.clear(currencyMonitor.Samples)
     table.clear(currencyMonitor.Tracked)
     table.clear(currencyMonitor.Balances)
@@ -5101,6 +5554,16 @@ local function updateRuntimeTelemetry()
         local quickVisible = config.QuickHUD == true
             and type(quickHUD) == "table"
             and quickHUD.Gui ~= nil
+        local networkSnapshot
+        if monitorVisible or (quickVisible and config.QuickHUDNetwork == true) then
+            local lootStats
+            if lootCollector.Controller then
+                local ok, value = pcall(lootCollector.Controller, "stats")
+                if ok and type(value) == "table" then lootStats = value end
+            end
+            networkGovernor:SetLootStats(lootStats)
+            networkSnapshot = networkGovernor:Snapshot(false)
+        end
         local rateText = updateCurrencyMonitorStatus(
             monitorVisible or (quickVisible and config.QuickHUDFarmRate == true)
         )
@@ -5140,7 +5603,7 @@ local function updateRuntimeTelemetry()
                     or ("fail-open: " .. tostring(coinSync.LastProblem))
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nSlow recoveries: %d | last: %s\nDriver: %s",
+                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nSlow recoveries: %d | last: %s\nDriver: %s\n%s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
@@ -5155,7 +5618,9 @@ local function updateRuntimeTelemetry()
                 tonumber(dispatchStats.Errors) or 0,
                 idleRecoveryCount,
                 lastRecovery,
-                driverStatus
+                driverStatus,
+                networkSnapshot and networkSnapshot.Detailed
+                    or "Network route governor: telemetry idle"
             ))
         end
         if quickVisible then
@@ -5164,7 +5629,9 @@ local function updateRuntimeTelemetry()
                 equippedCount,
                 workingCount,
                 joiningCount,
-                petFarm.LastZone
+                petFarm.LastZone,
+                networkSnapshot and networkSnapshot.Compact
+                    or "Net: telemetry hidden"
             )
         elseif type(quickHUD) == "table" then
             quickHUD:ApplyVisibility()

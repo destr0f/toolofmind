@@ -2,7 +2,7 @@
 -- Converts verified golden pets through a user-selected server tier.
 
 local activeState
-local MODULE_VERSION = "1.3.0"
+local MODULE_VERSION = "1.3.1"
 local TARGET_PET_ID = "288"
 local TARGET_PET_NAME = "404 Demon"
 local RETRY_DELAY = 10
@@ -272,13 +272,11 @@ end
 
 local function resolveBatch(state, context)
     if not state.MachineInfo then
-        local remote, sourceName, sessionIndex, problem =
-            context.GetCommandRemote("Get Rainbow Machine Info")
-        if not remote then return nil, nil, nil, problem end
-        local ok, info = pcall(function() return remote:InvokeServer() end)
+        local ok, _, problem, sourceName, sessionIndex, _, info =
+            context.InvokeCommand("Get Rainbow Machine Info")
         if not ok then
-            context.InvalidateCommand("Get Rainbow Machine Info")
-            return nil, nil, nil, "Get Rainbow Machine Info transport error: " .. tostring(info)
+            return nil, nil, nil,
+                "Get Rainbow Machine Info transport error: " .. tostring(problem)
         end
         if type(info) ~= "table" or #info < 1 then
             return nil, nil, nil, "Get Rainbow Machine Info returned no batch tiers"

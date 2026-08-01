@@ -47,7 +47,19 @@ local function context(overrides)
         Running = function() return true end,
         Enabled = function() return true end,
         Resetting = function() return false end,
-        NetworkReady = function() return network end,
+        InvokeCommand = function(command, ...)
+            local ok, response = pcall(network.Invoke, command, ...)
+            if not ok then return false, false, response, "test", 1, nil, nil end
+            return true, response ~= false and response ~= nil, nil,
+                "test", 1, nil, response
+        end,
+        FireCommand = function(command, ...)
+            local ok, problem = pcall(network.Fire, command, ...)
+            return ok, ok and nil or problem, "test", 1
+        end,
+        RouteText = function(source, index)
+            return tostring(source) .. " #" .. tostring(index)
+        end,
         RecordAlive = function(record) return record.Alive end,
         StateCurrent = function(petId, state) return states[petId] == state end,
         OnAccepted = function(petId, state)

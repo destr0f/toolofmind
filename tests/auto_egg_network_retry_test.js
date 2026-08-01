@@ -18,8 +18,8 @@ function functionBody(name, nextName) {
 
 assert(source.includes("local MAX_NETWORK_ATTEMPTS = 12"),
     "poor-connection retry budget must remain 12 attempts");
-assert(source.includes('local MODULE_VERSION = "1.6.1"'),
-    "the producer-gated status build must expose Auto Egg v1.6.1");
+assert(source.includes('local MODULE_VERSION = "1.6.2"'),
+    "the governed producer-gated build must expose Auto Egg v1.6.2");
 assert(source.includes("local NETWORK_RETRY_WINDOW = 600"),
     "poor-connection retry window must remain bounded at 600 seconds");
 assert(source.includes("local RESPONSE_WAIT_SLICE = 54"),

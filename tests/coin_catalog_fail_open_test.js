@@ -18,14 +18,14 @@ for (const marker of [
     "SnapshotFailOpen = false",
     "EventConfirmed = false",
     "coinSync.SnapshotAttempts = coinSync.SnapshotAttempts + 1",
-    'pcall(network.Invoke, "Get Coins")',
+    'invokeCommand("Get Coins")',
     'coinSync.LastProblem = coinSync.LastProblem .. "; event-driven fail-open"',
     "folder.ChildAdded:Connect",
     "folder.ChildRemoved:Connect",
 ]) {
     assert(farm.includes(marker), `missing bounded catalog marker: ${marker}`);
 }
-assert(count(farm, /pcall\(network\.Invoke, "Get Coins"\)/g) === 1,
+assert(count(farm, /invokeCommand\("Get Coins"\)/g) === 1,
     "Get Coins has more than one invocation site");
 assert(farm.includes("coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts")
     && farm.includes("or coinSync.SnapshotFailOpen"),

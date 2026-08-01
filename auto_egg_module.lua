@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.1"
+local MODULE_VERSION = "1.6.2"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1483,11 +1483,14 @@ local function startHeadlessReconcile(state, context, pending)
                 pending.EventAt = os.clock()
                 pending.MatchMode = "inventory delta auto-detection"
 
-                local network = context.Library and context.Library.Network
-                local acknowledged, ackProblem = false, "Library.Network.Fire is unavailable"
-                if network and type(network.Fire) == "function" then
-                    acknowledged, ackProblem = pcall(network.Fire, "Opening Egg", pending.Egg, pets)
-                end
+                local called, sent, problem = pcall(
+                    context.FireCommand,
+                    "Opening Egg",
+                    pending.Egg,
+                    pets
+                )
+                local acknowledged = called and sent == true
+                local ackProblem = called and problem or sent
                 if not acknowledged then
                     pending.AckFailure = tostring(ackProblem)
                     pending.ReconcileDone = true
@@ -2135,6 +2138,7 @@ return function(action, context)
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
         "Library", "Running", "Enabled", "GetOptions", "InspectEgg", "InvokeCommand",
+        "FireCommand",
         "RouteText", "AcquireOperation", "ReleaseOperation", "CancelOperation",
         "OperationOwner", "SetStatus", "Trace", "Disable",
     }) do
@@ -2143,14 +2147,14 @@ return function(action, context)
 
     local network = context.Library and context.Library.Network
     local networkDeadline = os.clock() + 10
-    while (not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function")
+    while (not network or type(network.Fired) ~= "function")
         and context.Running() and context.Enabled() and os.clock() < networkDeadline do
         task.wait(0.1)
         network = context.Library and context.Library.Network
     end
     if not context.Running() or not context.Enabled() then return true end
-    if not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function" then
-        return false, "Library.Network Fired/Fire is unavailable"
+    if not network or type(network.Fired) ~= "function" then
+        return false, "Library.Network.Fired is unavailable"
     end
     local signal, eventRoute, eventIndex, eventProblem
     if type(context.GetEventRemote) == "function" then
@@ -2267,12 +2271,18 @@ return function(action, context)
                 local ownsAcknowledgement = pending and pending.Headless
                     and pending.ProducerGateRoute == HEADLESS_EVENT_GATE
                 if ownsAcknowledgement and not state.AcknowledgedEvents[signature] then
-                    local ackOk, ackProblem = pcall(network.Fire, "Opening Egg", eggName, pets)
+                    local ackCalled, ackSent, ackProblem = pcall(
+                        context.FireCommand,
+                        "Opening Egg",
+                        eggName,
+                        pets
+                    )
+                    local ackOk = ackCalled and ackSent == true
                     if ackOk then
                         state.AcknowledgedEvents[signature] = now
                         if matching then pending.Acknowledged = true end
                     elseif matching then
-                        pending.AckFailure = tostring(ackProblem)
+                        pending.AckFailure = tostring(ackCalled and ackProblem or ackSent)
                     end
                 elseif ownsAcknowledgement and matching then
                     pending.Acknowledged = true

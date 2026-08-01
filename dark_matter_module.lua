@@ -2,7 +2,7 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.3.0"
+local MODULE_VERSION = "1.3.1"
 local TARGET_PET_ID = "288"
 local TARGET_PET_NAME = "404 Demon"
 local RETRY_DELAY = 10
@@ -283,19 +283,13 @@ local function getServerTime(state, context)
     if os.clock() < state.ServerRetryAt then
         return nil, state.ServerProblem or "server clock retry pending"
     end
-    local remote, sourceName, sessionIndex, problem = context.GetCommandRemote("Get OSTime")
-    if not remote then
-        state.ServerRetryAt = os.clock() + RETRY_DELAY
-        state.ServerProblem = problem
-        return nil, problem
-    end
-    local ok, raw = pcall(function() return remote:InvokeServer() end)
+    local ok, _, problem, sourceName, sessionIndex, _, raw =
+        context.InvokeCommand("Get OSTime")
     local value = ok and tonumber(raw) or nil
     if value == nil then
-        context.InvalidateCommand("Get OSTime")
         state.ServerRetryAt = os.clock() + RETRY_DELAY
         state.ServerProblem = ok and "Get OSTime returned a non-number"
-            or ("Get OSTime transport error: " .. tostring(raw))
+            or ("Get OSTime transport error: " .. tostring(problem))
         return nil, state.ServerProblem
     end
     state.ServerTime = value
@@ -309,13 +303,11 @@ local function resolveMachineInfo(state, context)
     if state.MachineInfo and state.MaxBatch then
         return state.MachineInfo, state.MaxBatch, nil
     end
-    local remote, sourceName, sessionIndex, problem =
-        context.GetCommandRemote("Get Dark Matter Machine Info")
-    if not remote then return nil, nil, problem end
-    local ok, info = pcall(function() return remote:InvokeServer() end)
+    local ok, _, problem, sourceName, sessionIndex, _, info =
+        context.InvokeCommand("Get Dark Matter Machine Info")
     if not ok then
-        context.InvalidateCommand("Get Dark Matter Machine Info")
-        return nil, nil, "Get Dark Matter Machine Info transport error: " .. tostring(info)
+        return nil, nil,
+            "Get Dark Matter Machine Info transport error: " .. tostring(problem)
     end
     if type(info) ~= "table" or #info < 1 then
         return nil, nil, "Get Dark Matter Machine Info returned no batch tiers"
