@@ -3951,43 +3951,18 @@ local function restartFarmWatchers()
     task.delay(0.75, checkZone)
 end
 
-local LOOT_LIMITS = {
-    StartupDelay = 0.75,
-}
-
-local function localLootOwner(item)
-    for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
-        local value = readObjectValue(item, key)
-        if typeof(value) == "Instance" and value:IsA("Player") then
-            return value == player, true
-        end
-        if type(value) == "number" and value > 0 then
-            return value == player.UserId, true
-        end
-        if type(value) == "string" and value ~= "" then
-            local numeric = tonumber(value)
-            if numeric and numeric > 0 then return numeric == player.UserId, true end
-            local lowered = string.lower(value)
-            if lowered == string.lower(player.Name)
-                or lowered == string.lower(player.DisplayName) then
-                return true, true
-            end
-            local ownerPlayer = Players:FindFirstChild(value)
-            if ownerPlayer then return ownerPlayer == player, true end
-        end
-    end
-    return false, false
-end
-
 local lootCollector = {
     StartupArmed = false,
     WorkerActive = false,
     Controller = nil,
     Loading = false,
     Problem = nil,
+    Limits = {
+        StartupDelay = 0.75,
+    },
 }
 
-local lootContext = {
+lootCollector.Context = {
     Library = Library,
     Running = running,
     EnabledOrbs = function() return config.Orbs == true end,
@@ -3999,7 +3974,29 @@ local lootContext = {
         if typeof(things) == "Instance" then return things end
         return workspace:FindFirstChild("__THINGS")
     end,
-    LocalLootOwner = localLootOwner,
+    LocalLootOwner = function(item)
+        for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
+            local value = readObjectValue(item, key)
+            if typeof(value) == "Instance" and value:IsA("Player") then
+                return value == player, true
+            end
+            if type(value) == "number" and value > 0 then
+                return value == player.UserId, true
+            end
+            if type(value) == "string" and value ~= "" then
+                local numeric = tonumber(value)
+                if numeric and numeric > 0 then return numeric == player.UserId, true end
+                local lowered = string.lower(value)
+                if lowered == string.lower(player.Name)
+                    or lowered == string.lower(player.DisplayName) then
+                    return true, true
+                end
+                local ownerPlayer = Players:FindFirstChild(value)
+                if ownerPlayer then return ownerPlayer == player, true end
+            end
+        end
+        return false, false
+    end,
     Fire = function(commandName, ...)
         local fired, problem, sourceName, sessionIndex =
             fireCommand(commandName, ...)
@@ -4085,7 +4082,7 @@ function lootCollector:StartWorker()
         statusSetters.Set("Loot", "Loot reactor unavailable: " .. tostring(problem))
         return
     end
-    local called, accepted, startProblem = pcall(self.Controller, "start", lootContext)
+    local called, accepted, startProblem = pcall(self.Controller, "start", self.Context)
     if called and accepted == true then
         self.WorkerActive = true
     else
@@ -5167,9 +5164,9 @@ updateRuntimeTelemetry()
 pcall(function() UI.FarmTab:Select() end)
 trace("07 startup complete")
 lootCollector.StartupArmed = true
-task.delay(LOOT_LIMITS.StartupDelay, function()
+task.delay(lootCollector.Limits.StartupDelay, function()
     if not running() or not lootCollector.StartupArmed then return end
-    trace("07A loot reactor starting", "deferred=" .. tostring(LOOT_LIMITS.StartupDelay) .. "s")
+    trace("07A loot reactor starting", "deferred=" .. tostring(lootCollector.Limits.StartupDelay) .. "s")
     lootCollector:SyncWorker()
     trace("07B loot reactor ready", "active=" .. tostring(lootCollector.WorkerActive))
 end)
