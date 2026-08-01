@@ -1130,7 +1130,6 @@ local requestAllocatorPulse
 local releaseAssignmentsForCoin
 local requestFarmReset
 local assignmentCount
-
 local function getPlayerZone()
     if os.clock() < nextZoneCheck then return currentZone end
     nextZoneCheck = os.clock() + 0.25
@@ -1456,17 +1455,26 @@ end
 local coinSync = {
     SnapshotBusy = false,
     SnapshotPrimed = false,
+    SnapshotAttempts = 0,
+    SnapshotFailOpen = false,
     RetryArmed = false,
     RetryToken = 0,
     LastProblem = "not requested",
     RecordCount = 0,
     TargetsValidated = false,
+    EventConfirmed = false,
+    SnapshotSeen = {},
+    SnapshotStale = {},
+    MaxSnapshotAttempts = 3,
+    SnapshotBackoff = { 0.15, 0.45, 1.0 },
+    RemoteCaches = { Command = {}, Event = {}, Fire = {} },
     SignalsReady = false,
     SignalConnections = {},
     WorldSignalReady = false,
 }
 local coinGeneration = 0
 local coinMutationSerial = 0
+local targetRecordAllowed
 local coinIndex = {
     Revision = 0,
     Models = {},
@@ -1478,8 +1486,12 @@ local coinIndex = {
         Signature = nil,
         Revision = -1,
         Targets = {},
+        TargetById = {},
+        SortDirty = false,
+        Mode = nil,
         World = nil,
         Zone = nil,
+        ZoneAnchor = nil,
     },
 }
 
@@ -1488,12 +1500,76 @@ function coinIndex:Invalidate()
     self.Cache.Revision = -1
 end
 
+function coinIndex:FinalizeTargetMutations()
+    local cache = self.Cache
+    if not cache.SortDirty then return end
+    local profiled = beginProfile("PSX_TargetMutation")
+    cache.SortDirty = false
+    local strongest = cache.Mode ~= "Different Weakest"
+    table.sort(cache.Targets, function(left, right)
+        local leftMax = tonumber(left.MaxHealth) or tonumber(left.Health) or 0
+        local rightMax = tonumber(right.MaxHealth) or tonumber(right.Health) or 0
+        if leftMax ~= rightMax then
+            if strongest then return leftMax > rightMax end
+            return leftMax < rightMax
+        end
+        local leftHealth = tonumber(left.Health) or 0
+        local rightHealth = tonumber(right.Health) or 0
+        if leftHealth ~= rightHealth then
+            if strongest then return leftHealth > rightHealth end
+            return leftHealth < rightHealth
+        end
+        return tostring(left.Id) < tostring(right.Id)
+    end)
+    endProfile(profiled)
+end
+
+function coinIndex:MutateTarget(record, removed)
+    self.Revision = self.Revision + 1
+    local cache = self.Cache
+    if not record or not cache.Signature or type(targetRecordAllowed) ~= "function" then
+        cache.Revision = -1
+        return
+    end
+
+    local profiled = beginProfile("PSX_TargetMutation")
+    local id = tostring(record.Id)
+    local present = cache.TargetById[id] ~= nil
+    local allowed = not removed and targetRecordAllowed(
+        record,
+        cache.Mode,
+        cache.World,
+        cache.Zone,
+        cache.ZoneAnchor
+    )
+    if present and not allowed then
+        cache.TargetById[id] = nil
+        for index = #cache.Targets, 1, -1 do
+            if tostring(cache.Targets[index].Id) == id then
+                table.remove(cache.Targets, index)
+                break
+            end
+        end
+        cache.SortDirty = true
+    elseif allowed and not present then
+        cache.TargetById[id] = record
+        cache.Targets[#cache.Targets + 1] = record
+        cache.SortDirty = true
+    elseif allowed then
+        cache.TargetById[id] = record
+        cache.SortDirty = true
+    end
+    cache.Revision = self.Revision
+    endProfile(profiled)
+end
+
 local function applyCoinData(rawId, data, fromEvent)
     if rawId == nil or type(data) ~= "table" then return nil end
     local id = tostring(rawId)
     local created = coinRecords[id] == nil
     local record = coinRecords[id] or { Id = id }
     coinRecords[id] = record
+    if created then coinSync.RecordCount = coinSync.RecordCount + 1 end
     local selectionChanged = created
     local previousHealth = tonumber(record.Health)
 
@@ -1532,8 +1608,11 @@ local function applyCoinData(rawId, data, fromEvent)
     record.Removed = false
     record.FromServer = true
 
-    if fromEvent then coinMutationSerial = coinMutationSerial + 1 end
-    if selectionChanged then coinIndex:Invalidate() end
+    if fromEvent then
+        coinMutationSerial = coinMutationSerial + 1
+        coinSync.EventConfirmed = true
+    end
+    if selectionChanged then coinIndex:MutateTarget(record, false) end
     if fromEvent and type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     return record
 end
@@ -1541,16 +1620,20 @@ end
 local function removeCoin(rawId, fromEvent)
     local id = tostring(rawId)
     coinMutationSerial = coinMutationSerial + 1
+    if fromEvent then coinSync.EventConfirmed = true end
     local record = coinRecords[id]
     if record then
         record.Health = 0
         record.Removed = true
     end
-    coinRecords[id] = nil
+    if record then
+        coinRecords[id] = nil
+        coinSync.RecordCount = math.max(coinSync.RecordCount - 1, 0)
+    end
     local model = coinIndex.Models[id]
     if model then coinIndex.IdByModel[model] = nil end
     coinIndex.Models[id] = nil
-    coinIndex:Invalidate()
+    coinIndex:MutateTarget(record, true)
     local released = type(releaseAssignmentsForCoin) == "function"
         and releaseAssignmentsForCoin(id) or 0
     if released == 0 and type(requestAllocatorPulse) == "function" then
@@ -1576,6 +1659,7 @@ function coinIndex:IndexModel(model, refreshHealth)
     local modelChanged = record.Model ~= model
     local selectionChanged = created or modelChanged
     coinRecords[id] = record
+    if created then coinSync.RecordCount = coinSync.RecordCount + 1 end
     self.Models[id] = model
     self.IdByModel[model] = id
     record.Model = model
@@ -1621,7 +1705,7 @@ function coinIndex:IndexModel(model, refreshHealth)
         end
     end
     record.Removed = false
-    if selectionChanged then self:Invalidate() end
+    if selectionChanged then self:MutateTarget(record, false) end
     return id, record
 end
 
@@ -1667,11 +1751,26 @@ local function refreshWorkspaceCoins()
 end
 
 local refreshCoinSnapshot
+local function resetCoinSnapshot(reason)
+    coinSync.RetryToken = coinSync.RetryToken + 1
+    coinSync.RetryArmed = false
+    coinSync.SnapshotBusy = false
+    coinSync.SnapshotPrimed = false
+    coinSync.SnapshotAttempts = 0
+    coinSync.SnapshotFailOpen = false
+    coinSync.EventConfirmed = false
+    coinSync.TargetsValidated = false
+    table.clear(coinSync.SnapshotSeen)
+    table.clear(coinSync.SnapshotStale)
+    coinSync.LastProblem = tostring(reason or "coin catalog refresh requested")
+end
 
 local function scheduleCoinSnapshotRetry(delaySeconds, problem)
     if problem then coinSync.LastProblem = tostring(problem) end
     if coinSync.RetryArmed
-        or (coinSync.SnapshotPrimed and coinSync.SignalsReady)
+        or coinSync.SnapshotPrimed
+        or coinSync.SnapshotFailOpen
+        or coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts
         or not running() then return end
     if not config.PetFarm and not config.PotatoMode then return end
     coinSync.RetryArmed = true
@@ -1681,26 +1780,35 @@ local function scheduleCoinSnapshotRetry(delaySeconds, problem)
     task.delay(math.max(tonumber(delaySeconds) or 0.75, 0.1), function()
         if retryToken ~= coinSync.RetryToken or generation ~= coinGeneration then return end
         coinSync.RetryArmed = false
-        if not running()
-            or (coinSync.SnapshotPrimed and coinSync.SignalsReady) then return end
-        if type(requestAllocatorPulse) == "function" then
-            requestAllocatorPulse(true)
-        elseif type(refreshCoinSnapshot) == "function" then
+        if not running() or coinSync.SnapshotPrimed or coinSync.SnapshotFailOpen then return end
+        if type(refreshCoinSnapshot) == "function" then
             task.defer(refreshCoinSnapshot)
         end
     end)
 end
 
 local function coinCatalogReady()
-    return coinSync.SnapshotPrimed and coinSync.SignalsReady
-        and coinSync.TargetsValidated and coinSync.RecordCount > 0
+    return coinSync.SignalsReady and coinSync.RecordCount > 0
+        and (coinSync.EventConfirmed or coinSync.TargetsValidated
+            or coinSync.SnapshotFailOpen or coinSync.SnapshotPrimed)
 end
 
 refreshCoinSnapshot = function()
-    if coinSync.SnapshotBusy or coinSync.SnapshotPrimed then return end
+    if coinSync.SnapshotBusy or coinSync.SnapshotPrimed or coinSync.SnapshotFailOpen
+        or coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then return end
+    coinSync.SnapshotAttempts = coinSync.SnapshotAttempts + 1
     local network = networkReady()
     if not network then
-        scheduleCoinSnapshotRetry(0.5, "Library.Network is not ready")
+        coinSync.LastProblem = "Library.Network is not ready"
+        if coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then
+            coinSync.SnapshotFailOpen = true
+            coinSync.LastProblem = coinSync.LastProblem .. "; event-driven fail-open"
+        else
+            scheduleCoinSnapshotRetry(
+                coinSync.SnapshotBackoff[coinSync.SnapshotAttempts],
+                coinSync.LastProblem
+            )
+        end
         return
     end
     coinSync.SnapshotBusy = true
@@ -1721,7 +1829,9 @@ refreshCoinSnapshot = function()
         and validCount > 0 and coinMutationSerial == serialAtStart
     if responseAccepted then
         coinSync.TargetsValidated = false
-        local seen = {}
+        local seen = coinSync.SnapshotSeen or {}
+        coinSync.SnapshotSeen = seen
+        table.clear(seen)
         for id, data in pairs(response) do
             if type(data) == "table" then
                 id = tostring(id)
@@ -1729,7 +1839,9 @@ refreshCoinSnapshot = function()
                 applyCoinData(id, data, false)
             end
         end
-        local stale = {}
+        local stale = coinSync.SnapshotStale or {}
+        coinSync.SnapshotStale = stale
+        table.clear(stale)
         for id, record in pairs(coinRecords) do
             if record.FromServer and not seen[id] then stale[#stale + 1] = id end
         end
@@ -1737,7 +1849,6 @@ refreshCoinSnapshot = function()
         if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     end
     coinSync.SnapshotPrimed = responseAccepted
-    coinSync.RecordCount = responseAccepted and validCount or 0
     if responseAccepted then
         coinSync.LastProblem = string.format("ready with %d records", validCount)
     elseif not ok then
@@ -1750,7 +1861,17 @@ refreshCoinSnapshot = function()
         coinSync.LastProblem = "Get Coins raced a live coin event"
     end
     coinSync.SnapshotBusy = false
-    if not responseAccepted then scheduleCoinSnapshotRetry(0.75, coinSync.LastProblem) end
+    if not responseAccepted then
+        if coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then
+            coinSync.SnapshotFailOpen = true
+            coinSync.LastProblem = coinSync.LastProblem .. "; event-driven fail-open"
+        else
+            scheduleCoinSnapshotRetry(
+                coinSync.SnapshotBackoff[coinSync.SnapshotAttempts],
+                coinSync.LastProblem
+            )
+        end
+    end
 end
 
 local function connectCoinSignals()
@@ -1786,6 +1907,7 @@ local function connectCoinSignals()
             else
                 record.Health = value
                 coinMutationSerial = coinMutationSerial + 1
+                coinSync.EventConfirmed = true
             end
         elseif (tonumber(health) or 0) > 0 then
             -- Absorb a missed creation event into the live registry. Repeating
@@ -1805,11 +1927,13 @@ local function connectCoinSignals()
             local connection = worldChanged:Connect(function()
                 coinGeneration = coinGeneration + 1
                 coinMutationSerial = coinMutationSerial + 1
-                coinSync.RetryToken = coinSync.RetryToken + 1
-                coinSync.RetryArmed = false
+                resetCoinSnapshot("world changed; awaiting fresh catalog")
                 table.clear(coinRecords)
                 table.clear(coinIndex.Models)
                 table.clear(coinIndex.IdByModel)
+                table.clear(coinSync.RemoteCaches.Command)
+                table.clear(coinSync.RemoteCaches.Event)
+                table.clear(coinSync.RemoteCaches.Fire)
                 table.clear(boundsCache)
                 resetAreaCatalog()
                 coinIndex:DisconnectFolder()
@@ -1822,10 +1946,8 @@ local function connectCoinSignals()
                 nextWorldCheck = 0
                 zoneCatalogDirty = true
                 eggCatalogDirty = true
-                coinSync.SnapshotPrimed = false
                 coinSync.RecordCount = 0
                 coinSync.TargetsValidated = false
-                coinSync.LastProblem = "world changed; awaiting fresh catalog"
                 if config.PetFarm and type(requestFarmReset) == "function" then
                     requestFarmReset("world changed")
                 end
@@ -1909,6 +2031,15 @@ local function recordInZone(record, zone, zoneAnchor)
         and (record.Position - zoneAnchor).Magnitude <= 240
 end
 
+targetRecordAllowed = function(record, mode, world, zone, zoneAnchor)
+    local boss = isBossChest(record)
+    local hackerPortal = namesMatch(zone, "Hacker Portal")
+    local allowed = mode == "Boss Chest Only" and boss
+        or mode ~= "Boss Chest Only" and (hackerPortal or not boss)
+    return allowed and worldMatches(record.World, world)
+        and recordInZone(record, zone, zoneAnchor)
+end
+
 local function orderedTargets(mode)
     refreshWorkspaceCoins()
     local world = getSelectedWorld()
@@ -1916,42 +2047,30 @@ local function orderedTargets(mode)
     local signature = table.concat({ tostring(mode), tostring(world), tostring(zone) }, "|")
     local cache = coinIndex.Cache
     if cache.Revision == coinIndex.Revision and cache.Signature == signature then
+        coinIndex:FinalizeTargetMutations()
         return cache.Targets, cache.World, cache.Zone
     end
     local zoneAnchor = findZoneAnchor(zone)
-    local targets = {}
-    local hackerPortal = namesMatch(zone, "Hacker Portal")
+    local profiled = beginProfile("PSX_TargetMutation")
+    local targets = cache.Targets
+    table.clear(targets)
+    table.clear(cache.TargetById)
+    cache.Mode = mode
+    cache.World = world
+    cache.Zone = zone
+    cache.ZoneAnchor = zoneAnchor
     for _, record in pairs(coinRecords) do
-        local boss = isBossChest(record)
-        local allowed = mode == "Boss Chest Only" and boss
-            or mode ~= "Boss Chest Only" and (hackerPortal or not boss)
-        if allowed and worldMatches(record.World, world) and recordInZone(record, zone, zoneAnchor) then
-            table.insert(targets, record)
+        if targetRecordAllowed(record, mode, world, zone, zoneAnchor) then
+            targets[#targets + 1] = record
+            cache.TargetById[tostring(record.Id)] = record
         end
     end
     coinSync.TargetsValidated = #targets > 0
-
-    local strongest = mode ~= "Different Weakest"
-    table.sort(targets, function(left, right)
-        local leftMax = tonumber(left.MaxHealth) or tonumber(left.Health) or 0
-        local rightMax = tonumber(right.MaxHealth) or tonumber(right.Health) or 0
-        if leftMax ~= rightMax then
-            if strongest then return leftMax > rightMax end
-            return leftMax < rightMax
-        end
-        local leftHealth = tonumber(left.Health) or 0
-        local rightHealth = tonumber(right.Health) or 0
-        if leftHealth ~= rightHealth then
-            if strongest then return leftHealth > rightHealth end
-            return leftHealth < rightHealth
-        end
-        return left.Id < right.Id
-    end)
+    cache.SortDirty = true
+    coinIndex:FinalizeTargetMutations()
     cache.Signature = signature
     cache.Revision = coinIndex.Revision
-    cache.Targets = targets
-    cache.World = world
-    cache.Zone = zone
+    endProfile(profiled)
     return targets, world, zone
 end
 
@@ -1999,7 +2118,60 @@ local petFarm = {
     FastScheduled = false,
     FastToken = 0,
     NextTargetByPet = {},
+    StatePool = {},
+    DispatchEntries = {},
+    DispatchEntryPool = {},
+    DispatchPayload = {},
+    PlanScratch = {
+        Plans = {},
+        PlanPool = {},
+        PlansById = {},
+        UsableById = {},
+        Occupied = {},
+        Candidates = {},
+        Loads = {},
+        CandidateById = {},
+    },
+    Scratch = {
+        FastEquipped = {},
+        FastFree = {},
+        FastUsable = {},
+        AllocatorEquipped = {},
+        AllocatorFree = {},
+        AllocatorUsable = {},
+    },
 }
+
+local function acquirePetState(coinId)
+    local pool = petFarm.StatePool
+    local state = pool[#pool]
+    if state then
+        pool[#pool] = nil
+    else
+        state = {}
+    end
+    state.CoinId = coinId
+    state.Phase = "joining"
+    state.Generation = farmGeneration
+    state.RetryCount = 0
+    state.StartedAt = os.clock()
+    return state
+end
+
+local function releasePetState(state, forceReusable)
+    if type(state) ~= "table" then return end
+    local reusable = forceReusable == true or state.Phase == "working"
+    state.CoinId = nil
+    state.Phase = nil
+    state.Generation = nil
+    state.RetryCount = nil
+    state.StartedAt = nil
+    local pool = petFarm.StatePool
+    -- A JOINING state can still be referenced by a yielding InvokeServer job.
+    -- Do not recycle it unless the engine is synchronously returning control
+    -- through OnFailed or dispatch rejected the payload before queueing it.
+    if reusable and #pool < 32 then pool[#pool + 1] = state end
+end
 
 releaseAssignmentsForCoin = function(rawId)
     if rawId == nil then
@@ -2009,6 +2181,7 @@ releaseAssignmentsForCoin = function(rawId)
         table.clear(petFarm.FastPets)
         table.clear(petFarm.NextTargetByPet)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
+        for _, state in pairs(petStates) do releasePetState(state) end
         table.clear(petStates)
         table.clear(rejectedUntil)
         return 0
@@ -2019,6 +2192,7 @@ releaseAssignmentsForCoin = function(rawId)
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId then
             petStates[petId] = nil
+            releasePetState(state)
             petFarm.FastPets[petId] = true
             released = released + 1
         end
@@ -2082,18 +2256,17 @@ local function remoteSessionIndex(remote)
     return table.find(ReplicatedStorage:GetChildren(), remote)
 end
 
-local commandRemoteCache = {}
 local commandRemoteSource = "Network.Invoke GetRemoteFunction upvalue #2"
 
 local function getCommandRemote(commandName)
-    local cached = commandRemoteCache[commandName]
+    local cached = coinSync.RemoteCaches.Command[commandName]
     local cachedRemote = type(cached) == "table" and cached.Remote or nil
     if type(cached) == "table" and cached.Command == commandName
         and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteFunction")
         and cachedRemote:IsDescendantOf(ReplicatedStorage) then
         return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
-    commandRemoteCache[commandName] = nil
+    coinSync.RemoteCaches.Command[commandName] = nil
 
     local network = networkReady()
     if not network or type(network.Invoke) ~= "function" then
@@ -2119,7 +2292,7 @@ local function getCommandRemote(commandName)
             and remote:IsDescendantOf(ReplicatedStorage) then
             local sourceName = commandRemoteSource .. " (" .. tostring(reader) .. ")"
             local sessionIndex = remoteSessionIndex(remote)
-            commandRemoteCache[commandName] = {
+            coinSync.RemoteCaches.Command[commandName] = {
                 Command = commandName,
                 Remote = remote,
                 Source = sourceName,
@@ -2133,18 +2306,17 @@ local function getCommandRemote(commandName)
         tostring(commandName) .. " did not resolve to a live RemoteFunction"
 end
 
-local eventRemoteCache = {}
 local eventRemoteSource = "Network.Fired GetRemoteEvent upvalue"
 
 local function getEventRemote(commandName)
-    local cached = eventRemoteCache[commandName]
+    local cached = coinSync.RemoteCaches.Event[commandName]
     local cachedRemote = type(cached) == "table" and cached.Remote or nil
     if type(cached) == "table" and cached.Command == commandName
         and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
         and cachedRemote:IsDescendantOf(ReplicatedStorage) then
         return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
-    eventRemoteCache[commandName] = nil
+    coinSync.RemoteCaches.Event[commandName] = nil
 
     local network = networkReady()
     if not network or type(network.Fired) ~= "function" then
@@ -2159,7 +2331,7 @@ local function getEventRemote(commandName)
             local sourceName = "Network.Fired direct RemoteEvent upvalue #" .. tostring(index)
                 .. " (" .. tostring(reader) .. ")"
             local sessionIndex = remoteSessionIndex(candidate)
-            eventRemoteCache[commandName] = {
+            coinSync.RemoteCaches.Event[commandName] = {
                 Remote = candidate,
                 Source = sourceName,
                 SessionIndex = sessionIndex,
@@ -2174,7 +2346,7 @@ local function getEventRemote(commandName)
                 local sourceName = "Network.Fired RemoteEvent map upvalue #" .. tostring(index)
                     .. " (" .. tostring(reader) .. ")"
                 local sessionIndex = remoteSessionIndex(mapped)
-                eventRemoteCache[commandName] = {
+                coinSync.RemoteCaches.Event[commandName] = {
                     Remote = mapped,
                     Source = sourceName,
                     SessionIndex = sessionIndex,
@@ -2192,7 +2364,7 @@ local function getEventRemote(commandName)
                         local sourceName = "Network.Fired GetRemoteEvent upvalue #" .. tostring(index)
                             .. " (" .. tostring(reader) .. ")"
                         local sessionIndex = remoteSessionIndex(remote)
-                        eventRemoteCache[commandName] = {
+                        coinSync.RemoteCaches.Event[commandName] = {
                             Command = commandName,
                             Remote = remote,
                             Source = sourceName,
@@ -2210,18 +2382,17 @@ local function getEventRemote(commandName)
     return nil, eventRemoteSource, nil, lastProblem
 end
 
-local fireRemoteCache = {}
 local fireRemoteSource = "Network.Fire GetRemoteEvent upvalue #2"
 
 local function getFireRemote(commandName)
-    local cached = fireRemoteCache[commandName]
+    local cached = coinSync.RemoteCaches.Fire[commandName]
     local cachedRemote = type(cached) == "table" and cached.Remote or nil
     if type(cached) == "table" and cached.Command == commandName
         and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
         and cachedRemote:IsDescendantOf(ReplicatedStorage) then
         return cachedRemote, cached.Source, cached.SessionIndex, nil
     end
-    fireRemoteCache[commandName] = nil
+    coinSync.RemoteCaches.Fire[commandName] = nil
 
     local network = networkReady()
     if not network or type(network.Fire) ~= "function" then
@@ -2242,7 +2413,7 @@ local function getFireRemote(commandName)
             and remote:IsDescendantOf(ReplicatedStorage) then
             local sourceName = fireRemoteSource .. " (" .. tostring(reader) .. ")"
             local sessionIndex = remoteSessionIndex(remote)
-            fireRemoteCache[commandName] = {
+            coinSync.RemoteCaches.Fire[commandName] = {
                 Command = commandName,
                 Remote = remote,
                 Source = sourceName,
@@ -2266,7 +2437,7 @@ local function invokeCommand(commandName, ...)
         return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
     end))
     if not result[1] then
-        commandRemoteCache[commandName] = nil
+        coinSync.RemoteCaches.Command[commandName] = nil
         return false, false, tostring(result[2]), sourceName, sessionIndex
     end
     return true, result[2] == true, result[3], sourceName, sessionIndex, result[4]
@@ -2280,7 +2451,7 @@ local function fireCommand(commandName, ...)
         remote:FireServer(table.unpack(arguments, 1, arguments.n))
     end)
     if not ok then
-        fireRemoteCache[commandName] = nil
+        coinSync.RemoteCaches.Fire[commandName] = nil
         return false, tostring(problem), sourceName, sessionIndex
     end
     return true, nil, sourceName, sessionIndex
@@ -2391,15 +2562,15 @@ function petFarm:EnsureEngine()
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
         InvalidateCommand = function(commandName, remote)
-            local cached = commandRemoteCache[commandName]
+            local cached = coinSync.RemoteCaches.Command[commandName]
             if not remote or (type(cached) == "table" and cached.Remote == remote) then
-                commandRemoteCache[commandName] = nil
+                coinSync.RemoteCaches.Command[commandName] = nil
             end
         end,
         InvalidateFire = function(commandName, remote)
-            local cached = fireRemoteCache[commandName]
+            local cached = coinSync.RemoteCaches.Fire[commandName]
             if not remote or (type(cached) == "table" and cached.Remote == remote) then
-                fireRemoteCache[commandName] = nil
+                coinSync.RemoteCaches.Fire[commandName] = nil
             end
         end,
         RecordAlive = recordAlive,
@@ -2428,13 +2599,17 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state then return end
             local now = os.clock()
             petStates[petId] = nil
-            if record then
+            releasePetState(state, true)
+            local rejected = string.find(tostring(reason), "Join Coin rejected", 1, true) ~= nil
+            if rejected and record then
                 rejectedUntil[tostring(record.Id)] = now + 0.75
             end
             self.FastPets[petId] = true
             idleRecoveryCount = idleRecoveryCount + 1
             lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
-            driverStatus = "stale/contended target skipped; fast reroute queued"
+            driverStatus = rejected
+                and "stale/contended target skipped; fast reroute queued"
+                or "transport failed after bounded retry; fast reroute queued"
             self.SuppressedFailures = self.SuppressedFailures + 1
             if now >= self.NextFailureTraceAt then
                 trace("pet dispatch recovery", tostring(reason)
@@ -2517,6 +2692,7 @@ local function clearAssignments(sendBack, callback)
     if petFarm.Engine then pcall(petFarm.Engine, "reset") end
     local groups, allPets = collectAssignmentsForReset()
     local network = sendBack and networkReady() or nil
+    for _, state in pairs(petStates) do releasePetState(state) end
     table.clear(petStates)
     table.clear(rejectedUntil)
 
@@ -2606,33 +2782,39 @@ local function dispatchPlan(record, petIds)
         return
     end
     local coinId = tostring(record.Id)
-    local entries = {}
-    for _, petId in ipairs(petIds) do
+    local entries = petFarm.DispatchEntries
+    table.clear(entries)
+    for index, petId in ipairs(petIds) do
         petId = tostring(petId)
         if not petStates[petId] then
-            local state = {
-                CoinId = coinId,
-                Phase = "joining",
-                Generation = farmGeneration,
-                RetryCount = 0,
-                StartedAt = os.clock(),
-            }
+            local state = acquirePetState(coinId)
             petStates[petId] = state
-            entries[#entries + 1] = { PetId = petId, State = state }
+            local entry = petFarm.DispatchEntryPool[index]
+            if not entry then
+                entry = {}
+                petFarm.DispatchEntryPool[index] = entry
+            end
+            entry.PetId = petId
+            entry.State = state
+            entries[#entries + 1] = entry
         end
     end
     if #entries == 0 then return end
 
-    local called, accepted, problem = pcall(petFarm.Engine, "dispatch", {
-        Record = record,
-        CoinId = coinId,
-        Entries = entries,
-    })
+    local payload = petFarm.DispatchPayload
+    payload.Record = record
+    payload.CoinId = coinId
+    payload.Entries = entries
+    local profiled = beginProfile("PSX_FarmDispatch")
+    local called, accepted, problem = pcall(petFarm.Engine, "dispatch", payload)
+    endProfile(profiled)
     if not called or accepted ~= true then
         for _, entry in ipairs(entries) do
-            if petStates[entry.PetId] == entry.State then petStates[entry.PetId] = nil end
+            if petStates[entry.PetId] == entry.State then
+                petStates[entry.PetId] = nil
+                releasePetState(entry.State, true)
+            end
         end
-        rejectedUntil[coinId] = os.clock() + 1
         driverStatus = "Lite dispatch queue error: " .. tostring(called and problem or accepted)
         if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     end
@@ -2645,13 +2827,30 @@ assignmentCount = function()
 end
 
 function petFarm:BuildDispatchPlans(freePets, usable, mode)
-    local plans, plansById = {}, {}
+    local scratch = self.PlanScratch
+    local plans = scratch.Plans
+    local plansById = scratch.PlansById
+    local usableById = scratch.UsableById
+    local occupied = scratch.Occupied
+    local candidates = scratch.Candidates
+    local loads = scratch.Loads
+    local candidateById = scratch.CandidateById
+    for _, plan in ipairs(scratch.PlanPool) do
+        plan.Record = nil
+        if plan.Pets then table.clear(plan.Pets) end
+    end
+    table.clear(plans)
+    table.clear(plansById)
+    table.clear(usableById)
+    table.clear(occupied)
+    table.clear(candidates)
+    table.clear(loads)
+    table.clear(candidateById)
     if type(freePets) ~= "table" or type(usable) ~= "table"
         or #freePets == 0 or #usable == 0 then
         return plans, 0
     end
 
-    local usableById = {}
     for _, record in ipairs(usable) do
         usableById[tostring(record.Id)] = record
     end
@@ -2666,14 +2865,21 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
             end
         end
         groupTarget = groupTarget or usable[1]
-        plans[1] = { Record = groupTarget, Pets = freePets }
+        local plan = scratch.PlanPool[1]
+        if not plan then
+            plan = { Pets = {} }
+            scratch.PlanPool[1] = plan
+        end
+        plan.Record = groupTarget
+        for _, petId in ipairs(freePets) do plan.Pets[#plan.Pets + 1] = petId end
+        plans[1] = plan
         for _, petId in ipairs(freePets) do
             self.NextTargetByPet[tostring(petId)] = tostring(groupTarget.Id)
         end
         return plans, 1
     end
 
-    local occupied, occupiedCount = {}, 0
+    local occupiedCount = 0
     for _, state in pairs(petStates) do
         local coinId = tostring(state.CoinId)
         if usableById[coinId] and not occupied[coinId] then
@@ -2683,7 +2889,6 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
     end
 
     local targetWindow = math.min(#usable, math.max(#freePets + occupiedCount, 1))
-    local candidates, loads, candidateById = {}, {}, {}
     for index = 1, targetWindow do
         local record = usable[index]
         local coinId = tostring(record.Id)
@@ -2724,7 +2929,13 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
         local coinId = tostring(chosen.Id)
         local plan = plansById[coinId]
         if not plan then
-            plan = { Record = chosen, Pets = {} }
+            local planIndex = #plans + 1
+            plan = scratch.PlanPool[planIndex]
+            if not plan then
+                plan = { Pets = {} }
+                scratch.PlanPool[planIndex] = plan
+            end
+            plan.Record = chosen
             plansById[coinId] = plan
             plans[#plans + 1] = plan
         end
@@ -2760,7 +2971,10 @@ function petFarm:QueueFastDispatch(petId)
             return
         end
 
-        local equipped, freePets = {}, {}
+        local equipped = self.Scratch.FastEquipped
+        local freePets = self.Scratch.FastFree
+        table.clear(equipped)
+        table.clear(freePets)
         for _, equippedId in ipairs(self.LastEquippedIds or {}) do
             equipped[tostring(equippedId)] = true
         end
@@ -2777,7 +2991,8 @@ function petFarm:QueueFastDispatch(petId)
         self.LastTargetCount = #targets
         self.LastWorld = selectedWorld or "unknown"
         self.LastZone = selectedZone or "unknown"
-        local usable, now = {}, os.clock()
+        local usable, now = self.Scratch.FastUsable, os.clock()
+        table.clear(usable)
         for _, record in ipairs(targets) do
             if now >= (rejectedUntil[tostring(record.Id)] or 0) then
                 usable[#usable + 1] = record
@@ -2825,17 +3040,23 @@ function statusSetters.Set(key, text)
     if statusSetters.Pending[key] == text then return end
     statusSetters.Pending[key] = text
 end
+function statusSetters.IsVisible(key)
+    if not interfaceIsVisible() then return false end
+    local view = statusViews[key]
+    local tab = statusTabs[key]
+    return view ~= nil and (tab == nil or tab.Selected == true)
+end
 function statusSetters.Flush()
     if not interfaceIsVisible() then return end
+    local profiled = beginProfile("PSX_UIRefresh")
     for key, text in pairs(statusSetters.Pending) do
         local view = statusViews[key]
-        local tab = statusTabs[key]
-        local visible = view ~= nil and (tab == nil or tab.Selected == true)
-        if visible and statusSetters.Published[key] ~= text then
+        if statusSetters.IsVisible(key) and statusSetters.Published[key] ~= text then
             local updated = pcall(function() view:SetDesc(text) end)
             if updated then statusSetters.Published[key] = text end
         end
     end
+    endProfile(profiled)
 end
 function statusSetters.Farm(text)
     statusSetters.Set("Farm", text)
@@ -2898,7 +3119,7 @@ local function getRewardServerTime()
     local ok, rawValue = pcall(function() return remote:InvokeServer() end)
     local value = ok and tonumber(rawValue) or nil
     if value == nil then
-        commandRemoteCache["Get OSTime"] = nil
+        coinSync.RemoteCaches.Command["Get OSTime"] = nil
         rewardClockRetryAt = os.clock() + 10
         rewardClockProblem = ok and "Get OSTime returned a non-number"
             or ("Get OSTime transport error: " .. tostring(rawValue))
@@ -3181,7 +3402,7 @@ function machineModules:Start(kind)
             return hours > 0 and hours * 3600 or nil
         end,
         GetCommandRemote = getCommandRemote,
-        InvalidateCommand = function(commandName) commandRemoteCache[commandName] = nil end,
+        InvalidateCommand = function(commandName) coinSync.RemoteCaches.Command[commandName] = nil end,
         InvokeCommand = invokeCommand,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
@@ -3500,11 +3721,12 @@ allocatorPass = function()
     end
     allocatorBusy = true
     allocatorRequested = false
-    local profiled = beginProfile("PSX.FarmAllocator")
     local ok, problem = pcall(function()
         connectCoinSignals()
         refreshWorkspaceCoins()
-        if not coinSync.SnapshotPrimed and not coinSync.SnapshotBusy then
+        if not coinSync.SnapshotPrimed and not coinSync.SnapshotBusy
+            and not coinSync.SnapshotFailOpen and coinSync.SnapshotAttempts == 0
+            and not coinSync.RetryArmed then
             task.defer(refreshCoinSnapshot)
         end
 
@@ -3532,7 +3754,8 @@ allocatorPass = function()
         petFarm.EquippedCount = #petIds
         petFarm.LastEquippedIds = petIds
         pcall(petFarm.Engine, "limit", math.min(#petIds, 16))
-        local equipped = {}
+        local equipped = petFarm.Scratch.AllocatorEquipped
+        table.clear(equipped)
         for _, petId in ipairs(petIds) do equipped[petId] = true end
         if #petIds == 0 then
             petFarm.TargetWindow = 0
@@ -3543,10 +3766,12 @@ allocatorPass = function()
             if not equipped[petId] or state.Generation ~= farmGeneration
                 or not recordAlive(coinRecords[tostring(state.CoinId)]) then
                 petStates[petId] = nil
+                releasePetState(state)
             end
         end
 
-        local freePets = {}
+        local freePets = petFarm.Scratch.AllocatorFree
+        table.clear(freePets)
         for _, petId in ipairs(petIds) do
             if not petStates[petId] then
                 table.insert(freePets, petId)
@@ -3562,7 +3787,8 @@ allocatorPass = function()
         petFarm.LastWorld = selectedWorld or "unknown"
         petFarm.LastZone = selectedZone or "unknown"
 
-        local usable = {}
+        local usable = petFarm.Scratch.AllocatorUsable
+        table.clear(usable)
         local now = os.clock()
         for _, record in ipairs(targets) do
             if now >= (rejectedUntil[tostring(record.Id)] or 0) then
@@ -3582,7 +3808,6 @@ allocatorPass = function()
             armFarmRecovery(1.05)
         end
     end)
-    endProfile(profiled)
     if not ok then driverStatus = "allocator error: " .. tostring(problem) end
 
     allocatorBusy = false
@@ -3762,6 +3987,10 @@ local lootContext = {
         return false, tostring(problem or "no live route"), "unavailable"
     end,
     Status = function(text) statusSetters.Set("Loot", text) end,
+    StatusVisible = function() return statusSetters.IsVisible("Loot") end,
+    ObserveCoin = function(rawId, data)
+        return applyCoinData(rawId, data, true) ~= nil
+    end,
     Trace = trace,
 }
 
@@ -4078,6 +4307,18 @@ UI.ZoneDropdown = UI.TargetSection:Dropdown({
         if config.PetFarm then
             requestFarmReset("zone selection changed")
             restartFarmWatchers()
+        end
+    end,
+})
+UI.TargetSection:Button({
+    Title = "Refresh Coin Catalog",
+    Desc = "Allows one new bounded three-attempt Get Coins probe for this world",
+    Icon = "refresh-cw",
+    Callback = function()
+        resetCoinSnapshot("manual coin catalog refresh")
+        task.defer(refreshCoinSnapshot)
+        if config.PetFarm and type(requestAllocatorPulse) == "function" then
+            requestAllocatorPulse(true)
         end
     end,
 })
@@ -4555,6 +4796,9 @@ local function finishShutdown()
     coinGeneration = coinGeneration + 1
     coinSync.SnapshotBusy = false
     coinSync.SnapshotPrimed = false
+    coinSync.SnapshotAttempts = 0
+    coinSync.SnapshotFailOpen = false
+    coinSync.EventConfirmed = false
     coinSync.RetryToken = coinSync.RetryToken + 1
     coinSync.RetryArmed = false
     coinSync.LastProblem = "stopped"
@@ -4562,6 +4806,8 @@ local function finishShutdown()
     coinSync.TargetsValidated = false
     coinSync.SignalsReady = false
     coinSync.WorldSignalReady = false
+    table.clear(coinSync.SnapshotSeen)
+    table.clear(coinSync.SnapshotStale)
     table.clear(coinSync.SignalConnections)
     coinIndex:DisconnectFolder()
     table.clear(coinRecords)
@@ -4569,15 +4815,29 @@ local function finishShutdown()
     table.clear(coinIndex.IdByModel)
     coinIndex.Cache.Signature = nil
     coinIndex.Cache.Revision = -1
-    coinIndex.Cache.Targets = {}
+    table.clear(coinIndex.Cache.Targets)
+    table.clear(coinIndex.Cache.TargetById)
+    coinIndex.Cache.SortDirty = false
+    coinIndex.Cache.Mode = nil
     coinIndex.Cache.World = nil
     coinIndex.Cache.Zone = nil
+    coinIndex.Cache.ZoneAnchor = nil
+    table.clear(petFarm.StatePool)
+    table.clear(petFarm.DispatchEntries)
+    table.clear(petFarm.DispatchEntryPool)
+    table.clear(petFarm.DispatchPayload)
+    table.clear(petFarm.FastPets)
+    table.clear(petFarm.NextTargetByPet)
+    for _, scratch in pairs(petFarm.Scratch) do table.clear(scratch) end
+    for _, scratch in pairs(petFarm.PlanScratch) do
+        if type(scratch) == "table" then table.clear(scratch) end
+    end
     table.clear(rejectedUntil)
     table.clear(boundsCache)
     resetAreaCatalog()
-    table.clear(commandRemoteCache)
-    table.clear(eventRemoteCache)
-    table.clear(fireRemoteCache)
+    table.clear(coinSync.RemoteCaches.Command)
+    table.clear(coinSync.RemoteCaches.Event)
+    table.clear(coinSync.RemoteCaches.Fire)
 end
 
 local function shutdown(reason)
