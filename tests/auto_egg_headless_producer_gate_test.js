@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.2"',
+requireText('local MODULE_VERSION = "1.6.1"',
     "auto egg module version was not advanced");
 requireText('"\\nRoutes: Open Eggs %s | Egg World %s | prevented open/world %d/%d"',
     "the hatch controller does not expose both visual gate routes and counters");

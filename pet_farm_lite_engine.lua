@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.2.1"
+local MODULE_VERSION = "1.2.0"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -192,28 +192,47 @@ end
 
 local function callNamedInvoke(command, ...)
     local context = run.Context
-    if not context or type(context.InvokeCommand) ~= "function" then
-        return false, "NetworkRouteGovernor invoke is unavailable", "none"
+    if context and type(context.GetCommandRemote) == "function" then
+        local resolved, remote = pcall(context.GetCommandRemote, command)
+        if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteFunction") then
+            local invoked, response = pcall(remote.InvokeServer, remote, ...)
+            if invoked then return true, response, "direct named remote" end
+            if type(context.InvalidateCommand) == "function" then
+                pcall(context.InvalidateCommand, command, remote)
+            end
+        end
     end
-    local transported, _, problem, sourceName, sessionIndex, _, raw =
-        context.InvokeCommand(command, ...)
-    local route = type(context.RouteText) == "function"
-        and context.RouteText(sourceName, sessionIndex)
-        or tostring(sourceName or "NetworkRouteGovernor")
-    if transported ~= true then return false, problem, route end
-    return true, raw, route
+
+    local network = context and type(context.NetworkReady) == "function"
+        and context.NetworkReady() or nil
+    if not network or type(network.Invoke) ~= "function" then
+        return false, "Library.Network.Invoke unavailable", "none"
+    end
+    local invoked, response = pcall(network.Invoke, command, ...)
+    if not invoked then return false, response, "Library.Network.Invoke" end
+    return true, response, "Library.Network.Invoke"
 end
 
 local function callNamedFire(command, ...)
     local context = run.Context
-    if not context or type(context.FireCommand) ~= "function" then
-        return false, "NetworkRouteGovernor fire is unavailable"
+    if context and type(context.GetFireRemote) == "function" then
+        local resolved, remote = pcall(context.GetFireRemote, command)
+        if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent") then
+            local fired = pcall(remote.FireServer, remote, ...)
+            if fired then return true, "direct named remote" end
+            if type(context.InvalidateFire) == "function" then
+                pcall(context.InvalidateFire, command, remote)
+            end
+        end
     end
-    local fired, problem, sourceName, sessionIndex = context.FireCommand(command, ...)
-    local route = type(context.RouteText) == "function"
-        and context.RouteText(sourceName, sessionIndex)
-        or tostring(sourceName or problem or "NetworkRouteGovernor")
-    return fired == true, fired and route or tostring(problem)
+
+    local network = context and type(context.NetworkReady) == "function"
+        and context.NetworkReady() or nil
+    if not network or type(network.Fire) ~= "function" then
+        return false, "Library.Network.Fire unavailable"
+    end
+    local fired, problem = pcall(network.Fire, command, ...)
+    return fired, fired and "Library.Network.Fire" or tostring(problem)
 end
 
 local function normalizedPetId(value)
@@ -509,9 +528,6 @@ local function process(job)
         -- A successful InvokeServer transport followed by a rejected UID means
         -- the coin is stale or contended. Retrying the same coin only burns one
         -- more RTT and lets the pet drift back toward the player.
-        if context and type(context.MarkStale) == "function" then
-            pcall(context.MarkStale, "Join Coin", #rejectedEntries)
-        end
         failEntries(job, rejectedEntries, run.LastProblem)
     elseif #signalFailures == 0 then
         run.LastProblem = "none"

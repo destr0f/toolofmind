@@ -1,6 +1,6 @@
 local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local machine = require(modulePath)
-    assert(machine("version") == "1.3.1")
+    assert(machine("version") == "1.3.0")
 
     local callback
     local calls = {}
@@ -47,16 +47,8 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         end,
         InvalidateCommand = function() end,
         InvokeCommand = function(command, uids)
-            if command == "Get OSTime" then
-                return true, true, nil, "test", 1, nil, os.time()
-            end
-            if command == infoCommand then
-                local info = darkMatter and { { cost = 0, waitTime = 1 } }
-                    or { { cost = 0, chance = 100 } }
-                return true, true, nil, "test", 1, nil, info
-            end
             calls[#calls + 1] = { Command = command, Uids = uids }
-            return true, true, nil, "test", 1, 100, true
+            return true, true, nil, "test", 1, 100
         end,
         RouteText = function(source, index)
             return tostring(source) .. " #" .. tostring(index)

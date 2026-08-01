@@ -43,7 +43,7 @@ for (const command of ["New Coin", "Update Coin Health", "Remove Coin"]) {
 }
 assert(!farm.includes('connect("Update Coin Pets"'),
     "Lite farm still subscribes to high-frequency pet-set reconciliation");
-assert(count(farm, /invokeCommand\("Get Coins"\)/g) === 1,
+assert(count(farm, /"Get Coins"/g) === 1,
     "Get Coins must remain an initial-world snapshot only");
 assert(!/workspace\s*\.\s*DescendantAdded/.test(farm),
     "the farm observes every Workspace descendant");
@@ -85,18 +85,14 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.4.0"',
-    "ORB_BATCH_SIZE = 512",
+    'local MODULE_VERSION = "3.3.1"',
+    "ORB_BATCH_SIZE = 2048",
     "MAX_PENDING_ORBS = 8192",
-    "ORB_MIN_FLUSH_INTERVAL = 0.10",
-    "ORB_MAX_FLUSH_INTERVAL = 0.25",
-    "OrbAwaitingIds = {}",
-    "OrbInFlight = false",
     "BAG_LANES = 4",
     "MAX_PENDING_BAGS = 4096",
     "BAG_TRANSPORT_RETRY_DELAY = 0.10",
     "BAG_SENT_TTL = 1.25",
-    "STATUS_INTERVAL = 5",
+    "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
     "OrbBatch = table.create(ORB_BATCH_SIZE)",
     "BagById = {}",
@@ -124,11 +120,7 @@ for (const marker of [
     "playerScripts.ChildAdded:Connect",
     "folder.ChildAdded:Connect(queueOrbFallback)",
     "folder.ChildAdded:Connect(watchBagFallback)",
-    "BAG_MAX_FAST_ATTEMPTS = 3",
-    'record.State = "DISCOVERED"',
-    'record.State = "QUEUED"',
-    'record.State = "SENT"',
-    'record.State = acknowledged and "CONFIRMED"',
+    "record.Attempts < 2",
     "record.Retired = true",
     "OrbDropped",
     "BagOverflow",
@@ -136,10 +128,9 @@ for (const marker of [
     assert(loot.includes(marker), `missing native loot marker: ${marker}`);
 }
 assert(loot.includes("run.PendingOrbIds[orbId] = nil")
-    && loot.includes("run.OrbAwaitingIds[orbId] = sentAt")
     && loot.includes("run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)"),
-    "successful orb batches do not transfer IDs into bounded acknowledgement state");
-assert(loot.includes("record.State = \"SENT\"")
+    "successful orb batches do not evict acknowledged IDs");
+assert(loot.includes("record.State = \"sent\"")
     && loot.includes("enqueueDelayedBag(record, now + BAG_SENT_TTL)"),
     "successful bag sends remain in the retry queue or have no bounded ack wait");
 assert(loot.includes("return originalAddOrb(id, ...)")

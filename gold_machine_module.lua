@@ -2,7 +2,7 @@
 -- The parent supplies a live pet catalog and a shared inventory-operation gate.
 
 local activeState
-local MODULE_VERSION = "1.3.1"
+local MODULE_VERSION = "1.3.0"
 local TARGET_PET_ID = "288"
 local TARGET_PET_NAME = "404 Demon"
 
@@ -289,11 +289,13 @@ end
 
 local function resolveBatch(state, context)
     if not state.MachineInfo then
-        local ok, _, problem, sourceName, sessionIndex, _, info =
-            context.InvokeCommand("Get Golden Machine Info")
+        local remote, sourceName, sessionIndex, problem =
+            context.GetCommandRemote("Get Golden Machine Info")
+        if not remote then return nil, nil, nil, problem end
+        local ok, info = pcall(function() return remote:InvokeServer() end)
         if not ok then
-            return nil, nil, nil,
-                "Get Golden Machine Info transport error: " .. tostring(problem)
+            context.InvalidateCommand("Get Golden Machine Info")
+            return nil, nil, nil, "Get Golden Machine Info transport error: " .. tostring(info)
         end
         if type(info) ~= "table" or #info < 1 then
             return nil, nil, nil, "Get Golden Machine Info returned no batch tiers"
