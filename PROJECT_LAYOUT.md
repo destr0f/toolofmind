@@ -25,6 +25,12 @@ modules are declared at startup but downloaded only when their feature is used.
 `loot_reactor.lua` owns the only orb/lootbag subscriptions. Lazy loading does
 not weaken identity checks.
 
+`enchant_module.lua` owns the equipped-pet enchant pipeline. It resolves only
+the stable named `Enchant Pet` command, keeps one UID selected until an exact
+`Save.Pets[uid].powers` change is observed, accepts any selected live power-tier
+title, and permits only one request in flight. It never depends on a floating
+ReplicatedStorage child index or the game's two-second visual animation delay.
+
 ## Runtime execution policy
 
 The active build has no global scheduler, profiler, timer heap or retained

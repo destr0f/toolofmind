@@ -31,7 +31,7 @@ end
 local statusViews = {}
 local statusSetters = {}
 local config = {}
-for _, key in ipairs({ "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMatter", "Boost" }) do
+for _, key in ipairs({ "EggCatalog", "Egg", "Routes", "Gold", "Rainbow", "DarkMatter", "Enchant", "Boost" }) do
     statusSetters[key] = function(value)
         local view = statusViews[key]
         assert(type(view) == "table", key .. " view was not installed")
@@ -65,6 +65,13 @@ local accepted, controls = automationUI("build", {
     SetGoldStatus = statusSetters.Gold,
     SetRainbowStatus = statusSetters.Rainbow,
     SetDarkMatterStatus = statusSetters.DarkMatter,
+    GetEnchantOptions = function()
+        return { "Royalty", "Tech Coins IV", "Tech Coins V" }
+    end,
+    StartEnchant = noOp,
+    StopEnchant = noOp,
+    RestartEnchant = noOp,
+    SetEnchantStatus = statusSetters.Enchant,
     ReconcileBoost = noOp,
     BoostEnabled = function() return false end,
     StartBoost = noOp,
@@ -83,6 +90,14 @@ countSlider.Definition.Callback(4)
 timeSlider.Definition.Callback(12.5)
 assert(config.DarkMatterBatchSize == 4, "Dark Matter pet-count slider did not update config")
 assert(config.DarkMatterMaxWaitHours == 12.5, "Dark Matter time slider did not update config")
+
+local enchantTargets = controlsByFlag.auto_enchant_targets
+local enchantToggle = controlsByFlag.auto_enchant_equipped
+assert(type(enchantTargets) == "table", "multi-enchant target dropdown is missing")
+assert(enchantTargets.Definition.Multi == true, "enchant dropdown is not multi-select")
+assert(type(enchantToggle) == "table", "auto-enchant toggle is missing")
+enchantTargets.Definition.Callback({ "Royalty", "Tech Coins V" })
+assert(#config.EnchantTargets == 2, "multi-enchant targets were not stored")
 
 for key, setter in pairs(statusSetters) do
     assert(type(setter) == "function", key .. " setter was overwritten")

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.26"
+local VERSION = "1.4.1-dev.27"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -265,6 +265,8 @@ local config = {
     AutoSuperLucky = false,
     AutoUltraLucky = false,
     AutoEgg = false,
+    AutoEnchant = false,
+    EnchantTargets = {},
     EggScope = "Nearby Eggs",
     EggName = nil,
     EggCount = 1,
@@ -516,6 +518,7 @@ function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
     local active = self.ActiveLabels
     table.clear(active)
     if config.AutoEgg then active[#active + 1] = "Egg" end
+    if config.AutoEnchant then active[#active + 1] = "Enchant" end
     if config.AutoGoldenGalaxyFox then active[#active + 1] = "Gold" end
     if config.AutoRainbowGalaxyFox then active[#active + 1] = "RB" end
     if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then active[#active + 1] = "DM" end
@@ -3129,6 +3132,9 @@ end
 function statusSetters.DarkMatter(text)
     statusSetters.Set("DarkMatter", text)
 end
+function statusSetters.Enchant(text)
+    statusSetters.Set("Enchant", text)
+end
 function statusSetters.Egg(text)
     statusSetters.Set("Egg", text)
 end
@@ -3386,6 +3392,117 @@ local function getMachinePetSnapshot(force)
         ByUID = byUID,
     }
     return machinePetSnapshot
+end
+
+local enchantRuntime = {
+    Controller = nil,
+    Loading = false,
+    Problem = nil,
+    Toggle = nil,
+}
+
+function enchantRuntime:DisableToggle()
+    config.AutoEnchant = false
+    task.defer(function()
+        if running() and self.Toggle and type(self.Toggle.Set) == "function" then
+            pcall(function() self.Toggle:Set(false) end)
+        end
+    end)
+end
+
+function enchantRuntime:Options()
+    local values, seen = {}, {}
+    local powers = Library.Directory and Library.Directory.Powers
+    if type(powers) == "table" then
+        for powerName, definition in pairs(powers) do
+            if type(definition) == "table"
+                and definition.canDrop ~= false and definition.CanDrop ~= false then
+                local tiers = definition.tiers or definition.Tiers
+                if type(tiers) == "table" then
+                    for _, tier in pairs(tiers) do
+                        local title = type(tier) == "table"
+                            and (tier.title or tier.Title or tier.name or tier.Name) or nil
+                        title = title and tostring(title) or nil
+                        local key = title and string.lower(title) or nil
+                        if key and key ~= "" and not seen[key] then
+                            seen[key] = true
+                            values[#values + 1] = title
+                        end
+                    end
+                elseif type(powerName) == "string" then
+                    local key = string.lower(powerName)
+                    if not seen[key] then
+                        seen[key] = true
+                        values[#values + 1] = powerName
+                    end
+                end
+            end
+        end
+    end
+    if #values == 0 then
+        for _, title in ipairs({
+            "Agility I", "Agility II", "Agility III",
+            "Chest Breaker I", "Chest Breaker II", "Chest Breaker III",
+            "Coins I", "Coins II", "Coins III", "Coins IV", "Coins V",
+            "Diamonds I", "Diamonds II", "Diamonds III", "Diamonds IV", "Diamonds V",
+            "Fantasy Coins I", "Fantasy Coins II", "Fantasy Coins III", "Fantasy Coins IV", "Fantasy Coins V",
+            "Gifts I", "Gifts II", "Gifts III", "Glittering", "Royalty",
+            "Strength I", "Strength II", "Strength III", "Strength IV", "Strength V",
+            "Teamwork", "Super Teamwork",
+            "Tech Coins I", "Tech Coins II", "Tech Coins III", "Tech Coins IV", "Tech Coins V",
+        }) do values[#values + 1] = title end
+    end
+    table.sort(values)
+    return values
+end
+
+function enchantRuntime:Stop(statusText)
+    if self.Controller then pcall(self.Controller, "stop") end
+    if statusText then statusSetters.Enchant(statusText) end
+end
+
+function enchantRuntime:Start()
+    if not config.AutoEnchant or not running() or self.Loading then return end
+    self.Loading = true
+    if not self.Controller then
+        local controller, problem = loadRemoteController("enchant", "auto enchant module", statusSetters.Enchant)
+        if not controller then
+            self.Loading = false
+            self.Problem = tostring(problem)
+            self:DisableToggle()
+            statusSetters.Enchant("Auto enchant module could not be loaded; no request was sent: " .. self.Problem)
+            return
+        end
+        self.Controller = controller
+    end
+    self.Loading = false
+    self.Problem = nil
+    if not config.AutoEnchant or not running() then return end
+    local context = {
+        Library = Library,
+        Running = running,
+        Enabled = function() return config.AutoEnchant end,
+        GetTargets = function() return config.EnchantTargets end,
+        InvokeCommand = invokeCommand,
+        RouteText = routeText,
+        AcquireOperation = acquireOperation,
+        ReleaseOperation = releaseOperation,
+        CancelOperation = cancelOperation,
+        OperationOwner = "AutoEnchant",
+        SetStatus = statusSetters.Enchant,
+        Trace = trace,
+    }
+    local called, accepted, problem = pcall(self.Controller, "start", context)
+    if not called or accepted == false then
+        self:DisableToggle()
+        statusSetters.Enchant("Auto enchant worker failed to start; no request was sent: "
+            .. tostring(not called and accepted or problem))
+    end
+end
+
+function enchantRuntime:Restart()
+    self:Stop()
+    if config.AutoEnchant then task.defer(function() self:Start() end) end
 end
 
 function machineModules:Enabled(entry)
@@ -4523,6 +4640,11 @@ do
             SetGoldStatus = statusSetters.Gold,
             SetRainbowStatus = statusSetters.Rainbow,
             SetDarkMatterStatus = statusSetters.DarkMatter,
+            GetEnchantOptions = function() return enchantRuntime:Options() end,
+            StartEnchant = function() enchantRuntime:Start() end,
+            StopEnchant = function(text) enchantRuntime:Stop(text) end,
+            RestartEnchant = function() enchantRuntime:Restart() end,
+            SetEnchantStatus = statusSetters.Enchant,
             ReconcileBoost = reconcileBoostModule,
             BoostEnabled = boostAutomationEnabled,
             StartBoost = startBoostModule,
@@ -4537,6 +4659,7 @@ do
         )
     end
     autoEggToggleControl = automationUIControls.AutoEggToggle
+    enchantRuntime.Toggle = automationUIControls.AutoEnchantToggle
     UI.EggScopeDropdown = automationUIControls.EggScopeDropdown
     UI.EggDropdown = automationUIControls.EggDropdown
     statusTabs.EggCatalog = UI.EggTab
@@ -4545,6 +4668,7 @@ do
     statusTabs.Gold = UI.MachinesTab
     statusTabs.Rainbow = UI.MachinesTab
     statusTabs.DarkMatter = UI.MachinesTab
+    statusTabs.Enchant = UI.MachinesTab
     statusTabs.Boost = UI.BoostsTab
     refreshEggDropdown(true)
     trace("06B automation UI ready")
@@ -4924,6 +5048,7 @@ local function shutdown(reason)
     config.AutoSuperLucky = false
     config.AutoUltraLucky = false
     config.AutoEgg = false
+    config.AutoEnchant = false
     disconnectAll()
     disconnectPetLifecycleSignals()
     restartFarmWatchers()
@@ -4944,10 +5069,15 @@ local function shutdown(reason)
         petFarm.Engine = nil
     end
     stopAutoEggModule()
+    enchantRuntime:Stop()
     machineModules:StopAll()
     stopBoostModule()
     resetSupportCoordinator()
     autoEggController = nil
+    enchantRuntime.Controller = nil
+    enchantRuntime.Loading = false
+    enchantRuntime.Problem = nil
+    enchantRuntime.Toggle = nil
     boostController = nil
     supportController = nil
     for _, entry in pairs(machineModules) do

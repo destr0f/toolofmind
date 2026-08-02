@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.2.5"
+local MODULE_VERSION = "1.3.0"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -18,6 +18,7 @@ local function build(context)
         "SetEggCatalogStatus",
         "RefreshRoutes", "SetRouteStatus", "GetMachinePetCatalog", "StartMachine",
         "StopMachine", "SetGoldStatus", "SetRainbowStatus", "SetDarkMatterStatus",
+        "GetEnchantOptions", "StartEnchant", "StopEnchant", "RestartEnchant", "SetEnchantStatus",
         "ReconcileBoost", "BoostEnabled", "StartBoost",
     })
     if not valid then return false, problem end
@@ -290,6 +291,59 @@ local function build(context)
     })
     yieldUI("dark matter machine")
 
+    local enchant = UI.MachinesTab:Section({ Title = "Fast Equipped-Pet Enchant", Box = true, Opened = true })
+    enchant:Paragraph({
+        Title = "ONE PET > ONE ROLL > SAVE ACK",
+        Desc = "Keeps one equipped UID locked until it receives any selected enchant, then advances immediately.",
+    })
+    local enchantTargets = enchant:Dropdown({
+        Flag = "auto_enchant_targets",
+        Title = "Target Enchants",
+        Desc = "Select one or more acceptable results. Exact live Directory.Powers tier names are used.",
+        Values = context.GetEnchantOptions(),
+        Value = type(config.EnchantTargets) == "table" and config.EnchantTargets or {},
+        Multi = true,
+        AllowNone = true,
+        SearchBarEnabled = true,
+        Callback = function(value)
+            local selected, seen = {}, {}
+            if type(value) == "table" then
+                for key, item in pairs(value) do
+                    local raw = type(key) == "string" and item == true and key or item
+                    if type(raw) == "string" and raw ~= "" and not seen[raw] then
+                        seen[raw] = true
+                        selected[#selected + 1] = raw
+                    end
+                end
+            elseif type(value) == "string" and value ~= "" then
+                selected[1] = value
+            end
+            table.sort(selected)
+            config.EnchantTargets = selected
+            if config.AutoEnchant then context.RestartEnchant() end
+        end,
+    })
+    local autoEnchantToggle = enchant:Toggle({
+        Flag = "auto_enchant_equipped",
+        Title = "Auto Enchant Equipped Pets",
+        Desc = "One Enchant Pet request may exist at a time; no fixed remote index and no animation wait.",
+        Value = false,
+        Callback = function(value)
+            config.AutoEnchant = value == true
+            if config.AutoEnchant then
+                context.SetEnchantStatus("Enabled. Locking one eligible equipped pet until any selected enchant appears...")
+                task.spawn(context.StartEnchant)
+            else
+                context.StopEnchant("Disabled. No enchant request is active.")
+            end
+        end,
+    })
+    statusViews.Enchant = enchant:Paragraph({
+        Title = "Auto Enchant Status",
+        Desc = "Disabled / select target enchants before enabling",
+    })
+    yieldUI("auto enchant")
+
     local boost = UI.BoostsTab:Section({ Title = "Adaptive Boost Controller", Box = true, Opened = true })
     boost:Paragraph({
         Title = "RENEW FROM SAVE / REFILL WHEN EMPTY",
@@ -355,6 +409,8 @@ local function build(context)
         AutoEggToggle = autoEggToggle,
         EggScopeDropdown = eggScope,
         EggDropdown = eggDropdown,
+        EnchantTargetsDropdown = enchantTargets,
+        AutoEnchantToggle = autoEnchantToggle,
     }
 end
 
