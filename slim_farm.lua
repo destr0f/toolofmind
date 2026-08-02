@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.24"
+local VERSION = "1.4.1-dev.26"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -1222,6 +1222,9 @@ BossChestZones = {
     ["giant alien chest"] = "Giant Alien Chest",
     ["hacker chest"] = "Hacker Portal",
     ["giant hacker chest"] = "Hacker Portal",
+    ["giant ocean chest"] = "Axolotl Cave",
+    ["ocean chest"] = "Axolotl Cave",
+    ["giant underwater chest"] = "Axolotl Cave",
 }
 
 local cachedWorld, nextWorldCheck = nil, 0
@@ -1620,6 +1623,16 @@ local function applyCoinData(rawId, data, fromEvent)
         local value = tostring(data.n or data.Name or data.name)
         if record.Name ~= value then record.Name = value; selectionChanged = true end
     end
+    -- Giant world chests can respawn from a compact New Coin payload without
+    -- an explicit area. The canonical name-to-zone map keeps the replacement
+    -- target selectable without a Workspace model or a geometry scan.
+    if record.Area == nil then
+        local inferredArea = BossChestZones[normalize(record.Name)]
+        if inferredArea then
+            record.Area = inferredArea
+            selectionChanged = true
+        end
+    end
     if world ~= nil then
         local value = tostring(world)
         if record.World ~= value then record.World = value; selectionChanged = true end
@@ -1711,6 +1724,10 @@ function coinIndex:IndexModel(model, refreshHealth)
         end
         if area ~= nil and record.Area ~= area then record.Area = area; selectionChanged = true end
         if name ~= nil and record.Name ~= name then record.Name = name; selectionChanged = true end
+        if record.Area == nil then
+            local inferredArea = BossChestZones[normalize(record.Name)]
+            if inferredArea then record.Area = inferredArea; selectionChanged = true end
+        end
         if world ~= nil and record.World ~= world then record.World = world; selectionChanged = true end
         record.WorkspaceIndexed = true
     end
