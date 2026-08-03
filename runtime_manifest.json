@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Develop",
-    "version": "1.4.1-dev.29",
+    "version": "1.4.1-dev.30",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-dev.29",
+    "compatibleSuite": "1.4.1-dev.30",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -46,7 +46,7 @@
       "version": "1.2.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -62,7 +62,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -78,7 +78,7 @@
       "version": "1.2.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -94,7 +94,7 @@
       "version": "3.3.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -109,7 +109,7 @@
       "label": "Auto egg",
       "version": "1.6.1",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -125,7 +125,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -141,7 +141,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -157,7 +157,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -173,7 +173,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -188,7 +188,7 @@
       "label": "Auto boost",
       "version": "1.1.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -204,7 +204,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.29",
+      "compatibleSuite": "1.4.1-dev.30",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -273,7 +273,8 @@
         "tests/develop_prompt10_policy_test.js",
         "tests/native_pet_coin_contract_test.js",
         "tests/machine_404_enchant_policy_test.lua",
-        "tests/axolotl_ocean_hotfix_test.js"
+        "tests/axolotl_ocean_hotfix_test.js",
+        "tests/hacker_portal_hotfix_test.js"
       ]
     },
     "documentation": {
@@ -302,31 +303,31 @@
   },
   "build": {
     "generatedFromCommit": "0edabae2bd8a71aa53c03381606581240ad06748",
-    "sourceTree": "clean",
+    "sourceTree": "dirty",
     "embeddedRuntimeFingerprint": {
       "bytes": 5745,
-      "sha256": "d62deb55376a951b0ccb83ab9f94c277acfb9df9f23ae0d6a5e8ecefde18bee5",
-      "djb2": "0a549928"
+      "sha256": "30c36b6ade8f96995aec494adf83a2ec30b868c025eac901c33c139b8a208ce0",
+      "djb2": "4cf31479"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-dev.29",
-      "bytes": 201078,
-      "sha256": "c44ecbbbad6eefbd588dbfd38126e187adefe8e3a3ea02564eb23b36d7176e50",
-      "djb2": "075666f3"
+      "version": "1.4.1-dev.30",
+      "bytes": 201542,
+      "sha256": "d6f1a41e2bc546eccbeec0c7c3dbdaa683af1924bee92980031114b740d8ef9a",
+      "djb2": "2f2162e5"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 161520,
-        "sha256": "81cfb35a04a5422e948679294cdc199b4de249af7f96afe009c16b8ad4db3ed2",
-        "djb2": "8b08c83d"
+        "bytes": 161787,
+        "sha256": "aade6f5c4574bd34559161cdd0555bec6f0e246309e7bcf8d4caa8f0d0fc6202",
+        "djb2": "db6f15c0"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 161520,
-        "sha256": "81cfb35a04a5422e948679294cdc199b4de249af7f96afe009c16b8ad4db3ed2",
-        "djb2": "8b08c83d"
+        "bytes": 161787,
+        "sha256": "aade6f5c4574bd34559161cdd0555bec6f0e246309e7bcf8d4caa8f0d0fc6202",
+        "djb2": "db6f15c0"
       }
     }
   }

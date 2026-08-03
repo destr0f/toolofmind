@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.29"
+local VERSION = "1.4.1-dev.30"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -1192,6 +1192,8 @@ local BossChestNames = {
     ["giant alien chest"] = true,
     ["hacker chest"] = true,
     ["giant hacker chest"] = true,
+    ["hacker portal chest"] = true,
+    ["giant hacker portal chest"] = true,
     ["giant ocean chest"] = true,
     ["ocean chest"] = true,
     ["giant underwater chest"] = true,
@@ -1225,6 +1227,8 @@ BossChestZones = {
     ["giant alien chest"] = "Giant Alien Chest",
     ["hacker chest"] = "Hacker Portal",
     ["giant hacker chest"] = "Hacker Portal",
+    ["hacker portal chest"] = "Hacker Portal",
+    ["giant hacker portal chest"] = "Hacker Portal",
     ["giant ocean chest"] = "Axolotl Cave",
     ["ocean chest"] = "Axolotl Cave",
     ["giant underwater chest"] = "Axolotl Cave",
@@ -2079,9 +2083,13 @@ local function recordInZone(record, zone, zoneAnchor)
         record.DetectedArea = areaForPosition(record.Position)
     end
     local detected = record.DetectedArea
-    if detected ~= nil then return namesMatch(detected, zone) end
-    return zoneAnchor ~= nil and record.Position ~= nil
+    if detected ~= nil and namesMatch(detected, zone) then return true end
+    local nearAnchor = zoneAnchor ~= nil and record.Position ~= nil
         and (record.Position - zoneAnchor).Magnitude <= 240
+    -- Hacker Portal overlaps the terminal Tech World area boundary. Trust its
+    -- live chest/area anchor when the nearest-area classifier says Glitch.
+    if namesMatch(zone, "Hacker Portal") then return nearAnchor end
+    return detected == nil and nearAnchor
 end
 
 targetRecordAllowed = function(record, mode, world, zone, zoneAnchor)
