@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.27"
+local VERSION = "1.4.1-dev.28"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -3489,6 +3489,19 @@ function enchantRuntime:Start()
         ReleaseOperation = releaseOperation,
         CancelOperation = cancelOperation,
         OperationOwner = "AutoEnchant",
+        GetNetworkPressure = function()
+            local pingMs
+            local pingOk, ping = pcall(function()
+                return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+            end)
+            if pingOk then pingMs = tonumber(ping) end
+            local farmStats = petFarm:RefreshStats()
+            if type(farmStats) ~= "table" then farmStats = {} end
+            return pingMs,
+                tonumber(farmStats.AverageRTT) or 0,
+                tonumber(farmStats.Active) or 0,
+                tonumber(farmStats.Queued) or 0
+        end,
         SetStatus = statusSetters.Enchant,
         Trace = trace,
     }

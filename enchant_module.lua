@@ -1,7 +1,7 @@
 -- Serialized equipped-pet enchant worker for PSX OG Nova develop.
 -- One UID remains selected until any requested enchant is confirmed in Save.Pets.
 
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.0.1"
 local activeState
 
 local CONFIRM_POLL = 0.04
@@ -10,6 +10,12 @@ local GATE_RETRY = 0.10
 local REJECT_RETRY = 1.00
 local IDLE_RECHECK = 1.00
 local MAX_TRANSPORT_BACKOFF = 3.00
+local SUCCESS_MIN_DELAY = 0.20
+local SUCCESS_MAX_DELAY = 0.90
+local SUCCESS_RTT_FACTOR = 0.75
+local FARM_QUEUE_DELAY = 0.35
+local HIGH_PING_MS = 350
+local HIGH_PING_DELAY = 0.50
 
 local ROMAN_LEVELS = { I = 1, II = 2, III = 3, IV = 4, V = 5 }
 local LEVEL_ROMANS = { "I", "II", "III", "IV", "V" }
@@ -218,6 +224,41 @@ local function clearCurrent(state)
     state.Awaiting = nil
 end
 
+local function successfulRollDelay(state)
+    local delay = SUCCESS_MIN_DELAY
+    local reader = state.Context.GetNetworkPressure
+    if type(reader) ~= "function" then
+        state.LastPacingDelay = delay
+        return delay
+    end
+
+    local ok, pingMs, farmRTT, farmActive, farmQueued = pcall(reader)
+    if not ok then
+        state.LastPacingDelay = delay
+        return delay
+    end
+
+    pingMs = math.max(0, tonumber(pingMs) or 0)
+    farmRTT = math.max(0, tonumber(farmRTT) or 0)
+    farmActive = math.max(0, tonumber(farmActive) or 0)
+    farmQueued = math.max(0, tonumber(farmQueued) or 0)
+
+    local observedRTT = math.max(pingMs / 1000, farmRTT)
+    if observedRTT > 0 then
+        delay = math.max(delay, math.min(SUCCESS_MAX_DELAY, observedRTT * SUCCESS_RTT_FACTOR))
+    end
+    if farmQueued > 0 then
+        delay = math.max(delay, FARM_QUEUE_DELAY)
+    end
+    if farmActive > 0 and pingMs >= HIGH_PING_MS then
+        delay = math.max(delay, math.min(SUCCESS_MAX_DELAY, math.max(HIGH_PING_DELAY, pingMs / 1000)))
+    end
+
+    state.LastPacingDelay = delay
+    state.LastPingMs = pingMs
+    return delay
+end
+
 local function selectNext(state, save)
     local candidates = {}
     local equipped, alreadyReady, blocked = 0, 0, 0
@@ -272,7 +313,7 @@ local function confirmRoll(state, save, pet)
             ))
             clearCurrent(state)
         end
-        schedule(state, 0)
+        schedule(state, successfulRollDelay(state))
         return true
     end
     if os.clock() >= awaiting.Deadline then

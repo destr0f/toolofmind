@@ -1,8 +1,9 @@
 local enchant = require("../enchant_module")
 
-local queue = {}
+local queue, delays = {}, {}
 local fakeTask = {
-    delay = function(_, callback)
+    delay = function(seconds, callback)
+        delays[#delays + 1] = tonumber(seconds) or 0
         queue[#queue + 1] = callback
     end,
 }
@@ -68,6 +69,7 @@ local accepted, problem = enchant("start", {
     ReleaseOperation = function() return true end,
     CancelOperation = function() return true end,
     OperationOwner = "AutoEnchant",
+    GetNetworkPressure = function() return 420, 0.18, 12, 2 end,
     SetStatus = function() end,
     Trace = function() end,
     Task = fakeTask,
@@ -87,6 +89,8 @@ assert(#calls == 3, "expected exactly three confirmed rolls")
 assert(calls[1] == "pet-a" and calls[2] == "pet-a" and calls[3] == "pet-b",
     "worker did not keep one UID until a selected enchant appeared")
 assert(maximumInFlight == 1, "more than one enchant request was in flight")
+assert(table.find(delays, 0.5) ~= nil,
+    "high-ping farm pressure did not pace the next confirmed enchant roll")
 assert(find("pet-a").powers[1][1] == "Royalty", "first pet did not reach a selected enchant")
 assert(find("pet-b").powers[1][2] == 5, "second pet did not reach a selected enchant")
 
