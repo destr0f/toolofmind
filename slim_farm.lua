@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.30"
+local VERSION = "1.4.1-dev.31"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -960,6 +960,9 @@ local ZoneAliases = {
     ["Tech Shop"] = "Shop",
     ["Doodle Shop"] = "Shop",
     ["Steampunk Chest Area"] = "Steampunk Chest",
+    ["Hacker Portals"] = "Hacker Portal",
+    ["Hacker Portal Area"] = "Hacker Portal",
+    ["Hacker Portals Area"] = "Hacker Portal",
 }
 
 local WorldAliases = {
@@ -1058,6 +1061,7 @@ end
 local areaCatalog = {
     Folder = nil,
     Dirty = true,
+    Revision = 0,
     Entries = {},
     Names = {},
     Connections = {},
@@ -1070,6 +1074,7 @@ local function resetAreaCatalog()
     table.clear(areaCatalog.Connections)
     areaCatalog.Folder = nil
     areaCatalog.Dirty = true
+    areaCatalog.Revision = areaCatalog.Revision + 1
     table.clear(areaCatalog.Entries)
     table.clear(areaCatalog.Names)
 end
@@ -1083,6 +1088,7 @@ local function refreshAreaCatalog()
         if areas then
             local function invalidate()
                 areaCatalog.Dirty = true
+                areaCatalog.Revision = areaCatalog.Revision + 1
             end
             local added = areas.ChildAdded:Connect(invalidate)
             local removed = areas.ChildRemoved:Connect(invalidate)
@@ -1138,6 +1144,24 @@ local function areaForPosition(position)
         end
     end
     return insideName or nearestName
+end
+
+local function positionInsideNamedArea(position, zone, horizontalMargin)
+    if typeof(position) ~= "Vector3" or zone == nil then return false end
+    horizontalMargin = math.max(tonumber(horizontalMargin) or 0, 0)
+    local entries = refreshAreaCatalog()
+    for _, entry in ipairs(entries) do
+        if namesMatch(entry.Name, zone) then
+            local point = entry.CFrame:PointToObjectSpace(position)
+            local half = entry.Size / 2 + Vector3.new(horizontalMargin, 25, horizontalMargin)
+            if math.abs(point.X) <= half.X
+                and math.abs(point.Y) <= half.Y
+                and math.abs(point.Z) <= half.Z then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local currentZone, currentZoneAnchor, nextZoneCheck = nil, nil, 0
@@ -2078,12 +2102,19 @@ local function recordInZone(record, zone, zoneAnchor)
     if bossZone and namesMatch(bossZone, zone) then return true end
     if record.Area and namesMatch(record.Area, zone) then return true end
     if record.Name and namesMatch(record.Name, zone) then return true end
-    if record.Position and record.DetectedPosition ~= record.Position then
+    local areaRevision = areaCatalog.Revision
+    if record.Position and (record.DetectedPosition ~= record.Position
+        or record.DetectedAreaRevision ~= areaRevision) then
         record.DetectedPosition = record.Position
         record.DetectedArea = areaForPosition(record.Position)
+        record.DetectedAreaRevision = areaCatalog.Revision
     end
     local detected = record.DetectedArea
     if detected ~= nil and namesMatch(detected, zone) then return true end
+    if namesMatch(zone, "Hacker Portal")
+        and positionInsideNamedArea(record.Position, zone, 36) then
+        return true
+    end
     local nearAnchor = zoneAnchor ~= nil and record.Position ~= nil
         and (record.Position - zoneAnchor).Magnitude <= 240
     -- Hacker Portal overlaps the terminal Tech World area boundary. Trust its
@@ -2103,9 +2134,15 @@ end
 
 local function orderedTargets(mode)
     refreshWorkspaceCoins()
+    -- Area folders can stream in after their coin records. Refreshing here and
+    -- carrying the revision in the cache key prevents a permanent empty target
+    -- cache at the terminal Hacker Portal boundary.
+    refreshAreaCatalog()
     local world = getSelectedWorld()
     local zone = getSelectedZone()
-    local signature = table.concat({ tostring(mode), tostring(world), tostring(zone) }, "|")
+    local signature = table.concat({
+        tostring(mode), tostring(world), tostring(zone), tostring(areaCatalog.Revision),
+    }, "|")
     local cache = coinIndex.Cache
     if cache.Revision == coinIndex.Revision and cache.Signature == signature then
         coinIndex:FinalizeTargetMutations()
