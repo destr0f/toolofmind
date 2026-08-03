@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.3.1"
+local MODULE_VERSION = "3.3.2"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
 local BAG_LANES = 4
@@ -14,6 +14,8 @@ local BAG_TRANSPORT_RETRY_DELAY = 0.10
 local BAG_SENT_TTL = 1.25
 local MAX_BAG_POOL = 256
 local STATUS_INTERVAL = 1
+local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"
+local NATIVE_PET_COIN_STAGE = "__PSX_HEADLESS_TARGET__"
 
 local Players = game:GetService("Players")
 
@@ -764,6 +766,83 @@ local function scriptEnvironment(scriptObject)
     return environment
 end
 
+local function liveCoinFolder(rawId)
+    if rawId == nil then return nil end
+    local things = workspace:FindFirstChild("__THINGS")
+    local coins = things and things:FindFirstChild("Coins")
+    return coins and coins:FindFirstChild(tostring(rawId)) or nil
+end
+
+-- Game.Pets.Tick follows the invisible POS part but reads the sibling Coin.Size
+-- every render frame. Full headless mode may suppress the expensive Coin clone,
+-- so retain one invisible POS clone only for folders that already exist without
+-- that required sibling. This is structural compatibility, not a visual model.
+local function ensureNativePetCoinTarget(record, rawId)
+    if type(record) ~= "table" or rawId == nil then return false end
+    local id = tostring(rawId)
+    local folder = liveCoinFolder(id)
+    if not folder then return true end
+
+    local target = folder:FindFirstChild("Coin")
+    if target then
+        if not target:IsA("BasePart") then return false end
+        local marked = false
+        pcall(function()
+            marked = target:GetAttribute(NATIVE_PET_COIN_SHELL_ATTRIBUTE) == true
+        end)
+        if marked then record.StructuralShells[id] = target end
+        return true
+    end
+
+    local pos = folder:FindFirstChild("POS")
+    if not pos or not pos:IsA("BasePart") then return false end
+    local created, shell = pcall(function()
+        local clone = pos:Clone()
+        clone.Name = "Coin"
+        clone.Size = Vector3.new(0.05, 0.05, 0.05)
+        clone.Transparency = 1
+        clone.CastShadow = false
+        clone.CanCollide = false
+        clone.CanTouch = false
+        clone.CanQuery = false
+        clone:SetAttribute(NATIVE_PET_COIN_SHELL_ATTRIBUTE, true)
+        folder:SetAttribute("ModelStage", NATIVE_PET_COIN_STAGE)
+        clone.Parent = folder
+        return clone
+    end)
+    if not created or not shell then return false end
+    record.StructuralShells[id] = shell
+    return true
+end
+
+local function restoreNativePetCoinTargets(record)
+    disconnect(record and record.StructureConnection)
+    disconnect(record and record.StructureRemovalConnection)
+    if type(record) ~= "table" or type(record.StructuralShells) ~= "table" then return end
+    if coinsHeadlessEnabled() then
+        table.clear(record.StructuralShells)
+        return
+    end
+
+    local originalUpdate = record.Originals and record.Originals.UpdateCoin
+    for id, shell in pairs(record.StructuralShells) do
+        local folder = typeof(shell) == "Instance" and shell.Parent or nil
+        local owned = false
+        if folder then
+            pcall(function()
+                owned = shell:GetAttribute(NATIVE_PET_COIN_SHELL_ATTRIBUTE) == true
+            end)
+        end
+        if owned then
+            pcall(function()
+                folder:SetAttribute("ModelStage", NATIVE_PET_COIN_STAGE)
+            end)
+            if type(originalUpdate) == "function" then pcall(originalUpdate, id) end
+        end
+        record.StructuralShells[id] = nil
+    end
+end
+
 local function restoreProducerRecord(record)
     if type(record) ~= "table" then return end
     record.Active = false
@@ -775,6 +854,7 @@ local function restoreProducerRecord(record)
             end
         end
     end
+    restoreNativePetCoinTargets(record)
     record.Environment = nil
     record.Script = nil
     table.clear(record.CoinDataTables or {})
@@ -800,6 +880,10 @@ local function coinProducerCall(record, original, producerName, ...)
                     and type(data) == "table" then
                     pcall(context.ObserveCoin, rawId, data)
                 end
+                local structureReady = true
+                if producerName == "UpdateCoin" then
+                    structureReady = ensureNativePetCoinTarget(record, rawId)
+                end
                 -- The catalog-wide guard is insufficient here: one stale or
                 -- out-of-zone record must never suppress a newly spawned ID.
                 -- Only gate the visual producer after this exact coin has a
@@ -807,6 +891,7 @@ local function coinProducerCall(record, original, producerName, ...)
                 -- original producer create its tiny data folder, then recover
                 -- that one ID without scanning Workspace.
                 shouldPrevent = coinCatalogReady() and coinRecordReady(rawId)
+                if not structureReady then shouldPrevent = false end
                 if not shouldPrevent then
                     local results = table.pack(original(...))
                     if producerName == "AddCoin" then recoverCoinRecord(rawId) end
@@ -951,6 +1036,10 @@ local function installCoinProducer()
         Environment = environment,
         Originals = {},
         Wrappers = {},
+        CoinDataTables = readFunctionUpvalueTables(environment.AddCoin),
+        StructuralShells = {},
+        StructureConnection = nil,
+        StructureRemovalConnection = nil,
     }
     for _, name in ipairs(names) do
         local original = environment[name]
@@ -980,8 +1069,35 @@ local function installCoinProducer()
     end
 
     run.CoinProducerRecord = record
+    local things = workspace:FindFirstChild("__THINGS")
+    local coins = things and things:FindFirstChild("Coins")
+    if coins then
+        for _, folder in ipairs(coins:GetChildren()) do
+            ensureNativePetCoinTarget(record, folder.Name)
+        end
+        record.StructureConnection = coins.ChildAdded:Connect(function(folder)
+            task.defer(function()
+                if record.Active and record.Generation == run.Generation then
+                    ensureNativePetCoinTarget(record, folder.Name)
+                end
+            end)
+        end)
+        record.StructureRemovalConnection = coins.DescendantRemoving:Connect(function(descendant)
+            local folder = descendant and descendant.Parent
+            if descendant and descendant.Name == "Coin"
+                and folder and folder.Parent == coins then
+                local id = folder.Name
+                record.StructuralShells[id] = nil
+                task.defer(function()
+                    if record.Active and record.Generation == run.Generation then
+                        ensureNativePetCoinTarget(record, id)
+                    end
+                end)
+            end
+        end)
+    end
     run.CoinsProducer = "producer-gated"
-    run.CoinGateReason = "effects gated per verified coin ID; missing IDs fail open"
+    run.CoinGateReason = "verified IDs gated; native pet target shells preserved"
     return true
 end
 
