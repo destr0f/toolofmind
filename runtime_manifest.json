@@ -321,32 +321,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "3a2d208bd3368581883d36d972bbfd169d2b03ef",
+    "generatedFromCommit": "f0ea8bd088e17cb41b9f2d38324cf5259c4e39fb",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6233,
-      "sha256": "c37d82c7973589d6532303fea44b4455ed75e46b442e933528ec22a928702b67",
-      "djb2": "5d083dbf"
+      "sha256": "71c11bef2c8bd8d2f5f1591890c485d6c169b259da11ab11706c8c250595ba9f",
+      "djb2": "781dcb67"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-dev.35",
-      "bytes": 239947,
-      "sha256": "be137c30304c33223da6750b7405c64444ff756546b52fbc0ac21445548ff420",
-      "djb2": "4a1f68ba"
+      "bytes": 246853,
+      "sha256": "b2ce7b0c5f53f094d66413b26a0691cab3977d24aee6370b7ca7a08a6683acc3",
+      "djb2": "f386a1b2"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 193714,
-        "sha256": "ef9353db6eebc5f64c6c7c9dfecf36bb7d97f64e4857f9d18a4871e63732a7ee",
-        "djb2": "12f9614b"
+        "bytes": 198849,
+        "sha256": "038e51ea0879d91c5c62bf2125e124b3b5b87ba38af1525c41025b21b212c106",
+        "djb2": "e660ff4d"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 193714,
-        "sha256": "ef9353db6eebc5f64c6c7c9dfecf36bb7d97f64e4857f9d18a4871e63732a7ee",
-        "djb2": "12f9614b"
+        "bytes": 198849,
+        "sha256": "038e51ea0879d91c5c62bf2125e124b3b5b87ba38af1525c41025b21b212c106",
+        "djb2": "e660ff4d"
       }
     }
   }
