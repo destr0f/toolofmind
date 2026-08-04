@@ -37,7 +37,7 @@ for (const name of ["New Coin", "Update Coin Health", "Remove Coin"]) {
         `missing connection proof for ${name}`);
 }
 assert(farm.includes('connect("Update Coin Pets", function(id, pets)')
-    && farm.includes("petFarm:ConfirmCoinPets(id, pets)"),
+    && farm.includes("controller:ConfirmCoinPets(id, pets)"),
     "Update Coin Pets is not routed to the transition-only membership confirmer");
 const membershipStart = farm.indexOf("function petFarm:ConfirmCoinPets");
 const membershipEnd = farm.indexOf("function petFarm:RefreshStats", membershipStart);

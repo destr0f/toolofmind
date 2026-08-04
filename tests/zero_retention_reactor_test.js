@@ -42,7 +42,7 @@ for (const command of ["New Coin", "Update Coin Health", "Remove Coin"]) {
     assert(farm.includes(`connect("${command}"`), `missing coin delta ${command}`);
 }
 assert(farm.includes('connect("Update Coin Pets", function(id, pets)')
-    && farm.includes("petFarm:ConfirmCoinPets(id, pets)"),
+    && farm.includes("controller:ConfirmCoinPets(id, pets)"),
     "Lite farm is missing its transition-only Join Coin membership acknowledgement");
 const membershipStart = farm.indexOf("function petFarm:ConfirmCoinPets");
 const membershipEnd = farm.indexOf("function petFarm:RefreshStats", membershipStart);

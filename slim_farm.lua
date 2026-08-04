@@ -1410,7 +1410,6 @@ local releaseAssignmentsForCoin
 local requestFarmReset
 local assignmentCount
 local armFarmRecovery
-local petFarm
 local function getPlayerZone()
     if os.clock() < nextZoneCheck then return currentZone end
     nextZoneCheck = os.clock() + 0.25
@@ -2250,8 +2249,9 @@ local function connectCoinSignals()
     -- attached pet UIDs to a coin. Keep the callback transition-only: it
     -- checks at most the equipped assignments and retains no server pet list.
     connect("Update Coin Pets", function(id, pets)
-        if petFarm and type(petFarm.ConfirmCoinPets) == "function" then
-            petFarm:ConfirmCoinPets(id, pets)
+        local controller = coinSync.PetFarm
+        if controller and type(controller.ConfirmCoinPets) == "function" then
+            controller:ConfirmCoinPets(id, pets)
         end
     end)
     connect("Remove Coin", function(id) removeCoin(id, true) end)
@@ -2442,7 +2442,7 @@ local allocatorRequested = false
 local driverStatus = "waiting for first target"
 local idleRecoveryCount = 0
 local lastRecovery = "none"
-petFarm = {
+local petFarm = {
     Engine = nil,
     Loading = false,
     Problem = nil,
@@ -2502,6 +2502,7 @@ petFarm = {
         AllocatorUsable = {},
     },
 }
+coinSync.PetFarm = petFarm
 
 local function acquirePetState(coinId, petId)
     local pool = petFarm.StatePool
@@ -2982,7 +2983,7 @@ local function getMachinePetCatalog(force)
     return ids, names, summary
 end
 
-local function normalizedPetUid(value)
+function petFarm:NormalizedPetUid(value)
     if value == nil then return nil end
     if type(value) == "table" then
         value = value.uid or value.UID or value.id or value.ID
@@ -3085,10 +3086,10 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
 
     local present = {}
     for key, value in pairs(payload) do
-        local uid = normalizedPetUid(value)
+        local uid = self:NormalizedPetUid(value)
         if uid then present[uid] = true end
         if value == true then
-            local keyedUid = normalizedPetUid(key)
+            local keyedUid = self:NormalizedPetUid(key)
             if keyedUid then present[keyedUid] = true end
         end
     end
