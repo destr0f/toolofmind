@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.4.3"
+local MODULE_VERSION = "3.4.4"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
 local BAG_LANES = 4
@@ -518,6 +518,7 @@ end
 local function releaseBagRecord(record)
     record.Id = nil
     record.Position = nil
+    record.Object = nil
     record.Attempts = nil
     record.Due = nil
     record.State = nil
@@ -618,7 +619,15 @@ local function processDelayedBags(now)
                         -- missing acknowledgement cannot grow retained state.
                         run.BagRetried = run.BagRetried + 1
                         record.State = "retry"
-                        enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)
+                        -- Keep the retry in this compacted delayed array. Calling
+                        -- enqueueDelayedBag here appends to the same array that is
+                        -- truncated below, which used to erase every second send.
+                        local retryAt = now + BAG_TRANSPORT_RETRY_DELAY
+                        record.Due = retryAt
+                        record.Delayed = true
+                        delayed[write] = record
+                        write = write + 1
+                        if not nextAt or retryAt < nextAt then nextAt = retryAt end
                     else
                         closeBag(record, false, "sent ttl expired")
                     end
@@ -637,6 +646,12 @@ local function processDelayedBags(now)
 end
 
 local function collectBag(record, now)
+    local liveObject = record.Object
+    if typeof(liveObject) == "Instance" and liveObject.Parent then
+        -- Collect Lootbag expects the bag's current landed position. The first
+        -- fallback observation can happen while the object is still moving.
+        record.Position = objectPosition(liveObject) or record.Position
+    end
     local profiled = profileBegin("PSX_LootbagFlush")
     local sent, _, route = fire("Collect Lootbag", record.Id, record.Position)
     profileEnd(profiled)
@@ -656,7 +671,7 @@ local function collectBag(record, now)
     end
 end
 
-local function queueBagEvent(id, payload, explicitPosition)
+local function queueBagEvent(id, payload, explicitPosition, sourceObject)
     if not bagsEnabled() then return false end
     id = id ~= nil and tostring(id) or nil
     if not id or id == "" then return false end
@@ -683,6 +698,7 @@ local function queueBagEvent(id, payload, explicitPosition)
     local record = acquireBagRecord()
     record.Id = id
     record.Position = position
+    record.Object = typeof(sourceObject) == "Instance" and sourceObject or nil
     record.Attempts = 0
     record.State = "queued"
     run.BagById[id] = record
@@ -707,7 +723,7 @@ local function queueBagObject(item)
     local id = objectId(item)
     local position = objectPosition(item)
     if not id or not position then return false end
-    return queueBagEvent(id, nil, position)
+    return queueBagEvent(id, nil, position, item)
 end
 
 local function acknowledgeBag(id, source)
