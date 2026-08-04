@@ -15,8 +15,10 @@ const send = body(
     "function petFarm:SendCommittedFarmSignals",
     "function petFarm:ConfirmStateProgress"
 );
-assert(!send.includes('state.Phase = "working"'),
-    "a locally sent FireServer call must not prove that the pet is farming");
+assert(send.includes('state.Phase = "working"'),
+    "a successful named target/farm signal pair must commit the local lock");
+assert(send.includes('fireFast("Change Pet Target", petId, "Coin", coinId)'));
+assert(send.includes('fireFast("Farm Coin", coinId, petId)'));
 
 const confirm = body(
     "function petFarm:ConfirmStateProgress",
@@ -24,7 +26,9 @@ const confirm = body(
 );
 assert(confirm.includes('state.Phase = "working"'));
 assert(confirm.includes("state.ProgressConfirmed = true"));
-assert(confirm.includes("self.ProgressLeases[petId] = nil"));
+assert(confirm.includes('self.ProgressAckMode = "available"'));
+assert(!confirm.includes("self.ProgressLeases[petId] = nil"),
+    "an optional acknowledgement must not disable the same-target watchdog");
 
 const health = body(
     "function petFarm:ObserveCoinHealth",
@@ -37,29 +41,39 @@ const lease = body(
     "function petFarm:RunProgressLeases",
     "function petFarm:ScheduleProgressLease"
 );
-assert(lease.includes("state.ProgressConfirmed == true"));
 assert(lease.includes("now >= (tonumber(state.ProgressDeadline) or now)"));
-assert(lease.includes("petStates[petId] = nil"));
+assert(lease.includes("self:SendCommittedFarmSignals(petId, state)"));
+assert(lease.includes('self.ProgressAckMode = "fail-open"'));
+assert(lease.includes("self.ProgressLeaseRepairs = self.ProgressLeaseRepairs + 1"));
+assert(lease.includes("petStates[petId] = nil"),
+    "a genuinely removed coin must still free its pet");
 assert(lease.includes("self.FastPets[petId] = true"));
 assert(lease.includes("self:QueueFastDispatch()"));
+assert(!lease.includes("rejectedUntil[coinId]"),
+    "missing optional acknowledgements must never reject a live target");
+assert(!lease.includes("unconfirmed farm lease"),
+    "missing optional acknowledgements must never rotate a live target");
 for (const forbidden of ["Get Coins", "refreshWorkspaceCoins", "getgc", "getconnections", "Update Coin Pets"]) {
-    assert(!lease.includes(forbidden), `progress lease became a scan/hook path: ${forbidden}`);
+    assert(!lease.includes(forbidden), `progress watchdog became a scan/hook path: ${forbidden}`);
 }
 
 const accepted = body("OnAccepted = function", "OnSignalsSent = function");
+assert(accepted.includes('state.Phase = "working"'));
 assert(accepted.includes("self.ProgressLeases[petId] = state"));
-assert(accepted.includes("state.ProgressDeadline = state.AcceptedAt + math.clamp"));
-assert(accepted.includes("self:ScheduleProgressLease(0.1)"));
+assert(accepted.includes("self.ProgressProbeAccepted = self.ProgressProbeAccepted + 1"));
+assert(accepted.includes('config.Mode == "Boss Chest Only" and 20 or 8'));
+assert(accepted.includes("self:ScheduleProgressLease(0.5)"));
 
 const membership = body(
     "function petFarm:ConfirmCoinPets",
     "local function resetSupportCoordinator"
 );
 assert(membership.includes('self:ConfirmStateProgress(state, "membership", now)'));
+assert(membership.includes("local firstMembership = state.MembershipConfirmed ~= true"));
 
 assert((source.match(/ProgressLeaseToken = petFarm\.ProgressLeaseToken \+ 1/g) || []).length >= 3,
-    "reload/reset cleanup does not invalidate every progress lease scheduler");
+    "reload/reset cleanup does not invalidate every progress watchdog scheduler");
 assert((source.match(/table\.clear\(petFarm\.ProgressLeases\)/g) || []).length >= 3,
-    "reload/reset cleanup retains progress lease state");
+    "reload/reset cleanup retains progress watchdog state");
 
 console.log("farm_progress_lease_test: ok");

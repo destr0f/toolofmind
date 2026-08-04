@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.36"
+local VERSION = "1.4.1-dev.37"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -2489,6 +2489,9 @@ local petFarm = {
     ProgressLeaseToken = 0,
     ProgressConfirms = 0,
     ProgressLeaseExpiries = 0,
+    ProgressLeaseRepairs = 0,
+    ProgressProbeAccepted = 0,
+    ProgressAckMode = "probing",
     NextTargetByPet = {},
     StatePool = {},
     DispatchEntries = {},
@@ -2537,6 +2540,9 @@ local function acquirePetState(coinId, petId)
     state.ProgressConfirmedAt = nil
     state.ProgressConfirmSource = nil
     state.ProgressInitialHealth = nil
+    state.ProgressObservedHealth = nil
+    state.ProgressObservedAt = nil
+    state.ProgressRepairAttempts = 0
     state.ProgressDeadline = nil
     return state
 end
@@ -2565,6 +2571,9 @@ local function releasePetState(state, forceReusable)
     state.ProgressConfirmedAt = nil
     state.ProgressConfirmSource = nil
     state.ProgressInitialHealth = nil
+    state.ProgressObservedHealth = nil
+    state.ProgressObservedAt = nil
+    state.ProgressRepairAttempts = nil
     state.ProgressDeadline = nil
     local pool = petFarm.StatePool
     -- A JOINING state can still be referenced by a yielding InvokeServer job.
@@ -3044,24 +3053,36 @@ function petFarm:SendCommittedFarmSignals(petId, state)
     local targetSent = fireFast("Change Pet Target", petId, "Coin", coinId)
     local farmSent = fireFast("Farm Coin", coinId, petId)
     if targetSent and farmSent then
+        -- The current PSX runtime does not consistently expose Update Coin Pets
+        -- or health acknowledgements. A successful pair of named FireServer calls
+        -- therefore commits the local lock; the passive lease below only repairs
+        -- the same target and never rotates a live coin on missing acknowledgements.
+        state.Phase = "working"
         return true
     end
     return false
 end
 
 function petFarm:ConfirmStateProgress(state, source, now)
-    if type(state) ~= "table" or state.ProgressConfirmed == true then return false end
+    if type(state) ~= "table" then return false end
     local petId = tostring(state.PetId or "")
     if petId == "" or petStates[petId] ~= state or state.Generation ~= farmGeneration then
         return false
     end
+    local firstConfirmation = state.ProgressConfirmed ~= true
+    local confirmedAt = tonumber(now) or os.clock()
     state.ProgressConfirmed = true
-    state.ProgressConfirmedAt = tonumber(now) or os.clock()
+    state.ProgressConfirmedAt = confirmedAt
     state.ProgressConfirmSource = tostring(source or "unknown")
+    state.ProgressObservedAt = confirmedAt
+    local record = coinRecords[tostring(state.CoinId)]
+    state.ProgressObservedHealth = record and tonumber(record.Health)
+        or state.ProgressObservedHealth
+    state.ProgressDeadline = confirmedAt + (config.Mode == "Boss Chest Only" and 20 or 8)
     state.Phase = "working"
-    if self.ProgressLeases[petId] == state then self.ProgressLeases[petId] = nil end
-    self.ProgressConfirms = self.ProgressConfirms + 1
-    return true
+    if state.ProgressConfirmSource == "membership" then self.ProgressAckMode = "available" end
+    if firstConfirmation then self.ProgressConfirms = self.ProgressConfirms + 1 end
+    return firstConfirmation
 end
 
 function petFarm:ObserveCoinHealth(rawCoinId, previousHealth, newHealth)
@@ -3083,33 +3104,49 @@ function petFarm:RunProgressLeases(token)
     local released = 0
     for petId, state in pairs(self.ProgressLeases) do
         local current = petStates[petId] == state and state.Generation == farmGeneration
-        local alive = current and recordAlive(coinRecords[tostring(state.CoinId)])
-        if not current or state.ProgressConfirmed == true then
+        local record = current and coinRecords[tostring(state.CoinId)] or nil
+        local alive = current and recordAlive(record)
+        if not current then
             self.ProgressLeases[petId] = nil
-        elseif not alive or now >= (tonumber(state.ProgressDeadline) or now) then
-            local coinId = tostring(state.CoinId)
+        elseif not alive then
             self.ProgressLeases[petId] = nil
             petStates[petId] = nil
             releasePetState(state, true)
             self.FastPets[petId] = true
             released = released + 1
-            if alive then
-                self.ProgressLeaseExpiries = self.ProgressLeaseExpiries + 1
-                if config.Mode ~= "Boss Chest Only" then
-                    rejectedUntil[coinId] = math.max(tonumber(rejectedUntil[coinId]) or 0, now + 0.45)
-                end
-                lastRecovery = "unconfirmed farm lease for " .. string.sub(petId, 1, 8)
-                driverStatus = "farm acknowledgement lease expired; fast reroute queued"
-            end
         else
             pending = true
+            local health = tonumber(record.Health)
+            local observedHealth = tonumber(state.ProgressObservedHealth)
+            if health and observedHealth and health < observedHealth then
+                state.ProgressObservedHealth = health
+                state.ProgressObservedAt = now
+                state.ProgressDeadline = now + (config.Mode == "Boss Chest Only" and 20 or 8)
+            elseif now >= (tonumber(state.ProgressDeadline) or now) then
+                if self.ProgressAckMode == "probing" and self.ProgressProbeAccepted >= 15
+                    and self.MembershipConfirms == 0 then
+                    self.ProgressAckMode = "fail-open"
+                end
+                local sent = self:SendCommittedFarmSignals(petId, state)
+                state.ProgressRepairAttempts = (tonumber(state.ProgressRepairAttempts) or 0) + 1
+                state.ProgressObservedAt = now
+                state.ProgressObservedHealth = health
+                state.ProgressDeadline = now + (config.Mode == "Boss Chest Only" and 20 or 8)
+                self.ProgressLeaseRepairs = self.ProgressLeaseRepairs + 1
+                if sent then
+                    lastRecovery = "same-target repair for " .. string.sub(petId, 1, 8)
+                    driverStatus = "progress ACK unavailable; same locked target signal repaired"
+                else
+                    driverStatus = "same-target repair deferred; named farm route unavailable"
+                end
+            end
         end
     end
     if released > 0 then
         idleRecoveryCount = idleRecoveryCount + released
         self:QueueFastDispatch()
     end
-    if pending then self:ScheduleProgressLease(0.1) end
+    if pending then self:ScheduleProgressLease(0.5) end
 end
 
 function petFarm:ScheduleProgressLease(delaySeconds)
@@ -3177,7 +3214,7 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
     local interested = false
     for _, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId and state.Generation == farmGeneration
-            and state.Phase ~= "working" then
+            and self.ProgressLeases[tostring(state.PetId)] == state then
             interested = true
             break
         end
@@ -3199,10 +3236,11 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId and state.Generation == farmGeneration
             and present[tostring(petId)] then
+            local firstMembership = state.MembershipConfirmed ~= true
             state.MembershipConfirmed = true
             state.MembershipConfirmedAt = now
             self:ConfirmStateProgress(state, "membership", now)
-            if state.AcceptedAt ~= nil then
+            if firstMembership and state.AcceptedAt ~= nil then
                 self.SignalCommits[tostring(petId)] = state
                 confirmed = true
             end
@@ -3271,18 +3309,23 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state
                 or state.Generation ~= farmGeneration
                 or not recordAlive(record) then return false end
-            state.Phase = "joined"
+            -- OnAccepted is reached only after the engine successfully sent both
+            -- named farm signals. Keep the target locked immediately; optional
+            -- game acknowledgements refine diagnostics but are never mandatory.
+            state.Phase = "working"
             state.RetryCount = math.max((tonumber(attempt) or 1) - 1, 0)
             state.AcceptedAt = os.clock()
             state.ProgressInitialHealth = tonumber(record.Health)
-            local stats = self:RefreshStats()
-            local averageRtt = math.max(tonumber(stats.AverageRTT) or 0, 0)
-            state.ProgressDeadline = state.AcceptedAt + math.clamp(1 + averageRtt * 3, 1.6, 3.5)
+            state.ProgressObservedHealth = state.ProgressInitialHealth
+            state.ProgressObservedAt = state.AcceptedAt
+            state.ProgressDeadline = state.AcceptedAt
+                + (config.Mode == "Boss Chest Only" and 20 or 8)
+            self.ProgressProbeAccepted = self.ProgressProbeAccepted + 1
             self.ProgressLeases[petId] = state
             self.SignalCommits[petId] = state
             self:ScheduleSignalCommit(state.MembershipConfirmed and 0 or 0.04)
-            self:ScheduleProgressLease(0.1)
-            driverStatus = "Lite lock accepted; awaiting server progress via " .. tostring(route)
+            self:ScheduleProgressLease(0.5)
+            driverStatus = "Lite lock accepted fail-open via " .. tostring(route)
             return true
         end,
         OnSignalsSent = function(petId, state, record, targetSent, farmSent, targetRoute, farmRoute)
@@ -6017,6 +6060,8 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "membershipConfirms", petFarm.MembershipConfirms)
     requestDiagnostics.Gauge("Farm", "progressConfirms", petFarm.ProgressConfirms)
     requestDiagnostics.Gauge("Farm", "progressLeaseExpiries", petFarm.ProgressLeaseExpiries)
+    requestDiagnostics.Gauge("Farm", "progressLeaseRepairs", petFarm.ProgressLeaseRepairs)
+    requestDiagnostics.Gauge("Farm", "progressAckMode", petFarm.ProgressAckMode)
     requestDiagnostics.Gauge("Farm", "wireRepairs", petFarm.WireRepairs)
     requestDiagnostics.Gauge("Farm", "lastRoute", tostring(dispatchStats.LastRoute or "none"))
     requestDiagnostics.Gauge("Farm", "lastAssignmentAge", (tonumber(dispatchStats.LastAssignmentAt) or 0) > 0

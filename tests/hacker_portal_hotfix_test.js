@@ -5,7 +5,7 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "slim_farm.lua"), "utf8");
 
-assert(source.includes('local VERSION = "1.4.1-dev.36"'));
+assert(source.includes('local VERSION = "1.4.1-dev.37"'));
 assert(source.includes('["hacker portal chest"] = true'));
 assert(source.includes('["giant hacker portal chest"] = "Hacker Portal"'));
 assert(source.includes('["Hacker Portals"] = "Hacker Portal"'));
@@ -24,8 +24,8 @@ assert(!source.includes('"rearm",'));
 const acceptedStart = source.indexOf("OnAccepted = function");
 const signalsStart = source.indexOf("OnSignalsSent = function", acceptedStart);
 assert(acceptedStart >= 0 && signalsStart > acceptedStart);
-assert(source.slice(acceptedStart, signalsStart).includes('state.Phase = "joined"'),
-    "accepted Join Coin must remain in a short commit phase until its attack signal is re-armed");
+assert(source.slice(acceptedStart, signalsStart).includes('state.Phase = "working"'),
+    "accepted target/farm signals must commit the lock without an unavailable progress ACK");
 assert(source.slice(acceptedStart, signalsStart).includes("self.SignalCommits[petId] = state"),
     "accepted Join Coin is not queued for the bounded farm-signal commit");
 assert(source.includes('connect("Update Coin Pets", function(id, pets)'),
