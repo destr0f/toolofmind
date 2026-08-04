@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.4.2"
+local MODULE_VERSION = "3.4.3"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
 local BAG_LANES = 4
@@ -12,6 +12,7 @@ local MAX_PENDING_BAGS = 4096
 local BAG_FIRST_ATTEMPT_DELAY = 0.05
 local BAG_TRANSPORT_RETRY_DELAY = 0.10
 local BAG_SENT_TTL = 1.25
+local MAX_BAG_SEND_ATTEMPTS = 2
 local MAX_BAG_POOL = 256
 local STATUS_INTERVAL = 1
 local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"
@@ -610,7 +611,17 @@ local function processDelayedBags(now)
             elseif due <= now then
                 record.Delayed = false
                 if record.State == "sent" then
-                    closeBag(record, false, "sent ttl expired")
+                    if (tonumber(record.Attempts) or 0) < MAX_BAG_SEND_ATTEMPTS then
+                        -- Some sessions never expose Remove Lootbag back to the
+                        -- client even though Collect Lootbag reached the server.
+                        -- Retry the same immutable ID once, then retire it so a
+                        -- missing acknowledgement cannot grow retained state.
+                        run.BagRetried = run.BagRetried + 1
+                        record.State = "retry"
+                        enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)
+                    else
+                        closeBag(record, false, "sent ttl expired")
+                    end
                 else
                     enqueueReadyBag(record)
                 end
