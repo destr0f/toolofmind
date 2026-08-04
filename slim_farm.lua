@@ -1409,7 +1409,6 @@ local requestAllocatorPulse
 local releaseAssignmentsForCoin
 local requestFarmReset
 local assignmentCount
-local noteCoinProgress
 local armFarmRecovery
 local function getPlayerZone()
     if os.clock() < nextZoneCheck then return currentZone end
@@ -2241,8 +2240,8 @@ local function connectCoinSignals()
                 coinMutationSerial = coinMutationSerial + 1
                 coinSync.EventConfirmed = true
                 if previous and tonumber(value) and value < previous
-                    and type(noteCoinProgress) == "function" then
-                    noteCoinProgress(id, previous, value)
+                    and type(coinSync.NoteCoinProgress) == "function" then
+                    coinSync.NoteCoinProgress(id, previous, value)
                 end
             end
         elseif (tonumber(health) or 0) > 0 then
@@ -2576,7 +2575,7 @@ releaseAssignmentsForCoin = function(rawId)
     return released
 end
 
-noteCoinProgress = function(rawId, previousHealth, currentHealth)
+coinSync.NoteCoinProgress = function(rawId, previousHealth, currentHealth)
     local previous = tonumber(previousHealth)
     local current = tonumber(currentHealth)
     if rawId == nil or not previous or not current or current >= previous then return 0 end
