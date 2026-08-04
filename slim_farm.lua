@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.39"
+local VERSION = "1.4.1-dev.40"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -6228,6 +6228,7 @@ function requestDiagnostics.UpdateTelemetry()
         requestDiagnostics.Gauge("Loot", "bagSent", tonumber(lootStats.BagSent) or 0)
         requestDiagnostics.Gauge("Loot", "bagAcked", tonumber(lootStats.BagAcked) or 0)
         requestDiagnostics.Gauge("Loot", "bagRetiredNoAck", tonumber(lootStats.BagRetiredNoAck) or 0)
+        requestDiagnostics.Gauge("Loot", "bagSentUnverifiable", tonumber(lootStats.BagSentUnverifiable) or 0)
         requestDiagnostics.Gauge("Loot", "bagObjectAck", tonumber(lootStats.BagObjectAcknowledged) or 0)
         requestDiagnostics.Gauge("Loot", "bagNetworkAck", tonumber(lootStats.BagNetworkAcknowledged) or 0)
         requestDiagnostics.Gauge("Loot", "bagTransportDropped", tonumber(lootStats.BagTransportDropped) or 0)

@@ -96,14 +96,17 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.4.4"',
+    'local MODULE_VERSION = "3.5.0"',
     "ORB_BATCH_SIZE = 2048",
     "MAX_PENDING_ORBS = 8192",
+    "ORB_FLUSH_INTERVAL = 0.08",
+    "CLIENT_STAGGER_SLOTS = 16",
+    "CLIENT_STAGGER_STEP = 0.002",
     "BAG_LANES = 4",
     "MAX_PENDING_BAGS = 4096",
     "BAG_TRANSPORT_RETRY_DELAY = 0.10",
     "BAG_SENT_TTL = 1.25",
-    "MAX_BAG_SEND_ATTEMPTS = 2",
+    "MAX_BAG_TRANSPORT_ATTEMPTS = 2",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
     "OrbBatch = table.create(ORB_BATCH_SIZE)",
@@ -115,7 +118,7 @@ for (const marker of [
     'profileBegin("PSX_LootbagFlush")',
     'fire("Claim Orbs", ids)',
     'fire("Collect Lootbag", record.Id, record.Position)',
-    "task.defer(function()",
+    "task.delay(delaySeconds, function()",
     'networkSignal("Remove Lootbag")',
     "type(getsenv)",
     'findGameScript("Orbs")',
@@ -132,7 +135,7 @@ for (const marker of [
     "playerScripts.ChildAdded:Connect",
     "folder.ChildAdded:Connect(queueOrbFallback)",
     "folder.ChildAdded:Connect(watchBagFallback)",
-    "record.Attempts < 2",
+    "record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS",
     "record.Retired = true",
     "OrbDropped",
     "BagOverflow",
@@ -143,13 +146,20 @@ assert(loot.includes("run.PendingOrbIds[orbId] = nil")
     && loot.includes("run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)"),
     "successful orb batches do not evict acknowledged IDs");
 assert(loot.includes("record.State = \"sent\"")
-    && loot.includes("enqueueDelayedBag(record, now + BAG_SENT_TTL)"),
-    "successful bag sends remain in the retry queue or have no bounded ack wait");
-assert(loot.includes("(tonumber(record.Attempts) or 0) < MAX_BAG_SEND_ATTEMPTS")
+    && loot.includes("enqueueDelayedBag(record, now + BAG_SENT_TTL)")
+    && loot.includes("run.BagSentUnverifiable = run.BagSentUnverifiable + 1")
+    && loot.includes('closeBag(record, false, "sent unverifiable")'),
+    "successful bag sends are not split between observable and producer-gated completion");
+assert(loot.includes("objectStillPresent")
+    && loot.includes("(tonumber(record.Attempts) or 0) < MAX_BAG_TRANSPORT_ATTEMPTS")
     && loot.includes("record.State = \"retry\"")
     && loot.includes("local retryAt = now + BAG_TRANSPORT_RETRY_DELAY")
     && loot.includes("delayed[write] = record"),
-    "unacknowledged lootbags do not receive one bounded reliability retry");
+    "fallback lootbags do not receive one evidence-driven bounded retry");
+assert(loot.includes("local earliest = (tonumber(run.OrbLastFlushAt) or 0) + ORB_FLUSH_INTERVAL")
+    && loot.includes("ORB_FLUSH_INTERVAL + clientStagger()")
+    && !loot.includes("task.defer(function()\n        if generation ~= run.Generation or token ~= run.OrbToken then return end\n        flushOrbs()"),
+    "orb callbacks can still create same-window microflushes");
 assert(loot.includes('record.Object = typeof(sourceObject) == "Instance" and sourceObject or nil')
     && loot.includes("record.Position = objectPosition(liveObject) or record.Position"),
     "fallback lootbag retries do not refresh the live landed position");

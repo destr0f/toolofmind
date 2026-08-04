@@ -4,15 +4,18 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.4.4"
+local MODULE_VERSION = "3.5.0"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
+local ORB_FLUSH_INTERVAL = 0.08
+local CLIENT_STAGGER_SLOTS = 16
+local CLIENT_STAGGER_STEP = 0.002
 local BAG_LANES = 4
 local MAX_PENDING_BAGS = 4096
 local BAG_FIRST_ATTEMPT_DELAY = 0.05
 local BAG_TRANSPORT_RETRY_DELAY = 0.10
 local BAG_SENT_TTL = 1.25
-local MAX_BAG_SEND_ATTEMPTS = 2
+local MAX_BAG_TRANSPORT_ATTEMPTS = 2
 local MAX_BAG_POOL = 256
 local STATUS_INTERVAL = 1
 local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"
@@ -62,6 +65,7 @@ local run = {
     OrbBatch = table.create(ORB_BATCH_SIZE),
     OrbFlushArmed = false,
     OrbRetryArmed = false,
+    OrbLastFlushAt = 0,
     BagById = {},
     BagQueue = {},
     BagQueueHead = 1,
@@ -91,6 +95,7 @@ local run = {
     BagErrors = 0,
     BagOverflow = 0,
     BagRetiredNoAck = 0,
+    BagSentUnverifiable = 0,
     BagObjectAcknowledged = 0,
     BagNetworkAcknowledged = 0,
     BagTransportDropped = 0,
@@ -261,6 +266,12 @@ local function objectPosition(object)
     return normalizePosition(readValue(object, "Position") or readValue(object, "POS"))
 end
 
+local function clientStagger()
+    local player = Players.LocalPlayer
+    local userId = tonumber(player and player.UserId) or 0
+    return (math.abs(userId) % CLIENT_STAGGER_SLOTS) * CLIENT_STAGGER_STEP
+end
+
 local function statusText()
     return string.format(
         "Orbs producer: %s (%s) | Coins producer: %s (%s)\n"
@@ -268,7 +279,7 @@ local function statusText()
             .. "Native routes: Claim Orbs %s | Collect Lootbag %s\n"
             .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
             .. "Orbs: pending %d/%d | events/batches %d/%d | error/overflow/drop %d/%d/%d\n"
-            .. "Lootbags: waiting %d/%d | lanes %d | events/sent/ack/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d\n"
+            .. "Lootbags: waiting %d/%d | lanes %d | events/sent/ack/unverified/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d/%d\n"
             .. "Retention: unsent orb IDs + scalar queued/sent bag records only",
         run.OrbsProducer,
         run.OrbGateReason,
@@ -295,6 +306,7 @@ local function statusText()
         run.BagEvents,
         run.BagSent,
         run.BagAcked,
+        run.BagSentUnverifiable,
         run.BagRetried,
         run.BagSkipped,
         run.BagErrors,
@@ -355,6 +367,7 @@ local armOrbFlush
 local function flushOrbs()
     run.OrbFlushArmed = false
     if not orbsEnabled() or run.PendingOrbCount == 0 then return end
+    run.OrbLastFlushAt = os.clock()
     local profiled = profileBegin("PSX_OrbFlush")
     local ids = run.OrbBatch
     table.clear(ids)
@@ -423,7 +436,13 @@ armOrbFlush = function()
     run.OrbFlushArmed = true
     local generation = run.Generation
     local token = run.OrbToken
-    task.defer(function()
+    local now = os.clock()
+    local earliest = (tonumber(run.OrbLastFlushAt) or 0) + ORB_FLUSH_INTERVAL
+    local delaySeconds = math.max(earliest - now, 0)
+    if run.OrbLastFlushAt == 0 then
+        delaySeconds = ORB_FLUSH_INTERVAL + clientStagger()
+    end
+    task.delay(delaySeconds, function()
         if generation ~= run.Generation or token ~= run.OrbToken then return end
         flushOrbs()
     end)
@@ -612,11 +631,15 @@ local function processDelayedBags(now)
             elseif due <= now then
                 record.Delayed = false
                 if record.State == "sent" then
-                    if (tonumber(record.Attempts) or 0) < MAX_BAG_SEND_ATTEMPTS then
-                        -- Some sessions never expose Remove Lootbag back to the
-                        -- client even though Collect Lootbag reached the server.
-                        -- Retry the same immutable ID once, then retire it so a
-                        -- missing acknowledgement cannot grow retained state.
+                    local liveObject = record.Object
+                    local objectStillPresent = typeof(liveObject) == "Instance"
+                        and liveObject.Parent ~= nil
+                    if objectStillPresent
+                        and (tonumber(record.Attempts) or 0) < MAX_BAG_TRANSPORT_ATTEMPTS then
+                        -- A second send is evidence-driven: producer-gated bags
+                        -- have no local object and are never duplicated. Only a
+                        -- fallback bag that still exists after the bounded
+                        -- confirmation window receives one retry.
                         run.BagRetried = run.BagRetried + 1
                         record.State = "retry"
                         -- Keep the retry in this compacted delayed array. Calling
@@ -628,8 +651,11 @@ local function processDelayedBags(now)
                         delayed[write] = record
                         write = write + 1
                         if not nextAt or retryAt < nextAt then nextAt = retryAt end
-                    else
+                    elseif objectStillPresent then
                         closeBag(record, false, "sent ttl expired")
+                    else
+                        run.BagObjectAcknowledged = run.BagObjectAcknowledged + 1
+                        closeBag(record, true, "object absent")
                     end
                 else
                     enqueueReadyBag(record)
@@ -659,9 +685,17 @@ local function collectBag(record, now)
     record.Attempts = (record.Attempts or 0) + 1
     if sent then
         run.BagSent = run.BagSent + 1
-        record.State = "sent"
-        enqueueDelayedBag(record, now + BAG_SENT_TTL)
-    elseif record.Attempts < 2 then
+        if typeof(liveObject) == "Instance" then
+            record.State = "sent"
+            enqueueDelayedBag(record, now + BAG_SENT_TTL)
+        else
+            -- Fire has no acknowledgement contract. A producer-gated bag has
+            -- no local object that can prove failure, so retire it immediately
+            -- as sent/unverifiable instead of manufacturing a duplicate call.
+            run.BagSentUnverifiable = run.BagSentUnverifiable + 1
+            closeBag(record, false, "sent unverifiable")
+        end
+    elseif record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
         run.BagRetried = run.BagRetried + 1
         record.State = "retry"
         enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)
@@ -704,7 +738,7 @@ local function queueBagEvent(id, payload, explicitPosition, sourceObject)
     run.BagById[id] = record
     run.WaitingBagCount = run.WaitingBagCount + 1
     run.BagEvents = run.BagEvents + 1
-    enqueueDelayedBag(record, os.clock() + BAG_FIRST_ATTEMPT_DELAY)
+    enqueueDelayedBag(record, os.clock() + BAG_FIRST_ATTEMPT_DELAY + clientStagger())
     armStatus()
     return true
 end
@@ -776,6 +810,7 @@ local function clearOrbBinding()
     run.PendingOrbCount = 0
     run.OrbFlushArmed = false
     run.OrbRetryArmed = false
+    run.OrbLastFlushAt = 0
 end
 
 local function clearBagBinding()
@@ -1519,6 +1554,7 @@ local function resetStats()
     run.BagErrors = 0
     run.BagOverflow = 0
     run.BagRetiredNoAck = 0
+    run.BagSentUnverifiable = 0
     run.BagObjectAcknowledged = 0
     run.BagNetworkAcknowledged = 0
     run.BagTransportDropped = 0
@@ -1646,6 +1682,7 @@ local function stats()
         BagErrors = run.BagErrors,
         BagOverflow = run.BagOverflow,
         BagRetiredNoAck = run.BagRetiredNoAck,
+        BagSentUnverifiable = run.BagSentUnverifiable,
         BagObjectAcknowledged = run.BagObjectAcknowledged,
         BagNetworkAcknowledged = run.BagNetworkAcknowledged,
         BagTransportDropped = run.BagTransportDropped,
