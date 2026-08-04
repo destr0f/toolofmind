@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Develop",
-    "version": "1.4.1-dev.31",
+    "version": "1.4.1-dev.32",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-dev.31",
+    "compatibleSuite": "1.4.1-dev.32",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -27,6 +27,7 @@
     "djb2": "6755b554"
   },
   "moduleOrder": [
+    "requestInspector",
     "automationSupport",
     "automationUI",
     "petFarmEngine",
@@ -40,21 +41,37 @@
     "graphics"
   ],
   "modules": {
+    "requestInspector": {
+      "id": "requestInspector",
+      "label": "Passive request-state inspector",
+      "version": "1.0.0",
+      "versionAuthority": "module-api",
+      "versionAction": "version",
+      "compatibleSuite": "1.4.1-dev.32",
+      "required": false,
+      "load": "startup",
+      "role": "passive-request-state-inspector",
+      "path": "request_state_inspector.lua",
+      "commit": "07fec41ba9a3d4a4abbfd83cdcd5c6724510465c",
+      "bytes": 51717,
+      "sha256": "1227dcc283b8508cc5ddc1161f6162b516e4a54c73f461c707fcdea67d3d5fc6",
+      "djb2": "52e34348"
+    },
     "automationSupport": {
       "id": "automationSupport",
       "label": "Automation support coordinator",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
       "path": "automation_support_module.lua",
-      "commit": "98b7ce12b0497af66f876827429c367b18c04e39",
-      "bytes": 9615,
-      "sha256": "b9f9aa7796bc0998c931f1fcd4e18541e7dd5711a8feefac882e90c20ebbde85",
-      "djb2": "af00e9e5"
+      "commit": "07fec41ba9a3d4a4abbfd83cdcd5c6724510465c",
+      "bytes": 12683,
+      "sha256": "8f2f8a5f0bdb8c05a602d9d10467e84c882638fa7e66456516573773d799eab4",
+      "djb2": "ea3cf106"
     },
     "automationUI": {
       "id": "automationUI",
@@ -62,7 +79,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -75,41 +92,41 @@
     "petFarmEngine": {
       "id": "petFarmEngine",
       "label": "Pet farm engine",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "69891f9272a6428df7b7fe34d4e724c6364efd6d",
-      "bytes": 22523,
-      "sha256": "739c6080628f7caf0a93ec428f6fdc5ca913330fd0d11b241c87a1a781de364d",
-      "djb2": "60cf5ff3"
+      "commit": "07fec41ba9a3d4a4abbfd83cdcd5c6724510465c",
+      "bytes": 27110,
+      "sha256": "fbfabe29703353759a8a42891d6b4955cbe35073733829f36db65b048db725a3",
+      "djb2": "5d2631d3"
     },
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.3.2",
+      "version": "3.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "0edabae2bd8a71aa53c03381606581240ad06748",
-      "bytes": 54778,
-      "sha256": "a8790295bb4d58c38ac31de2d4b0ec4eba21ed9cf984f29965eed3f9f39f6234",
-      "djb2": "720b9cc7"
+      "commit": "07fec41ba9a3d4a4abbfd83cdcd5c6724510465c",
+      "bytes": 56405,
+      "sha256": "d2a4ff72335143229cd194f2db96c30f473e3c7f3b407c84cdb00fd74831f8f0",
+      "djb2": "dc100073"
     },
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
       "version": "1.6.1",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -125,7 +142,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -141,7 +158,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -157,7 +174,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -173,7 +190,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -188,7 +205,7 @@
       "label": "Auto boost",
       "version": "1.1.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -204,7 +221,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.31",
+      "compatibleSuite": "1.4.1-dev.32",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -220,6 +237,7 @@
       "files": [
         "slim_farm.lua",
         "runtime_manifest.json",
+        "request_state_inspector.lua",
         "automation_support_module.lua",
         "automation_ui_module.lua",
         "pet_farm_lite_engine.lua",
@@ -274,7 +292,8 @@
         "tests/native_pet_coin_contract_test.js",
         "tests/machine_404_enchant_policy_test.lua",
         "tests/axolotl_ocean_hotfix_test.js",
-        "tests/hacker_portal_hotfix_test.js"
+        "tests/hacker_portal_hotfix_test.js",
+        "tests/request_state_inspector_policy_test.js"
       ]
     },
     "documentation": {
@@ -302,32 +321,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "121056492d4ac79ed256b35820b1eba0f8496847",
+    "generatedFromCommit": "07fec41ba9a3d4a4abbfd83cdcd5c6724510465c",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 5745,
-      "sha256": "1fc046364ccf15ff976151a2dd39938b585a081e640dd24a171a394d0924fdfd",
-      "djb2": "e58bf9c5"
+      "bytes": 6233,
+      "sha256": "348b8f22e306e6abb40ed20cd00f723e66bdc41d2aa305221c43c03d9fd58933",
+      "djb2": "6186a929"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-dev.31",
-      "bytes": 203125,
-      "sha256": "83d2fe13cadcbab2bb6dcf836082c112f7450e4a1212fdcfe1e028d9daee8513",
-      "djb2": "243c579a"
+      "version": "1.4.1-dev.32",
+      "bytes": 241151,
+      "sha256": "a8c370504feef2260354cc19a1491cf8f30f695c12b2aca2b908ae821529b159",
+      "djb2": "569961e2"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 162851,
-        "sha256": "9f9a378c59bea8a3a267858042dfadb90da6012675a6e654051e992455a5aaee",
-        "djb2": "7447fd61"
+        "bytes": 194503,
+        "sha256": "82310a8783e9b9a3514fabf36988bc3ca19e26d84cbe2096083c4baab8383747",
+        "djb2": "ae7e5872"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 162851,
-        "sha256": "9f9a378c59bea8a3a267858042dfadb90da6012675a6e654051e992455a5aaee",
-        "djb2": "7447fd61"
+        "bytes": 194503,
+        "sha256": "82310a8783e9b9a3514fabf36988bc3ca19e26d84cbe2096083c4baab8383747",
+        "djb2": "ae7e5872"
       }
     }
   }

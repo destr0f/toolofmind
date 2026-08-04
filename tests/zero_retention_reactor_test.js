@@ -85,7 +85,7 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.3.2"',
+    'local MODULE_VERSION = "3.4.0"',
     "ORB_BATCH_SIZE = 2048",
     "MAX_PENDING_ORBS = 8192",
     "BAG_LANES = 4",
