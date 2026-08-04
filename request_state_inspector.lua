@@ -1,7 +1,7 @@
 -- Passive request-state diagnostics for PSX OG Nova develop.
 -- This module never invokes/fires a remote and never changes automation policy.
 
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.0.1"
 local EVENT_CAPACITY = 128
 local SNAPSHOT_CAPACITY = 8
 local ACTIVE_CAPACITY = 96
@@ -10,6 +10,9 @@ local UPDATE_MINIMIZED = 2
 
 local TERMINAL = {
     COALESCED_INTO = true,
+    -- RemoteEvent calls have no protocol acknowledgement. Retain their event
+    -- in the bounded history, but never keep them in the active registry.
+    FIRE_LOCAL_SENT_UNACKED = true,
     SERVER_ACCEPTED = true,
     SERVER_REJECTED = true,
     TRANSPORT_FAILED = true,
@@ -355,7 +358,8 @@ local function transition(state, subsystem, requestId, stateName, detail)
     if stateName == "INVOKE_IN_FLIGHT" and previousState ~= stateName then
         state.ActiveInvokes = state.ActiveInvokes + 1
     end
-    if stateName == "FIRE_LOCAL_SENT_UNACKED" and previousState ~= stateName then
+    if stateName == "FIRE_LOCAL_SENT_UNACKED" and previousState ~= stateName
+        and not TERMINAL[stateName] then
         state.UnackedFires = state.UnackedFires + 1
     end
     if (stateName == "INVOKE_IN_FLIGHT" or stateName == "FIRE_LOCAL_SENT_UNACKED")

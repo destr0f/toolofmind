@@ -5,7 +5,7 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "slim_farm.lua"), "utf8");
 
-assert(source.includes('local VERSION = "1.4.1-dev.32"'));
+assert(source.includes('local VERSION = "1.4.1-dev.33"'));
 assert(source.includes('["hacker portal chest"] = true'));
 assert(source.includes('["giant hacker portal chest"] = "Hacker Portal"'));
 assert(source.includes('["Hacker Portals"] = "Hacker Portal"'));
@@ -16,6 +16,18 @@ assert(source.includes('if detected ~= nil and namesMatch(detected, zone) then r
 assert(source.includes('and positionInsideNamedArea(record.Position, zone, 36) then'));
 assert(source.includes('if namesMatch(zone, "Hacker Portal") then return nearAnchor end'));
 assert(source.includes('return detected == nil and nearAnchor'));
+assert(source.includes('state.LivenessDeadline = now + 0.9'));
+assert(source.includes('state.Phase = "joining"'));
+assert(source.includes('acknowledgement = "Update Coin Health"'));
+assert(source.includes('rearmCount >= 2'));
+assert(source.includes('"rearm",'));
+assert(source.includes('silent farm signal expired; fast reroute queued'));
+
+const acceptedStart = source.indexOf("OnAccepted = function");
+const signalsStart = source.indexOf("OnSignalsSent = function", acceptedStart);
+assert(acceptedStart >= 0 && signalsStart > acceptedStart);
+assert(!source.slice(acceptedStart, signalsStart).includes('state.Phase = "working"'),
+    "a local FireServer return must not be treated as confirmed coin progress");
 
 function recordInZoneDecision(zone, detected, nearAnchor) {
     if (detected === zone) return true;

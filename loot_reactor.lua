@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.4.0"
+local MODULE_VERSION = "3.4.1"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
 local BAG_LANES = 4
@@ -799,8 +799,9 @@ end
 
 -- Game.Pets.Tick follows the invisible POS part but reads the sibling Coin.Size
 -- every render frame. Full headless mode may suppress the expensive Coin clone,
--- so retain one invisible POS clone only for folders that already exist without
--- that required sibling. This is structural compatibility, not a visual model.
+-- so retain one target-sized invisible POS clone only for folders that already
+-- exist without that required sibling. This is structural compatibility, not
+-- a visual model or moving physics assembly.
 local function ensureNativePetCoinTarget(record, rawId)
     if type(record) ~= "table" or rawId == nil then return false end
     local id = tostring(rawId)
@@ -823,7 +824,7 @@ local function ensureNativePetCoinTarget(record, rawId)
     local created, shell = pcall(function()
         local clone = pos:Clone()
         clone.Name = "Coin"
-        clone.Size = Vector3.new(0.05, 0.05, 0.05)
+        clone.Size = Vector3.new(4, 4, 4)
         clone.Transparency = 1
         clone.CastShadow = false
         clone.CanCollide = false

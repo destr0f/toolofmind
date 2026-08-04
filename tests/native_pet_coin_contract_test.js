@@ -9,13 +9,14 @@ function assert(condition, message) {
 }
 
 for (const marker of [
-    'local MODULE_VERSION = "3.4.0"',
+    'local MODULE_VERSION = "3.4.1"',
     'local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"',
     "local function ensureNativePetCoinTarget(record, rawId)",
     'local target = folder:FindFirstChild("Coin")',
     'local pos = folder:FindFirstChild("POS")',
     "local clone = pos:Clone()",
     'clone.Name = "Coin"',
+    "clone.Size = Vector3.new(4, 4, 4)",
     "record.StructuralShells[id] = shell",
     'if producerName == "UpdateCoin" then',
     "structureReady = ensureNativePetCoinTarget(record, rawId)",
@@ -29,5 +30,7 @@ for (const marker of [
 
 assert(!source.includes('Instance.new("Part")'),
     "the compatibility path allocates a new physics part instead of cloning POS");
+assert(!source.includes("clone.Size = Vector3.new(0.05, 0.05, 0.05)"),
+    "the compatibility target is too small for Game.Pets arrival math");
 
 console.log("Native pet coin contract OK | invisible POS shell prevents Game.Pets Tick nil Size errors");

@@ -31,7 +31,7 @@ assert(!/[.:](?:InvokeServer|FireServer)\s*\(/.test(inspector),
     "passive inspector performs a direct remote call");
 
 for (const marker of [
-    'local MODULE_VERSION = "1.0.0"',
+    'local MODULE_VERSION = "1.0.1"',
     "local EVENT_CAPACITY = 128",
     "local SNAPSHOT_CAPACITY = 8",
     "local ACTIVE_CAPACITY = 96",
@@ -51,6 +51,13 @@ for (const marker of [
 ]) {
     assert(inspector.includes(marker), `inspector contract misses ${marker}`);
 }
+const terminalStart = inspector.indexOf("local TERMINAL = {");
+const validStart = inspector.indexOf("local VALID_STATE = {");
+assert(terminalStart >= 0 && validStart > terminalStart
+    && inspector.slice(terminalStart, validStart).includes("FIRE_LOCAL_SENT_UNACKED = true"),
+    "unacknowledgeable Fire observations must not occupy the active registry");
+assert(inspector.includes('and not TERMINAL[stateName] then'),
+    "terminal Fire observations must not increment the active unacknowledged gauge");
 
 for (const state of [
     "IDLE",

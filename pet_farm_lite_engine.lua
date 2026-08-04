@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.3.0"
+local MODULE_VERSION = "1.3.1"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -795,6 +795,21 @@ local function stats()
     }
 end
 
+-- Re-send only the damage-start signal for an already accepted lock. The
+-- caller owns the progress lease and bounds how often this path can run.
+local function rearm(petId, coinId)
+    if not run.Context then return false, "engine is not started" end
+    if petId == nil or coinId == nil then return false, "pet or coin is missing" end
+    local sent, route = callNamedFire("Farm Coin", tostring(coinId), tostring(petId))
+    if sent then
+        run.FarmSignals = run.FarmSignals + 1
+        run.LastAssignmentAt = os.clock()
+        return true, route
+    end
+    run.SignalFailures = run.SignalFailures + 1
+    return false, route
+end
+
 return function(action, context, value)
     if action == "start" then return start(context) end
     if action == "dispatch" then return dispatch(value or context) end
@@ -804,6 +819,7 @@ return function(action, context, value)
     if action == "stop" then resetQueue(); run.Context = nil; return true end
     if action == "stats" then return stats() end
     if action == "classify" then return classifyResponse(context, value) end
+    if action == "rearm" then return rearm(context, value) end
     if action == "retry-delay" then return RETRY_DELAY end
     if action == "version" then return MODULE_VERSION end
     return false, "unknown action"
