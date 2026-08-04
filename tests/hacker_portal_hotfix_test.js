@@ -5,7 +5,7 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "slim_farm.lua"), "utf8");
 
-assert(source.includes('local VERSION = "1.4.1-dev.37"'));
+assert(source.includes('local VERSION = "1.4.1-dev.38"'));
 assert(source.includes('["hacker portal chest"] = true'));
 assert(source.includes('["giant hacker portal chest"] = "Hacker Portal"'));
 assert(source.includes('["Hacker Portals"] = "Hacker Portal"'));
@@ -26,8 +26,9 @@ const signalsStart = source.indexOf("OnSignalsSent = function", acceptedStart);
 assert(acceptedStart >= 0 && signalsStart > acceptedStart);
 assert(source.slice(acceptedStart, signalsStart).includes('state.Phase = "working"'),
     "accepted target/farm signals must commit the lock without an unavailable progress ACK");
-assert(source.slice(acceptedStart, signalsStart).includes("self.SignalCommits[petId] = state"),
-    "accepted Join Coin is not queued for the bounded farm-signal commit");
+assert(!source.slice(acceptedStart, signalsStart).includes("self.SignalCommits[petId] = state")
+    && !source.slice(acceptedStart, signalsStart).includes("self:ScheduleSignalCommit("),
+    "accepted Join Coin duplicates the signal pair already sent by the engine");
 assert(source.includes('connect("Update Coin Pets", function(id, pets)'),
     "the authoritative server membership acknowledgement is not connected");
 assert(source.includes("function petFarm:ConfirmCoinPets(rawCoinId, payload)"));

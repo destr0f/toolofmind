@@ -96,13 +96,14 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.4.2"',
+    'local MODULE_VERSION = "3.4.3"',
     "ORB_BATCH_SIZE = 2048",
     "MAX_PENDING_ORBS = 8192",
     "BAG_LANES = 4",
     "MAX_PENDING_BAGS = 4096",
     "BAG_TRANSPORT_RETRY_DELAY = 0.10",
     "BAG_SENT_TTL = 1.25",
+    "MAX_BAG_SEND_ATTEMPTS = 2",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
     "OrbBatch = table.create(ORB_BATCH_SIZE)",
@@ -144,6 +145,10 @@ assert(loot.includes("run.PendingOrbIds[orbId] = nil")
 assert(loot.includes("record.State = \"sent\"")
     && loot.includes("enqueueDelayedBag(record, now + BAG_SENT_TTL)"),
     "successful bag sends remain in the retry queue or have no bounded ack wait");
+assert(loot.includes("(tonumber(record.Attempts) or 0) < MAX_BAG_SEND_ATTEMPTS")
+    && loot.includes("record.State = \"retry\"")
+    && loot.includes("enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)"),
+    "unacknowledged lootbags do not receive one bounded reliability retry");
 assert(loot.includes("return originalAddOrb(id, ...)")
     && loot.includes("return originalAdd(id, payload, ...)")
     && loot.includes("return originalScan(...)")

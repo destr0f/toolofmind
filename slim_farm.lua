@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.37"
+local VERSION = "1.4.1-dev.38"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -3231,7 +3231,6 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
         end
     end
 
-    local confirmed = false
     local now = os.clock()
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId and state.Generation == farmGeneration
@@ -3241,13 +3240,14 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
             state.MembershipConfirmedAt = now
             self:ConfirmStateProgress(state, "membership", now)
             if firstMembership and state.AcceptedAt ~= nil then
-                self.SignalCommits[tostring(petId)] = state
-                confirmed = true
+                -- The dispatch engine already sent Change Pet Target and Farm
+                -- Coin before OnAccepted. Membership is an acknowledgement,
+                -- not a reason to duplicate both wire signals again.
+                self.MembershipConfirms = self.MembershipConfirms + 1
             end
         end
     end
     table.clear(present)
-    if confirmed then self:ScheduleSignalCommit(0) end
 end
 
 local function resetSupportCoordinator()
@@ -3322,8 +3322,6 @@ function petFarm:EnsureEngine()
                 + (config.Mode == "Boss Chest Only" and 20 or 8)
             self.ProgressProbeAccepted = self.ProgressProbeAccepted + 1
             self.ProgressLeases[petId] = state
-            self.SignalCommits[petId] = state
-            self:ScheduleSignalCommit(state.MembershipConfirmed and 0 or 0.04)
             self:ScheduleProgressLease(0.5)
             driverStatus = "Lite lock accepted fail-open via " .. tostring(route)
             return true

@@ -63,6 +63,9 @@ assert(accepted.includes("self.ProgressLeases[petId] = state"));
 assert(accepted.includes("self.ProgressProbeAccepted = self.ProgressProbeAccepted + 1"));
 assert(accepted.includes('config.Mode == "Boss Chest Only" and 20 or 8'));
 assert(accepted.includes("self:ScheduleProgressLease(0.5)"));
+assert(!accepted.includes("self.SignalCommits[petId] = state")
+    && !accepted.includes("self:ScheduleSignalCommit("),
+    "accepted assignments must not duplicate the signal pair already sent by the engine");
 
 const membership = body(
     "function petFarm:ConfirmCoinPets",
@@ -70,6 +73,10 @@ const membership = body(
 );
 assert(membership.includes('self:ConfirmStateProgress(state, "membership", now)'));
 assert(membership.includes("local firstMembership = state.MembershipConfirmed ~= true"));
+assert(membership.includes("self.MembershipConfirms = self.MembershipConfirms + 1"));
+assert(!membership.includes("self.SignalCommits[tostring(petId)] = state")
+    && !membership.includes("self:ScheduleSignalCommit("),
+    "membership acknowledgement must not resend a committed signal pair");
 
 assert((source.match(/ProgressLeaseToken = petFarm\.ProgressLeaseToken \+ 1/g) || []).length >= 3,
     "reload/reset cleanup does not invalidate every progress watchdog scheduler");

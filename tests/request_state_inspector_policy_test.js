@@ -143,6 +143,7 @@ for (const marker of [
     "local MAX_PENDING_BAGS = 4096",
     "local BAG_TRANSPORT_RETRY_DELAY = 0.10",
     "local BAG_SENT_TTL = 1.25",
+    "local MAX_BAG_SEND_ATTEMPTS = 2",
 ]) {
     assert(loot.includes(marker), `loot hot policy changed: ${marker}`);
 }
