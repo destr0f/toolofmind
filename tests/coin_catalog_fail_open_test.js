@@ -36,8 +36,16 @@ for (const name of ["New Coin", "Update Coin Health", "Remove Coin"]) {
     assert(farm.includes(`coinSync.SignalConnections["${name}"]`),
         `missing connection proof for ${name}`);
 }
-assert(!farm.includes('connect("Update Coin Pets"'),
-    "high-frequency Update Coin Pets returned to the catalog");
+assert(farm.includes('connect("Update Coin Pets", function(id, pets)')
+    && farm.includes("petFarm:ConfirmCoinPets(id, pets)"),
+    "Update Coin Pets is not routed to the transition-only membership confirmer");
+const membershipStart = farm.indexOf("function petFarm:ConfirmCoinPets");
+const membershipEnd = farm.indexOf("function petFarm:RefreshStats", membershipStart);
+const membershipBody = farm.slice(membershipStart, membershipEnd);
+for (const forbidden of ["requestAllocatorPulse", "applyCoinData", "record.Pets", "refreshWorkspaceCoins"]) {
+    assert(!membershipBody.includes(forbidden),
+        `membership acknowledgement became a heavy catalog path: ${forbidden}`);
+}
 assert(farm.includes("local function coinCatalogReady()")
     && farm.includes("coinSync.SignalsReady and coinSync.RecordCount > 0")
     && farm.includes("coinSync.EventConfirmed or coinSync.TargetsValidated"),
@@ -88,6 +96,6 @@ for (const forbidden of [
 }
 
 process.stdout.write(
-    "Coin catalog fail-open OK | max attempts=3 | deltas=3"
+    "Coin catalog fail-open OK | max attempts=3 | deltas=4"
     + " | per-ID model recovery | no physics fallback\n"
 );

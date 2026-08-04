@@ -5,7 +5,7 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "slim_farm.lua"), "utf8");
 
-assert(source.includes('local VERSION = "1.4.1-dev.34"'));
+assert(source.includes('local VERSION = "1.4.1-dev.35"'));
 assert(source.includes('["hacker portal chest"] = true'));
 assert(source.includes('["giant hacker portal chest"] = "Hacker Portal"'));
 assert(source.includes('["Hacker Portals"] = "Hacker Portal"'));
@@ -24,8 +24,23 @@ assert(!source.includes('"rearm",'));
 const acceptedStart = source.indexOf("OnAccepted = function");
 const signalsStart = source.indexOf("OnSignalsSent = function", acceptedStart);
 assert(acceptedStart >= 0 && signalsStart > acceptedStart);
-assert(source.slice(acceptedStart, signalsStart).includes('state.Phase = "working"'),
-    "an accepted Join Coin plus both named fire signals must lock the pet without waiting for visual health events");
+assert(source.slice(acceptedStart, signalsStart).includes('state.Phase = "joined"'),
+    "accepted Join Coin must remain in a short commit phase until its attack signal is re-armed");
+assert(source.slice(acceptedStart, signalsStart).includes("self.SignalCommits[petId] = state"),
+    "accepted Join Coin is not queued for the bounded farm-signal commit");
+assert(source.includes('connect("Update Coin Pets", function(id, pets)'),
+    "the authoritative server membership acknowledgement is not connected");
+assert(source.includes("function petFarm:ConfirmCoinPets(rawCoinId, payload)"));
+assert(source.includes('fireFast("Change Pet Target", petId, "Coin", coinId)'));
+assert(source.includes('fireFast("Farm Coin", coinId, petId)'));
+assert(source.includes("attempt == 0 and age >= 0.22"));
+assert(source.includes("attempt == 1 and age >= 0.55"));
+const commitStart = source.indexOf("function petFarm:RunSignalCommits");
+const commitEnd = source.indexOf("function petFarm:ScheduleSignalCommit", commitStart);
+assert(commitStart >= 0 && commitEnd > commitStart);
+const commitBody = source.slice(commitStart, commitEnd);
+assert(!commitBody.includes('"Join Coin"'), "commit worker must never repeat Join Coin");
+assert(!commitBody.includes('"Leave Coin"'), "commit worker must never detach a live assignment");
 assert(!source.slice(signalsStart, source.indexOf("OnRetry = function", signalsStart))
     .includes('FIRE_LOCAL_SENT_UNACKED'),
     "successful per-pet fire signals must stay on aggregate counters instead of the inspector hot path");

@@ -41,8 +41,19 @@ assert(farm.includes("local coinRecords = {}")
 for (const command of ["New Coin", "Update Coin Health", "Remove Coin"]) {
     assert(farm.includes(`connect("${command}"`), `missing coin delta ${command}`);
 }
-assert(!farm.includes('connect("Update Coin Pets"'),
-    "Lite farm still subscribes to high-frequency pet-set reconciliation");
+assert(farm.includes('connect("Update Coin Pets", function(id, pets)')
+    && farm.includes("petFarm:ConfirmCoinPets(id, pets)"),
+    "Lite farm is missing its transition-only Join Coin membership acknowledgement");
+const membershipStart = farm.indexOf("function petFarm:ConfirmCoinPets");
+const membershipEnd = farm.indexOf("function petFarm:RefreshStats", membershipStart);
+const membershipBody = farm.slice(membershipStart, membershipEnd);
+assert(membershipBody.includes("if not interested then return end")
+    && membershipBody.includes("table.clear(present)"),
+    "Update Coin Pets is not bounded to pending local assignments");
+for (const forbidden of ["requestAllocatorPulse", "applyCoinData", "record.Pets", "refreshWorkspaceCoins"]) {
+    assert(!membershipBody.includes(forbidden),
+        `Update Coin Pets became a retained reconciliation path: ${forbidden}`);
+}
 assert(count(farm, /"Get Coins"/g) === 1,
     "Get Coins must remain an initial-world snapshot only");
 assert(!/workspace\s*\.\s*DescendantAdded/.test(farm),

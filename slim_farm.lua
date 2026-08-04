@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.34"
+local VERSION = "1.4.1-dev.35"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -1410,6 +1410,7 @@ local releaseAssignmentsForCoin
 local requestFarmReset
 local assignmentCount
 local armFarmRecovery
+local petFarm
 local function getPlayerZone()
     if os.clock() < nextZoneCheck then return currentZone end
     nextZoneCheck = os.clock() + 0.25
@@ -2245,6 +2246,14 @@ local function connectCoinSignals()
             applyCoinData(id, { Health = health }, true)
         end
     end)
+    -- This is the game's authoritative acknowledgement that Join Coin has
+    -- attached pet UIDs to a coin. Keep the callback transition-only: it
+    -- checks at most the equipped assignments and retains no server pet list.
+    connect("Update Coin Pets", function(id, pets)
+        if petFarm and type(petFarm.ConfirmCoinPets) == "function" then
+            petFarm:ConfirmCoinPets(id, pets)
+        end
+    end)
     connect("Remove Coin", function(id) removeCoin(id, true) end)
     coinSync.SignalsReady = coinSync.SignalConnections["New Coin"] ~= nil
         and coinSync.SignalConnections["Update Coin Health"] ~= nil
@@ -2433,7 +2442,7 @@ local allocatorRequested = false
 local driverStatus = "waiting for first target"
 local idleRecoveryCount = 0
 local lastRecovery = "none"
-local petFarm = {
+petFarm = {
     Engine = nil,
     Loading = false,
     Problem = nil,
@@ -2464,6 +2473,11 @@ local petFarm = {
     FastPets = {},
     FastScheduled = false,
     FastToken = 0,
+    SignalCommits = {},
+    SignalCommitScheduled = false,
+    SignalCommitToken = 0,
+    MembershipConfirms = 0,
+    WireRepairs = 0,
     NextTargetByPet = {},
     StatePool = {},
     DispatchEntries = {},
@@ -2489,7 +2503,7 @@ local petFarm = {
     },
 }
 
-local function acquirePetState(coinId)
+local function acquirePetState(coinId, petId)
     local pool = petFarm.StatePool
     local state = pool[#pool]
     if state then
@@ -2498,21 +2512,35 @@ local function acquirePetState(coinId)
         state = {}
     end
     state.CoinId = coinId
+    state.PetId = tostring(petId)
     state.Phase = "joining"
     state.Generation = farmGeneration
     state.RetryCount = 0
     state.StartedAt = os.clock()
+    state.AcceptedAt = nil
+    state.MembershipConfirmed = false
+    state.MembershipConfirmedAt = nil
+    state.SignalCommitAttempt = 0
     return state
 end
 
 local function releasePetState(state, forceReusable)
     if type(state) ~= "table" then return end
     local reusable = forceReusable == true or state.Phase == "working"
+    local petId = state.PetId
+    if petId and petFarm.SignalCommits[petId] == state then
+        petFarm.SignalCommits[petId] = nil
+    end
     state.CoinId = nil
+    state.PetId = nil
     state.Phase = nil
     state.Generation = nil
     state.RetryCount = nil
     state.StartedAt = nil
+    state.AcceptedAt = nil
+    state.MembershipConfirmed = nil
+    state.MembershipConfirmedAt = nil
+    state.SignalCommitAttempt = nil
     local pool = petFarm.StatePool
     -- A JOINING state can still be referenced by a yielding InvokeServer job.
     -- Do not recycle it unless the engine is synchronously returning control
@@ -2524,8 +2552,11 @@ releaseAssignmentsForCoin = function(rawId)
     if rawId == nil then
         farmGeneration = farmGeneration + 1
         petFarm.FastToken = petFarm.FastToken + 1
+        petFarm.SignalCommitToken = petFarm.SignalCommitToken + 1
+        petFarm.SignalCommitScheduled = false
         petFarm.FastScheduled = false
         table.clear(petFarm.FastPets)
+        table.clear(petFarm.SignalCommits)
         table.clear(petFarm.NextTargetByPet)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
         for _, state in pairs(petStates) do
@@ -2951,6 +2982,134 @@ local function getMachinePetCatalog(force)
     return ids, names, summary
 end
 
+local function normalizedPetUid(value)
+    if value == nil then return nil end
+    if type(value) == "table" then
+        value = value.uid or value.UID or value.id or value.ID
+            or value.PetId or value.petId or value[1]
+    end
+    return value ~= nil and tostring(value) or nil
+end
+
+function petFarm:SendCommittedFarmSignals(petId, state)
+    petId = tostring(petId)
+    if petStates[petId] ~= state or state.Generation ~= farmGeneration then
+        return false
+    end
+    local record = coinRecords[tostring(state.CoinId)]
+    if not recordAlive(record) then return false end
+
+    local function fireFast(command, ...)
+        local remote = getFireRemote(command)
+        if remote then
+            local sent = pcall(remote.FireServer, remote, ...)
+            if sent then return true end
+            coinSync.RemoteCaches.Fire[command] = nil
+        end
+        local network = networkReady()
+        return network and type(network.Fire) == "function"
+            and pcall(network.Fire, command, ...) or false
+    end
+
+    state.SignalCommitAttempt = (tonumber(state.SignalCommitAttempt) or 0) + 1
+    local coinId = tostring(state.CoinId)
+    local targetSent = fireFast("Change Pet Target", petId, "Coin", coinId)
+    local farmSent = fireFast("Farm Coin", coinId, petId)
+    if targetSent and farmSent then
+        state.Phase = "working"
+        return true
+    end
+    return false
+end
+
+function petFarm:RunSignalCommits(token)
+    if token ~= self.SignalCommitToken or not running() or not config.PetFarm then return end
+    local now = os.clock()
+    local pending = false
+    for petId, state in pairs(self.SignalCommits) do
+        if petStates[petId] ~= state or state.Generation ~= farmGeneration
+            or not recordAlive(coinRecords[tostring(state.CoinId)]) then
+            self.SignalCommits[petId] = nil
+        else
+            local age = math.max(now - (tonumber(state.AcceptedAt) or now), 0)
+            local attempt = tonumber(state.SignalCommitAttempt) or 0
+            local due = state.MembershipConfirmed == true
+                or (attempt == 0 and age >= 0.22)
+                or (attempt == 1 and age >= 0.55)
+            if due then
+                local sent = self:SendCommittedFarmSignals(petId, state)
+                if sent then
+                    if state.MembershipConfirmed then
+                        self.MembershipConfirms = self.MembershipConfirms + 1
+                    else
+                        self.WireRepairs = self.WireRepairs + 1
+                    end
+                end
+                attempt = tonumber(state.SignalCommitAttempt) or attempt
+                if state.MembershipConfirmed or attempt >= 2 or age >= 0.9 then
+                    self.SignalCommits[petId] = nil
+                else
+                    pending = true
+                end
+            else
+                pending = true
+            end
+        end
+    end
+    if pending then self:ScheduleSignalCommit(0.04) end
+end
+
+function petFarm:ScheduleSignalCommit(delaySeconds)
+    if self.SignalCommitScheduled or not running() then return end
+    self.SignalCommitScheduled = true
+    local token = self.SignalCommitToken
+    task.delay(math.max(tonumber(delaySeconds) or 0.04, 0), function()
+        if token ~= self.SignalCommitToken then return end
+        self.SignalCommitScheduled = false
+        self:RunSignalCommits(token)
+    end)
+end
+
+function petFarm:ConfirmCoinPets(rawCoinId, payload)
+    if rawCoinId == nil or type(payload) ~= "table" then return end
+    local coinId = tostring(rawCoinId)
+    local interested = false
+    for _, state in pairs(petStates) do
+        if tostring(state.CoinId) == coinId and state.Generation == farmGeneration
+            and state.Phase ~= "working" then
+            interested = true
+            break
+        end
+    end
+    if not interested then return end
+
+    local present = {}
+    for key, value in pairs(payload) do
+        local uid = normalizedPetUid(value)
+        if uid then present[uid] = true end
+        if value == true then
+            local keyedUid = normalizedPetUid(key)
+            if keyedUid then present[keyedUid] = true end
+        end
+    end
+
+    local confirmed = false
+    local now = os.clock()
+    for petId, state in pairs(petStates) do
+        if tostring(state.CoinId) == coinId and state.Generation == farmGeneration
+            and present[tostring(petId)] then
+            state.MembershipConfirmed = true
+            state.MembershipConfirmedAt = now
+            if state.AcceptedAt ~= nil then
+                self.SignalCommits[tostring(petId)] = state
+                confirmed = true
+            end
+        end
+    end
+    table.clear(present)
+    if confirmed then self:ScheduleSignalCommit(0) end
+end
+
 local function resetSupportCoordinator()
     if supportController then pcall(supportController, "reset", supportContext) end
 end
@@ -3010,9 +3169,12 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state
                 or state.Generation ~= farmGeneration
                 or not recordAlive(record) then return false end
-            state.Phase = "working"
+            state.Phase = "joined"
             state.RetryCount = math.max((tonumber(attempt) or 1) - 1, 0)
-            driverStatus = "Lite lock accepted via " .. tostring(route)
+            state.AcceptedAt = os.clock()
+            self.SignalCommits[petId] = state
+            self:ScheduleSignalCommit(state.MembershipConfirmed and 0 or 0.04)
+            driverStatus = "Lite lock accepted; committing farm signal via " .. tostring(route)
             return true
         end,
         OnSignalsSent = function(petId, state, record, targetSent, farmSent, targetRoute, farmRoute)
@@ -3130,8 +3292,11 @@ end
 local function clearAssignments(sendBack, callback)
     farmGeneration = farmGeneration + 1
     petFarm.FastToken = petFarm.FastToken + 1
+    petFarm.SignalCommitToken = petFarm.SignalCommitToken + 1
+    petFarm.SignalCommitScheduled = false
     petFarm.FastScheduled = false
     table.clear(petFarm.FastPets)
+    table.clear(petFarm.SignalCommits)
     table.clear(petFarm.NextTargetByPet)
     if petFarm.Engine then pcall(petFarm.Engine, "reset") end
     local groups, allPets = collectAssignmentsForReset()
@@ -3231,7 +3396,7 @@ local function dispatchPlan(record, petIds)
     for index, petId in ipairs(petIds) do
         petId = tostring(petId)
         if not petStates[petId] then
-            local state = acquirePetState(coinId)
+            local state = acquirePetState(coinId, petId)
             petStates[petId] = state
             local entry = petFarm.DispatchEntryPool[index]
             if not entry then
@@ -5438,6 +5603,9 @@ local function finishShutdown()
     table.clear(petFarm.DispatchEntryPool)
     table.clear(petFarm.DispatchPayload)
     table.clear(petFarm.FastPets)
+    petFarm.SignalCommitToken = petFarm.SignalCommitToken + 1
+    petFarm.SignalCommitScheduled = false
+    table.clear(petFarm.SignalCommits)
     table.clear(petFarm.NextTargetByPet)
     for _, scratch in pairs(petFarm.Scratch) do table.clear(scratch) end
     for _, scratch in pairs(petFarm.PlanScratch) do
@@ -5707,6 +5875,10 @@ function requestDiagnostics.UpdateTelemetry()
     for _, untilAt in pairs(rejectedUntil) do
         if (tonumber(untilAt) or 0) > now then cooldownCount = cooldownCount + 1 end
     end
+    local pendingSignalCommits = 0
+    for _ in pairs(petFarm.SignalCommits) do
+        pendingSignalCommits = pendingSignalCommits + 1
+    end
     requestDiagnostics.Gauge("Farm", "queued", queued)
     requestDiagnostics.Gauge("Farm", "active", active)
     requestDiagnostics.Gauge("Farm", "averageRtt", tonumber(dispatchStats.AverageRTT) or 0)
@@ -5722,6 +5894,9 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "localTimeouts", tonumber(dispatchStats.LocalTimeouts) or 0)
     requestDiagnostics.Gauge("Farm", "targetSignals", tonumber(dispatchStats.TargetSignals) or 0)
     requestDiagnostics.Gauge("Farm", "farmSignals", tonumber(dispatchStats.FarmSignals) or 0)
+    requestDiagnostics.Gauge("Farm", "pendingSignalCommits", pendingSignalCommits)
+    requestDiagnostics.Gauge("Farm", "membershipConfirms", petFarm.MembershipConfirms)
+    requestDiagnostics.Gauge("Farm", "wireRepairs", petFarm.WireRepairs)
     requestDiagnostics.Gauge("Farm", "lastRoute", tostring(dispatchStats.LastRoute or "none"))
     requestDiagnostics.Gauge("Farm", "lastAssignmentAge", (tonumber(dispatchStats.LastAssignmentAt) or 0) > 0
         and math.max(now - tonumber(dispatchStats.LastAssignmentAt), 0) or 0)
