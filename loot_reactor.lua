@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.3.2"
+local MODULE_VERSION = "3.4.0"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
 local BAG_LANES = 4
@@ -79,6 +79,9 @@ local run = {
     OrbErrors = 0,
     OrbOverflow = 0,
     OrbDropped = 0,
+    OrbDeduplicated = 0,
+    OrbMaxBatch = 0,
+    OrbLocalSentUnacked = 0,
     BagEvents = 0,
     BagSent = 0,
     BagAcked = 0,
@@ -86,6 +89,10 @@ local run = {
     BagSkipped = 0,
     BagErrors = 0,
     BagOverflow = 0,
+    BagRetiredNoAck = 0,
+    BagObjectAcknowledged = 0,
+    BagNetworkAcknowledged = 0,
+    BagTransportDropped = 0,
 }
 
 local function disconnect(connection)
@@ -373,6 +380,8 @@ local function flushOrbs()
         end
         run.OrbBatches = run.OrbBatches + 1
         run.OrbIdsSent = run.OrbIdsSent + #ids
+        run.OrbLocalSentUnacked = run.OrbLocalSentUnacked + #ids
+        run.OrbMaxBatch = math.max(run.OrbMaxBatch, #ids)
         if run.PendingOrbCount > 0 then armOrbFlush() end
     else
         run.OrbErrors = run.OrbErrors + 1
@@ -434,6 +443,8 @@ local function queueOrb(itemOrId, fromEvent)
         end
         run.PendingOrbIds[orbId] = 0
         run.PendingOrbCount = run.PendingOrbCount + 1
+    else
+        run.OrbDeduplicated = run.OrbDeduplicated + 1
     end
     if fromEvent then run.OrbEvents = run.OrbEvents + 1 end
     armOrbFlush()
@@ -517,11 +528,17 @@ local function releaseBagRecord(record)
     end
 end
 
-local function closeBag(record, acknowledged)
+local function closeBag(record, acknowledged, reason)
     if not record or run.BagById[record.Id] ~= record then return end
     run.BagById[record.Id] = nil
     run.WaitingBagCount = math.max(run.WaitingBagCount - 1, 0)
-    if acknowledged then run.BagAcked = run.BagAcked + 1 end
+    if acknowledged then
+        run.BagAcked = run.BagAcked + 1
+    elseif reason == "sent ttl expired" then
+        run.BagRetiredNoAck = run.BagRetiredNoAck + 1
+    elseif reason == "transport dropped" then
+        run.BagTransportDropped = run.BagTransportDropped + 1
+    end
     -- A queued/delayed array can still hold this record. Do not return it to
     -- the pool until that final scalar reference has been consumed; otherwise
     -- a newly spawned bag could reuse the same table and inherit stale work.
@@ -593,7 +610,7 @@ local function processDelayedBags(now)
             elseif due <= now then
                 record.Delayed = false
                 if record.State == "sent" then
-                    closeBag(record, false)
+                    closeBag(record, false, "sent ttl expired")
                 else
                     enqueueReadyBag(record)
                 end
@@ -624,7 +641,7 @@ local function collectBag(record, now)
         enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)
     else
         run.BagErrors = run.BagErrors + 1
-        closeBag(record, false)
+        closeBag(record, false, "transport dropped")
     end
 end
 
@@ -682,9 +699,16 @@ local function queueBagObject(item)
     return queueBagEvent(id, nil, position)
 end
 
-local function acknowledgeBag(id)
+local function acknowledgeBag(id, source)
     id = id ~= nil and tostring(id) or nil
-    if id then closeBag(run.BagById[id], true) end
+    local record = id and run.BagById[id] or nil
+    if not record then return end
+    if source == "object" then
+        run.BagObjectAcknowledged = run.BagObjectAcknowledged + 1
+    else
+        run.BagNetworkAcknowledged = run.BagNetworkAcknowledged + 1
+    end
+    closeBag(record, true, source or "network")
     armStatus()
 end
 
@@ -1171,7 +1195,7 @@ local function installBagProducer()
     local originalRemove = record.Originals.Remove
     record.Wrappers.Remove = function(id, ...)
         if record.Active and record.Generation == run.Generation then
-            pcall(acknowledgeBag, id)
+            pcall(acknowledgeBag, id, "game remove")
             if bagsEnabled() and not record.FailOpen then return nil end
         end
         return originalRemove(id, ...)
@@ -1201,7 +1225,7 @@ local function installBagProducer()
     local removeSignal = networkSignal("Remove Lootbag")
     if removeSignal then
         run.BagGateConnections[#run.BagGateConnections + 1] =
-            removeSignal:Connect(acknowledgeBag)
+            removeSignal:Connect(function(id) acknowledgeBag(id, "network") end)
     end
     return true
 end
@@ -1396,7 +1420,7 @@ local function bindLootbagFolder(folder)
     run.BagConnections[#run.BagConnections + 1] =
         folder.ChildRemoved:Connect(function(item)
             local id = objectId(item)
-            if id then acknowledgeBag(id) end
+            if id then acknowledgeBag(id, "object") end
         end)
     scanFolder(folder, watchBagFallback)
 end
@@ -1454,6 +1478,9 @@ local function resetStats()
     run.OrbErrors = 0
     run.OrbOverflow = 0
     run.OrbDropped = 0
+    run.OrbDeduplicated = 0
+    run.OrbMaxBatch = 0
+    run.OrbLocalSentUnacked = 0
     run.BagEvents = 0
     run.BagSent = 0
     run.BagAcked = 0
@@ -1461,6 +1488,10 @@ local function resetStats()
     run.BagSkipped = 0
     run.BagErrors = 0
     run.BagOverflow = 0
+    run.BagRetiredNoAck = 0
+    run.BagObjectAcknowledged = 0
+    run.BagNetworkAcknowledged = 0
+    run.BagTransportDropped = 0
     run.VisualInstancesPrevented = 0
     run.GateGeneration = 0
     run.LastRebindReason = "startup"
@@ -1573,6 +1604,10 @@ local function stats()
         OrbErrors = run.OrbErrors,
         OrbOverflow = run.OrbOverflow,
         OrbDropped = run.OrbDropped,
+        OrbDeduplicated = run.OrbDeduplicated,
+        OrbMaxBatch = run.OrbMaxBatch,
+        OrbLocalSentUnacked = run.OrbLocalSentUnacked,
+        RouteOrbs = run.RouteOrbs,
         BagEvents = run.BagEvents,
         BagSent = run.BagSent,
         BagAcked = run.BagAcked,
@@ -1580,6 +1615,11 @@ local function stats()
         BagSkipped = run.BagSkipped,
         BagErrors = run.BagErrors,
         BagOverflow = run.BagOverflow,
+        BagRetiredNoAck = run.BagRetiredNoAck,
+        BagObjectAcknowledged = run.BagObjectAcknowledged,
+        BagNetworkAcknowledged = run.BagNetworkAcknowledged,
+        BagTransportDropped = run.BagTransportDropped,
+        RouteLootbags = run.RouteLootbags,
     }
 end
 

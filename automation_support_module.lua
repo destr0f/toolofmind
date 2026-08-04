@@ -1,13 +1,22 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.2.0"
+local MODULE_VERSION = "1.3.0"
 
 local gate = {
     Owner = nil,
     OwnerSince = 0,
     Waiters = {},
     Sequence = 0,
+    OwnerGeneration = 0,
+    LastAcquireReason = "none",
+    LastAcquireAt = 0,
+    LastReleaseReason = "none",
+    LastReleaseAt = 0,
+    LastOwnerExpiry = "none",
+    LastOwnerExpiryAt = 0,
+    LastWaiterExpiryCount = 0,
+    LastWaiterExpiryAt = 0,
 }
 
 local catalogCache = {
@@ -54,11 +63,22 @@ local function cleanGate(context, now)
     now = now or os.clock()
     if gate.Owner and now - gate.OwnerSince > 45 then
         trace(context, "operation gate", "expired stale owner " .. tostring(gate.Owner))
+        gate.LastOwnerExpiry = tostring(gate.Owner)
+        gate.LastOwnerExpiryAt = now
         gate.Owner = nil
         gate.OwnerSince = 0
+        gate.OwnerGeneration = 0
     end
+    local expiredWaiters = 0
     for owner, waiter in pairs(gate.Waiters) do
-        if now - (waiter.SeenAt or 0) > 2 then gate.Waiters[owner] = nil end
+        if now - (waiter.SeenAt or 0) > 2 then
+            gate.Waiters[owner] = nil
+            expiredWaiters = expiredWaiters + 1
+        end
+    end
+    if expiredWaiters > 0 then
+        gate.LastWaiterExpiryCount = expiredWaiters
+        gate.LastWaiterExpiryAt = now
     end
 end
 
@@ -71,7 +91,11 @@ local function acquire(context, rawOwner)
     local waiter = gate.Waiters[owner]
     if not waiter then
         gate.Sequence = gate.Sequence + 1
-        waiter = { Sequence = gate.Sequence, SeenAt = now }
+        waiter = {
+            Sequence = gate.Sequence,
+            SeenAt = now,
+            Generation = tonumber(type(context) == "table" and context.Generation or nil) or 0,
+        }
         gate.Waiters[owner] = waiter
     else
         waiter.SeenAt = now
@@ -89,15 +113,21 @@ local function acquire(context, rawOwner)
     gate.Waiters[owner] = nil
     gate.Owner = owner
     gate.OwnerSince = now
+    gate.OwnerGeneration = tonumber(type(context) == "table" and context.Generation or nil) or 0
+    gate.LastAcquireReason = "fifo owner selected"
+    gate.LastAcquireAt = now
     return true, owner
 end
 
-local function release(rawOwner)
+local function release(context, rawOwner, reason)
     local owner = tostring(rawOwner or "unknown")
     gate.Waiters[owner] = nil
     if gate.Owner == owner then
         gate.Owner = nil
         gate.OwnerSince = 0
+        gate.OwnerGeneration = 0
+        gate.LastReleaseReason = tostring(reason or "owner released")
+        gate.LastReleaseAt = os.clock()
     end
     return true
 end
@@ -107,6 +137,41 @@ local function gateStatus(context)
     local waiting = 0
     for _ in pairs(gate.Waiters) do waiting = waiting + 1 end
     return gate.Owner or "idle", waiting
+end
+
+local function gateDiagnostics(context)
+    local now = os.clock()
+    cleanGate(context, now)
+    local waiting, oldestWaiterAge = 0, 0
+    local waiterAges = {}
+    for owner, waiter in pairs(gate.Waiters) do
+        waiting = waiting + 1
+        local age = math.max(now - (tonumber(waiter.SeenAt) or now), 0)
+        oldestWaiterAge = math.max(oldestWaiterAge, age)
+        if #waiterAges < 16 then
+            waiterAges[#waiterAges + 1] = tostring(owner) .. ":" .. string.format("%.2f", age)
+        end
+    end
+    table.sort(waiterAges)
+    return {
+        Owner = gate.Owner or "idle",
+        OwnerAge = gate.Owner and math.max(now - gate.OwnerSince, 0) or 0,
+        OwnerGeneration = gate.OwnerGeneration,
+        Waiters = waiting,
+        OldestWaiterAge = oldestWaiterAge,
+        WaiterAges = table.concat(waiterAges, ","),
+        OwnerExpirySeconds = 45,
+        WaiterExpirySeconds = 2,
+        LastAcquireReason = gate.LastAcquireReason,
+        LastAcquireAge = gate.LastAcquireAt > 0 and math.max(now - gate.LastAcquireAt, 0) or 0,
+        LastReleaseReason = gate.LastReleaseReason,
+        LastReleaseAge = gate.LastReleaseAt > 0 and math.max(now - gate.LastReleaseAt, 0) or 0,
+        LastOwnerExpiry = gate.LastOwnerExpiry,
+        LastOwnerExpiryAge = gate.LastOwnerExpiryAt > 0 and math.max(now - gate.LastOwnerExpiryAt, 0) or 0,
+        LastWaiterExpiryCount = gate.LastWaiterExpiryCount,
+        LastWaiterExpiryAge = gate.LastWaiterExpiryAt > 0
+            and math.max(now - gate.LastWaiterExpiryAt, 0) or 0,
+    }
 end
 
 local function definitionAllowed(definition, rawId)
@@ -246,6 +311,15 @@ end
 local function reset()
     gate.Owner = nil
     gate.OwnerSince = 0
+    gate.OwnerGeneration = 0
+    gate.LastAcquireReason = "none"
+    gate.LastAcquireAt = 0
+    gate.LastReleaseReason = "none"
+    gate.LastReleaseAt = 0
+    gate.LastOwnerExpiry = "none"
+    gate.LastOwnerExpiryAt = 0
+    gate.LastWaiterExpiryCount = 0
+    gate.LastWaiterExpiryAt = 0
     table.clear(gate.Waiters)
     catalogCache.ExpiresAt = 0
     catalogCache.Ids = {}
@@ -256,8 +330,10 @@ end
 
 return function(action, context, value)
     if action == "acquire" then return acquire(context, value) end
-    if action == "release" or action == "cancel" then return release(value) end
+    if action == "release" then return release(context, value, "owner released") end
+    if action == "cancel" then return release(context, value, "waiter cancelled") end
     if action == "status" then return gateStatus(context) end
+    if action == "diagnostics" then return gateDiagnostics(context) end
     if action == "catalog" then return getCatalog(context, value == true) end
     if action == "route-health" then return routeHealth(context) end
     if action == "reset" then return reset() end

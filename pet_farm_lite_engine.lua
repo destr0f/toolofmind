@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.2.0"
+local MODULE_VERSION = "1.3.0"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -35,6 +35,18 @@ local run = {
     AverageRTT = 0,
     LastRTT = 0,
     LastProblem = "none",
+    DiagnosticSequence = 0,
+    LastDispatchAt = 0,
+    LastCompletionAt = 0,
+    ActiveInvokes = {},
+    TargetSignals = 0,
+    FarmSignals = 0,
+    SignalFailures = 0,
+    TransportFailures = 0,
+    LocalTimeouts = 0,
+    LastRoute = "unavailable",
+    LastAssignmentAt = 0,
+    LastTargetChangeAt = 0,
 }
 
 local pump
@@ -43,6 +55,20 @@ local function trace(stage, detail)
     local context = run.Context
     if context and type(context.Trace) == "function" then
         pcall(context.Trace, stage, detail)
+    end
+end
+
+local function inspectTransition(requestId, stateName, detail)
+    local context = run.Context
+    if context and type(context.InspectorTransition) == "function" then
+        pcall(context.InspectorTransition, "Farm", requestId, stateName, detail)
+    end
+end
+
+local function inspectComplete(requestId, outcome, detail)
+    local context = run.Context
+    if context and type(context.InspectorComplete) == "function" then
+        pcall(context.InspectorComplete, "Farm", requestId, outcome, detail)
     end
 end
 
@@ -113,6 +139,8 @@ local function releaseJob(job)
     job.Attempt = nil
     job.Joined = nil
     job.Due = nil
+    job.DiagnosticId = nil
+    job.QueuedAt = nil
     for _, entry in ipairs(job.EntryPool) do
         entry.PetId = nil
         entry.State = nil
@@ -130,9 +158,18 @@ local function resetQueue()
     run.Epoch = run.Epoch + 1
     for index = run.Head, #run.Queue do
         local job = run.Queue[index]
-        if job then clearPending(job.Entries); releaseJob(job) end
+        if job then
+            if job.DiagnosticId then
+                inspectComplete(job.DiagnosticId, "CANCELLED_BY_DISABLE", "pet transport queue reset")
+            end
+            clearPending(job.Entries)
+            releaseJob(job)
+        end
     end
     for _, job in ipairs(run.Delayed) do
+        if job.DiagnosticId then
+            inspectComplete(job.DiagnosticId, "CANCELLED_BY_DISABLE", "pet transport retry reset")
+        end
         clearPending(job.Entries)
         releaseJob(job)
     end
@@ -142,6 +179,7 @@ local function resetQueue()
     run.RetryToken = run.RetryToken + 1
     run.RetryDue = nil
     table.clear(run.PendingByPet)
+    table.clear(run.ActiveInvokes)
 end
 
 local function resetStats()
@@ -154,6 +192,14 @@ local function resetStats()
     run.AverageRTT = 0
     run.LastRTT = 0
     run.LastProblem = "none"
+    run.TargetSignals = 0
+    run.FarmSignals = 0
+    run.SignalFailures = 0
+    run.TransportFailures = 0
+    run.LocalTimeouts = 0
+    run.LastRoute = "unavailable"
+    run.LastAssignmentAt = 0
+    run.LastTargetChangeAt = 0
 end
 
 local function contextActive(job)
@@ -403,6 +449,11 @@ local function scheduleRetry(job, entries, reason, joined)
     job.Attempt = nextAttempt
     job.Joined = joined == true
     job.Due = os.clock() + RETRY_DELAY
+    inspectTransition(job.DiagnosticId, "QUEUED", {
+        attempt = nextAttempt,
+        reason = reason,
+        delay = RETRY_DELAY,
+    })
     run.Delayed[#run.Delayed + 1] = job
     scheduleRetryTimer()
     return true
@@ -425,6 +476,11 @@ local function signalEntries(job, entries, route)
                 job.CoinId,
                 entry.PetId
             )
+            if targetSent then
+                run.TargetSignals = run.TargetSignals + 1
+                run.LastTargetChangeAt = os.clock()
+            end
+            if farmSent then run.FarmSignals = run.FarmSignals + 1 end
             if context and type(context.OnSignalsSent) == "function" then
                 pcall(
                     context.OnSignalsSent,
@@ -452,8 +508,10 @@ local function signalEntries(job, entries, route)
             end
             if accepted then
                 run.Accepted = run.Accepted + 1
+                run.LastAssignmentAt = os.clock()
                 clearPendingEntry(entry)
             else
+                run.SignalFailures = run.SignalFailures + 1
                 failed[#failed + 1] = entry
             end
         else
@@ -481,17 +539,31 @@ local function process(job)
     end
 
     local startedAt = os.clock()
+    run.LastDispatchAt = startedAt
+    local attemptId = tostring(job.DiagnosticId) .. ":attempt:" .. tostring(job.Attempt)
+    inspectTransition(attemptId, "INVOKE_IN_FLIGHT", {
+        command = "Join Coin",
+        coin = job.CoinId,
+        pets = #petIds,
+        queuedFor = math.max(startedAt - (tonumber(job.QueuedAt) or startedAt), 0),
+    })
+    run.ActiveInvokes[attemptId] = startedAt
     local invoked, response, route = callNamedInvoke("Join Coin", job.CoinId, petIds)
+    run.ActiveInvokes[attemptId] = nil
     local elapsed = math.max(os.clock() - startedAt, 0)
     run.LastRTT = elapsed
     run.AverageRTT = run.AverageRTT == 0 and elapsed
         or run.AverageRTT * 0.85 + elapsed * 0.15
+    run.LastRoute = tostring(route or "unavailable")
 
     if not invoked then
+        inspectComplete(attemptId, "TRANSPORT_FAILED", tostring(response))
+        run.TransportFailures = run.TransportFailures + 1
         run.Errors = run.Errors + #entries
         run.LastProblem = "Join Coin transport error: " .. tostring(response)
         return scheduleRetry(job, entries, run.LastProblem, false)
     end
+    run.LastCompletionAt = os.clock()
 
     local acceptedMap = classifyResponseInto(
         response,
@@ -509,6 +581,15 @@ local function process(job)
         else
             rejectedEntries[#rejectedEntries + 1] = entry
         end
+    end
+
+    if #acceptedEntries == #entries then
+        inspectComplete(attemptId, "SERVER_ACCEPTED", "accepted pets=" .. tostring(#acceptedEntries))
+    elseif #acceptedEntries == 0 then
+        inspectComplete(attemptId, "SERVER_REJECTED", "rejected pets=" .. tostring(#rejectedEntries))
+    else
+        inspectComplete(attemptId, "COMPLETED", "partial accepted=" .. tostring(#acceptedEntries)
+            .. " rejected=" .. tostring(#rejectedEntries))
     end
 
     if not contextActive(job) then
@@ -560,7 +641,12 @@ pump = function()
                     )
                     trace("lite pet dispatch", tostring(run.LastProblem))
                 end
-                if not retained then releaseJob(job) end
+                if not retained then
+                    inspectComplete(job.DiagnosticId,
+                        handled and "COMPLETED" or "DROPPED_WITH_REASON",
+                        handled and "pet transport cycle finished" or tostring(run.LastProblem))
+                    releaseJob(job)
+                end
                 run.Active = math.max(run.Active - 1, 0)
                 pump()
             end)
@@ -576,7 +662,10 @@ pump = function()
                     "dispatch coroutine failed: " .. tostring(problem),
                     job.Joined
                 )
-                if not retained then releaseJob(job) end
+                if not retained then
+                    inspectComplete(job.DiagnosticId, "DROPPED_WITH_REASON", tostring(problem))
+                    releaseJob(job)
+                end
                 trace("lite pet dispatch", tostring(problem))
                 pump()
             end
@@ -654,12 +743,25 @@ local function dispatch(payload)
     job.CoinId = tostring(payload.CoinId)
     job.Attempt = 1
     job.Joined = false
+    run.DiagnosticSequence = run.DiagnosticSequence + 1
+    job.DiagnosticId = "join:" .. tostring(run.Epoch) .. ":" .. tostring(run.DiagnosticSequence)
+    job.QueuedAt = os.clock()
+    inspectTransition(job.DiagnosticId, "QUEUED", {
+        command = "Join Coin",
+        coin = job.CoinId,
+        pets = #entries,
+    })
     run.Queue[#run.Queue + 1] = job
     pump()
     return true
 end
 
 local function stats()
+    local now, activeInvokeCount, oldestInvokeAge = os.clock(), 0, 0
+    for _, startedAt in pairs(run.ActiveInvokes) do
+        activeInvokeCount = activeInvokeCount + 1
+        oldestInvokeAge = math.max(oldestInvokeAge, now - (tonumber(startedAt) or now))
+    end
     return {
         Version = MODULE_VERSION,
         Epoch = run.Epoch,
@@ -677,6 +779,18 @@ local function stats()
         AverageRTT = run.AverageRTT,
         LastRTT = run.LastRTT,
         LastProblem = run.LastProblem,
+        LastDispatchAt = run.LastDispatchAt,
+        LastCompletionAt = run.LastCompletionAt,
+        ActiveInvokeCount = activeInvokeCount,
+        OldestInvokeAge = oldestInvokeAge,
+        TargetSignals = run.TargetSignals,
+        FarmSignals = run.FarmSignals,
+        SignalFailures = run.SignalFailures,
+        TransportFailures = run.TransportFailures,
+        LocalTimeouts = run.LocalTimeouts,
+        LastRoute = run.LastRoute,
+        LastAssignmentAt = run.LastAssignmentAt,
+        LastTargetChangeAt = run.LastTargetChangeAt,
         QueueCapacity = MAX_QUEUED_JOBS,
     }
 end

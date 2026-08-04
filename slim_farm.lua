@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.31"
+local VERSION = "1.4.1-dev.32"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -103,7 +103,19 @@ end
 
 validateRuntimeManifest()
 
-env.PSX_OG_RUNTIME_GENERATION = (tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0) + 1
+env.PSX_OG_REQUEST_INSPECTOR_BOOT = {
+    PreviousGeneration = tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0,
+    Generation = (tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0) + 1,
+    CleanupStartedAt = os.clock(),
+    CleanupCompletedAt = 0,
+    CleanupInvoked = false,
+    CleanupSucceeded = false,
+    DisconnectedConnections = 0,
+    CancelledWorkers = 0,
+    StoppedLegacyStates = 0,
+    StaleUIRemoved = 0,
+}
+env.PSX_OG_RUNTIME_GENERATION = env.PSX_OG_REQUEST_INSPECTOR_BOOT.Generation
 env.PSX_OG_RunToken = nil
 env.PSX_OG_SLIM_TOKEN = nil
 env.PSX_OG_Running = false
@@ -117,6 +129,7 @@ _G.AutoBoosts = false
 do
 local function stopLegacyState(state)
     if type(state) ~= "table" then return end
+    local bootAudit = env.PSX_OG_REQUEST_INSPECTOR_BOOT
     state.active = false
     state.Running = false
     state.Enabled = false
@@ -125,19 +138,30 @@ local function stopLegacyState(state)
 
     for _, methodName in ipairs({ "Stop", "Cleanup", "Destroy" }) do
         local method = state[methodName]
-        if type(method) == "function" then pcall(method, state) end
+        if type(method) == "function" then
+            local stopped = pcall(method, state)
+            if stopped and type(bootAudit) == "table" then
+                bootAudit.StoppedLegacyStates = (tonumber(bootAudit.StoppedLegacyStates) or 0) + 1
+            end
+        end
     end
     for _, fieldName in ipairs({ "Connection", "RenderConnection", "HeartbeatConnection" }) do
         local connection = state[fieldName]
         if connection and type(connection.Disconnect) == "function" then
-            pcall(function() connection:Disconnect() end)
+            local disconnected = pcall(function() connection:Disconnect() end)
+            if disconnected and type(bootAudit) == "table" then
+                bootAudit.DisconnectedConnections = (tonumber(bootAudit.DisconnectedConnections) or 0) + 1
+            end
         end
         state[fieldName] = nil
     end
     if type(state.Connections) == "table" then
         for _, connection in pairs(state.Connections) do
             if connection and type(connection.Disconnect) == "function" then
-                pcall(function() connection:Disconnect() end)
+                local disconnected = pcall(function() connection:Disconnect() end)
+                if disconnected and type(bootAudit) == "table" then
+                    bootAudit.DisconnectedConnections = (tonumber(bootAudit.DisconnectedConnections) or 0) + 1
+                end
             end
         end
         table.clear(state.Connections)
@@ -146,7 +170,10 @@ local function stopLegacyState(state)
         for _, fieldName in ipairs({ "Thread", "WorkerThread", "Task" }) do
             local thread = state[fieldName]
             if type(thread) == "thread" and thread ~= coroutine.running() then
-                pcall(task.cancel, thread)
+                local cancelled = pcall(task.cancel, thread)
+                if cancelled and type(bootAudit) == "table" then
+                    bootAudit.CancelledWorkers = (tonumber(bootAudit.CancelledWorkers) or 0) + 1
+                end
             end
             state[fieldName] = nil
         end
@@ -154,8 +181,14 @@ local function stopLegacyState(state)
 end
 
 if type(env.PSX_OG_SLIM_CLEANUP) == "function" then
-    pcall(env.PSX_OG_SLIM_CLEANUP)
+    env.PSX_OG_REQUEST_INSPECTOR_BOOT.CleanupInvoked = true
+    env.PSX_OG_REQUEST_INSPECTOR_BOOT.CleanupSucceeded = pcall(env.PSX_OG_SLIM_CLEANUP)
     env.PSX_OG_SLIM_CLEANUP = nil
+end
+if type(env.PSX_OG_REQUEST_INSPECTOR) == "table"
+    and type(env.PSX_OG_REQUEST_INSPECTOR.Destroy) == "function" then
+    pcall(env.PSX_OG_REQUEST_INSPECTOR.Destroy, env.PSX_OG_REQUEST_INSPECTOR, "superseded before startup")
+    env.PSX_OG_REQUEST_INSPECTOR = nil
 end
 if type(env.PSX_OG_MENU_TEST_CLEANUP) == "function" then
     pcall(env.PSX_OG_MENU_TEST_CLEANUP)
@@ -202,7 +235,11 @@ if type(env.PSX_OG_UI_CLEANUP) == "function" then
 end
 if type(env.PSX_OG_RunConnections) == "table" then
     for _, connection in ipairs(env.PSX_OG_RunConnections) do
-        pcall(function() connection:Disconnect() end)
+        local disconnected = pcall(function() connection:Disconnect() end)
+        if disconnected then
+            env.PSX_OG_REQUEST_INSPECTOR_BOOT.DisconnectedConnections =
+                (tonumber(env.PSX_OG_REQUEST_INSPECTOR_BOOT.DisconnectedConnections) or 0) + 1
+        end
     end
     env.PSX_OG_RunConnections = {}
 end
@@ -220,10 +257,22 @@ pcall(function()
     for _, root in ipairs(roots) do
         for _, guiName in ipairs({ "PSX_OG_NativeUI", "PSX_OG_QuickHUD" }) do
             local stale = root:FindFirstChild(guiName)
-            if stale then pcall(function() stale:Destroy() end) end
+            if stale then
+                local removed = pcall(function() stale:Destroy() end)
+                if removed then
+                    env.PSX_OG_REQUEST_INSPECTOR_BOOT.StaleUIRemoved =
+                        (tonumber(env.PSX_OG_REQUEST_INSPECTOR_BOOT.StaleUIRemoved) or 0) + 1
+                end
+            end
         end
     end
 end)
+env.PSX_OG_REQUEST_INSPECTOR_BOOT.CleanupCompletedAt = os.clock()
+env.PSX_OG_REQUEST_INSPECTOR_BOOT.CleanupDuration = math.max(
+    env.PSX_OG_REQUEST_INSPECTOR_BOOT.CleanupCompletedAt
+        - env.PSX_OG_REQUEST_INSPECTOR_BOOT.CleanupStartedAt,
+    0
+)
 end
 
 local Players = game:GetService("Players")
@@ -231,9 +280,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local VirtualUser = game:GetService("VirtualUser")
 local player = Players.LocalPlayer
-local camera = workspace.CurrentCamera
 
 local token = {}
+token.InitialCamera = workspace.CurrentCamera
 local connections = {}
 local zoneCatalogDirty = true
 local eggCatalogDirty = true
@@ -546,10 +595,12 @@ local function track(connection)
 end
 
 local function disconnectAll()
+    local disconnected = 0
     for _, connection in ipairs(connections) do
-        pcall(function() connection:Disconnect() end)
+        if pcall(function() connection:Disconnect() end) then disconnected = disconnected + 1 end
     end
     table.clear(connections)
+    return disconnected
 end
 
 trace("01 loading Library")
@@ -620,6 +671,94 @@ end
 -- parallel during profile auto-load. Every optional module now uses this one lane.
 local moduleLoadState = { Busy = false, Owner = nil, NextAt = 0, Cache = {} }
 
+-- Optional passive diagnostics. Every helper is fail-open and only records
+-- primitive metadata; no automation path depends on the inspector.
+local requestDiagnostics = {
+    Controller = nil,
+    Sequence = 0,
+    UnresolvedRoutes = {},
+    UnresolvedRouteCount = 0,
+    GateState = {},
+    Egg = { Id = nil, LastState = nil, Successes = 0 },
+    Startup = { RequestTimes = {}, LoaderWaiters = 0 },
+    Loot = { At = 0, OrbIds = 0, OrbBatches = 0 },
+    Reload = { WorkerStarts = 0 },
+}
+
+function requestDiagnostics.Id(prefix)
+    requestDiagnostics.Sequence = requestDiagnostics.Sequence + 1
+    return tostring(prefix or "request") .. ":" .. tostring(requestDiagnostics.Sequence)
+end
+
+function requestDiagnostics.Transition(subsystem, requestId, stateName, detail)
+    local inspector = requestDiagnostics.Controller
+    if type(inspector) ~= "table" or type(inspector.Transition) ~= "function" then return false end
+    local ok, accepted = pcall(inspector.Transition, inspector, subsystem, requestId, stateName, detail)
+    return ok and accepted == true
+end
+
+function requestDiagnostics.Complete(subsystem, requestId, outcome, detail)
+    local inspector = requestDiagnostics.Controller
+    if type(inspector) ~= "table" or type(inspector.Complete) ~= "function" then return false end
+    local ok, accepted = pcall(inspector.Complete, inspector, subsystem, requestId, outcome, detail)
+    return ok and accepted == true
+end
+
+function requestDiagnostics.Gauge(subsystem, key, value)
+    local inspector = requestDiagnostics.Controller
+    if type(inspector) ~= "table" or type(inspector.SetGauge) ~= "function" then return false end
+    local ok, accepted = pcall(inspector.SetGauge, inspector, subsystem, key, value)
+    return ok and accepted == true
+end
+
+function requestDiagnostics.Subsystem(commandName)
+    local name = string.lower(tostring(commandName or ""))
+    if string.find(name, "golden", 1, true)
+        or string.find(name, "rainbow", 1, true)
+        or string.find(name, "dark matter", 1, true)
+        or string.find(name, "machine", 1, true)
+        or string.find(name, "convert", 1, true) then
+        return "Machines"
+    end
+    if string.find(name, "enchant", 1, true) then return "Enchant" end
+    if string.find(name, "boost", 1, true) then return "Boosts" end
+    if string.find(name, "reward", 1, true)
+        or string.find(name, "rank", 1, true)
+        or string.find(name, "vip", 1, true) then
+        return "Rewards"
+    end
+    if string.find(name, "coin", 1, true) or string.find(name, "pet target", 1, true) then
+        return "Farm"
+    end
+    if string.find(name, "egg", 1, true) or string.find(name, "delete", 1, true) then
+        return "Egg"
+    end
+    if string.find(name, "orb", 1, true) or string.find(name, "lootbag", 1, true) then
+        return "Loot"
+    end
+    return "Background"
+end
+
+function requestDiagnostics.Route(kind, commandName, resolved, problem)
+    local key = tostring(kind) .. ":" .. tostring(commandName)
+    local wasUnresolved = requestDiagnostics.UnresolvedRoutes[key] == true
+    if resolved then
+        requestDiagnostics.Gauge("Routes", "lastResolved", key)
+        if wasUnresolved then
+            requestDiagnostics.UnresolvedRoutes[key] = nil
+            requestDiagnostics.UnresolvedRouteCount = math.max(requestDiagnostics.UnresolvedRouteCount - 1, 0)
+            requestDiagnostics.Complete("Routes", key, "COMPLETED", "named route resolved")
+        end
+    elseif not wasUnresolved then
+        requestDiagnostics.Gauge("Routes", "lastUnresolved",
+            key .. " | " .. tostring(problem or "named route unresolved"))
+        requestDiagnostics.UnresolvedRoutes[key] = true
+        requestDiagnostics.UnresolvedRouteCount = requestDiagnostics.UnresolvedRouteCount + 1
+        requestDiagnostics.Transition("Routes", key, "DROPPED_WITH_REASON", tostring(problem or "named route unresolved"))
+    end
+    requestDiagnostics.Gauge("Routes", "unresolved", requestDiagnostics.UnresolvedRouteCount)
+end
+
 local function runtimeModuleURL(entry)
     local repository = RUNTIME_MANIFEST.repository
     return tostring(repository.rawBase) .. "/" .. tostring(repository.owner)
@@ -635,35 +774,96 @@ local function loadRemoteController(moduleKey, label, statusCallback)
         return nil, "module " .. tostring(moduleKey) .. " is incompatible with suite " .. VERSION
     end
     label = label or entry.label or moduleKey
+    local timing = { StartedAt = os.clock(), DownloadAt = 0, VerifyAt = 0, CompileAt = 0 }
+    local requestTimes = requestDiagnostics.Startup.RequestTimes
+    local now = timing.StartedAt
+    local writeIndex = 1
+    for readIndex = 1, #requestTimes do
+        local value = tonumber(requestTimes[readIndex]) or 0
+        if now - value <= 5 then
+            requestTimes[writeIndex] = value
+            writeIndex = writeIndex + 1
+        end
+    end
+    for index = #requestTimes, writeIndex, -1 do requestTimes[index] = nil end
+    if #requestTimes < 32 then requestTimes[#requestTimes + 1] = now end
+    requestDiagnostics.Gauge("Startup", "moduleRequests5s", #requestTimes)
+    local diagnosticId = requestDiagnostics.Id("module:" .. tostring(moduleKey))
+    requestDiagnostics.Gauge("Startup", "lastModule", tostring(moduleKey))
+    requestDiagnostics.Gauge("Startup", "lastModuleState", "waiting")
+    requestDiagnostics.Gauge("Startup", "module." .. tostring(moduleKey), "waiting")
+    requestDiagnostics.Transition("Startup", diagnosticId, "WAITING_READY", {
+        module = tostring(moduleKey), requestType = "local module load",
+    })
     local cacheKey = tostring(moduleKey) .. "@" .. tostring(entry.commit) .. ":" .. tostring(entry.djb2)
     local cached = moduleLoadState.Cache[cacheKey]
-    if type(cached) == "function" then return cached, nil end
+    if type(cached) == "function" then
+        requestDiagnostics.Gauge("Startup", "lastModuleState", "cache hit")
+        requestDiagnostics.Gauge("Startup", "module." .. tostring(moduleKey), "cache hit")
+        requestDiagnostics.Complete("Startup", diagnosticId, "COMPLETED", "module cache hit")
+        return cached, nil
+    end
 
     local deadline = os.clock() + 45
+    local waitedForLoader = moduleLoadState.Busy or os.clock() < moduleLoadState.NextAt
+    if waitedForLoader then
+        requestDiagnostics.Startup.LoaderWaiters = requestDiagnostics.Startup.LoaderWaiters + 1
+        requestDiagnostics.Gauge("Startup", "moduleLoaderWaiters",
+            requestDiagnostics.Startup.LoaderWaiters)
+        requestDiagnostics.Transition("Startup", diagnosticId, "WAITING_GATE",
+            "serial loader owner=" .. tostring(moduleLoadState.Owner or "cooldown"))
+    end
     while running() and (moduleLoadState.Busy or os.clock() < moduleLoadState.NextAt)
         and os.clock() < deadline do
         task.wait(0.05)
     end
-    if not running() then return nil, "script stopped before module load" end
+    if waitedForLoader then
+        requestDiagnostics.Startup.LoaderWaiters = math.max(
+            requestDiagnostics.Startup.LoaderWaiters - 1, 0)
+        requestDiagnostics.Gauge("Startup", "moduleLoaderWaiters",
+            requestDiagnostics.Startup.LoaderWaiters)
+    end
+    if not running() then
+        requestDiagnostics.Complete("Startup", diagnosticId, "CANCELLED_BY_RELOAD", "script stopped before module load")
+        return nil, "script stopped before module load"
+    end
     if moduleLoadState.Busy then
+        requestDiagnostics.Complete("Startup", diagnosticId, "TIMED_OUT_LOCALLY_REMOTE_UNKNOWN",
+            "serial loader timed out behind " .. tostring(moduleLoadState.Owner))
         return nil, "module loader timed out behind " .. tostring(moduleLoadState.Owner)
     end
     cached = moduleLoadState.Cache[cacheKey]
-    if type(cached) == "function" then return cached, nil end
+    if type(cached) == "function" then
+        requestDiagnostics.Gauge("Startup", "lastModuleState", "cache hit after wait")
+        requestDiagnostics.Gauge("Startup", "module." .. tostring(moduleKey), "cache hit")
+        requestDiagnostics.Complete("Startup", diagnosticId, "COMPLETED", "module cache hit after wait")
+        return cached, nil
+    end
 
     moduleLoadState.Busy = true
     moduleLoadState.Owner = tostring(label or "optional module")
+    requestDiagnostics.Gauge("Startup", "lastModuleState", "downloading")
+    requestDiagnostics.Gauge("Startup", "module." .. tostring(moduleKey), "downloading")
+    requestDiagnostics.Transition("Startup", diagnosticId, "WAITING_READY", {
+        module = tostring(moduleKey), requestType = "HttpGet + local verify",
+    })
     if type(statusCallback) == "function" then
         pcall(statusCallback, "Loading " .. moduleLoadState.Owner .. " in the serial module lane...")
     end
 
     local loaded, controllerOrProblem = pcall(function()
+        timing.DownloadAt = os.clock()
         local source = game:HttpGet(runtimeModuleURL(entry))
+        requestDiagnostics.Gauge("Startup", "lastDownloadMs", (os.clock() - timing.DownloadAt) * 1000)
+        timing.VerifyAt = os.clock()
         local verified, verifyProblem = verifyRuntimeSource(entry, source)
         if not verified then error("identity rejected: " .. tostring(verifyProblem), 0) end
+        requestDiagnostics.Gauge("Startup", "lastVerifyMs", (os.clock() - timing.VerifyAt) * 1000)
+        timing.CompileAt = os.clock()
         local chunk, compileProblem = loadstring(source)
         source = nil
         if not chunk then error("compile failed: " .. tostring(compileProblem), 0) end
+        requestDiagnostics.Gauge("Startup", "lastCompileMs", (os.clock() - timing.CompileAt) * 1000)
         local controller = chunk()
         chunk = nil
         if type(controller) ~= "function" then
@@ -683,17 +883,55 @@ local function loadRemoteController(moduleKey, label, statusCallback)
     moduleLoadState.Busy = false
     moduleLoadState.Owner = nil
     moduleLoadState.NextAt = os.clock() + 0.25
+    local moduleLoadMs = (os.clock() - timing.StartedAt) * 1000
+    requestDiagnostics.Gauge("Startup", "lastModuleLoadMs", moduleLoadMs)
+    requestDiagnostics.Gauge("Startup", "moduleMs." .. tostring(moduleKey), moduleLoadMs)
     if not loaded then
+        requestDiagnostics.Gauge("Startup", "lastModuleState", "failed")
+        requestDiagnostics.Gauge("Startup", "module." .. tostring(moduleKey), "failed")
+        requestDiagnostics.Complete("Startup", diagnosticId, "TRANSPORT_FAILED", tostring(controllerOrProblem))
         trace("module loader", tostring(label) .. " failed: " .. tostring(controllerOrProblem))
         return nil, tostring(controllerOrProblem)
     end
     moduleLoadState.Cache[cacheKey] = controllerOrProblem
+    requestDiagnostics.Gauge("Startup", "lastModuleState", "ready")
+    requestDiagnostics.Gauge("Startup", "module." .. tostring(moduleKey), "ready")
+    requestDiagnostics.Complete("Startup", diagnosticId, "COMPLETED", "verified module ready")
     trace("module loader", tostring(label) .. " ready | version=" .. tostring(entry.version)
         .. " | commit=" .. tostring(entry.commit)
         .. " | sha256=" .. tostring(entry.sha256)
         .. " | djb2=" .. tostring(entry.djb2))
     return controllerOrProblem, nil
 end
+
+function requestDiagnostics.Start()
+    local controller, problem = loadRemoteController(
+        "requestInspector",
+        "passive request-state inspector"
+    )
+    if not controller then
+        trace("request inspector", "unavailable: " .. tostring(problem))
+        return false
+    end
+    local called, inspectorOrProblem = pcall(controller, "start", {
+        Env = env,
+        Player = player,
+        Version = VERSION,
+        Commit = RUNTIME_MANIFEST.build and RUNTIME_MANIFEST.build.sourceCommit or "unknown",
+        Generation = env.PSX_OG_RUNTIME_GENERATION,
+        Trace = trace,
+    })
+    if not called or type(inspectorOrProblem) ~= "table" then
+        trace("request inspector", "start failed: " .. tostring(inspectorOrProblem))
+        return false
+    end
+    requestDiagnostics.Controller = inspectorOrProblem
+    requestDiagnostics.Gauge("Routes", "unresolved", requestDiagnostics.UnresolvedRouteCount)
+    trace("request inspector", "passive diagnostics ready")
+    return true
+end
+
+requestDiagnostics.Start()
 
 local function normalize(value)
     value = string.lower(tostring(value or ""))
@@ -1895,7 +2133,17 @@ refreshCoinSnapshot = function()
     coinSync.SnapshotBusy = true
     local generation = coinGeneration
     local serialAtStart = coinMutationSerial
+    local diagnosticId = requestDiagnostics.Id("invoke:Get Coins")
+    requestDiagnostics.Transition("Farm", diagnosticId, "INVOKE_IN_FLIGHT", "Library.Network.Invoke Get Coins")
     local ok, response = pcall(network.Invoke, "Get Coins")
+    if not ok then
+        requestDiagnostics.Complete("Farm", diagnosticId, "TRANSPORT_FAILED", tostring(response))
+    elseif type(response) == "table" then
+        requestDiagnostics.Complete("Farm", diagnosticId, "COMPLETED", "coin snapshot table returned")
+    else
+        requestDiagnostics.Complete("Farm", diagnosticId, "SERVER_REJECTED",
+            "Get Coins returned " .. tostring(type(response)))
+    end
     if generation ~= coinGeneration then
         coinSync.SnapshotBusy = false
         return
@@ -2253,6 +2501,7 @@ local function acquirePetState(coinId)
     state.Generation = farmGeneration
     state.RetryCount = 0
     state.StartedAt = os.clock()
+    state.InspectorSignalId = nil
     return state
 end
 
@@ -2264,6 +2513,7 @@ local function releasePetState(state, forceReusable)
     state.Generation = nil
     state.RetryCount = nil
     state.StartedAt = nil
+    state.InspectorSignalId = nil
     local pool = petFarm.StatePool
     -- A JOINING state can still be referenced by a yielding InvokeServer job.
     -- Do not recycle it unless the engine is synchronously returning control
@@ -2279,7 +2529,14 @@ releaseAssignmentsForCoin = function(rawId)
         table.clear(petFarm.FastPets)
         table.clear(petFarm.NextTargetByPet)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
-        for _, state in pairs(petStates) do releasePetState(state) end
+        for _, state in pairs(petStates) do
+            if state.InspectorSignalId then
+                requestDiagnostics.Complete("Farm", state.InspectorSignalId,
+                    config.PetFarm and "LOCAL_CANCELLED_REMOTE_UNKNOWN" or "CANCELLED_BY_DISABLE",
+                    "assignment reset before a Remove Coin acknowledgement")
+            end
+            releasePetState(state)
+        end
         table.clear(petStates)
         table.clear(rejectedUntil)
         return 0
@@ -2290,6 +2547,10 @@ releaseAssignmentsForCoin = function(rawId)
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId then
             petStates[petId] = nil
+            if state.InspectorSignalId then
+                requestDiagnostics.Complete("Farm", state.InspectorSignalId, "COMPLETED",
+                    "Remove Coin acknowledged coin=" .. coinId)
+            end
             releasePetState(state)
             petFarm.FastPets[petId] = true
             released = released + 1
@@ -2526,32 +2787,74 @@ end
 
 local function invokeCommand(commandName, ...)
     local arguments = table.pack(...)
+    local subsystem = requestDiagnostics.Subsystem(commandName)
+    local diagnosticId = requestDiagnostics.Id("invoke:" .. tostring(commandName))
+    requestDiagnostics.Transition(subsystem, diagnosticId, "WAITING_READY", {
+        command = commandName,
+        argc = arguments.n,
+    })
     local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
     if not remote then
+        requestDiagnostics.Route("invoke", commandName, false, resolveProblem)
+        requestDiagnostics.Complete(subsystem, diagnosticId, "DROPPED_WITH_REASON", resolveProblem)
         return false, false, resolveProblem, sourceName, sessionIndex
     end
+    requestDiagnostics.Route("invoke", commandName, true)
 
+    requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
+        command = commandName,
+        route = sourceName,
+        index = sessionIndex,
+    })
     local result = table.pack(pcall(function()
         return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
     end))
     if not result[1] then
         coinSync.RemoteCaches.Command[commandName] = nil
+        requestDiagnostics.Complete(subsystem, diagnosticId, "TRANSPORT_FAILED", tostring(result[2]))
         return false, false, tostring(result[2]), sourceName, sessionIndex
+    end
+    if result[2] == true then
+        requestDiagnostics.Complete(subsystem, diagnosticId, "SERVER_ACCEPTED", "server returned true")
+    elseif result[2] == false or result[2] == nil then
+        requestDiagnostics.Complete(subsystem, diagnosticId, "SERVER_REJECTED", "server returned false/nil")
+    else
+        requestDiagnostics.Complete(subsystem, diagnosticId, "COMPLETED",
+            "server returned " .. tostring(type(result[2])))
     end
     return true, result[2] == true, result[3], sourceName, sessionIndex, result[4]
 end
 
 local function fireCommand(commandName, ...)
     local arguments = table.pack(...)
+    local subsystem = requestDiagnostics.Subsystem(commandName)
+    local diagnosticId = requestDiagnostics.Id("fire:" .. tostring(commandName))
+    requestDiagnostics.Transition(subsystem, diagnosticId, "WAITING_READY", {
+        command = commandName,
+        argc = arguments.n,
+    })
     local remote, sourceName, sessionIndex, resolveProblem = getFireRemote(commandName)
-    if not remote then return false, resolveProblem, sourceName, sessionIndex end
+    if not remote then
+        requestDiagnostics.Route("fire", commandName, false, resolveProblem)
+        requestDiagnostics.Complete(subsystem, diagnosticId, "DROPPED_WITH_REASON", resolveProblem)
+        return false, resolveProblem, sourceName, sessionIndex
+    end
+    requestDiagnostics.Route("fire", commandName, true)
     local ok, problem = pcall(function()
         remote:FireServer(table.unpack(arguments, 1, arguments.n))
     end)
     if not ok then
         coinSync.RemoteCaches.Fire[commandName] = nil
+        requestDiagnostics.Complete(subsystem, diagnosticId, "TRANSPORT_FAILED", tostring(problem))
         return false, tostring(problem), sourceName, sessionIndex
     end
+    -- A RemoteEvent has no response. Keep this explicitly unacknowledged until
+    -- a subsystem observes its own existing game acknowledgement.
+    requestDiagnostics.Transition(subsystem, diagnosticId, "FIRE_LOCAL_SENT_UNACKED", {
+        command = commandName,
+        route = sourceName,
+        index = sessionIndex,
+    })
     return true, nil, sourceName, sessionIndex
 end
 
@@ -2566,6 +2869,7 @@ local supportContext = {
     Trace = trace,
     GetCommandRemote = getCommandRemote,
     GetFireRemote = getFireRemote,
+    Generation = env.PSX_OG_RUNTIME_GENERATION,
 }
 
 local function ensureSupportModule()
@@ -2589,21 +2893,49 @@ end
 
 local function acquireOperation(owner)
     local controller, problem = ensureSupportModule()
-    if not controller then return false, "coordinator unavailable: " .. tostring(problem) end
+    local gateId = "gate:" .. tostring(owner)
+    if not controller then
+        requestDiagnostics.Complete("Gate", gateId, "DROPPED_WITH_REASON",
+            "coordinator unavailable: " .. tostring(problem))
+        return false, "coordinator unavailable: " .. tostring(problem)
+    end
     local called, acquired, currentOwner = pcall(controller, "acquire", supportContext, owner)
-    if not called then return false, "coordinator error: " .. tostring(acquired) end
+    if not called then
+        requestDiagnostics.Complete("Gate", gateId, "TRANSPORT_FAILED", "local coordinator error: " .. tostring(acquired))
+        return false, "coordinator error: " .. tostring(acquired)
+    end
+    if acquired then
+        if requestDiagnostics.GateState[tostring(owner)] ~= "owned" then
+            requestDiagnostics.GateState[tostring(owner)] = "owned"
+            requestDiagnostics.Complete("Gate", gateId, "COMPLETED", "gate acquired")
+        end
+    else
+        local detail = "waiting behind " .. tostring(currentOwner)
+        if requestDiagnostics.GateState[tostring(owner)] ~= detail then
+            requestDiagnostics.GateState[tostring(owner)] = detail
+            requestDiagnostics.Transition("Gate", gateId, "WAITING_GATE", detail)
+        end
+    end
     return acquired, currentOwner
 end
 
 local function releaseOperation(owner)
     if not supportController then return false end
     local called, released = pcall(supportController, "release", supportContext, owner)
+    requestDiagnostics.GateState[tostring(owner)] = nil
+    if called and released == true then
+        requestDiagnostics.Complete("Gate", "gate:" .. tostring(owner), "COMPLETED", "gate released")
+    end
     return called and released == true
 end
 
 local function cancelOperation(owner)
     if not supportController then return false end
     local called, cancelled = pcall(supportController, "cancel", supportContext, owner)
+    requestDiagnostics.GateState[tostring(owner)] = nil
+    if called and cancelled == true then
+        requestDiagnostics.Complete("Gate", "gate:" .. tostring(owner), "CANCELLED_BY_DISABLE", "gate waiter cancelled")
+    end
     return called and cancelled == true
 end
 
@@ -2612,6 +2944,13 @@ local function operationGateStatus()
     local called, owner, waiting = pcall(supportController, "status", supportContext)
     if not called then return "coordinator error", 0 end
     return owner, waiting
+end
+
+function requestDiagnostics.GateDiagnostics()
+    if not supportController then return nil end
+    local called, diagnostics = pcall(supportController, "diagnostics", supportContext)
+    if not called or type(diagnostics) ~= "table" then return nil end
+    return diagnostics
 end
 
 local function getMachinePetCatalog(force)
@@ -2686,6 +3025,31 @@ function petFarm:EnsureEngine()
             driverStatus = "Lite lock accepted via " .. tostring(route)
             return true
         end,
+        OnSignalsSent = function(petId, state, record, targetSent, farmSent, targetRoute, farmRoute)
+            if type(state) ~= "table" then return end
+            if petStates[tostring(petId)] ~= state or state.Generation ~= farmGeneration then return end
+            local coinId = record and tostring(record.Id) or tostring(state.CoinId or "unknown")
+            local signalId = "farm-signals:" .. tostring(farmGeneration) .. ":"
+                .. tostring(petId) .. ":" .. coinId
+            state.InspectorSignalId = signalId
+            if targetSent and farmSent then
+                requestDiagnostics.Transition("Farm", signalId, "FIRE_LOCAL_SENT_UNACKED", {
+                    coin = coinId,
+                    pet = tostring(petId),
+                    targetRoute = targetRoute,
+                    farmRoute = farmRoute,
+                    fires = 2,
+                })
+            else
+                requestDiagnostics.Complete("Farm", signalId, "TRANSPORT_FAILED", {
+                    targetSent = targetSent == true,
+                    farmSent = farmSent == true,
+                    targetRoute = targetRoute,
+                    farmRoute = farmRoute,
+                })
+                state.InspectorSignalId = nil
+            end
+        end,
         OnRetry = function(petId, state, _, reason, nextAttempt)
             if petStates[tostring(petId)] ~= state then return end
             state.Phase = "joining"
@@ -2697,6 +3061,10 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state then return end
             local now = os.clock()
             petStates[petId] = nil
+            if state.InspectorSignalId then
+                requestDiagnostics.Complete("Farm", state.InspectorSignalId,
+                    "LOCAL_CANCELLED_REMOTE_UNKNOWN", tostring(reason))
+            end
             releasePetState(state, true)
             local rejected = string.find(tostring(reason), "Join Coin rejected", 1, true) ~= nil
             if rejected and record then
@@ -2727,6 +3095,8 @@ function petFarm:EnsureEngine()
             pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
         end,
         Trace = trace,
+        InspectorTransition = requestDiagnostics.Transition,
+        InspectorComplete = requestDiagnostics.Complete,
         DispatchWidth = 16,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
@@ -4331,7 +4701,7 @@ end
 
 track(player.Idled:Connect(function()
     if config.AntiAFK and running() then
-        local activeCamera = workspace.CurrentCamera or camera
+        local activeCamera = workspace.CurrentCamera or token.InitialCamera
         if not activeCamera then return end
         pcall(function() VirtualUser:Button2Down(Vector2.new(0, 0), activeCamera.CFrame) end)
         task.wait(0.25)
@@ -4340,6 +4710,10 @@ track(player.Idled:Connect(function()
 end))
 
 env.__PSX_START_INTERFACE_WORKERS = function()
+requestDiagnostics.Reload.WorkerStarts = requestDiagnostics.Reload.WorkerStarts + 1
+requestDiagnostics.Gauge("Reload", "workerStarts", requestDiagnostics.Reload.WorkerStarts)
+requestDiagnostics.Gauge("Reload", "duplicateWorkerStarts",
+    math.max(requestDiagnostics.Reload.WorkerStarts - 1, 0))
 local function uiStageYield(stage)
     if not running() then return end
     if stage then trace("UI stage", stage) end
@@ -4963,21 +5337,36 @@ function UI.SaveProfile()
 end
 
 function UI.LoadProfile(label)
+    local diagnosticId = requestDiagnostics.Id("config-load")
+    local startedAt = os.clock()
+    requestDiagnostics.Transition("Startup", diagnosticId, "WAITING_READY", {
+        requestType = "local config read", label = tostring(label or "manual"),
+    })
     if not UI.Profile then
         UI.SetProfileStatus("Load unavailable: " .. tostring(UI.ProfileProblem or "filesystem API missing"))
+        requestDiagnostics.Complete("Startup", diagnosticId, "DROPPED_WITH_REASON",
+            tostring(UI.ProfileProblem or "filesystem API missing"))
         return
     end
     local called, result, problem = pcall(function() return UI.Profile:Load() end)
     if not called then
         UI.SetProfileStatus("Load failed: " .. tostring(result))
+        requestDiagnostics.Complete("Startup", diagnosticId, "TRANSPORT_FAILED",
+            "local profile load error: " .. tostring(result))
         return
     end
     if result == false then
         UI.SetProfileStatus("Load failed: " .. tostring(problem))
+        requestDiagnostics.Complete("Startup", diagnosticId, "DROPPED_WITH_REASON", tostring(problem))
         return
     end
+    requestDiagnostics.Gauge("Startup", "configLoadMs", (os.clock() - startedAt) * 1000)
     UI.SetProfileStatus("Profile loaded. Synchronizing controls and target location...")
-    task.delay(0.3, function() UI.ReconcileProfile(label or "Manual load complete") end)
+    task.delay(0.3, function()
+        UI.ReconcileProfile(label or "Manual load complete")
+        requestDiagnostics.Gauge("Startup", "configAppliedAt", os.clock())
+        requestDiagnostics.Complete("Startup", diagnosticId, "COMPLETED", "profile reconciled")
+    end)
 end
 
 UI.ProfileSection:Button({
@@ -5107,7 +5496,8 @@ local function shutdown(reason)
     config.AutoUltraLucky = false
     config.AutoEgg = false
     config.AutoEnchant = false
-    disconnectAll()
+    local disconnectedAtShutdown = disconnectAll()
+    requestDiagnostics.Gauge("Reload", "disconnectedConnections", disconnectedAtShutdown)
     disconnectPetLifecycleSignals()
     restartFarmWatchers()
     reconcileDiamondWorker()
@@ -5122,6 +5512,16 @@ local function shutdown(reason)
         state.ArmedReported = nil
     end
     finishShutdown()
+    local stoppedWorkers = 0
+    if petFarm.Engine then stoppedWorkers = stoppedWorkers + 1 end
+    if autoEggController then stoppedWorkers = stoppedWorkers + 1 end
+    if enchantRuntime.Controller then stoppedWorkers = stoppedWorkers + 1 end
+    if boostController then stoppedWorkers = stoppedWorkers + 1 end
+    if lootCollector.Controller then stoppedWorkers = stoppedWorkers + 1 end
+    for _, entry in pairs(machineModules) do
+        if type(entry) == "table" and entry.Controller then stoppedWorkers = stoppedWorkers + 1 end
+    end
+    requestDiagnostics.Gauge("Reload", "cancelledWorkers", stoppedWorkers)
     if petFarm.Engine then
         pcall(petFarm.Engine, "stop")
         petFarm.Engine = nil
@@ -5175,11 +5575,33 @@ local function shutdown(reason)
     farmResetRunning = false
     local activeHUD = env.PSX_OG_QuickHUDRuntime
     if type(activeHUD) == "table" and activeHUD.Token == token then
+        requestDiagnostics.Gauge("Reload", "staleUIRemoved", 1)
         activeHUD:Destroy()
         env.PSX_OG_QuickHUDRuntime = nil
     end
     if env.PSX_OG_SLIM_CLEANUP == shutdown then env.PSX_OG_SLIM_CLEANUP = nil end
     if env.PSX_OG_UI_CLEANUP == shutdown then env.PSX_OG_UI_CLEANUP = nil end
+
+    if type(requestDiagnostics.Controller) == "table" then
+        requestDiagnostics.Transition("Reload", "shutdown:" .. tostring(env.PSX_OG_RUNTIME_GENERATION),
+            "CANCELLED_BY_RELOAD", tostring(reason or "reload"))
+        if type(requestDiagnostics.Controller.Snapshot) == "function" then
+            pcall(requestDiagnostics.Controller.Snapshot, requestDiagnostics.Controller, "shutdown")
+        end
+        if type(requestDiagnostics.Controller.Destroy) == "function" then
+            pcall(requestDiagnostics.Controller.Destroy, requestDiagnostics.Controller, tostring(reason or "reload"))
+        end
+    end
+    requestDiagnostics.Controller = nil
+    table.clear(requestDiagnostics.GateState)
+    table.clear(requestDiagnostics.UnresolvedRoutes)
+    table.clear(requestDiagnostics.Startup.RequestTimes)
+    requestDiagnostics.Startup.LoaderWaiters = 0
+    requestDiagnostics.Loot.At = 0
+    requestDiagnostics.Loot.OrbIds = 0
+    requestDiagnostics.Loot.OrbBatches = 0
+    requestDiagnostics.UnresolvedRouteCount = 0
+    requestDiagnostics.Reload.WorkerStarts = 0
 
     hideInterface()
     local destroyed, problem = pcall(function() Window:Destroy() end)
@@ -5295,10 +5717,241 @@ local function updateCurrencyMonitorStatus(publish)
     return rateText or lastRateText
 end
 
+function requestDiagnostics.UpdateTelemetry()
+    if type(requestDiagnostics.Controller) ~= "table" then return end
+    local now = os.clock()
+
+    local dispatchStats = petFarm:RefreshStats()
+    local active = tonumber(dispatchStats.Active) or 0
+    local queued = tonumber(dispatchStats.Queued) or 0
+    local lastCompletion = tonumber(dispatchStats.LastCompletionAt) or 0
+    local working, joining = petFarm:PhaseCounts()
+    local equipped = tonumber(petFarm.EquippedCount) or 0
+    local assigned = assignmentCount()
+    local cooldownCount = 0
+    for _, untilAt in pairs(rejectedUntil) do
+        if (tonumber(untilAt) or 0) > now then cooldownCount = cooldownCount + 1 end
+    end
+    requestDiagnostics.Gauge("Farm", "queued", queued)
+    requestDiagnostics.Gauge("Farm", "active", active)
+    requestDiagnostics.Gauge("Farm", "averageRtt", tonumber(dispatchStats.AverageRTT) or 0)
+    requestDiagnostics.Gauge("Farm", "activeInvokeCount", tonumber(dispatchStats.ActiveInvokeCount) or 0)
+    requestDiagnostics.Gauge("Farm", "oldestInvokeAge", tonumber(dispatchStats.OldestInvokeAge) or 0)
+    requestDiagnostics.Gauge("Farm", "retries", tonumber(dispatchStats.Retries) or 0)
+    requestDiagnostics.Gauge("Farm", "accepted", tonumber(dispatchStats.Accepted) or 0)
+    requestDiagnostics.Gauge("Farm", "rejects", tonumber(dispatchStats.Rejected) or 0)
+    requestDiagnostics.Gauge("Farm", "stale", tonumber(dispatchStats.Stale) or 0)
+    requestDiagnostics.Gauge("Farm", "targetCooldowns", cooldownCount)
+    requestDiagnostics.Gauge("Farm", "signalFailures", tonumber(dispatchStats.SignalFailures) or 0)
+    requestDiagnostics.Gauge("Farm", "transportFailures", tonumber(dispatchStats.TransportFailures) or 0)
+    requestDiagnostics.Gauge("Farm", "localTimeouts", tonumber(dispatchStats.LocalTimeouts) or 0)
+    requestDiagnostics.Gauge("Farm", "targetSignals", tonumber(dispatchStats.TargetSignals) or 0)
+    requestDiagnostics.Gauge("Farm", "farmSignals", tonumber(dispatchStats.FarmSignals) or 0)
+    requestDiagnostics.Gauge("Farm", "lastRoute", tostring(dispatchStats.LastRoute or "none"))
+    requestDiagnostics.Gauge("Farm", "lastAssignmentAge", (tonumber(dispatchStats.LastAssignmentAt) or 0) > 0
+        and math.max(now - tonumber(dispatchStats.LastAssignmentAt), 0) or 0)
+    requestDiagnostics.Gauge("Farm", "lastTargetChangeAge", (tonumber(dispatchStats.LastTargetChangeAt) or 0) > 0
+        and math.max(now - tonumber(dispatchStats.LastTargetChangeAt), 0) or 0)
+    requestDiagnostics.Gauge("Farm", "equipped", equipped)
+    requestDiagnostics.Gauge("Farm", "working", working)
+    requestDiagnostics.Gauge("Farm", "joining", joining)
+    requestDiagnostics.Gauge("Farm", "trueIdle", math.max(equipped - assigned, 0))
+    requestDiagnostics.Gauge("Farm", "targets", tonumber(petFarm.LastTargetCount) or 0)
+    requestDiagnostics.Gauge("Farm", "targetWindow", tonumber(petFarm.TargetWindow) or 0)
+    requestDiagnostics.Gauge("Farm", "noCompletionAge",
+        (active + queued > 0 and lastCompletion > 0) and math.max(now - lastCompletion, 0) or 0)
+
+    local gate = requestDiagnostics.GateDiagnostics()
+    if gate then
+        requestDiagnostics.Gauge("Gate", "owner", tostring(gate.Owner or "idle"))
+        requestDiagnostics.Gauge("Gate", "ownerAge", tonumber(gate.OwnerAge) or 0)
+        requestDiagnostics.Gauge("Gate", "waiters", tonumber(gate.Waiters) or 0)
+        requestDiagnostics.Gauge("Gate", "oldestWaiterAge", tonumber(gate.OldestWaiterAge) or 0)
+        requestDiagnostics.Gauge("Gate", "waiterAges", tostring(gate.WaiterAges or ""))
+        requestDiagnostics.Gauge("Gate", "ownerExpiry", tonumber(gate.OwnerExpirySeconds) or 45)
+        requestDiagnostics.Gauge("Gate", "waiterExpiry", tonumber(gate.WaiterExpirySeconds) or 2)
+        requestDiagnostics.Gauge("Gate", "ownerGeneration", tonumber(gate.OwnerGeneration) or 0)
+        requestDiagnostics.Gauge("Gate", "lastAcquireReason", tostring(gate.LastAcquireReason or "none"))
+        requestDiagnostics.Gauge("Gate", "lastAcquireAge", tonumber(gate.LastAcquireAge) or 0)
+        requestDiagnostics.Gauge("Gate", "lastReleaseReason", tostring(gate.LastReleaseReason or "none"))
+        requestDiagnostics.Gauge("Gate", "lastReleaseAge", tonumber(gate.LastReleaseAge) or 0)
+        requestDiagnostics.Gauge("Gate", "lastOwnerExpiry", tostring(gate.LastOwnerExpiry or "none"))
+        requestDiagnostics.Gauge("Gate", "lastOwnerExpiryAge", tonumber(gate.LastOwnerExpiryAge) or 0)
+        requestDiagnostics.Gauge("Gate", "lastWaiterExpiryCount", tonumber(gate.LastWaiterExpiryCount) or 0)
+        requestDiagnostics.Gauge("Gate", "lastWaiterExpiryAge", tonumber(gate.LastWaiterExpiryAge) or 0)
+    end
+
+    local eggState = env.PSX_OG_FastEggState
+    local pending = type(eggState) == "table" and eggState.Pending or nil
+    if type(pending) == "table" then
+        local pendingId = "egg-lifecycle:"
+            .. tostring(pending.Egg or "unknown") .. ":" .. tostring(pending.StartedAt or 0)
+        if requestDiagnostics.Egg.Id ~= pendingId then
+            if requestDiagnostics.Egg.Id then
+                requestDiagnostics.Complete("Egg", requestDiagnostics.Egg.Id,
+                    "LOCAL_CANCELLED_REMOTE_UNKNOWN", "pending hatch identity changed")
+            end
+            requestDiagnostics.Egg.Id = pendingId
+            requestDiagnostics.Egg.LastState = nil
+            requestDiagnostics.Egg.Successes = tonumber(eggState.Successes) or 0
+        end
+        local lifecycleState = "INVOKE_IN_FLIGHT"
+        if pending.ResponseDone and pending.Accepted and not pending.EventReceived then
+            lifecycleState = "WAITING_GAME_ACK"
+        elseif pending.EventReceived and pending.Headless and not pending.PostProcessDone then
+            lifecycleState = "POST_PROCESSING"
+        elseif pending.EventReceived and (not pending.Headless or pending.PostProcessDone) then
+            lifecycleState = "WAITING_GAME_ACK"
+        elseif pending.ResponseDone and not pending.Accepted then
+            lifecycleState = pending.TransportOk == false and "TRANSPORT_FAILED" or "SERVER_REJECTED"
+        end
+        if requestDiagnostics.Egg.LastState ~= lifecycleState then
+            requestDiagnostics.Egg.LastState = lifecycleState
+            requestDiagnostics.Transition("Egg", pendingId, lifecycleState, {
+                egg = tostring(pending.Egg or "unknown"),
+                count = pending.Triple and 3 or 1,
+                attempt = tonumber(pending.Attempt) or 1,
+                response = pending.ResponseDone == true,
+                event = pending.EventReceived == true,
+                post = pending.PostProcessDone == true,
+            })
+        end
+        local startedAt = tonumber(pending.StartedAt) or now
+        requestDiagnostics.Gauge("Egg", "waitingAckAge",
+            (pending.ResponseDone and pending.Accepted and not pending.EventReceived)
+                and math.max(now - startedAt, 0) or 0)
+        local postStartedAt = tonumber(pending.PostProcessStartedAt) or now
+        requestDiagnostics.Gauge("Egg", "postProcessAge",
+            (pending.PostProcessStarted and not pending.PostProcessDone)
+                and math.max(now - postStartedAt, 0) or 0)
+        requestDiagnostics.Gauge("Egg", "attempt", tonumber(pending.Attempt) or 1)
+        requestDiagnostics.Gauge("Egg", "requestAge", math.max(now - startedAt, 0))
+        requestDiagnostics.Gauge("Egg", "openEvents", tonumber(pending.OpenEventsSeen) or 0)
+        requestDiagnostics.Gauge("Egg", "inventoryDelta", tonumber(pending.InventoryDeltaSeen) or 0)
+        requestDiagnostics.Gauge("Egg", "responseWaits", tonumber(pending.ResponseWaits) or 0)
+        requestDiagnostics.Gauge("Egg", "postProcessAttempt", tonumber(pending.PostProcessAttempt) or 0)
+        requestDiagnostics.Gauge("Egg", "postProcessWaits", tonumber(pending.PostProcessWaits) or 0)
+        requestDiagnostics.Gauge("Egg", "reconcileAttempt", tonumber(pending.ReconcileAttempt) or 0)
+        requestDiagnostics.Gauge("Egg", "overlapEvents", tonumber(pending.OverlapEvents) or 0)
+        requestDiagnostics.Gauge("Egg", "manualOverlapSeen", (tonumber(pending.OverlapEvents) or 0) > 0)
+        local pendingDeletes = 0
+        if type(pending.PostProcessQueue) == "table" then
+            for index = 1, math.min(#pending.PostProcessQueue, 32) do
+                local batch = pending.PostProcessQueue[index]
+                pendingDeletes = pendingDeletes + (type(batch) == "table" and type(batch.Pets) == "table"
+                    and #batch.Pets or 0)
+            end
+        end
+        requestDiagnostics.Gauge("Egg", "autoDeletePending", pendingDeletes)
+        requestDiagnostics.Gauge("Egg", "selected", tostring(pending.Egg or "unknown"))
+        requestDiagnostics.Gauge("Egg", "count", pending.Triple and 3 or 1)
+    else
+        if requestDiagnostics.Egg.Id then
+            local successes = type(eggState) == "table" and tonumber(eggState.Successes) or 0
+            local completed = successes > (tonumber(requestDiagnostics.Egg.Successes) or 0)
+            requestDiagnostics.Complete("Egg", requestDiagnostics.Egg.Id,
+                completed and "COMPLETED" or "LOCAL_CANCELLED_REMOTE_UNKNOWN",
+                completed and "hatch lifecycle completed" or "pending hatch ended without a retained acknowledgement")
+        end
+        requestDiagnostics.Egg.Id = nil
+        requestDiagnostics.Egg.LastState = nil
+        requestDiagnostics.Gauge("Egg", "waitingAckAge", 0)
+        requestDiagnostics.Gauge("Egg", "postProcessAge", 0)
+        requestDiagnostics.Gauge("Egg", "requestAge", 0)
+    end
+    if type(eggState) == "table" then
+        requestDiagnostics.Gauge("Egg", "requests", tonumber(eggState.Requests) or 0)
+        requestDiagnostics.Gauge("Egg", "successes", tonumber(eggState.Successes) or 0)
+        requestDiagnostics.Gauge("Egg", "rejections", tonumber(eggState.Rejections) or 0)
+        requestDiagnostics.Gauge("Egg", "timeouts", tonumber(eggState.Timeouts) or 0)
+        requestDiagnostics.Gauge("Egg", "networkRetries", tonumber(eggState.NetworkRetries) or 0)
+        requestDiagnostics.Gauge("Egg", "networkFailures", tonumber(eggState.NetworkFailures) or 0)
+        requestDiagnostics.Gauge("Egg", "postProcessRetries", tonumber(eggState.PostProcessRetries) or 0)
+        requestDiagnostics.Gauge("Egg", "autoDeleted", tonumber(eggState.AutoDeleted) or 0)
+        requestDiagnostics.Gauge("Egg", "eventRoute", tostring(eggState.EventRoute or "unresolved"))
+        local windowStart = tonumber(eggState["NetworkWindow" .. "StartedAt"]) or 0
+        requestDiagnostics.Gauge("Egg", "recoveryWindowRemaining", windowStart > 0
+            and math.max(600 - (now - windowStart), 0) or 600)
+    end
+
+    local lootStats
+    if lootCollector.Controller then
+        local called, value = pcall(lootCollector.Controller, "stats")
+        if called and type(value) == "table" then lootStats = value end
+    end
+    if lootStats then
+        local orbProducer = tostring(lootStats.OrbsProducer or "unknown")
+        local bagProducer = tostring(lootStats.LootbagsProducer
+            or (lootStats.BagGate and "direct" or "fallback"))
+        local producerText = string.lower(orbProducer .. " " .. bagProducer)
+        requestDiagnostics.Gauge("Loot", "orbPending", tonumber(lootStats.PendingOrbs) or 0)
+        requestDiagnostics.Gauge("Loot", "bagsWaiting", tonumber(lootStats.WaitingBags) or 0)
+        requestDiagnostics.Gauge("Loot", "orbEvents", tonumber(lootStats.OrbEvents) or 0)
+        requestDiagnostics.Gauge("Loot", "orbIdsSent", tonumber(lootStats.OrbIdsSent) or 0)
+        requestDiagnostics.Gauge("Loot", "orbBatches", tonumber(lootStats.OrbBatches) or 0)
+        requestDiagnostics.Gauge("Loot", "orbMaxBatch", tonumber(lootStats.OrbMaxBatch) or 0)
+        requestDiagnostics.Gauge("Loot", "orbLocalSentUnacked", tonumber(lootStats.OrbLocalSentUnacked) or 0)
+        requestDiagnostics.Gauge("Loot", "orbErrors", tonumber(lootStats.OrbErrors) or 0)
+        requestDiagnostics.Gauge("Loot", "orbOverflow", tonumber(lootStats.OrbOverflow) or 0)
+        requestDiagnostics.Gauge("Loot", "orbDropped", tonumber(lootStats.OrbDropped) or 0)
+        requestDiagnostics.Gauge("Loot", "orbDeduplicated", tonumber(lootStats.OrbDeduplicated) or 0)
+        requestDiagnostics.Gauge("Loot", "orbRoute", tostring(lootStats.RouteOrbs or "unresolved"))
+        local sampleAt = tonumber(requestDiagnostics.Loot.At) or 0
+        local sampleIds = tonumber(requestDiagnostics.Loot.OrbIds) or 0
+        local sampleBatches = tonumber(requestDiagnostics.Loot.OrbBatches) or 0
+        local orbIds = tonumber(lootStats.OrbIdsSent) or 0
+        local orbBatches = tonumber(lootStats.OrbBatches) or 0
+        if sampleAt > 0 and now > sampleAt then
+            local elapsed = now - sampleAt
+            requestDiagnostics.Gauge("Loot", "orbIdsPerSecond", math.max(orbIds - sampleIds, 0) / elapsed)
+            requestDiagnostics.Gauge("Loot", "orbBatchesPerSecond", math.max(orbBatches - sampleBatches, 0) / elapsed)
+        end
+        requestDiagnostics.Gauge("Loot", "orbAverageBatch", orbBatches > 0 and orbIds / orbBatches or 0)
+        requestDiagnostics.Loot.At = now
+        requestDiagnostics.Loot.OrbIds = orbIds
+        requestDiagnostics.Loot.OrbBatches = orbBatches
+        requestDiagnostics.Gauge("Loot", "bagEvents", tonumber(lootStats.BagEvents) or 0)
+        requestDiagnostics.Gauge("Loot", "bagSent", tonumber(lootStats.BagSent) or 0)
+        requestDiagnostics.Gauge("Loot", "bagAcked", tonumber(lootStats.BagAcked) or 0)
+        requestDiagnostics.Gauge("Loot", "bagRetiredNoAck", tonumber(lootStats.BagRetiredNoAck) or 0)
+        requestDiagnostics.Gauge("Loot", "bagObjectAck", tonumber(lootStats.BagObjectAcknowledged) or 0)
+        requestDiagnostics.Gauge("Loot", "bagNetworkAck", tonumber(lootStats.BagNetworkAcknowledged) or 0)
+        requestDiagnostics.Gauge("Loot", "bagTransportDropped", tonumber(lootStats.BagTransportDropped) or 0)
+        requestDiagnostics.Gauge("Loot", "bagRetries", tonumber(lootStats.BagRetried) or 0)
+        requestDiagnostics.Gauge("Loot", "bagErrors", tonumber(lootStats.BagErrors) or 0)
+        requestDiagnostics.Gauge("Loot", "bagOverflow", tonumber(lootStats.BagOverflow) or 0)
+        requestDiagnostics.Gauge("Loot", "bagRoute", tostring(lootStats.RouteLootbags or "unresolved"))
+        requestDiagnostics.Gauge("Loot", "producerCold",
+            string.find(producerText, "unavailable", 1, true) ~= nil
+                or string.find(producerText, "cold", 1, true) ~= nil)
+        requestDiagnostics.Gauge("Loot", "producer", orbProducer .. " | " .. bagProducer)
+    else
+        requestDiagnostics.Gauge("Loot", "producerCold", lootCollector.WorkerActive and false or lootCollector:IsEnabled())
+    end
+
+    requestDiagnostics.Gauge("Background", "moduleLoaderBusy", moduleLoadState.Busy == true)
+    requestDiagnostics.Gauge("Background", "moduleLoaderOwner", tostring(moduleLoadState.Owner or "idle"))
+    local enabled = {}
+    if config.PetFarm then enabled[#enabled + 1] = "Farm" end
+    if config.AutoEgg then enabled[#enabled + 1] = "Egg" end
+    if config.AutoEnchant then enabled[#enabled + 1] = "Enchant" end
+    if config.AutoGoldenGalaxyFox then enabled[#enabled + 1] = "Gold" end
+    if config.AutoRainbowGalaxyFox then enabled[#enabled + 1] = "Rainbow" end
+    if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then enabled[#enabled + 1] = "DarkMatter" end
+    if config.AutoBoostBundle or config.AutoTripleCoins or config.AutoTripleDamage
+        or config.AutoSuperLucky or config.AutoUltraLucky then enabled[#enabled + 1] = "Boosts" end
+    if config.AutoVIPRewards or config.AutoRankRewards then enabled[#enabled + 1] = "Rewards" end
+    if config.Orbs or config.Lootbags then enabled[#enabled + 1] = "Loot" end
+    requestDiagnostics.Gauge("Startup", "enabledAutomation",
+        #enabled > 0 and table.concat(enabled, ",") or "none")
+    requestDiagnostics.Gauge("Routes", "unresolved", requestDiagnostics.UnresolvedRouteCount)
+end
+
 local function updateRuntimeTelemetry()
     if not running() then return end
     local function tick()
         if not running() then return end
+        requestDiagnostics.UpdateTelemetry()
         local interfaceVisible = interfaceIsVisible()
         local monitorVisible = interfaceVisible and UI.MonitorTab
             and UI.MonitorTab.Selected == true
@@ -5386,6 +6039,8 @@ end
 updateRuntimeTelemetry()
 
 pcall(function() UI.FarmTab:Select() end)
+requestDiagnostics.Gauge("Startup", "generation", tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0)
+requestDiagnostics.Complete("Startup", "suite:" .. VERSION, "COMPLETED", "main UI and telemetry ready")
 trace("07 startup complete")
 lootCollector.StartupArmed = true
 task.delay(lootCollector.Limits.StartupDelay, function()
