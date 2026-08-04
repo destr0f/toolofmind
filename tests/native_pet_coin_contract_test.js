@@ -9,7 +9,7 @@ function assert(condition, message) {
 }
 
 for (const marker of [
-    'local MODULE_VERSION = "3.4.1"',
+    'local MODULE_VERSION = "3.4.2"',
     'local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"',
     "local function ensureNativePetCoinTarget(record, rawId)",
     'local target = folder:FindFirstChild("Coin")',
@@ -24,6 +24,8 @@ for (const marker of [
     "restoreNativePetCoinTargets(record)",
     "record.StructureConnection = coins.ChildAdded:Connect",
     "record.StructureRemovalConnection = coins.DescendantRemoving:Connect",
+    'if child.Name == "Coins" then scheduleProducerRebind("Coins added") end',
+    'if child.Name == "Coins" then scheduleProducerRebind("Coins removed") end',
 ]) {
     assert(source.includes(marker), `missing native pet coin contract marker: ${marker}`);
 }

@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.4.1"
+local MODULE_VERSION = "3.4.2"
 local ORB_BATCH_SIZE = 2048
 local MAX_PENDING_ORBS = 8192
 local BAG_LANES = 4
@@ -1456,11 +1456,13 @@ bindRoots = function(resetAll, refreshOrbs, refreshBags)
                 things.ChildAdded:Connect(function(child)
                     if child.Name == "Orbs" then bindOrbFolder(child) end
                     if child.Name == "Lootbags" then bindLootbagFolder(child) end
+                    if child.Name == "Coins" then scheduleProducerRebind("Coins added") end
                 end)
             run.ThingsConnections[#run.ThingsConnections + 1] =
                 things.ChildRemoved:Connect(function(child)
                     if child == run.OrbFolder then bindOrbFolder(nil) end
                     if child == run.LootbagFolder then bindLootbagFolder(nil) end
+                    if child.Name == "Coins" then scheduleProducerRebind("Coins removed") end
                 end)
         end
     end

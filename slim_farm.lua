@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.33"
+local VERSION = "1.4.1-dev.34"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -2231,7 +2231,6 @@ local function connectCoinSignals()
     connect("Update Coin Health", function(id, health)
         local record = coinRecords[tostring(id)]
         if record then
-            local previous = tonumber(record.Health)
             local value = tonumber(health) or record.Health
             if (value or 0) <= 0 then
                 removeCoin(id, true)
@@ -2239,10 +2238,6 @@ local function connectCoinSignals()
                 record.Health = value
                 coinMutationSerial = coinMutationSerial + 1
                 coinSync.EventConfirmed = true
-                if previous and tonumber(value) and value < previous
-                    and type(coinSync.NoteCoinProgress) == "function" then
-                    coinSync.NoteCoinProgress(id, previous, value)
-                end
             end
         elseif (tonumber(health) or 0) > 0 then
             -- Absorb a missed creation event into the live registry. Repeating
@@ -2507,10 +2502,6 @@ local function acquirePetState(coinId)
     state.Generation = farmGeneration
     state.RetryCount = 0
     state.StartedAt = os.clock()
-    state.InspectorSignalId = nil
-    state.LivenessDeadline = nil
-    state.ProgressSeenAt = nil
-    state.RearmCount = 0
     return state
 end
 
@@ -2522,10 +2513,6 @@ local function releasePetState(state, forceReusable)
     state.Generation = nil
     state.RetryCount = nil
     state.StartedAt = nil
-    state.InspectorSignalId = nil
-    state.LivenessDeadline = nil
-    state.ProgressSeenAt = nil
-    state.RearmCount = nil
     local pool = petFarm.StatePool
     -- A JOINING state can still be referenced by a yielding InvokeServer job.
     -- Do not recycle it unless the engine is synchronously returning control
@@ -2542,11 +2529,6 @@ releaseAssignmentsForCoin = function(rawId)
         table.clear(petFarm.NextTargetByPet)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
         for _, state in pairs(petStates) do
-            if state.InspectorSignalId then
-                requestDiagnostics.Complete("Farm", state.InspectorSignalId,
-                    config.PetFarm and "LOCAL_CANCELLED_REMOTE_UNKNOWN" or "CANCELLED_BY_DISABLE",
-                    "assignment reset before a Remove Coin acknowledgement")
-            end
             releasePetState(state)
         end
         table.clear(petStates)
@@ -2559,10 +2541,6 @@ releaseAssignmentsForCoin = function(rawId)
     for petId, state in pairs(petStates) do
         if tostring(state.CoinId) == coinId then
             petStates[petId] = nil
-            if state.InspectorSignalId then
-                requestDiagnostics.Complete("Farm", state.InspectorSignalId, "COMPLETED",
-                    "Remove Coin acknowledged coin=" .. coinId)
-            end
             releasePetState(state)
             petFarm.FastPets[petId] = true
             released = released + 1
@@ -2573,35 +2551,6 @@ releaseAssignmentsForCoin = function(rawId)
         petFarm:QueueFastDispatch()
     end
     return released
-end
-
-coinSync.NoteCoinProgress = function(rawId, previousHealth, currentHealth)
-    local previous = tonumber(previousHealth)
-    local current = tonumber(currentHealth)
-    if rawId == nil or not previous or not current or current >= previous then return 0 end
-    local coinId = tostring(rawId)
-    local now, confirmed = os.clock(), 0
-    for petId, state in pairs(petStates) do
-        if tostring(state.CoinId) == coinId and state.Generation == farmGeneration then
-            state.Phase = "working"
-            state.ProgressSeenAt = now
-            state.LivenessDeadline = now + 6
-            state.RearmCount = 0
-            if state.InspectorSignalId then
-                requestDiagnostics.Complete("Farm", state.InspectorSignalId, "COMPLETED", {
-                    coin = coinId,
-                    pet = tostring(petId),
-                    previousHealth = previous,
-                    currentHealth = current,
-                    acknowledgement = "Update Coin Health",
-                })
-                state.InspectorSignalId = nil
-            end
-            confirmed = confirmed + 1
-        end
-    end
-    if confirmed > 0 and type(armFarmRecovery) == "function" then armFarmRecovery(6) end
-    return confirmed
 end
 
 local function functionUpvalueAt(callback, index)
@@ -3061,39 +3010,24 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state
                 or state.Generation ~= farmGeneration
                 or not recordAlive(record) then return false end
-            local now = os.clock()
-            state.Phase = "joining"
+            state.Phase = "working"
             state.RetryCount = math.max((tonumber(attempt) or 1) - 1, 0)
-            state.ProgressSeenAt = nil
-            state.LivenessDeadline = now + 0.9
-            state.RearmCount = 0
-            driverStatus = "Lite lock accepted; awaiting coin health progress"
-            if type(armFarmRecovery) == "function" then armFarmRecovery(0.9) end
+            driverStatus = "Lite lock accepted via " .. tostring(route)
             return true
         end,
         OnSignalsSent = function(petId, state, record, targetSent, farmSent, targetRoute, farmRoute)
             if type(state) ~= "table" then return end
             if petStates[tostring(petId)] ~= state or state.Generation ~= farmGeneration then return end
             local coinId = record and tostring(record.Id) or tostring(state.CoinId or "unknown")
-            local signalId = "farm-signals:" .. tostring(farmGeneration) .. ":"
-                .. tostring(petId) .. ":" .. coinId
-            state.InspectorSignalId = signalId
-            if targetSent and farmSent then
-                requestDiagnostics.Transition("Farm", signalId, "FIRE_LOCAL_SENT_UNACKED", {
-                    coin = coinId,
-                    pet = tostring(petId),
-                    targetRoute = targetRoute,
-                    farmRoute = farmRoute,
-                    fires = 2,
-                })
-            else
+            if not (targetSent and farmSent) then
+                local signalId = "farm-signal-failure:" .. tostring(farmGeneration) .. ":"
+                    .. tostring(petId) .. ":" .. coinId
                 requestDiagnostics.Complete("Farm", signalId, "TRANSPORT_FAILED", {
                     targetSent = targetSent == true,
                     farmSent = farmSent == true,
                     targetRoute = targetRoute,
                     farmRoute = farmRoute,
                 })
-                state.InspectorSignalId = nil
             end
         end,
         OnRetry = function(petId, state, _, reason, nextAttempt)
@@ -3107,10 +3041,6 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state then return end
             local now = os.clock()
             petStates[petId] = nil
-            if state.InspectorSignalId then
-                requestDiagnostics.Complete("Farm", state.InspectorSignalId,
-                    "LOCAL_CANCELLED_REMOTE_UNKNOWN", tostring(reason))
-            end
             releasePetState(state, true)
             local rejected = string.find(tostring(reason), "Join Coin rejected", 1, true) ~= nil
             if rejected and record then
@@ -4528,63 +4458,11 @@ armFarmRecovery = function(delaySeconds)
     if farmWatch.RecoveryArmed or not running() or not config.PetFarm then return end
     farmWatch.RecoveryArmed = true
     local token = farmWatch.RecoveryToken
-    task.delay(math.max(tonumber(delaySeconds) or 0.9, 0.25), function()
+    task.delay(math.max(tonumber(delaySeconds) or 1.05, 1), function()
         farmWatch.RecoveryArmed = false
         if token ~= farmWatch.RecoveryToken or not running() or not config.PetFarm then return end
-        local now = os.clock()
-        local nextDeadline, rerouted = nil, false
-        for petId, state in pairs(petStates) do
-            local deadline = tonumber(state.LivenessDeadline)
-            if state.Generation == farmGeneration and deadline then
-                if deadline <= now then
-                    local coinId = tostring(state.CoinId)
-                    local record = coinRecords[coinId]
-                    local rearmCount = tonumber(state.RearmCount) or 0
-                    if not recordAlive(record) or rearmCount >= 2 then
-                        petStates[petId] = nil
-                        rejectedUntil[coinId] = now + 0.75
-                        if state.InspectorSignalId then
-                            requestDiagnostics.Complete("Farm", state.InspectorSignalId,
-                                "TIMED_OUT_LOCALLY_REMOTE_UNKNOWN", {
-                                    coin = coinId,
-                                    pet = tostring(petId),
-                                    rearms = rearmCount,
-                                    reason = "no Update Coin Health progress",
-                                })
-                            state.InspectorSignalId = nil
-                        end
-                        releasePetState(state, true)
-                        petFarm.FastPets[tostring(petId)] = true
-                        idleRecoveryCount = idleRecoveryCount + 1
-                        lastRecovery = "progress lease expired for " .. string.sub(tostring(petId), 1, 8)
-                        driverStatus = "silent farm signal expired; fast reroute queued"
-                        rerouted = true
-                    else
-                        local called, sent, route = pcall(
-                            petFarm.Engine,
-                            "rearm",
-                            tostring(petId),
-                            coinId
-                        )
-                        state.RearmCount = rearmCount + 1
-                        state.LivenessDeadline = now + 1.25 + (state.RearmCount * 0.5)
-                        driverStatus = called and sent
-                            and ("farm signal rearmed via " .. tostring(route))
-                            or "farm signal rearm failed; bounded recovery remains"
-                    end
-                end
-                if petStates[petId] == state and state.LivenessDeadline then
-                    nextDeadline = math.min(nextDeadline or math.huge, state.LivenessDeadline)
-                end
-            end
-        end
-        if rerouted and type(petFarm.QueueFastDispatch) == "function" then
-            petFarm:QueueFastDispatch()
-        else
-            local expected = tonumber(petFarm.EquippedCount) or 0
-            if expected > 0 and assignmentCount() < expected then requestAllocatorPulse(true) end
-        end
-        if nextDeadline then armFarmRecovery(math.max(nextDeadline - os.clock(), 0.25)) end
+        local expected = tonumber(petFarm.EquippedCount) or 0
+        if expected > 0 and assignmentCount() < expected then requestAllocatorPulse(true) end
     end)
 end
 
