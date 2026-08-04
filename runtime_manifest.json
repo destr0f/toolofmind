@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Develop",
-    "version": "1.4.1-dev.38",
+    "version": "1.4.1-dev.39",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-dev.38",
+    "compatibleSuite": "1.4.1-dev.39",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -47,7 +47,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -63,7 +63,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -79,7 +79,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -95,7 +95,7 @@
       "version": "1.3.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -108,25 +108,25 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.4.3",
+      "version": "3.4.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "b886ade645adb92458526ec14ec98617e2e29541",
-      "bytes": 57308,
-      "sha256": "b815cec87031b6741f49286a90f896228e7f707d58c511df6ae4aa87d77d7df0",
-      "djb2": "407a8ac4"
+      "commit": "4764a7e46cb296397a205e9160f2bff98f1e4397",
+      "bytes": 58276,
+      "sha256": "1752f98d6c481e3838d7f29edde557c9de12a2d30d6dad5e5d752379c73a28ca",
+      "djb2": "1a344d4a"
     },
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
       "version": "1.6.1",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -142,7 +142,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -158,7 +158,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -174,7 +174,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -190,7 +190,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -205,7 +205,7 @@
       "label": "Auto boost",
       "version": "1.1.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -221,7 +221,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.38",
+      "compatibleSuite": "1.4.1-dev.39",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -322,32 +322,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "ce102c35de907d7b73365e2d9b422599c228b7c8",
+    "generatedFromCommit": "4764a7e46cb296397a205e9160f2bff98f1e4397",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6233,
-      "sha256": "c847da3a88e73d264e2e8d61f0f159bbee3eb7df4dca36ffdada345ef6da8c1a",
-      "djb2": "3c5680bb"
+      "sha256": "10ee1fe16ca7c8885e2358d71a7f8fcd4457cde7e19a9ef8c0adef8785a5270c",
+      "djb2": "7a0d6d69"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-dev.38",
+      "version": "1.4.1-dev.39",
       "bytes": 254931,
-      "sha256": "be86c4a333e19f27fc1b43b128f728ca01bee72811334985ee5ef71a59aaefa9",
-      "djb2": "5e17a65b"
+      "sha256": "246bf9523e2a454bfa800f10f06a7758801995a6849aeaf1385b665037942e0a",
+      "djb2": "b85a633c"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
         "bytes": 204623,
-        "sha256": "79bc1649cb72f72de1229f3dfd821c97e9610fc9f97896ebd01dcb0c74cc78ba",
-        "djb2": "3f5ab5a5"
+        "sha256": "35c8f67682748f12430dd768bd30987830e479141cf82da667d3c24f87f489c6",
+        "djb2": "ad4a3b94"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 204623,
-        "sha256": "79bc1649cb72f72de1229f3dfd821c97e9610fc9f97896ebd01dcb0c74cc78ba",
-        "djb2": "3f5ab5a5"
+        "sha256": "35c8f67682748f12430dd768bd30987830e479141cf82da667d3c24f87f489c6",
+        "djb2": "ad4a3b94"
       }
     }
   }
