@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.43"
+local VERSION = "1.4.1-dev.44"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -2297,6 +2297,9 @@ local function connectCoinSignals()
                 table.clear(coinSync.RemoteCaches.Command)
                 table.clear(coinSync.RemoteCaches.Event)
                 table.clear(coinSync.RemoteCaches.Fire)
+                if coinSync.NetworkTransport and coinSync.NetworkTransport.Controller then
+                    pcall(coinSync.NetworkTransport.Controller, "clear")
+                end
                 table.clear(boundsCache)
                 resetAreaCatalog()
                 coinIndex:DisconnectFolder()
@@ -2694,174 +2697,85 @@ local function remoteSessionIndex(remote)
     return table.find(ReplicatedStorage:GetChildren(), remote)
 end
 
-local commandRemoteSource = "Network.Invoke GetRemoteFunction upvalue #2"
+coinSync.NetworkTransport = {
+    Controller = nil,
+    LoadProblem = nil,
+    RetryAt = 0,
+    Context = {
+        Library = Library,
+        ReplicatedStorage = ReplicatedStorage,
+        Game = game,
+        FunctionUpvalueAt = functionUpvalueAt,
+        RemoteSessionIndex = remoteSessionIndex,
+    },
+}
+
+function coinSync.NetworkTransport.Context.IsRemote(remote, className)
+    return typeof(remote) == "Instance" and remote:IsA(className)
+        and remote:IsDescendantOf(ReplicatedStorage)
+end
+
+function coinSync.NetworkTransport:Ensure()
+    if self.Controller then return self.Controller end
+    if os.clock() < self.RetryAt then return nil, self.LoadProblem end
+    self.RetryAt = os.clock() + 5
+    local controller, problem = loadRemoteController("networkTransport", "Network4 transport adapter")
+    if type(controller) == "function" then
+        self.Controller = controller
+        self.LoadProblem = nil
+        return controller, nil
+    end
+    self.LoadProblem = tostring(problem or "Network4 transport adapter unavailable")
+    return nil, self.LoadProblem
+end
+
+function coinSync.NetworkTransport:Resolve(cache, action, commandName, className)
+    local cached = cache[commandName]
+    local cachedRemote = type(cached) == "table" and cached.Remote or nil
+    if type(cached) == "table" and cached.Command == commandName
+        and typeof(cachedRemote) == "Instance" and cachedRemote:IsA(className)
+        and cachedRemote:IsDescendantOf(ReplicatedStorage) then
+        return cached.Remote, cached.Source, cached.SessionIndex, nil
+    end
+    cache[commandName] = nil
+
+    local controller, loadProblem = self:Ensure()
+    if not controller then
+        return nil, "Network4 adapter", nil, loadProblem
+    end
+    local ok, remote, sourceName, sessionIndex, resolveProblem = pcall(
+        controller, action, self.Context, commandName)
+    if not ok then
+        return nil, "Network4 adapter", nil, tostring(remote)
+    end
+    if typeof(remote) ~= "Instance" or not remote:IsA(className)
+        or not remote:IsDescendantOf(ReplicatedStorage) then
+        return nil, sourceName or "Network4 adapter", sessionIndex,
+            tostring(resolveProblem or commandName .. " did not resolve to a live " .. className)
+    end
+
+    cache[commandName] = {
+        Command = commandName,
+        Remote = remote,
+        Source = sourceName,
+        SessionIndex = sessionIndex,
+    }
+    return remote, sourceName, sessionIndex, nil
+end
 
 local function getCommandRemote(commandName)
-    local cached = coinSync.RemoteCaches.Command[commandName]
-    local cachedRemote = type(cached) == "table" and cached.Remote or nil
-    if type(cached) == "table" and cached.Command == commandName
-        and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteFunction")
-        and cachedRemote:IsDescendantOf(ReplicatedStorage) then
-        return cachedRemote, cached.Source, cached.SessionIndex, nil
-    end
-    coinSync.RemoteCaches.Command[commandName] = nil
-
-    local network = networkReady()
-    if not network or type(network.Invoke) ~= "function" then
-        return nil, commandRemoteSource, nil, "Library.Network.Invoke is unavailable"
-    end
-
-    local accessor, reader = functionUpvalueAt(network.Invoke, 2)
-    if type(accessor) ~= "function" then
-        return nil, commandRemoteSource, nil,
-            "GetRemoteFunction accessor is unavailable (" .. tostring(reader) .. ")"
-    end
-
-    local ok, first, second, third = pcall(accessor, commandName)
-    if not ok then
-        return nil, commandRemoteSource, nil,
-            "GetRemoteFunction failed: " .. tostring(first)
-    end
-
-    local values = { first, second, third }
-    for index = 1, 3 do
-        local remote = values[index]
-        if typeof(remote) == "Instance" and remote:IsA("RemoteFunction")
-            and remote:IsDescendantOf(ReplicatedStorage) then
-            local sourceName = commandRemoteSource .. " (" .. tostring(reader) .. ")"
-            local sessionIndex = remoteSessionIndex(remote)
-            coinSync.RemoteCaches.Command[commandName] = {
-                Command = commandName,
-                Remote = remote,
-                Source = sourceName,
-                SessionIndex = sessionIndex,
-            }
-            return remote, sourceName, sessionIndex, nil
-        end
-    end
-
-    return nil, commandRemoteSource, nil,
-        tostring(commandName) .. " did not resolve to a live RemoteFunction"
+    return coinSync.NetworkTransport:Resolve(
+        coinSync.RemoteCaches.Command, "resolveFunction", commandName, "RemoteFunction")
 end
-
-local eventRemoteSource = "Network.Fired GetRemoteEvent upvalue"
 
 local function getEventRemote(commandName)
-    local cached = coinSync.RemoteCaches.Event[commandName]
-    local cachedRemote = type(cached) == "table" and cached.Remote or nil
-    if type(cached) == "table" and cached.Command == commandName
-        and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
-        and cachedRemote:IsDescendantOf(ReplicatedStorage) then
-        return cachedRemote, cached.Source, cached.SessionIndex, nil
-    end
-    coinSync.RemoteCaches.Event[commandName] = nil
-
-    local network = networkReady()
-    if not network or type(network.Fired) ~= "function" then
-        return nil, eventRemoteSource, nil, "Library.Network.Fired is unavailable"
-    end
-
-    local lastProblem = "GetRemoteEvent accessor was not exposed"
-    for index = 1, 8 do
-        local candidate, reader = functionUpvalueAt(network.Fired, index)
-        if typeof(candidate) == "Instance" and candidate:IsA("RemoteEvent")
-            and candidate:IsDescendantOf(ReplicatedStorage) then
-            local sourceName = "Network.Fired direct RemoteEvent upvalue #" .. tostring(index)
-                .. " (" .. tostring(reader) .. ")"
-            local sessionIndex = remoteSessionIndex(candidate)
-            coinSync.RemoteCaches.Event[commandName] = {
-                Remote = candidate,
-                Source = sourceName,
-                SessionIndex = sessionIndex,
-            }
-            return candidate, sourceName, sessionIndex, nil
-        end
-
-        if type(candidate) == "table" then
-            local mapped = rawget(candidate, commandName)
-            if typeof(mapped) == "Instance" and mapped:IsA("RemoteEvent")
-                and mapped:IsDescendantOf(ReplicatedStorage) then
-                local sourceName = "Network.Fired RemoteEvent map upvalue #" .. tostring(index)
-                    .. " (" .. tostring(reader) .. ")"
-                local sessionIndex = remoteSessionIndex(mapped)
-                coinSync.RemoteCaches.Event[commandName] = {
-                    Remote = mapped,
-                    Source = sourceName,
-                    SessionIndex = sessionIndex,
-                }
-                return mapped, sourceName, sessionIndex, nil
-            end
-        elseif type(candidate) == "function" then
-            local called, first, second, third = pcall(candidate, commandName)
-            if called then
-                local values = { first, second, third }
-                for resultIndex = 1, 3 do
-                    local remote = values[resultIndex]
-                    if typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
-                        and remote:IsDescendantOf(ReplicatedStorage) then
-                        local sourceName = "Network.Fired GetRemoteEvent upvalue #" .. tostring(index)
-                            .. " (" .. tostring(reader) .. ")"
-                        local sessionIndex = remoteSessionIndex(remote)
-                        coinSync.RemoteCaches.Event[commandName] = {
-                            Command = commandName,
-                            Remote = remote,
-                            Source = sourceName,
-                            SessionIndex = sessionIndex,
-                        }
-                        return remote, sourceName, sessionIndex, nil
-                    end
-                end
-            else
-                lastProblem = "upvalue #" .. tostring(index) .. " probe failed: " .. tostring(first)
-            end
-        end
-    end
-
-    return nil, eventRemoteSource, nil, lastProblem
+    return coinSync.NetworkTransport:Resolve(
+        coinSync.RemoteCaches.Event, "resolveEvent", commandName, "RemoteEvent")
 end
 
-local fireRemoteSource = "Network.Fire GetRemoteEvent upvalue #2"
-
 local function getFireRemote(commandName)
-    local cached = coinSync.RemoteCaches.Fire[commandName]
-    local cachedRemote = type(cached) == "table" and cached.Remote or nil
-    if type(cached) == "table" and cached.Command == commandName
-        and typeof(cachedRemote) == "Instance" and cachedRemote:IsA("RemoteEvent")
-        and cachedRemote:IsDescendantOf(ReplicatedStorage) then
-        return cachedRemote, cached.Source, cached.SessionIndex, nil
-    end
-    coinSync.RemoteCaches.Fire[commandName] = nil
-
-    local network = networkReady()
-    if not network or type(network.Fire) ~= "function" then
-        return nil, fireRemoteSource, nil, "Library.Network.Fire is unavailable"
-    end
-    local accessor, reader = functionUpvalueAt(network.Fire, 2)
-    if type(accessor) ~= "function" then
-        return nil, fireRemoteSource, nil,
-            "GetRemoteEvent accessor is unavailable (" .. tostring(reader) .. ")"
-    end
-
-    local ok, first, second, third = pcall(accessor, commandName)
-    if not ok then
-        return nil, fireRemoteSource, nil, "GetRemoteEvent failed: " .. tostring(first)
-    end
-    for _, remote in ipairs({ first, second, third }) do
-        if typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
-            and remote:IsDescendantOf(ReplicatedStorage) then
-            local sourceName = fireRemoteSource .. " (" .. tostring(reader) .. ")"
-            local sessionIndex = remoteSessionIndex(remote)
-            coinSync.RemoteCaches.Fire[commandName] = {
-                Command = commandName,
-                Remote = remote,
-                Source = sourceName,
-                SessionIndex = sessionIndex,
-            }
-            return remote, sourceName, sessionIndex, nil
-        end
-    end
-    return nil, fireRemoteSource, nil,
-        tostring(commandName) .. " did not resolve to a live RemoteEvent"
+    return coinSync.NetworkTransport:Resolve(
+        coinSync.RemoteCaches.Fire, "resolveEvent", commandName, "RemoteEvent")
 end
 
 local function invokeCommand(commandName, ...)
@@ -2873,23 +2787,40 @@ local function invokeCommand(commandName, ...)
         argc = arguments.n,
     })
     local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
-    if not remote then
-        requestDiagnostics.Route("invoke", commandName, false, resolveProblem)
-        requestDiagnostics.Complete(subsystem, diagnosticId, "DROPPED_WITH_REASON", resolveProblem)
-        return false, false, resolveProblem, sourceName, sessionIndex
+    local result
+    if remote then
+        requestDiagnostics.Route("invoke", commandName, true)
+        requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
+            command = commandName,
+            route = sourceName,
+            index = sessionIndex,
+        })
+        result = table.pack(pcall(function()
+            return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
+        end))
+        if not result[1] then coinSync.RemoteCaches.Command[commandName] = nil end
     end
-    requestDiagnostics.Route("invoke", commandName, true)
-
-    requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
-        command = commandName,
-        route = sourceName,
-        index = sessionIndex,
-    })
-    local result = table.pack(pcall(function()
-        return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
-    end))
+    if not remote or not result[1] then
+        local directProblem = remote and tostring(result[2]) or tostring(resolveProblem)
+        local network = networkReady()
+        if network and type(network.Invoke) == "function" then
+            sourceName = "Library.Network.Invoke named fallback"
+            sessionIndex = nil
+            requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
+                command = commandName,
+                route = sourceName,
+                fallback = directProblem,
+            })
+            result = table.pack(pcall(function()
+                return network.Invoke(commandName, table.unpack(arguments, 1, arguments.n))
+            end))
+            if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
+        else
+            result = table.pack(false, directProblem .. "; Library.Network.Invoke is unavailable")
+        end
+    end
     if not result[1] then
-        coinSync.RemoteCaches.Command[commandName] = nil
+        requestDiagnostics.Route("invoke", commandName, false, tostring(result[2]))
         requestDiagnostics.Complete(subsystem, diagnosticId, "TRANSPORT_FAILED", tostring(result[2]))
         return false, false, tostring(result[2]), sourceName, sessionIndex
     end
@@ -2913,17 +2844,30 @@ local function fireCommand(commandName, ...)
         argc = arguments.n,
     })
     local remote, sourceName, sessionIndex, resolveProblem = getFireRemote(commandName)
-    if not remote then
-        requestDiagnostics.Route("fire", commandName, false, resolveProblem)
-        requestDiagnostics.Complete(subsystem, diagnosticId, "DROPPED_WITH_REASON", resolveProblem)
-        return false, resolveProblem, sourceName, sessionIndex
+    local ok, problem
+    if remote then
+        requestDiagnostics.Route("fire", commandName, true)
+        ok, problem = pcall(function()
+            remote:FireServer(table.unpack(arguments, 1, arguments.n))
+        end)
+        if not ok then coinSync.RemoteCaches.Fire[commandName] = nil end
     end
-    requestDiagnostics.Route("fire", commandName, true)
-    local ok, problem = pcall(function()
-        remote:FireServer(table.unpack(arguments, 1, arguments.n))
-    end)
+    if not remote or not ok then
+        local directProblem = remote and tostring(problem) or tostring(resolveProblem)
+        local network = networkReady()
+        if network and type(network.Fire) == "function" then
+            sourceName = "Library.Network.Fire named fallback"
+            sessionIndex = nil
+            ok, problem = pcall(function()
+                network.Fire(commandName, table.unpack(arguments, 1, arguments.n))
+            end)
+            if ok then requestDiagnostics.Route("fire", commandName, true) end
+        else
+            ok, problem = false, directProblem .. "; Library.Network.Fire is unavailable"
+        end
+    end
     if not ok then
-        coinSync.RemoteCaches.Fire[commandName] = nil
+        requestDiagnostics.Route("fire", commandName, false, tostring(problem))
         requestDiagnostics.Complete(subsystem, diagnosticId, "TRANSPORT_FAILED", tostring(problem))
         return false, tostring(problem), sourceName, sessionIndex
     end
@@ -5920,6 +5864,10 @@ local function finishShutdown()
     table.clear(coinSync.RemoteCaches.Command)
     table.clear(coinSync.RemoteCaches.Event)
     table.clear(coinSync.RemoteCaches.Fire)
+    if coinSync.NetworkTransport and coinSync.NetworkTransport.Controller then
+        pcall(coinSync.NetworkTransport.Controller, "clear")
+        coinSync.NetworkTransport.Controller = nil
+    end
 end
 
 local function shutdown(reason)
