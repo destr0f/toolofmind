@@ -137,7 +137,7 @@ for (const marker of [
     assert(engine.includes(marker), `farm hot policy changed: ${marker}`);
 }
 for (const marker of [
-    "local ORB_BATCH_SIZE = 2048",
+    "local ORB_BATCH_SIZE = 512",
     "local MAX_PENDING_ORBS = 8192",
     "local BAG_LANES = 4",
     "local MAX_PENDING_BAGS = 4096",

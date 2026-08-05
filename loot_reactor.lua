@@ -4,12 +4,12 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.5.0"
-local ORB_BATCH_SIZE = 2048
+local MODULE_VERSION = "3.6.0"
+local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
-local ORB_FLUSH_INTERVAL = 0.08
+local ORB_FLUSH_INTERVAL = 0.12
 local CLIENT_STAGGER_SLOTS = 16
-local CLIENT_STAGGER_STEP = 0.002
+local CLIENT_STAGGER_STEP = 0.01
 local BAG_LANES = 4
 local MAX_PENDING_BAGS = 4096
 local BAG_FIRST_ATTEMPT_DELAY = 0.05
@@ -60,7 +60,9 @@ local run = {
     OrbToken = 0,
     BagToken = 0,
     BagWakeSerial = 0,
+    -- Scalar state: 0=unsent, positive=first send time, negative=retry send time.
     PendingOrbIds = {},
+    OrbTransportFailures = {},
     PendingOrbCount = 0,
     OrbBatch = table.create(ORB_BATCH_SIZE),
     OrbFlushArmed = false,
@@ -87,6 +89,8 @@ local run = {
     OrbDeduplicated = 0,
     OrbMaxBatch = 0,
     OrbLocalSentUnacked = 0,
+    OrbAckAvailable = false,
+    OrbAcked = 0,
     BagEvents = 0,
     BagSent = 0,
     BagAcked = 0,
@@ -272,6 +276,25 @@ local function clientStagger()
     return (math.abs(userId) % CLIENT_STAGGER_SLOTS) * CLIENT_STAGGER_STEP
 end
 
+local function currentRTT()
+    local context = run.Context
+    if not context or type(context.GetRTT) ~= "function" then return 0 end
+    local ok, value = pcall(context.GetRTT)
+    return ok and math.max(tonumber(value) or 0, 0) or 0
+end
+
+local function orbFlushInterval()
+    local rtt = currentRTT()
+    if rtt >= 1 then return 0.40 end
+    if rtt >= 0.50 then return 0.28 end
+    if rtt >= 0.25 then return 0.18 end
+    return ORB_FLUSH_INTERVAL
+end
+
+local function acknowledgementDelay()
+    return math.clamp(0.75 + currentRTT() * 2, 0.9, 4)
+end
+
 local function statusText()
     return string.format(
         "Orbs producer: %s (%s) | Coins producer: %s (%s)\n"
@@ -363,22 +386,39 @@ local function networkSignal(name)
 end
 
 local armOrbFlush
+local payloadOwnerClass
 
 local function flushOrbs()
     run.OrbFlushArmed = false
     if not orbsEnabled() or run.PendingOrbCount == 0 then return end
-    run.OrbLastFlushAt = os.clock()
+    local now = os.clock()
+    run.OrbLastFlushAt = now
     local profiled = profileBegin("PSX_OrbFlush")
     local ids = run.OrbBatch
     table.clear(ids)
-    for orbId in pairs(run.PendingOrbIds) do
-        ids[#ids + 1] = orbId
-        if #ids == ORB_BATCH_SIZE then break end
+    local ackDelay = acknowledgementDelay()
+    local nextDue = nil
+    for orbId, state in pairs(run.PendingOrbIds) do
+        state = tonumber(state) or 0
+        local due = state == 0 and now
+            or (math.abs(state) + ackDelay)
+        if state < 0 and due <= now then
+            run.PendingOrbIds[orbId] = nil
+            run.OrbTransportFailures[orbId] = nil
+            run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
+            run.OrbDropped = run.OrbDropped + 1
+        elseif due <= now then
+            ids[#ids + 1] = orbId
+            if #ids == ORB_BATCH_SIZE then break end
+        elseif not nextDue or due < nextDue then
+            nextDue = due
+        end
     end
     if #ids == 0 then
-        table.clear(run.PendingOrbIds)
-        run.PendingOrbCount = 0
         profileEnd(profiled)
+        if run.PendingOrbCount > 0 then
+            armOrbFlush(math.max((nextDue or (now + orbFlushInterval())) - now, orbFlushInterval()))
+        end
         return
     end
 
@@ -387,60 +427,55 @@ local function flushOrbs()
     if sent then
         for index = 1, #ids do
             local orbId = ids[index]
-            if run.PendingOrbIds[orbId] then
-                run.PendingOrbIds[orbId] = nil
-                run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
+            local state = run.PendingOrbIds[orbId]
+            if state ~= nil then
+                run.OrbTransportFailures[orbId] = nil
+                if run.OrbAckAvailable then
+                    run.PendingOrbIds[orbId] = (tonumber(state) or 0) == 0 and now or -now
+                    run.OrbLocalSentUnacked = run.OrbLocalSentUnacked + 1
+                else
+                    run.PendingOrbIds[orbId] = nil
+                    run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
+                end
             end
         end
         run.OrbBatches = run.OrbBatches + 1
         run.OrbIdsSent = run.OrbIdsSent + #ids
-        run.OrbLocalSentUnacked = run.OrbLocalSentUnacked + #ids
         run.OrbMaxBatch = math.max(run.OrbMaxBatch, #ids)
-        if run.PendingOrbCount > 0 then armOrbFlush() end
     else
         run.OrbErrors = run.OrbErrors + 1
-        local needsRetry = false
         for index = 1, #ids do
             local orbId = ids[index]
-            local attempts = run.PendingOrbIds[orbId]
-            if attempts ~= nil then
-                if attempts < 1 then
-                    run.PendingOrbIds[orbId] = 1
-                    needsRetry = true
-                else
+            if run.PendingOrbIds[orbId] ~= nil then
+                local failures = (tonumber(run.OrbTransportFailures[orbId]) or 0) + 1
+                if failures >= 2 then
                     run.PendingOrbIds[orbId] = nil
+                    run.OrbTransportFailures[orbId] = nil
                     run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
                     run.OrbDropped = run.OrbDropped + 1
+                else
+                    run.OrbTransportFailures[orbId] = failures
                 end
             end
-        end
-        if needsRetry and not run.OrbRetryArmed then
-            run.OrbRetryArmed = true
-            local generation, token = run.Generation, run.OrbToken
-            task.delay(0.08, function()
-                if generation ~= run.Generation or token ~= run.OrbToken then return end
-                run.OrbRetryArmed = false
-                armOrbFlush()
-            end)
-        elseif run.PendingOrbCount > 0 then
-            armOrbFlush()
         end
     end
     table.clear(ids)
     profileEnd(profiled)
+    if run.PendingOrbCount > 0 then armOrbFlush(orbFlushInterval()) end
     armStatus()
 end
 
-armOrbFlush = function()
+armOrbFlush = function(minimumDelay)
     if run.OrbFlushArmed or not orbsEnabled() or run.PendingOrbCount == 0 then return end
     run.OrbFlushArmed = true
     local generation = run.Generation
     local token = run.OrbToken
     local now = os.clock()
-    local earliest = (tonumber(run.OrbLastFlushAt) or 0) + ORB_FLUSH_INTERVAL
-    local delaySeconds = math.max(earliest - now, 0)
+    local interval = orbFlushInterval()
+    local earliest = (tonumber(run.OrbLastFlushAt) or 0) + interval
+    local delaySeconds = math.max(earliest - now, tonumber(minimumDelay) or 0)
     if run.OrbLastFlushAt == 0 then
-        delaySeconds = ORB_FLUSH_INTERVAL + clientStagger()
+        delaySeconds = interval + clientStagger()
     end
     task.delay(delaySeconds, function()
         if generation ~= run.Generation or token ~= run.OrbToken then return end
@@ -448,12 +483,17 @@ armOrbFlush = function()
     end)
 end
 
-local function queueOrb(itemOrId, fromEvent)
+local function queueOrb(itemOrId, fromEvent, payload)
     if not orbsEnabled() then return false end
     local isObject = typeof(itemOrId) == "Instance"
     local orbId = isObject and objectId(itemOrId)
         or (itemOrId ~= nil and tostring(itemOrId) or nil)
     if not orbId or orbId == "" then return false end
+    if payloadOwnerClass and payloadOwnerClass(payload) == "foreign" then
+        run.OrbDropped = run.OrbDropped + 1
+        armStatus()
+        return true
+    end
 
     if not run.PendingOrbIds[orbId] then
         if run.PendingOrbCount >= MAX_PENDING_ORBS then
@@ -476,7 +516,9 @@ local function removeQueuedOrb(id)
     id = id ~= nil and tostring(id) or nil
     if id and run.PendingOrbIds[id] then
         run.PendingOrbIds[id] = nil
+        run.OrbTransportFailures[id] = nil
         run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
+        run.OrbAcked = run.OrbAcked + 1
     end
 end
 
@@ -494,32 +536,38 @@ end
 
 local BAG_OWNER_KEYS = { "OwnerUserId", "UserId", "Owner", "Player", "User" }
 
-local function payloadOwnerAllowed(payload)
-    if type(payload) ~= "table" then return true end
+payloadOwnerClass = function(payload)
+    if type(payload) ~= "table" then return "unknown" end
     local localPlayer = Players.LocalPlayer
-    if not localPlayer then return true end
+    if not localPlayer then return "unknown" end
     for index = 1, #BAG_OWNER_KEYS do
         local key = BAG_OWNER_KEYS[index]
         local value = payload[key]
         if typeof(value) == "Instance" and value:IsA("Player") then
-            return value == localPlayer
+            return value == localPlayer and "local" or "foreign"
         end
         if type(value) == "number" and value > 0 then
-            return value == localPlayer.UserId
+            return value == localPlayer.UserId and "local" or "foreign"
         end
         if type(value) == "string" and value ~= "" then
             local numeric = tonumber(value)
-            if numeric and numeric > 0 then return numeric == localPlayer.UserId end
+            if numeric and numeric > 0 then
+                return numeric == localPlayer.UserId and "local" or "foreign"
+            end
             local lowered = string.lower(value)
             if lowered == string.lower(localPlayer.Name)
                 or lowered == string.lower(localPlayer.DisplayName) then
-                return true
+                return "local"
             end
             local ownerPlayer = Players:FindFirstChild(value)
-            if ownerPlayer then return ownerPlayer == localPlayer end
+            if ownerPlayer then return ownerPlayer == localPlayer and "local" or "foreign" end
         end
     end
-    return true
+    return "unknown"
+end
+
+local function payloadOwnerAllowed(payload)
+    return payloadOwnerClass(payload) ~= "foreign"
 end
 
 local processBagWake
@@ -538,6 +586,7 @@ local function releaseBagRecord(record)
     record.Id = nil
     record.Position = nil
     record.Object = nil
+    record.HadObject = nil
     record.Attempts = nil
     record.Due = nil
     record.State = nil
@@ -634,12 +683,12 @@ local function processDelayedBags(now)
                     local liveObject = record.Object
                     local objectStillPresent = typeof(liveObject) == "Instance"
                         and liveObject.Parent ~= nil
-                    if objectStillPresent
-                        and (tonumber(record.Attempts) or 0) < MAX_BAG_TRANSPORT_ATTEMPTS then
-                        -- A second send is evidence-driven: producer-gated bags
-                        -- have no local object and are never duplicated. Only a
-                        -- fallback bag that still exists after the bounded
-                        -- confirmation window receives one retry.
+                    if record.HadObject and not objectStillPresent then
+                        run.BagObjectAcknowledged = run.BagObjectAcknowledged + 1
+                        closeBag(record, true, "object absent")
+                    elseif (tonumber(record.Attempts) or 0) < MAX_BAG_TRANSPORT_ATTEMPTS then
+                        -- Producer-gated bags have no local object, so retain the
+                        -- scalar ID until Remove Lootbag or one bounded retry.
                         run.BagRetried = run.BagRetried + 1
                         record.State = "retry"
                         -- Keep the retry in this compacted delayed array. Calling
@@ -651,11 +700,8 @@ local function processDelayedBags(now)
                         delayed[write] = record
                         write = write + 1
                         if not nextAt or retryAt < nextAt then nextAt = retryAt end
-                    elseif objectStillPresent then
-                        closeBag(record, false, "sent ttl expired")
                     else
-                        run.BagObjectAcknowledged = run.BagObjectAcknowledged + 1
-                        closeBag(record, true, "object absent")
+                        closeBag(record, false, "sent ttl expired")
                     end
                 else
                     enqueueReadyBag(record)
@@ -685,16 +731,11 @@ local function collectBag(record, now)
     record.Attempts = (record.Attempts or 0) + 1
     if sent then
         run.BagSent = run.BagSent + 1
-        if typeof(liveObject) == "Instance" then
-            record.State = "sent"
-            enqueueDelayedBag(record, now + BAG_SENT_TTL)
-        else
-            -- Fire has no acknowledgement contract. A producer-gated bag has
-            -- no local object that can prove failure, so retire it immediately
-            -- as sent/unverifiable instead of manufacturing a duplicate call.
+        record.State = "sent"
+        if typeof(liveObject) ~= "Instance" and record.Attempts == 1 then
             run.BagSentUnverifiable = run.BagSentUnverifiable + 1
-            closeBag(record, false, "sent unverifiable")
         end
+        enqueueDelayedBag(record, now + math.max(BAG_SENT_TTL, acknowledgementDelay()))
     elseif record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
         run.BagRetried = run.BagRetried + 1
         record.State = "retry"
@@ -733,6 +774,7 @@ local function queueBagEvent(id, payload, explicitPosition, sourceObject)
     record.Id = id
     record.Position = position
     record.Object = typeof(sourceObject) == "Instance" and sourceObject or nil
+    record.HadObject = record.Object ~= nil
     record.Attempts = 0
     record.State = "queued"
     run.BagById[id] = record
@@ -806,6 +848,7 @@ local function clearOrbBinding()
     clearConnections(run.OrbConnections)
     run.OrbFolder = nil
     table.clear(run.PendingOrbIds)
+    table.clear(run.OrbTransportFailures)
     table.clear(run.OrbBatch)
     run.PendingOrbCount = 0
     run.OrbFlushArmed = false
@@ -1033,17 +1076,17 @@ local function installOrbProducer()
     end
 
     local originalAddOrb = record.Originals.AddOrb
-    record.Wrappers.AddOrb = function(id, ...)
+    record.Wrappers.AddOrb = function(id, payload, ...)
         if record.Active and record.Generation == run.Generation
             and orbsEnabled() then
-            local queued, accepted = pcall(queueOrb, id, true)
+            local queued, accepted = pcall(queueOrb, id, true, payload)
             if queued and accepted == true then
                 run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
                 return nil
             end
             run.OrbErrors = run.OrbErrors + 1
         end
-        return originalAddOrb(id, ...)
+        return originalAddOrb(id, payload, ...)
     end
     for _, name in ipairs({ "OrbLoop", "PlaySounds" }) do
         local original = record.Originals[name]
@@ -1083,8 +1126,11 @@ local function installOrbProducer()
 
     local removedSignal = networkSignal("Orb Removed")
     if removedSignal then
+        run.OrbAckAvailable = true
         run.OrbGateConnections[#run.OrbGateConnections + 1] =
             removedSignal:Connect(removeQueuedOrb)
+    else
+        run.OrbAckAvailable = false
     end
     return true
 end
@@ -1298,6 +1344,7 @@ local function restoreOrbGate()
     restoreProducerRecord(run.OrbProducerRecord)
     run.OrbProducerRecord = nil
     run.OrbGate = false
+    run.OrbAckAvailable = false
     run.OrbsProducer = run.OrbsOn and "fallback" or "disabled"
 end
 
@@ -1546,6 +1593,7 @@ local function resetStats()
     run.OrbDeduplicated = 0
     run.OrbMaxBatch = 0
     run.OrbLocalSentUnacked = 0
+    run.OrbAcked = 0
     run.BagEvents = 0
     run.BagSent = 0
     run.BagAcked = 0

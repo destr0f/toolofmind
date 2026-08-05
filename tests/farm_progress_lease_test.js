@@ -43,16 +43,19 @@ const lease = body(
 );
 assert(lease.includes("now >= (tonumber(state.ProgressDeadline) or now)"));
 assert(lease.includes("self:SendCommittedFarmSignals(petId, state)"));
-assert(lease.includes('self.ProgressAckMode = "fail-open"'));
 assert(lease.includes("self.ProgressLeaseRepairs = self.ProgressLeaseRepairs + 1"));
 assert(lease.includes("petStates[petId] = nil"),
     "a genuinely removed coin must still free its pet");
 assert(lease.includes("self.FastPets[petId] = true"));
 assert(lease.includes("self:QueueFastDispatch()"));
-assert(!lease.includes("rejectedUntil[coinId]"),
-    "missing optional acknowledgements must never reject a live target");
-assert(!lease.includes("unconfirmed farm lease"),
-    "missing optional acknowledgements must never rotate a live target");
+assert(lease.includes('local maxRepairs = config.Mode == "Boss Chest Only" and 3 or 2'),
+    "progress watchdog lost its bounded regular/boss repair policy");
+assert(lease.includes("rejectedUntil[coinId] = now + 0.75 + stagger"),
+    "an exhausted stale target is not cooled down before rerouting");
+assert(lease.includes("self.ProgressLeaseEvictions = self.ProgressLeaseEvictions + 1"));
+assert(lease.includes("self.FastReroutes = self.FastReroutes + released"));
+assert(!lease.includes('self.ProgressAckMode = "fail-open"'),
+    "a successful local Fire must not become permanent fake progress");
 for (const forbidden of ["Get Coins", "refreshWorkspaceCoins", "getgc", "getconnections", "Update Coin Pets"]) {
     assert(!lease.includes(forbidden), `progress watchdog became a scan/hook path: ${forbidden}`);
 }
@@ -61,7 +64,7 @@ const accepted = body("OnAccepted = function", "OnSignalsSent = function");
 assert(accepted.includes('state.Phase = "working"'));
 assert(accepted.includes("self.ProgressLeases[petId] = state"));
 assert(accepted.includes("self.ProgressProbeAccepted = self.ProgressProbeAccepted + 1"));
-assert(accepted.includes('config.Mode == "Boss Chest Only" and 20 or 8'));
+assert(accepted.includes("self:ProgressLeaseSeconds()"));
 assert(accepted.includes("self:ScheduleProgressLease(0.5)"));
 assert(!accepted.includes("self.SignalCommits[petId] = state")
     && !accepted.includes("self:ScheduleSignalCommit("),
