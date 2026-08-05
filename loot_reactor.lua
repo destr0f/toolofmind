@@ -4,17 +4,16 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.0"
+local MODULE_VERSION = "3.6.1"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
-local ORB_FLUSH_INTERVAL = 0.12
+local ORB_FLUSH_INTERVAL = 0.25
 local CLIENT_STAGGER_SLOTS = 16
 local CLIENT_STAGGER_STEP = 0.01
 local BAG_LANES = 4
 local MAX_PENDING_BAGS = 4096
 local BAG_FIRST_ATTEMPT_DELAY = 0.05
 local BAG_TRANSPORT_RETRY_DELAY = 0.10
-local BAG_SENT_TTL = 1.25
 local MAX_BAG_TRANSPORT_ATTEMPTS = 2
 local MAX_BAG_POOL = 256
 local STATUS_INTERVAL = 1
@@ -60,7 +59,8 @@ local run = {
     OrbToken = 0,
     BagToken = 0,
     BagWakeSerial = 0,
-    -- Scalar state: 0=unsent, positive=first send time, negative=retry send time.
+    -- Unsent IDs only. A successful RemoteEvent transport commit removes the
+    -- ID immediately, matching the game's native Orbs collector semantics.
     PendingOrbIds = {},
     OrbTransportFailures = {},
     PendingOrbCount = 0,
@@ -89,6 +89,7 @@ local run = {
     OrbDeduplicated = 0,
     OrbMaxBatch = 0,
     OrbLocalSentUnacked = 0,
+    OrbTransportCommitted = 0,
     OrbAckAvailable = false,
     OrbAcked = 0,
     BagEvents = 0,
@@ -102,6 +103,7 @@ local run = {
     BagSentUnverifiable = 0,
     BagObjectAcknowledged = 0,
     BagNetworkAcknowledged = 0,
+    BagTransportCommitted = 0,
     BagTransportDropped = 0,
 }
 
@@ -285,14 +287,10 @@ end
 
 local function orbFlushInterval()
     local rtt = currentRTT()
-    if rtt >= 1 then return 0.40 end
-    if rtt >= 0.50 then return 0.28 end
-    if rtt >= 0.25 then return 0.18 end
+    if rtt >= 1 then return 0.60 end
+    if rtt >= 0.50 then return 0.40 end
+    if rtt >= 0.25 then return 0.30 end
     return ORB_FLUSH_INTERVAL
-end
-
-local function acknowledgementDelay()
-    return math.clamp(0.75 + currentRTT() * 2, 0.9, 4)
 end
 
 local function statusText()
@@ -302,8 +300,8 @@ local function statusText()
             .. "Native routes: Claim Orbs %s | Collect Lootbag %s\n"
             .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
             .. "Orbs: pending %d/%d | events/batches %d/%d | error/overflow/drop %d/%d/%d\n"
-            .. "Lootbags: waiting %d/%d | lanes %d | events/sent/ack/unverified/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d/%d\n"
-            .. "Retention: unsent orb IDs + scalar queued/sent bag records only",
+            .. "Lootbags: waiting %d/%d | lanes %d | events/sent/committed/ack/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d/%d\n"
+            .. "Retention: unsent transport failures only; successful Fire calls are committed once",
         run.OrbsProducer,
         run.OrbGateReason,
         run.CoinsProducer,
@@ -328,8 +326,8 @@ local function statusText()
         BAG_LANES,
         run.BagEvents,
         run.BagSent,
+        run.BagTransportCommitted,
         run.BagAcked,
-        run.BagSentUnverifiable,
         run.BagRetried,
         run.BagSkipped,
         run.BagErrors,
@@ -396,29 +394,12 @@ local function flushOrbs()
     local profiled = profileBegin("PSX_OrbFlush")
     local ids = run.OrbBatch
     table.clear(ids)
-    local ackDelay = acknowledgementDelay()
-    local nextDue = nil
-    for orbId, state in pairs(run.PendingOrbIds) do
-        state = tonumber(state) or 0
-        local due = state == 0 and now
-            or (math.abs(state) + ackDelay)
-        if state < 0 and due <= now then
-            run.PendingOrbIds[orbId] = nil
-            run.OrbTransportFailures[orbId] = nil
-            run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
-            run.OrbDropped = run.OrbDropped + 1
-        elseif due <= now then
-            ids[#ids + 1] = orbId
-            if #ids == ORB_BATCH_SIZE then break end
-        elseif not nextDue or due < nextDue then
-            nextDue = due
-        end
+    for orbId in pairs(run.PendingOrbIds) do
+        ids[#ids + 1] = orbId
+        if #ids == ORB_BATCH_SIZE then break end
     end
     if #ids == 0 then
         profileEnd(profiled)
-        if run.PendingOrbCount > 0 then
-            armOrbFlush(math.max((nextDue or (now + orbFlushInterval())) - now, orbFlushInterval()))
-        end
         return
     end
 
@@ -430,13 +411,9 @@ local function flushOrbs()
             local state = run.PendingOrbIds[orbId]
             if state ~= nil then
                 run.OrbTransportFailures[orbId] = nil
-                if run.OrbAckAvailable then
-                    run.PendingOrbIds[orbId] = (tonumber(state) or 0) == 0 and now or -now
-                    run.OrbLocalSentUnacked = run.OrbLocalSentUnacked + 1
-                else
-                    run.PendingOrbIds[orbId] = nil
-                    run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
-                end
+                run.PendingOrbIds[orbId] = nil
+                run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
+                run.OrbTransportCommitted = run.OrbTransportCommitted + 1
             end
         end
         run.OrbBatches = run.OrbBatches + 1
@@ -604,8 +581,8 @@ local function closeBag(record, acknowledged, reason)
     run.WaitingBagCount = math.max(run.WaitingBagCount - 1, 0)
     if acknowledged then
         run.BagAcked = run.BagAcked + 1
-    elseif reason == "sent ttl expired" then
-        run.BagRetiredNoAck = run.BagRetiredNoAck + 1
+    elseif reason == "transport committed" then
+        run.BagTransportCommitted = run.BagTransportCommitted + 1
     elseif reason == "transport dropped" then
         run.BagTransportDropped = run.BagTransportDropped + 1
     end
@@ -679,33 +656,7 @@ local function processDelayedBags(now)
                 if not record.Queued then releaseBagRecord(record) end
             elseif due <= now then
                 record.Delayed = false
-                if record.State == "sent" then
-                    local liveObject = record.Object
-                    local objectStillPresent = typeof(liveObject) == "Instance"
-                        and liveObject.Parent ~= nil
-                    if record.HadObject and not objectStillPresent then
-                        run.BagObjectAcknowledged = run.BagObjectAcknowledged + 1
-                        closeBag(record, true, "object absent")
-                    elseif (tonumber(record.Attempts) or 0) < MAX_BAG_TRANSPORT_ATTEMPTS then
-                        -- Producer-gated bags have no local object, so retain the
-                        -- scalar ID until Remove Lootbag or one bounded retry.
-                        run.BagRetried = run.BagRetried + 1
-                        record.State = "retry"
-                        -- Keep the retry in this compacted delayed array. Calling
-                        -- enqueueDelayedBag here appends to the same array that is
-                        -- truncated below, which used to erase every second send.
-                        local retryAt = now + BAG_TRANSPORT_RETRY_DELAY
-                        record.Due = retryAt
-                        record.Delayed = true
-                        delayed[write] = record
-                        write = write + 1
-                        if not nextAt or retryAt < nextAt then nextAt = retryAt end
-                    else
-                        closeBag(record, false, "sent ttl expired")
-                    end
-                else
-                    enqueueReadyBag(record)
-                end
+                enqueueReadyBag(record)
             else
                 delayed[write] = record
                 write = write + 1
@@ -731,11 +682,14 @@ local function collectBag(record, now)
     record.Attempts = (record.Attempts or 0) + 1
     if sent then
         run.BagSent = run.BagSent + 1
-        record.State = "sent"
+        record.State = "committed"
         if typeof(liveObject) ~= "Instance" and record.Attempts == 1 then
             run.BagSentUnverifiable = run.BagSentUnverifiable + 1
         end
-        enqueueDelayedBag(record, now + math.max(BAG_SENT_TTL, acknowledgementDelay()))
+        -- RemoteEvents are reliable and ordered. The native Lootbags script
+        -- sends once and immediately destroys its local object; missing
+        -- Remove Lootbag callbacks are not evidence of transport failure.
+        closeBag(record, false, "transport committed")
     elseif record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
         run.BagRetried = run.BagRetried + 1
         record.State = "retry"
@@ -1593,6 +1547,7 @@ local function resetStats()
     run.OrbDeduplicated = 0
     run.OrbMaxBatch = 0
     run.OrbLocalSentUnacked = 0
+    run.OrbTransportCommitted = 0
     run.OrbAcked = 0
     run.BagEvents = 0
     run.BagSent = 0
@@ -1605,6 +1560,7 @@ local function resetStats()
     run.BagSentUnverifiable = 0
     run.BagObjectAcknowledged = 0
     run.BagNetworkAcknowledged = 0
+    run.BagTransportCommitted = 0
     run.BagTransportDropped = 0
     run.VisualInstancesPrevented = 0
     run.GateGeneration = 0
@@ -1721,6 +1677,7 @@ local function stats()
         OrbDeduplicated = run.OrbDeduplicated,
         OrbMaxBatch = run.OrbMaxBatch,
         OrbLocalSentUnacked = run.OrbLocalSentUnacked,
+        OrbTransportCommitted = run.OrbTransportCommitted,
         RouteOrbs = run.RouteOrbs,
         BagEvents = run.BagEvents,
         BagSent = run.BagSent,
@@ -1733,6 +1690,7 @@ local function stats()
         BagSentUnverifiable = run.BagSentUnverifiable,
         BagObjectAcknowledged = run.BagObjectAcknowledged,
         BagNetworkAcknowledged = run.BagNetworkAcknowledged,
+        BagTransportCommitted = run.BagTransportCommitted,
         BagTransportDropped = run.BagTransportDropped,
         RouteLootbags = run.RouteLootbags,
     }

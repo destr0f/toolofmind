@@ -96,16 +96,15 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.6.0"',
+    'local MODULE_VERSION = "3.6.1"',
     "ORB_BATCH_SIZE = 512",
     "MAX_PENDING_ORBS = 8192",
-    "ORB_FLUSH_INTERVAL = 0.12",
+    "ORB_FLUSH_INTERVAL = 0.25",
     "CLIENT_STAGGER_SLOTS = 16",
     "CLIENT_STAGGER_STEP = 0.01",
     "BAG_LANES = 4",
     "MAX_PENDING_BAGS = 4096",
     "BAG_TRANSPORT_RETRY_DELAY = 0.10",
-    "BAG_SENT_TTL = 1.25",
     "MAX_BAG_TRANSPORT_ATTEMPTS = 2",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
@@ -143,31 +142,30 @@ for (const marker of [
     assert(loot.includes(marker), `missing native loot marker: ${marker}`);
 }
 assert(loot.includes("run.PendingOrbIds[orbId] = nil")
-    && loot.includes("run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)"),
-    "successful orb batches do not evict acknowledged IDs");
-assert(loot.includes("record.State = \"sent\"")
-    && loot.includes("enqueueDelayedBag(record, now + math.max(BAG_SENT_TTL, acknowledgementDelay()))")
+    && loot.includes("run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)")
+    && loot.includes("run.OrbTransportCommitted = run.OrbTransportCommitted + 1"),
+    "successful orb batches are not retired after one transport commit");
+assert(loot.includes("record.State = \"committed\"")
     && loot.includes("run.BagSentUnverifiable = run.BagSentUnverifiable + 1")
-    && loot.includes('closeBag(record, false, "sent ttl expired")'),
-    "successful bag sends are not retained through bounded acknowledgement");
-assert(loot.includes("objectStillPresent")
-    && loot.includes("(tonumber(record.Attempts) or 0) < MAX_BAG_TRANSPORT_ATTEMPTS")
+    && loot.includes('closeBag(record, false, "transport committed")')
+    && loot.includes("run.BagTransportCommitted = run.BagTransportCommitted + 1"),
+    "successful bag sends are not closed after one native transport commit");
+assert(loot.includes("record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS")
     && loot.includes("record.State = \"retry\"")
-    && loot.includes("local retryAt = now + BAG_TRANSPORT_RETRY_DELAY")
-    && loot.includes("delayed[write] = record"),
-    "fallback lootbags do not receive one evidence-driven bounded retry");
+    && loot.includes("enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)"),
+    "lootbags do not retry a genuine transport failure once");
 assert(loot.includes("local earliest = (tonumber(run.OrbLastFlushAt) or 0) + interval")
     && loot.includes("delaySeconds = interval + clientStagger()")
     && !loot.includes("task.defer(function()\n        if generation ~= run.Generation or token ~= run.OrbToken then return end\n        flushOrbs()"),
     "orb callbacks can still create same-window microflushes");
 assert(loot.includes("run.OrbAckAvailable")
     && loot.includes('networkSignal("Orb Removed")')
-    && loot.includes("run.PendingOrbIds[orbId] = (tonumber(state) or 0) == 0 and now or -now"),
-    "orb IDs are not retained for an authoritative remove acknowledgement");
+    && !loot.includes("run.PendingOrbIds[orbId] = (tonumber(state) or 0) == 0 and now or -now"),
+    "a merely discoverable Orb Removed signal still triggers duplicate sends");
 assert(loot.includes("local function currentRTT()")
-    && loot.includes("local function acknowledgementDelay()")
-    && loot.includes("local function orbFlushInterval()"),
-    "loot retry timing is not RTT-aware");
+    && loot.includes("local function orbFlushInterval()")
+    && !loot.includes("local function acknowledgementDelay()"),
+    "orb pacing is not RTT-aware or obsolete ACK timing remains");
 assert(loot.includes('record.Object = typeof(sourceObject) == "Instance" and sourceObject or nil')
     && loot.includes("record.Position = objectPosition(liveObject) or record.Position"),
     "fallback lootbag retries do not refresh the live landed position");
