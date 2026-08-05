@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Develop",
-    "version": "1.4.1-dev.42",
+    "version": "1.4.1-dev.43",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-dev.42",
+    "compatibleSuite": "1.4.1-dev.43",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -47,7 +47,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -63,7 +63,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -79,7 +79,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -95,7 +95,7 @@
       "version": "1.3.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -108,25 +108,25 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.6.1",
+      "version": "3.6.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "05b8e946610025de81f68061556d5fe7d5596420",
-      "bytes": 59684,
-      "sha256": "cb4416e4f4f52bf96f1dff6262e0aa7eb25e2f22f795f4f2dd328a995df27800",
-      "djb2": "7dd01ccd"
+      "commit": "31c02a7c86253286b6b10c820d3fb2726747473a",
+      "bytes": 64248,
+      "sha256": "70f3c2a0dd5e8990ae58dc7b556af88aecf2a3e6fffcf1b67bd784a7c5da5a29",
+      "djb2": "2fc27848"
     },
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
       "version": "1.6.1",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -142,7 +142,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -158,7 +158,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -174,7 +174,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -190,7 +190,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -205,7 +205,7 @@
       "label": "Auto boost",
       "version": "1.1.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -221,7 +221,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.42",
+      "compatibleSuite": "1.4.1-dev.43",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -323,32 +323,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "3a3a6f9ed589e53563dac18caaeb600a9df55bc4",
+    "generatedFromCommit": "31c02a7c86253286b6b10c820d3fb2726747473a",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6233,
-      "sha256": "42fe217e00bf8d2cdf85eb976bd845cb903325ceb5f0e5cf44a3dd0abf91b9eb",
-      "djb2": "9c841c73"
+      "sha256": "d46e491f25cd1672f144fed16b2dde46f95e9496a34ca82003d1cbdea310c04a",
+      "djb2": "098ee12d"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-dev.42",
-      "bytes": 261210,
-      "sha256": "c20657a1f1642a7fb17858d7f4c9c069175d2c85ecaede3aa4fe6bc9f4d4ef67",
-      "djb2": "df6f0889"
+      "version": "1.4.1-dev.43",
+      "bytes": 262064,
+      "sha256": "50704cb7ecd346750698b74ea25bbf8370492c86714170392ac9f1c8b03b4a63",
+      "djb2": "c53f43e8"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 209237,
-        "sha256": "d16f29c7012351074795eaa226f27d859bf31d1785cfb1f39b2c1775370bd106",
-        "djb2": "a66ca86f"
+        "bytes": 209944,
+        "sha256": "7f995067adb411b966a956b8801026625f8b887b7e6b537f92168aa158f9ee4d",
+        "djb2": "d5e0fbcb"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 209237,
-        "sha256": "d16f29c7012351074795eaa226f27d859bf31d1785cfb1f39b2c1775370bd106",
-        "djb2": "a66ca86f"
+        "bytes": 209944,
+        "sha256": "7f995067adb411b966a956b8801026625f8b887b7e6b537f92168aa158f9ee4d",
+        "djb2": "d5e0fbcb"
       }
     }
   }
