@@ -4,10 +4,13 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.1"
+local MODULE_VERSION = "3.6.2"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.25
+local MAX_ORB_DELIVERY_ATTEMPTS = 2
+local ORB_CONFIRM_MIN_DELAY = 2.5
+local ORB_CONFIRM_MAX_DELAY = 8
 local CLIENT_STAGGER_SLOTS = 16
 local CLIENT_STAGGER_STEP = 0.01
 local BAG_LANES = 4
@@ -59,13 +62,17 @@ local run = {
     OrbToken = 0,
     BagToken = 0,
     BagWakeSerial = 0,
-    -- Unsent IDs only. A successful RemoteEvent transport commit removes the
-    -- ID immediately, matching the game's native Orbs collector semantics.
+    -- Pending contains unsent IDs. Unconfirmed retains only IDs whose
+    -- FireServer call returned locally but have not produced Orb Removed yet.
     PendingOrbIds = {},
+    UnconfirmedOrbIds = {},
+    OrbDeliveryAttempts = {},
     OrbTransportFailures = {},
     PendingOrbCount = 0,
+    UnconfirmedOrbCount = 0,
     OrbBatch = table.create(ORB_BATCH_SIZE),
     OrbFlushArmed = false,
+    OrbConfirmArmed = false,
     OrbRetryArmed = false,
     OrbLastFlushAt = 0,
     BagById = {},
@@ -91,7 +98,10 @@ local run = {
     OrbLocalSentUnacked = 0,
     OrbTransportCommitted = 0,
     OrbAckAvailable = false,
+    OrbAckObserved = false,
     OrbAcked = 0,
+    OrbRetried = 0,
+    OrbExpiredUnverified = 0,
     BagEvents = 0,
     BagSent = 0,
     BagAcked = 0,
@@ -280,17 +290,30 @@ end
 
 local function currentRTT()
     local context = run.Context
-    if not context or type(context.GetRTT) ~= "function" then return 0 end
-    local ok, value = pcall(context.GetRTT)
-    return ok and math.max(tonumber(value) or 0, 0) or 0
+    if not context then return 0 end
+    local rtt = 0
+    if type(context.GetRTT) == "function" then
+        local ok, value = pcall(context.GetRTT)
+        if ok then rtt = math.max(tonumber(value) or 0, 0) end
+    end
+    if type(context.GetPingSeconds) == "function" then
+        local ok, value = pcall(context.GetPingSeconds)
+        if ok then rtt = math.max(rtt, tonumber(value) or 0) end
+    end
+    return rtt
 end
 
 local function orbFlushInterval()
     local rtt = currentRTT()
-    if rtt >= 1 then return 0.60 end
-    if rtt >= 0.50 then return 0.40 end
+    if rtt >= 1.25 then return 0.90 end
+    if rtt >= 0.80 then return 0.70 end
+    if rtt >= 0.50 then return 0.45 end
     if rtt >= 0.25 then return 0.30 end
     return ORB_FLUSH_INTERVAL
+end
+
+local function orbConfirmationDelay()
+    return math.clamp(currentRTT() * 3, ORB_CONFIRM_MIN_DELAY, ORB_CONFIRM_MAX_DELAY)
 end
 
 local function statusText()
@@ -299,9 +322,9 @@ local function statusText()
             .. "Lootbags producer: %s (%s) | gate generation %d | last rebind: %s\n"
             .. "Native routes: Claim Orbs %s | Collect Lootbag %s\n"
             .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
-            .. "Orbs: pending %d/%d | events/batches %d/%d | error/overflow/drop %d/%d/%d\n"
+            .. "Orbs: pending/unconfirmed/ack %d/%d/%d | events/batches %d/%d | retry/expired/error/overflow/drop %d/%d/%d/%d/%d\n"
             .. "Lootbags: waiting %d/%d | lanes %d | events/sent/committed/ack/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d/%d\n"
-            .. "Retention: unsent transport failures only; successful Fire calls are committed once",
+            .. "Retention: bounded Orb Removed confirmation; one retry only after a live ACK is observed",
         run.OrbsProducer,
         run.OrbGateReason,
         run.CoinsProducer,
@@ -315,9 +338,12 @@ local function statusText()
         run.VisualInstancesPrevented,
         run.OrbIdsSent,
         run.PendingOrbCount,
-        MAX_PENDING_ORBS,
+        run.UnconfirmedOrbCount,
+        run.OrbAcked,
         run.OrbEvents,
         run.OrbBatches,
+        run.OrbRetried,
+        run.OrbExpiredUnverified,
         run.OrbErrors,
         run.OrbOverflow,
         run.OrbDropped,
@@ -384,7 +410,50 @@ local function networkSignal(name)
 end
 
 local armOrbFlush
+local armOrbConfirmation
 local payloadOwnerClass
+
+local function reconcileUnconfirmedOrbs()
+    run.OrbConfirmArmed = false
+    if not orbsEnabled() or run.UnconfirmedOrbCount == 0 then return end
+    local now = os.clock()
+    local delay = orbConfirmationDelay()
+    local nextAt
+    for orbId, sentAt in pairs(run.UnconfirmedOrbIds) do
+        local dueAt = (tonumber(sentAt) or now) + delay
+        if now >= dueAt then
+            run.UnconfirmedOrbIds[orbId] = nil
+            run.UnconfirmedOrbCount = math.max(run.UnconfirmedOrbCount - 1, 0)
+            local attempts = tonumber(run.OrbDeliveryAttempts[orbId]) or 1
+            if run.OrbAckObserved and attempts < MAX_ORB_DELIVERY_ATTEMPTS then
+                run.PendingOrbIds[orbId] = 0
+                run.PendingOrbCount = run.PendingOrbCount + 1
+                run.OrbRetried = run.OrbRetried + 1
+            else
+                run.OrbDeliveryAttempts[orbId] = nil
+                run.OrbExpiredUnverified = run.OrbExpiredUnverified + 1
+            end
+        elseif not nextAt or dueAt < nextAt then
+            nextAt = dueAt
+        end
+    end
+    if run.PendingOrbCount > 0 then armOrbFlush(orbFlushInterval()) end
+    if run.UnconfirmedOrbCount > 0 then
+        armOrbConfirmation(math.max((nextAt or (now + delay)) - now, 0.05))
+    end
+    armStatus()
+end
+
+armOrbConfirmation = function(delaySeconds)
+    if run.OrbConfirmArmed or not orbsEnabled() or run.UnconfirmedOrbCount == 0 then return end
+    run.OrbConfirmArmed = true
+    local generation = run.Generation
+    local token = run.OrbToken
+    task.delay(math.max(tonumber(delaySeconds) or orbConfirmationDelay(), 0.05), function()
+        if generation ~= run.Generation or token ~= run.OrbToken then return end
+        reconcileUnconfirmedOrbs()
+    end)
+end
 
 local function flushOrbs()
     run.OrbFlushArmed = false
@@ -414,11 +483,22 @@ local function flushOrbs()
                 run.PendingOrbIds[orbId] = nil
                 run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
                 run.OrbTransportCommitted = run.OrbTransportCommitted + 1
+                local attempts = (tonumber(run.OrbDeliveryAttempts[orbId]) or 0) + 1
+                run.OrbDeliveryAttempts[orbId] = attempts
+                if run.OrbAckAvailable then
+                    if run.UnconfirmedOrbIds[orbId] == nil then
+                        run.UnconfirmedOrbIds[orbId] = now
+                        run.UnconfirmedOrbCount = run.UnconfirmedOrbCount + 1
+                    end
+                else
+                    run.OrbDeliveryAttempts[orbId] = nil
+                end
             end
         end
         run.OrbBatches = run.OrbBatches + 1
         run.OrbIdsSent = run.OrbIdsSent + #ids
         run.OrbMaxBatch = math.max(run.OrbMaxBatch, #ids)
+        if run.UnconfirmedOrbCount > 0 then armOrbConfirmation() end
     else
         run.OrbErrors = run.OrbErrors + 1
         for index = 1, #ids do
@@ -472,8 +552,10 @@ local function queueOrb(itemOrId, fromEvent, payload)
         return true
     end
 
-    if not run.PendingOrbIds[orbId] then
-        if run.PendingOrbCount >= MAX_PENDING_ORBS then
+    if run.UnconfirmedOrbIds[orbId] ~= nil then
+        run.OrbDeduplicated = run.OrbDeduplicated + 1
+    elseif not run.PendingOrbIds[orbId] then
+        if run.PendingOrbCount + run.UnconfirmedOrbCount >= MAX_PENDING_ORBS then
             run.OrbOverflow = run.OrbOverflow + 1
             armStatus()
             return false
@@ -491,12 +573,22 @@ end
 
 local function removeQueuedOrb(id)
     id = id ~= nil and tostring(id) or nil
-    if id and run.PendingOrbIds[id] then
+    if not id then return end
+    local found = false
+    if run.PendingOrbIds[id] ~= nil then
         run.PendingOrbIds[id] = nil
-        run.OrbTransportFailures[id] = nil
         run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
-        run.OrbAcked = run.OrbAcked + 1
+        found = true
     end
+    if run.UnconfirmedOrbIds[id] ~= nil then
+        run.UnconfirmedOrbIds[id] = nil
+        run.UnconfirmedOrbCount = math.max(run.UnconfirmedOrbCount - 1, 0)
+        found = true
+    end
+    run.OrbTransportFailures[id] = nil
+    run.OrbDeliveryAttempts[id] = nil
+    run.OrbAckObserved = true
+    if found then run.OrbAcked = run.OrbAcked + 1 end
 end
 
 
@@ -802,10 +894,14 @@ local function clearOrbBinding()
     clearConnections(run.OrbConnections)
     run.OrbFolder = nil
     table.clear(run.PendingOrbIds)
+    table.clear(run.UnconfirmedOrbIds)
+    table.clear(run.OrbDeliveryAttempts)
     table.clear(run.OrbTransportFailures)
     table.clear(run.OrbBatch)
     run.PendingOrbCount = 0
+    run.UnconfirmedOrbCount = 0
     run.OrbFlushArmed = false
+    run.OrbConfirmArmed = false
     run.OrbRetryArmed = false
     run.OrbLastFlushAt = 0
 end
@@ -1548,7 +1644,11 @@ local function resetStats()
     run.OrbMaxBatch = 0
     run.OrbLocalSentUnacked = 0
     run.OrbTransportCommitted = 0
+    run.OrbAckAvailable = false
+    run.OrbAckObserved = false
     run.OrbAcked = 0
+    run.OrbRetried = 0
+    run.OrbExpiredUnverified = 0
     run.BagEvents = 0
     run.BagSent = 0
     run.BagAcked = 0
@@ -1613,6 +1713,9 @@ local function start(context)
         end
     end
     bindRoots(true, true, true)
+    local initialStatus = statusText()
+    run.LastStatusText = initialStatus
+    if type(context.Status) == "function" then pcall(context.Status, initialStatus) end
     return true
 end
 
@@ -1667,6 +1770,12 @@ local function stats()
         LastRebindReason = run.LastRebindReason,
         VisualInstancesPrevented = run.VisualInstancesPrevented,
         PendingOrbs = run.PendingOrbCount,
+        UnconfirmedOrbs = run.UnconfirmedOrbCount,
+        OrbAckAvailable = run.OrbAckAvailable,
+        OrbAckObserved = run.OrbAckObserved,
+        OrbAcked = run.OrbAcked,
+        OrbRetried = run.OrbRetried,
+        OrbExpiredUnverified = run.OrbExpiredUnverified,
         WaitingBags = run.WaitingBagCount,
         OrbEvents = run.OrbEvents,
         OrbBatches = run.OrbBatches,
@@ -1676,7 +1785,10 @@ local function stats()
         OrbDropped = run.OrbDropped,
         OrbDeduplicated = run.OrbDeduplicated,
         OrbMaxBatch = run.OrbMaxBatch,
-        OrbLocalSentUnacked = run.OrbLocalSentUnacked,
+        -- Compatibility field consumed by the passive request inspector.
+        -- It must reflect the live bounded confirmation set instead of the
+        -- obsolete monotonically-written counter.
+        OrbLocalSentUnacked = run.UnconfirmedOrbCount,
         OrbTransportCommitted = run.OrbTransportCommitted,
         RouteOrbs = run.RouteOrbs,
         BagEvents = run.BagEvents,

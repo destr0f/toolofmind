@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.42"
+local VERSION = "1.4.1-dev.43"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -4968,6 +4968,12 @@ lootCollector.Context = {
         local stats = petFarm:RefreshStats()
         return math.max(tonumber(stats and stats.AverageRTT) or 0, 0)
     end,
+    GetPingSeconds = function()
+        local ok, pingMs = pcall(function()
+            return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+        end)
+        return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
+    end,
     LocalLootOwner = function(item)
         for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
             local value = readObjectValue(item, key)
@@ -5049,7 +5055,7 @@ function lootCollector:Status()
     return string.format(
         "Producer gates: Orbs %s | Coins %s | Lootbags %s\n"
             .. "Gate generation: %d | prevented visuals: %d\n"
-            .. "Orbs pending/events/sent/errors: %d/%d/%d/%d\n"
+            .. "Orbs pending/unconfirmed/events/sent/ack/retry/expired/errors: %d/%d/%d/%d/%d/%d/%d/%d\n"
             .. "Lootbags waiting/events/sent/ack/retry/errors: %d/%d/%d/%d/%d/%d",
         tostring(stats.OrbsProducer or (stats.OrbGate and "direct" or "fallback")),
         tostring(stats.CoinsProducer or "visual"),
@@ -5057,8 +5063,12 @@ function lootCollector:Status()
         tonumber(stats.GateGeneration) or 0,
         tonumber(stats.VisualInstancesPrevented) or 0,
         tonumber(stats.PendingOrbs) or 0,
+        tonumber(stats.UnconfirmedOrbs) or 0,
         tonumber(stats.OrbEvents) or 0,
         tonumber(stats.OrbIdsSent) or 0,
+        tonumber(stats.OrbAcked) or 0,
+        tonumber(stats.OrbRetried) or 0,
+        tonumber(stats.OrbExpiredUnverified) or 0,
         tonumber(stats.OrbErrors) or 0,
         tonumber(stats.WaitingBags) or 0,
         tonumber(stats.BagEvents) or 0,
@@ -6342,6 +6352,10 @@ function requestDiagnostics.UpdateTelemetry()
             or (lootStats.BagGate and "direct" or "fallback"))
         local producerText = string.lower(orbProducer .. " " .. bagProducer)
         requestDiagnostics.Gauge("Loot", "orbPending", tonumber(lootStats.PendingOrbs) or 0)
+        requestDiagnostics.Gauge("Loot", "orbUnconfirmed", tonumber(lootStats.UnconfirmedOrbs) or 0)
+        requestDiagnostics.Gauge("Loot", "orbAcked", tonumber(lootStats.OrbAcked) or 0)
+        requestDiagnostics.Gauge("Loot", "orbRetried", tonumber(lootStats.OrbRetried) or 0)
+        requestDiagnostics.Gauge("Loot", "orbExpiredUnverified", tonumber(lootStats.OrbExpiredUnverified) or 0)
         requestDiagnostics.Gauge("Loot", "bagsWaiting", tonumber(lootStats.WaitingBags) or 0)
         requestDiagnostics.Gauge("Loot", "orbEvents", tonumber(lootStats.OrbEvents) or 0)
         requestDiagnostics.Gauge("Loot", "orbIdsSent", tonumber(lootStats.OrbIdsSent) or 0)
