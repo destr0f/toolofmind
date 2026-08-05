@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.2"
+local MODULE_VERSION = "1.6.3"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -36,6 +36,10 @@ local MAX_POST_PROCESS_WAIT_SLICES = 12
 local HEADLESS_EVENT_SETTLE_DELAY = 0.35
 local HEADLESS_INVENTORY_FALLBACK = "exact inventory-delta compatibility fallback"
 local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer gate"
+-- The August Network4 build renamed the inbound hatch event while keeping the
+-- purchase command unchanged. Resolve the live name first, then retain the old
+-- name as a compatibility alias for older servers.
+local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }
 local physicalCache = {
     Root = nil,
     ById = {},
@@ -653,8 +657,7 @@ local function captureHeadlessEventGate(signal, eventRoute)
         return nil, "Open Egg is using a custom Signal rather than a direct RemoteEvent"
     end
     local route = lower(eventRoute)
-    if not string.find(route, "getremoteevent", 1, true)
-        and not string.find(route, "remoteevent map", 1, true) then
+    if not string.find(route, "remoteevent", 1, true) then
         return nil, "the resolved Open Egg RemoteEvent is not command-specific"
     end
     if type(getconnections) ~= "function" then
@@ -694,6 +697,43 @@ local function captureHeadlessEventGate(signal, eventRoute)
         return nil, "Open Egg native dispatcher cannot be restored: " .. tostring(restoreProblem)
     end
     return selected
+end
+
+local function resolveOpenEggSignal(context)
+    local replicatedStorage = game:GetService("ReplicatedStorage")
+    local problems = {}
+
+    for _, commandName in ipairs(OPEN_EGG_EVENT_NAMES) do
+        local resolved, remote, sourceName, sessionIndex, problem =
+            pcall(context.GetEventRemote, commandName)
+        if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
+            and remote:IsDescendantOf(replicatedStorage) then
+            return remote.OnClientEvent,
+                tostring(sourceName or "dynamic RemoteEvent"),
+                sessionIndex,
+                commandName
+        end
+        problems[#problems + 1] = commandName .. ": "
+            .. tostring(resolved and problem or remote)
+    end
+
+    local network = context.Library and context.Library.Network
+    if network and type(network.Fired) == "function" then
+        for _, commandName in ipairs(OPEN_EGG_EVENT_NAMES) do
+            local signalOk, fallbackSignal = pcall(network.Fired, commandName)
+            if signalOk and fallbackSignal and type(fallbackSignal.Connect) == "function" then
+                return fallbackSignal,
+                    "Library.Network.Fired fallback",
+                    nil,
+                    commandName
+            end
+            problems[#problems + 1] = commandName .. " fallback: " .. tostring(fallbackSignal)
+        end
+    else
+        problems[#problems + 1] = "Library.Network.Fired unavailable"
+    end
+
+    return nil, nil, nil, nil, table.concat(problems, " | ")
 end
 
 local function restoreHeadlessEventGate(state)
@@ -2153,35 +2193,26 @@ return function(action, context)
     end
 
     if not context.Running() or not context.Enabled() then return true end
-    local signal, eventRoute, eventIndex, eventProblem
-    local resolved, remote, sourceName, sessionIndex, problem =
-        pcall(context.GetEventRemote, "Open Egg")
-    if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
-        and remote:IsDescendantOf(game:GetService("ReplicatedStorage")) then
-        signal = remote.OnClientEvent
-        eventRoute = tostring(sourceName or "dynamic RemoteEvent")
-        eventIndex = sessionIndex
-    else
-        eventProblem = resolved and problem or remote
-    end
+    local signal, eventRoute, eventIndex, eventCommand, eventProblem =
+        resolveOpenEggSignal(context)
     if not signal then
-        local network = context.Library and context.Library.Network
-        local signalOk, fallbackSignal = false, "Library.Network.Fired unavailable"
-        if network and type(network.Fired) == "function" then
-            signalOk, fallbackSignal = pcall(network.Fired, "Open Egg")
-        end
-        if not signalOk or not fallbackSignal or type(fallbackSignal.Connect) ~= "function" then
-            return false, "Open Egg event could not be resolved: "
-                .. tostring(eventProblem or fallbackSignal)
-        end
-        signal = fallbackSignal
-        eventRoute = "Library.Network.Fired fallback"
+        -- Do not block Buy Egg Yay merely because an executor cannot expose the
+        -- inbound dispatcher. Headless still has the OpenEgg producer wrapper
+        -- and exact inventory-delta acknowledgement as bounded fallbacks.
+        eventRoute = "inventory/native-variable fallback"
+        context.Trace("auto egg route",
+            "inbound hatch event unavailable; purchase remains enabled: " .. tostring(eventProblem))
     end
 
     -- Capture the game's exact dispatcher before this module adds its own
     -- listener. When OpenEgg is not exported by getsenv, this lets Headless
     -- pause only the native visual producer for the duration of one purchase.
-    local eventGateConnection, eventGateProblem = captureHeadlessEventGate(signal, eventRoute)
+    local eventGateConnection, eventGateProblem
+    if signal then
+        eventGateConnection, eventGateProblem = captureHeadlessEventGate(signal, eventRoute)
+    else
+        eventGateProblem = tostring(eventProblem or "inbound hatch signal unavailable")
+    end
 
     local state = {
         Context = context,
@@ -2212,6 +2243,7 @@ return function(action, context)
         ReconcileRetries = 0,
         PostProcessRetries = 0,
         EventRoute = eventRoute,
+        EventCommand = eventCommand,
         EventIndex = eventIndex,
         WorkerThread = nil,
         OpenEggScript = nil,
@@ -2234,8 +2266,10 @@ return function(action, context)
     }
     activeState = state
 
-    local connected, connection = pcall(function()
-        return signal:Connect(function(eggName, pets)
+    local connected, connection = true, nil
+    if signal then
+        connected, connection = pcall(function()
+            return signal:Connect(function(eggName, pets)
             if not state.Running or activeState ~= state then return end
             local pending = state.Pending
             state.OpenEvents = state.OpenEvents + 1
@@ -2313,9 +2347,10 @@ return function(action, context)
             if queuedPostProcess and not pending.PostProcessStarted then
                 startHeadlessPostProcess(state, context, pending)
             end
+            end)
         end)
-    end)
-    if not connected or not connection then
+    end
+    if signal and (not connected or not connection) then
         activeState = nil
         return false, "Open Egg listener failed: " .. tostring(connection)
     end
@@ -2329,8 +2364,9 @@ return function(action, context)
         "v" .. MODULE_VERSION
         .. " | bounded poor-connection recovery " .. tostring(MAX_NETWORK_ATTEMPTS)
         .. " attempts/" .. tostring(NETWORK_RETRY_WINDOW)
-        .. "s | Native OpeningEgg + producer-gated Headless acknowledgement | Open Egg: "
-        .. tostring(eventRoute) .. " [session index " .. tostring(eventIndex or "?") .. "]")
+        .. "s | Native OpeningEgg + producer-gated Headless acknowledgement | inbound hatch event: "
+        .. tostring(eventCommand or "inventory fallback") .. " via " .. tostring(eventRoute)
+        .. " [session index " .. tostring(eventIndex or "?") .. "]")
     setStatus(state, context,
         "Auto Egg v" .. MODULE_VERSION
         .. " armed. Game Egg Skip and Auto Delete settings are bridged without enabling native Auto Hatch.\n"

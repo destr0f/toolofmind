@@ -8,8 +8,16 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.2"',
+requireText('local MODULE_VERSION = "1.6.3"',
     "auto egg module version was not advanced");
+requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
+    "the renamed live hatch event is not resolved before the legacy alias");
+requireText('resolveOpenEggSignal(context)',
+    "the hatch listener does not use the alias-aware resolver");
+requireText('purchase remains enabled',
+    "missing inbound acknowledgement still blocks Buy Egg Yay");
+requireText('if signal and (not connected or not connection) then',
+    "signal-less inventory fallback is still rejected as a listener failure");
 requireText('"\\nRoutes: Open Eggs %s | Egg World %s | prevented open/world %d/%d"',
     "the hatch controller does not expose both visual gate routes and counters");
 requireText('FindFirstChild("Open Eggs")',
