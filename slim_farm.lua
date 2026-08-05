@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.41"
+local VERSION = "1.4.1-dev.42"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -300,6 +300,7 @@ local config = {
     AutoTechDiamondPack = false,
     AutoVIPRewards = false,
     AutoRankRewards = false,
+    AutoFreeGifts = false,
     AutoGoldenGalaxyFox = false,
     AutoRainbowGalaxyFox = false,
     AutoDarkMatterGalaxyFox = false,
@@ -328,8 +329,8 @@ local config = {
 }
 
 local DIAMOND_PACK_TIER = 4
-local DIAMOND_PACK_PRICE = 25e12
-local DIAMOND_PACK_RESERVE = 500e9
+local DIAMOND_PACK_PRICE = 45e9
+local DIAMOND_PACK_RESERVE = 1e9
 local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE
 local DIAMOND_PACK_INTERVAL = 180
 local diamondPackNextCheck = 0
@@ -350,6 +351,16 @@ local rewardStates = {
         Command = "Redeem Rank Rewards",
         ConfigKey = "AutoRankRewards",
         NextAttempt = 0,
+    },
+    FreeGifts = {
+        Label = "Free gifts",
+        Command = "Redeem Free Gift",
+        ConfigKey = "AutoFreeGifts",
+        NextAttempt = 0,
+        Argument = nil,
+        LocalClaimed = {},
+        LastElapsed = nil,
+        LastReset = nil,
     },
 }
 
@@ -571,8 +582,10 @@ function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
     if config.AutoGoldenGalaxyFox then active[#active + 1] = "Gold" end
     if config.AutoRainbowGalaxyFox then active[#active + 1] = "RB" end
     if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then active[#active + 1] = "DM" end
-    if config.AutoTechDiamondPack then active[#active + 1] = "25T Pack" end
-    if config.AutoVIPRewards or config.AutoRankRewards then active[#active + 1] = "Rewards" end
+    if config.AutoTechDiamondPack then active[#active + 1] = "45B Pack" end
+    if config.AutoVIPRewards or config.AutoRankRewards or config.AutoFreeGifts then
+        active[#active + 1] = "Rewards"
+    end
     if config.AutoTripleCoins or config.AutoTripleDamage
         or config.AutoSuperLucky or config.AutoUltraLucky then active[#active + 1] = "Boosts" end
     if config.Orbs or config.Lootbags then active[#active + 1] = "Loot" end
@@ -3948,6 +3961,66 @@ local function getRewardTiming(kind)
             VIP_REWARD_COOLDOWN, nil
     end
 
+    if kind == "FreeGifts" then
+        local state = rewardStates.FreeGifts
+        local directory = Library.Directory and Library.Directory.FreeGifts
+        local elapsed = tonumber(save.FreeGiftsTime)
+        if type(directory) ~= "table" or elapsed == nil then
+            state.Argument = nil
+            return nil, nil, "free-gift directory/timer is unavailable; no claim sent"
+        end
+
+        local resetTime = tonumber(save.FreeGiftsResetTime)
+        if (state.LastElapsed ~= nil and elapsed < state.LastElapsed)
+            or (state.LastReset ~= nil and resetTime ~= nil and resetTime ~= state.LastReset) then
+            table.clear(state.LocalClaimed)
+        end
+        state.LastElapsed = elapsed
+        state.LastReset = resetTime
+
+        local redeemed = type(save.FreeGiftsRedeemed) == "table" and save.FreeGiftsRedeemed or {}
+        local function claimed(index)
+            if state.LocalClaimed[index] then return true end
+            if redeemed[index] == true or redeemed[tostring(index)] == true then return true end
+            for key, value in pairs(redeemed) do
+                if tonumber(value) == index then return true end
+                if tonumber(key) == index and value ~= false and value ~= nil then return true end
+            end
+            return false
+        end
+
+        local gifts = {}
+        for key, gift in pairs(directory) do
+            local index = tonumber(key)
+            local waitTime = type(gift) == "table"
+                and tonumber(gift.waitTime or gift.WaitTime or gift.wait or gift.Time) or nil
+            if index and waitTime then
+                gifts[#gifts + 1] = { Index = index, WaitTime = waitTime }
+            end
+        end
+        table.sort(gifts, function(left, right)
+            if left.WaitTime == right.WaitTime then return left.Index < right.Index end
+            return left.WaitTime < right.WaitTime
+        end)
+        if #gifts == 0 then
+            state.Argument = nil
+            return nil, nil, "free-gift definitions are empty; no claim sent"
+        end
+
+        for _, gift in ipairs(gifts) do
+            if not claimed(gift.Index) then
+                state.Argument = gift.Index
+                return math.max(0, gift.WaitTime - elapsed), 0.25, nil
+            end
+        end
+
+        state.Argument = nil
+        if resetTime ~= nil then
+            return math.max(5, resetTime - serverTime), 0.25, nil
+        end
+        return 60, 0.25, nil
+    end
+
     local rankTimer = tonumber(save.RankTimer)
     local ranks = Library.Directory and Library.Directory.Ranks
     local rankData = type(ranks) == "table" and ranks[save.Rank] or nil
@@ -4447,8 +4520,14 @@ end
 
 local function invokeReward(kind)
     local state = rewardStates[kind]
-    local transportOk, accepted, serverMessage, sourceName, sessionIndex =
-        invokeCommand(state.Command)
+    local transportOk, accepted, serverMessage, sourceName, sessionIndex
+    if state.Argument ~= nil then
+        transportOk, accepted, serverMessage, sourceName, sessionIndex =
+            invokeCommand(state.Command, state.Argument)
+    else
+        transportOk, accepted, serverMessage, sourceName, sessionIndex =
+            invokeCommand(state.Command)
+    end
     local reply
     local succeeded = false
 
@@ -4456,6 +4535,9 @@ local function invokeReward(kind)
         reply = "Route/transport error; no claim confirmed: " .. tostring(serverMessage)
     elseif accepted then
         succeeded = true
+        if kind == "FreeGifts" and state.Argument ~= nil then
+            state.LocalClaimed[state.Argument] = true
+        end
         reply = "Claimed via " .. routeText(sourceName, sessionIndex)
     else
         local reason = serverMessage ~= nil and tostring(serverMessage)
@@ -4471,15 +4553,15 @@ local function runDiamondPackCheck()
     if diamondPackBusy then return end
     diamondPackBusy = true
 
-    local balance = getCurrentCurrency("Tech Coins")
+    local balance = getCurrentCurrency("Rainbow Coins")
     local balanceText = balance ~= nil and formatRateNumber(balance) or "unknown"
     local status
 
     if balance == nil then
-        status = "Local check: Tech Coins balance was not found; no request sent."
+        status = "Local check: Rainbow Coins balance was not found; no request sent."
     elseif balance < DIAMOND_PACK_MINIMUM then
         status = "Local threshold hold: " .. balanceText
-            .. " is below 25.5T Tech Coins (25T pack + 500B reserve); no server request sent."
+            .. " is below 46B Rainbow Coins (45B pack + 1B reserve); no server request sent."
     else
         local transportOk, accepted, serverMessage, sourceName, sessionIndex =
             invokeCommand("Buy DiamondPack", DIAMOND_PACK_TIER)
@@ -4571,10 +4653,10 @@ end
 
 rewardWorker.Run = function(generation)
     if generation ~= rewardWorker.Generation or not running()
-        or not (config.AutoVIPRewards or config.AutoRankRewards) then return end
+        or not (config.AutoVIPRewards or config.AutoRankRewards or config.AutoFreeGifts) then return end
     local now = os.clock()
     local nextWake = 300
-    for _, kind in ipairs({ "VIP", "Rank" }) do
+    for _, kind in ipairs({ "VIP", "Rank", "FreeGifts" }) do
         local state = rewardStates[kind]
         if config[state.ConfigKey] then
             local remaining, cooldown, timingError = getRewardTiming(kind)
@@ -4601,9 +4683,9 @@ rewardWorker.Run = function(generation)
                 state.LastTimingError = nil
                 local succeeded = invokeReward(kind)
                 state.ArmedReported = false
-                state.NextAttempt = now
-                    + (succeeded and math.max(cooldown or 0, REWARD_RETRY_DELAY)
-                        or REWARD_RETRY_DELAY)
+                local successDelay = kind == "FreeGifts" and 0.25
+                    or math.max(cooldown or 0, REWARD_RETRY_DELAY)
+                state.NextAttempt = now + (succeeded and successDelay or REWARD_RETRY_DELAY)
                 nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
             else
                 nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
@@ -4618,7 +4700,8 @@ local function reconcileRewardWorker()
     cancelScheduledTask(rewardWorker.Thread)
     rewardWorker.Thread = nil
     local generation = rewardWorker.Generation
-    if not running() or not (config.AutoVIPRewards or config.AutoRankRewards) then return end
+    if not running()
+        or not (config.AutoVIPRewards or config.AutoRankRewards or config.AutoFreeGifts) then return end
     rewardWorker.Schedule(generation, 0)
 end
 
@@ -5437,16 +5520,16 @@ do
 end
 uiStageYield("automation controls")
 
-UI.DiamondSection = UI.MachinesTab:Section({ Title = "Tech Diamond Exchange", Box = true, Opened = true })
+UI.DiamondSection = UI.MachinesTab:Section({ Title = "Rainbow Diamond Exchange", Box = true, Opened = true })
 UI.DiamondSection:Toggle({
     Flag = "auto_tech_diamond_pack",
-    Title = "Auto Best Tech Diamond Pack",
-    Desc = "Tier 4 costs 25T / checks every 3 minutes / buys only at 25.5T to preserve 500B",
+    Title = "Auto Best Rainbow Diamond Pack",
+    Desc = "Tier 4 costs 45B / checks every 3 minutes / buys only at 46B to preserve 1B",
     Value = false,
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
         if config.AutoTechDiamondPack then
-            statusSetters.Diamond("Enabled. A local balance check will run now; below 25.5T no request is sent.")
+            statusSetters.Diamond("Enabled. A local balance check will run now; below 46B no request is sent.")
         else
             statusSetters.Diamond("Disabled. No purchase requests will be sent.")
         end
@@ -5528,9 +5611,26 @@ UI.RewardsHero:Toggle({
         reconcileRewardWorker()
     end,
 })
+UI.RewardsHero:Toggle({
+    Flag = "auto_free_gifts",
+    Title = "Auto Free Gifts",
+    Desc = "Claims each unlocked Free Gift by live timer/index and waits for the next eligible gift",
+    Value = false,
+    Callback = function(value)
+        local enabled = value == true
+        config.AutoFreeGifts = enabled
+        local state = rewardStates.FreeGifts
+        state.NextAttempt = 0
+        state.LastTimingError = nil
+        state.ArmedReported = false
+        state.Argument = nil
+        if not enabled then table.clear(state.LocalClaimed) end
+        reconcileRewardWorker()
+    end,
+})
 UI.RewardsHero:Paragraph({
     Title = "Remote Policy",
-    Desc = "VIP and Rank resolve separate live remotes; every accepted or rejected server response is logged.",
+    Desc = "VIP, Rank and Free Gifts resolve separate live remotes; every accepted or rejected server response is logged.",
 })
 uiStageYield("reward controls")
 
@@ -5821,6 +5921,7 @@ local function shutdown(reason)
     config.AutoTechDiamondPack = false
     config.AutoVIPRewards = false
     config.AutoRankRewards = false
+    config.AutoFreeGifts = false
     config.AutoGoldenGalaxyFox = false
     config.AutoRainbowGalaxyFox = false
     config.AutoDarkMatterGalaxyFox = false
@@ -5846,6 +5947,10 @@ local function shutdown(reason)
         state.NextAttempt = 0
         state.LastTimingError = nil
         state.ArmedReported = nil
+        state.Argument = nil
+        state.LastElapsed = nil
+        state.LastReset = nil
+        if type(state.LocalClaimed) == "table" then table.clear(state.LocalClaimed) end
     end
     finishShutdown()
     local stoppedWorkers = 0
@@ -6295,7 +6400,9 @@ function requestDiagnostics.UpdateTelemetry()
     if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then enabled[#enabled + 1] = "DarkMatter" end
     if config.AutoBoostBundle or config.AutoTripleCoins or config.AutoTripleDamage
         or config.AutoSuperLucky or config.AutoUltraLucky then enabled[#enabled + 1] = "Boosts" end
-    if config.AutoVIPRewards or config.AutoRankRewards then enabled[#enabled + 1] = "Rewards" end
+    if config.AutoVIPRewards or config.AutoRankRewards or config.AutoFreeGifts then
+        enabled[#enabled + 1] = "Rewards"
+    end
     if config.Orbs or config.Lootbags then enabled[#enabled + 1] = "Loot" end
     requestDiagnostics.Gauge("Startup", "enabledAutomation",
         #enabled > 0 and table.concat(enabled, ",") or "none")

@@ -2,9 +2,8 @@
 -- Converts verified golden pets through a user-selected server tier.
 
 local activeState
-local MODULE_VERSION = "1.3.0"
-local TARGET_PET_ID = "288"
-local TARGET_PET_NAME = "404 Demon"
+local MODULE_VERSION = "1.4.0"
+local TARGET_PET_NAME = "Hellish Axolotl"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
 local IDLE_CHECK_DELAY = 5
@@ -14,6 +13,7 @@ local ABBREVIATIONS = {
     ["Coins"] = "C", ["Diamonds"] = "D", ["Fantasy Coins"] = "FC",
     ["Glittering"] = "GL", ["Presents"] = "PR", ["Royalty"] = "ROY",
     ["Strength"] = "STR", ["Teamwork"] = "TW", ["Tech Coins"] = "TC",
+    ["Rainbow Coins"] = "RC",
 }
 local ROMAN_LEVELS = { I = 1, II = 2, III = 3, IV = 4, V = 5 }
 
@@ -37,13 +37,13 @@ local function readPower(power, key)
     return name ~= nil and tostring(name) or nil, level
 end
 
-local function protectedTechCoins(pet)
+local function protectedRainbowCoins(pet)
     local powers = type(pet) == "table" and (pet.powers or pet.Powers) or nil
     if type(powers) ~= "table" then return false end
     local function inspect(power, key)
         local name, level = readPower(power, key)
         local compactName = string.lower(tostring(name or "")):gsub("%W", "")
-        return compactName == "techcoins" and level ~= nil and level >= 4, level
+        return compactName == "rainbowcoins" and level ~= nil and level >= 4, level
     end
     if powers.name or powers.Name or powers.power or powers.Power then
         local protected, level = inspect(powers)
@@ -92,9 +92,17 @@ local function definitionFor(context, pet)
     return directory[pet.id] or directory[tostring(pet.id)]
 end
 
-local function targetCatalog(_context)
-    return { [TARGET_PET_ID] = true }, { TARGET_PET_NAME },
-        TARGET_PET_NAME .. " (ID " .. TARGET_PET_ID .. ")"
+local function targetCatalog(context)
+    local resolver = type(context) == "table" and context.GetMachinePetCatalog or nil
+    if type(resolver) ~= "function" then
+        return {}, {}, TARGET_PET_NAME .. " catalog resolver is unavailable"
+    end
+    local ok, ids, names, summary = pcall(resolver, false)
+    if not ok or type(ids) ~= "table" then
+        return {}, {}, TARGET_PET_NAME .. " catalog is unavailable: " .. tostring(ids)
+    end
+    return ids, type(names) == "table" and names or {},
+        tostring(summary or (TARGET_PET_NAME .. " exact-name catalog"))
 end
 
 local function acquireOperation(state, context)
@@ -149,7 +157,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "ID 288 found: %d | golden: %d | eligible: %d | Tech Coins IV-V protected: %d | equipped skipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
+        "Hellish Axolotl found: %d | golden: %d | eligible: %d | Rainbow Coins IV-V protected: %d | equipped skipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
         stats.All, stats.Golden, stats.Eligible, stats.Protected, stats.Equipped,
         stats.Locked, stats.Upgraded, stats.Normal, stats.Pending
     )
@@ -177,7 +185,7 @@ local function collectCandidates(state, context, pets)
                     local uid = pet.uid ~= nil and tostring(pet.uid) or nil
                     local equipped = pet.e == true
                     local locked = pet.l == true or pet.locked == true
-                    local protected = protectedTechCoins(pet)
+                    local protected = protectedRainbowCoins(pet)
                     if protected then stats.Protected = stats.Protected + 1 end
                     if equipped then stats.Equipped = stats.Equipped + 1 end
                     if locked then stats.Locked = stats.Locked + 1 end
@@ -250,9 +258,9 @@ local function validateSelection(context, selectedCandidates)
         if not pet.g or pet.r or pet.dm then
             return false, nil, nil, shortUID(uid) .. " is no longer an eligible golden pet"
         end
-        local protected, level = protectedTechCoins(pet)
+        local protected, level = protectedRainbowCoins(pet)
         if protected then
-            return false, nil, nil, shortUID(uid) .. " has protected Tech Coins " .. tostring(level)
+            return false, nil, nil, shortUID(uid) .. " has protected Rainbow Coins " .. tostring(level)
         end
         if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then return false, nil, nil, shortUID(uid) .. " is locked" end
@@ -432,7 +440,9 @@ end
 
 return function(action, context)
     if action == "version" then return MODULE_VERSION end
-    if action == "protected-tech-coins" then return protectedTechCoins(context) end
+    if action == "protected-rainbow-coins" or action == "protected-tech-coins" then
+        return protectedRainbowCoins(context)
+    end
     if action == "stop" then return stop() end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end

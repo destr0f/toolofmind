@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.3.0"
+local MODULE_VERSION = "1.4.0"
 
 local gate = {
     Owner = nil,
@@ -27,11 +27,7 @@ local catalogCache = {
 }
 
 local MACHINE_PET_NAMES = {
-    ["404 demon"] = "404 Demon",
-}
-
-local MACHINE_PET_IDS = {
-    ["288"] = "404 Demon",
+    ["hellish axolotl"] = "Hellish Axolotl",
 }
 
 local function normalize(value)
@@ -48,7 +44,6 @@ local function definitionName(definition)
 end
 
 local function explicitMachinePet(definition, rawId)
-    if rawId ~= nil and MACHINE_PET_IDS[tostring(rawId)] ~= nil then return true end
     local name = definitionName(definition)
     return name ~= nil and MACHINE_PET_NAMES[normalize(name)] ~= nil
 end
@@ -175,8 +170,8 @@ local function gateDiagnostics(context)
 end
 
 local function definitionAllowed(definition, rawId)
-    -- Develop machines are intentionally hard-pinned to 404 Demon. Directory
-    -- rarity and live event eggs must never broaden this catalog.
+    -- Machine pets are resolved by their exact live Directory.Pets name.
+    -- No guessed or session-specific numeric ID is ever accepted.
     return explicitMachinePet(definition, rawId)
 end
 
@@ -191,11 +186,6 @@ local function getCatalog(context, force)
     local pets = type(directory.Pets) == "table" and directory.Pets or {}
     local eggs = type(directory.Eggs) == "table" and directory.Eggs or {}
     local ids, eventEggs = {}, {}
-
-    -- ID 288 is authoritative even if Directory.Pets has not replicated yet.
-    for id in pairs(MACHINE_PET_IDS) do
-        ids[id] = true
-    end
 
     local function petDefinition(rawId)
         if rawId == nil then return nil end
@@ -266,11 +256,11 @@ local function getCatalog(context, force)
     local names = {}
     for id in pairs(ids) do
         local definition = petDefinition(id)
-        names[#names + 1] = tostring(definitionName(definition) or MACHINE_PET_IDS[id] or id)
+        names[#names + 1] = tostring(definitionName(definition) or id)
     end
     table.sort(names)
     table.sort(eventEggs)
-    local summary = string.format("%d eligible species from %d live event egg(s): %s",
+    local summary = string.format("%d exact Hellish Axolotl species from %d scanned event egg(s): %s",
         #names, #eventEggs, #names > 0 and table.concat(names, ", ") or "none")
     catalogCache = {
         ExpiresAt = now + 60,
@@ -301,7 +291,8 @@ local function routeHealth(context)
         "Dark Matter: create=" .. invoke("Convert To Dark Matter")
             .. " | claim=" .. invoke("Redeem Dark Matter Pet"),
         "Boosts: activate=" .. fire("Activate Boost") .. " | bundle=" .. invoke("Buy Boost Bundle"),
-        "Rewards: VIP=" .. invoke("Redeem VIP Rewards") .. " | Rank=" .. invoke("Redeem Rank Rewards"),
+        "Rewards: VIP=" .. invoke("Redeem VIP Rewards") .. " | Rank=" .. invoke("Redeem Rank Rewards")
+            .. " | Gifts=" .. invoke("Redeem Free Gift"),
         "Pet catalog: " .. tostring(catalogSummary),
         "Inventory gate: " .. tostring(owner) .. " | waiting workers: " .. tostring(waiting),
         "Manual local preflight only; no server request was sent.",

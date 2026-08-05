@@ -1,6 +1,6 @@
 local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local machine = require(modulePath)
-    assert(machine("version") == "1.3.0")
+    assert(machine("version") == "1.4.0")
 
     local callback
     local calls = {}
@@ -17,7 +17,7 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         DarkMatterSlots = 1,
     }
     local context = {
-        Library = { Directory = { Pets = {} } },
+        Library = { Directory = { Pets = { ["301"] = { name = "Hellish Axolotl" } } } },
         Task = workerTask,
         Running = function() return true end,
         Enabled = function() return enabled end,
@@ -27,11 +27,7 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         GetCurrency = function() return 1e15 end,
         FormatNumber = tostring,
         GetMachinePetCatalog = function()
-            -- Deliberately broad/stale parent data: each worker must still
-            -- enforce its own ID 288 policy.
-            return { ["263"] = true, ["264"] = true, ["265"] = true, ["288"] = true },
-                { "stale catalog", "404 Demon" },
-                "stale parent catalog"
+            return { ["301"] = true }, { "Hellish Axolotl" }, "live exact-name catalog"
         end,
         BatchSize = function() return 1 end,
         MaxWaitSeconds = function() return nil end,
@@ -75,20 +71,20 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
 end
 
 exercise("../gold_machine_module", {
-    id = "288",
-    uid = "404-demon-normal",
+    id = "301",
+    uid = "hellish-axolotl-normal",
 }, "Get Golden Machine Info", "Use Golden Machine", false)
 
 exercise("../rainbow_machine_module", {
-    id = "288",
-    uid = "404-demon-golden",
+    id = "301",
+    uid = "hellish-axolotl-golden",
     g = true,
 }, "Get Rainbow Machine Info", "Use Rainbow Machine", false)
 
 exercise("../dark_matter_module", {
-    id = "288",
-    uid = "404-demon-rainbow",
+    id = "301",
+    uid = "hellish-axolotl-rainbow",
     r = true,
 }, "Get Dark Matter Machine Info", "Convert To Dark Matter", true)
 
-print("PASS Gold, Rainbow and Dark Matter hard-pin 404 Demon ID 288 without Directory.Pets")
+print("PASS Gold, Rainbow and Dark Matter use the live Hellish Axolotl catalog")

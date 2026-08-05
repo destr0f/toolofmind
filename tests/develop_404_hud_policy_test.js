@@ -16,22 +16,25 @@ const machines = [
     read("dark_matter_module.lua"),
 ];
 
-assert(support.includes('["288"] = "404 Demon"'),
-    "shared machine catalog is not pinned to 404 Demon ID 288");
+assert(support.includes('["hellish axolotl"] = "Hellish Axolotl"'),
+    "shared machine catalog does not select exact Hellish Axolotl");
 for (const [index, machine] of machines.entries()) {
-    assert(machine.includes('local TARGET_PET_ID = "288"')
-        && machine.includes('local TARGET_PET_NAME = "404 Demon"')
-        && machine.includes("return { [TARGET_PET_ID] = true }"),
-        `machine ${index + 1} does not enforce ID 288 independently`);
+    assert(machine.includes('local TARGET_PET_NAME = "Hellish Axolotl"')
+        && machine.includes("context.GetMachinePetCatalog")
+        && !machine.includes("TARGET_PET_ID"),
+        `machine ${index + 1} does not enforce the live exact-name catalog`);
 }
 assert(!ui.includes("Galaxy Fox + Silver Stag + Silver Dragon + Santa Paws"),
     "machine UI still advertises the legacy target catalog");
 
 for (const marker of [
-    "local DIAMOND_PACK_PRICE = 25e12",
-    "local DIAMOND_PACK_RESERVE = 500e9",
+    "local DIAMOND_PACK_PRICE = 45e9",
+    "local DIAMOND_PACK_RESERVE = 1e9",
     "local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE",
-    "below 25.5T",
+    'getCurrentCurrency("Rainbow Coins")',
+    "below 46B",
+    'Command = "Redeem Free Gift"',
+    "FreeGiftsRedeemed",
 ]) {
     assert(farm.includes(marker), `diamond reserve policy misses ${marker}`);
 }
@@ -64,5 +67,5 @@ for (const marker of [
 }
 
 process.stdout.write(
-    "Develop 404/HUD policy OK | machines=288-only | pack=25T+500B | HUD=coalesced | reload=quiesced\n"
+    "Develop Hellish/HUD policy OK | machines=exact-name | pack=45B+1B | gifts=timer-gated | HUD=coalesced | reload=quiesced\n"
 );

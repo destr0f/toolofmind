@@ -17,12 +17,15 @@ const machineFiles = [
 
 for (const [file, minimum] of machineFiles) {
     const source = read(file);
-    assert(source.includes('local TARGET_PET_ID = "288"'),
-        `${file} is not pinned to species ID 288`);
+    assert(source.includes('local TARGET_PET_NAME = "Hellish Axolotl"')
+        && source.includes("context.GetMachinePetCatalog"),
+        `${file} does not resolve exact Hellish Axolotl from the live catalog`);
     assert(source.includes(`level >= ${minimum}`),
-        `${file} has the wrong Tech Coins protection floor`);
-    assert(source.includes("ID 288 found:"),
-        `${file} does not expose the ID 288 inventory count`);
+        `${file} has the wrong Rainbow Coins protection floor`);
+    assert(source.includes('compactName == "rainbowcoins"'),
+        `${file} does not protect Rainbow Coins`);
+    assert(source.includes("Hellish Axolotl found:"),
+        `${file} does not expose the target inventory count`);
 }
 
 assert(farm.includes('local hackerPortal = namesMatch(zone, "Hacker Portal")'),
@@ -94,5 +97,5 @@ for (const [pets, targets, expectedAssigned] of [
 }
 
 process.stdout.write(
-    "Prompt 10 policy OK | machines=288 | Hacker Portal=regular pool | allocator=balanced/16 | stale=no-retry\n"
+    "Prompt 10 policy OK | machines=Hellish Axolotl | Hacker Portal=regular pool | allocator=balanced/16 | stale=no-retry\n"
 );
