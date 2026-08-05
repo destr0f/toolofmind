@@ -1410,7 +1410,6 @@ local releaseAssignmentsForCoin
 local requestFarmReset
 local assignmentCount
 local armFarmRecovery
-local requestFarmProgressPulse
 local function getPlayerZone()
     if os.clock() < nextZoneCheck then return currentZone end
     nextZoneCheck = os.clock() + 0.25
@@ -1702,9 +1701,6 @@ function currencyMonitor:Update(currencyName, currentAmount, now, recordDelta)
         appendCurrencyGain(sample, now, delta)
         sample.LastGainAt = now
         sample.LastGain = delta
-        if type(requestFarmProgressPulse) == "function" then
-            requestFarmProgressPulse(now)
-        end
     elseif recordDelta ~= false and delta < 0 then
         sample.TotalSpent = sample.TotalSpent - delta
         sample.LastSpendAt = now
@@ -3447,14 +3443,6 @@ function petFarm:EnsureEngine()
     driverStatus = "event-driven Lite Reactor ready"
     if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
     return true
-end
-
-requestFarmProgressPulse = function(now)
-    if not running() or not config.PetFarm then return end
-    -- Currency gains are global and cannot prove that every equipped pet is
-    -- progressing. Keep this only as a farm-wide heartbeat; per-pet leases are
-    -- confirmed by their own coin health/membership/removal signals.
-    petFarm.LastBalanceProgressAt = tonumber(now) or os.clock()
 end
 
 local function currentFarmSignature()
