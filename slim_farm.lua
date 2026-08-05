@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.46"
+local VERSION = "1.4.1-dev.47"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -3903,6 +3903,22 @@ local function getRewardServerTime()
     if rewardServerTime ~= nil and rewardClockStarted ~= nil then
         return rewardServerTime + (os.clock() - rewardClockStarted), nil
     end
+
+    -- Roblox already exposes a server-synchronised Unix clock. Prefer it over
+    -- resolving Get OSTime so reward timers cannot be blocked by a cold
+    -- Network4 route during startup. The named command remains a guarded
+    -- fallback for executors where GetServerTimeNow is unavailable.
+    local clockOk, clockValue = pcall(function()
+        return workspace:GetServerTimeNow()
+    end)
+    clockValue = clockOk and tonumber(clockValue) or nil
+    if clockValue ~= nil and clockValue > 0 then
+        rewardServerTime = clockValue
+        rewardClockStarted = os.clock()
+        rewardClockProblem = nil
+        return clockValue, nil
+    end
+
     if os.clock() < rewardClockRetryAt then
         return nil, rewardClockProblem or "server clock retry pending"
     end
