@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.2"
+local MODULE_VERSION = "3.6.3"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.25
@@ -24,6 +24,7 @@ local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"
 local NATIVE_PET_COIN_STAGE = "__PSX_HEADLESS_TARGET__"
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local run = {
     Context = nil,
@@ -398,6 +399,14 @@ end
 
 local function networkSignal(name)
     local context = run.Context
+    if context and type(context.GetEventRemote) == "function" then
+        local resolved, remote, _, _, problem = pcall(context.GetEventRemote, name)
+        if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
+            and remote:IsDescendantOf(ReplicatedStorage) then
+            return remote.OnClientEvent
+        end
+        if not resolved then problem = remote end
+    end
     local network = context and context.Library and context.Library.Network
     if not network or type(network.Fired) ~= "function" then
         return nil, "Library.Network.Fired unavailable"

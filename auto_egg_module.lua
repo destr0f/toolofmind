@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.1"
+local MODULE_VERSION = "1.6.2"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1450,6 +1450,19 @@ local function startHeadlessPostProcess(state, context, pending)
     end)
 end
 
+local function acknowledgeOpeningEgg(context, eggName, pets)
+    if type(context.FireCommand) ~= "function" then
+        return false, "Opening Egg direct route is unavailable"
+    end
+    local called, sent, problem, sourceName, sessionIndex =
+        pcall(context.FireCommand, "Opening Egg", eggName, pets)
+    if not called then return false, tostring(sent) end
+    if sent ~= true then
+        return false, tostring(problem or "Opening Egg was not sent")
+    end
+    return true, context.RouteText(sourceName, sessionIndex)
+end
+
 local function startHeadlessReconcile(state, context, pending)
     if pending.ReconcileStarted or not pending.Headless or pending.EventReceived then return end
     local now = os.clock()
@@ -1483,11 +1496,8 @@ local function startHeadlessReconcile(state, context, pending)
                 pending.EventAt = os.clock()
                 pending.MatchMode = "inventory delta auto-detection"
 
-                local network = context.Library and context.Library.Network
-                local acknowledged, ackProblem = false, "Library.Network.Fire is unavailable"
-                if network and type(network.Fire) == "function" then
-                    acknowledged, ackProblem = pcall(network.Fire, "Opening Egg", pending.Egg, pets)
-                end
+                local acknowledged, ackProblem =
+                    acknowledgeOpeningEgg(context, pending.Egg, pets)
                 if not acknowledged then
                     pending.AckFailure = tostring(ackProblem)
                     pending.ReconcileDone = true
@@ -2135,38 +2145,31 @@ return function(action, context)
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
         "Library", "Running", "Enabled", "GetOptions", "InspectEgg", "InvokeCommand",
+        "FireCommand", "GetEventRemote",
         "RouteText", "AcquireOperation", "ReleaseOperation", "CancelOperation",
         "OperationOwner", "SetStatus", "Trace", "Disable",
     }) do
         if context[key] == nil then return false, "module context is missing " .. key end
     end
 
-    local network = context.Library and context.Library.Network
-    local networkDeadline = os.clock() + 10
-    while (not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function")
-        and context.Running() and context.Enabled() and os.clock() < networkDeadline do
-        task.wait(0.1)
-        network = context.Library and context.Library.Network
-    end
     if not context.Running() or not context.Enabled() then return true end
-    if not network or type(network.Fired) ~= "function" or type(network.Fire) ~= "function" then
-        return false, "Library.Network Fired/Fire is unavailable"
-    end
     local signal, eventRoute, eventIndex, eventProblem
-    if type(context.GetEventRemote) == "function" then
-        local resolved, remote, sourceName, sessionIndex, problem =
-            pcall(context.GetEventRemote, "Open Egg")
-        if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
-            and remote:IsDescendantOf(game:GetService("ReplicatedStorage")) then
-            signal = remote.OnClientEvent
-            eventRoute = tostring(sourceName or "dynamic RemoteEvent")
-            eventIndex = sessionIndex
-        else
-            eventProblem = resolved and problem or remote
-        end
+    local resolved, remote, sourceName, sessionIndex, problem =
+        pcall(context.GetEventRemote, "Open Egg")
+    if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
+        and remote:IsDescendantOf(game:GetService("ReplicatedStorage")) then
+        signal = remote.OnClientEvent
+        eventRoute = tostring(sourceName or "dynamic RemoteEvent")
+        eventIndex = sessionIndex
+    else
+        eventProblem = resolved and problem or remote
     end
     if not signal then
-        local signalOk, fallbackSignal = pcall(network.Fired, "Open Egg")
+        local network = context.Library and context.Library.Network
+        local signalOk, fallbackSignal = false, "Library.Network.Fired unavailable"
+        if network and type(network.Fired) == "function" then
+            signalOk, fallbackSignal = pcall(network.Fired, "Open Egg")
+        end
         if not signalOk or not fallbackSignal or type(fallbackSignal.Connect) ~= "function" then
             return false, "Open Egg event could not be resolved: "
                 .. tostring(eventProblem or fallbackSignal)
@@ -2267,7 +2270,7 @@ return function(action, context)
                 local ownsAcknowledgement = pending and pending.Headless
                     and pending.ProducerGateRoute == HEADLESS_EVENT_GATE
                 if ownsAcknowledgement and not state.AcknowledgedEvents[signature] then
-                    local ackOk, ackProblem = pcall(network.Fire, "Opening Egg", eggName, pets)
+                    local ackOk, ackProblem = acknowledgeOpeningEgg(context, eggName, pets)
                     if ackOk then
                         state.AcknowledgedEvents[signature] = now
                         if matching then pending.Acknowledged = true end

@@ -54,7 +54,14 @@ for (const forbidden of ["requestAllocatorPulse", "applyCoinData", "record.Pets"
     assert(!membershipBody.includes(forbidden),
         `Update Coin Pets became a retained reconciliation path: ${forbidden}`);
 }
-assert(count(farm, /"Get Coins"/g) === 1,
+const snapshotStart = farm.indexOf("refreshCoinSnapshot = function()");
+const snapshotEnd = farm.indexOf("local function connectCoinSignals", snapshotStart);
+assert(snapshotStart >= 0 && snapshotEnd > snapshotStart,
+    "Get Coins snapshot boundary is missing");
+const outsideSnapshot = farm.slice(0, snapshotStart) + farm.slice(snapshotEnd);
+assert(!outsideSnapshot.includes('network.Invoke("Get Coins"')
+    && !outsideSnapshot.includes('getCommandRemote("Get Coins"')
+    && !outsideSnapshot.includes('InvokeServer("Get Coins"'),
     "Get Coins must remain an initial-world snapshot only");
 assert(!/workspace\s*\.\s*DescendantAdded/.test(farm),
     "the farm observes every Workspace descendant");
@@ -96,7 +103,7 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.6.2"',
+    'local MODULE_VERSION = "3.6.3"',
     "ORB_BATCH_SIZE = 512",
     "MAX_PENDING_ORBS = 8192",
     "ORB_FLUSH_INTERVAL = 0.25",

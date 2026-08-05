@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.44"
+local VERSION = "1.4.1-dev.45"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -2130,26 +2130,34 @@ refreshCoinSnapshot = function()
     if coinSync.SnapshotBusy or coinSync.SnapshotPrimed or coinSync.SnapshotFailOpen
         or coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then return end
     coinSync.SnapshotAttempts = coinSync.SnapshotAttempts + 1
-    local network = networkReady()
-    if not network then
-        coinSync.LastProblem = "Library.Network is not ready"
-        if coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then
-            coinSync.SnapshotFailOpen = true
-            coinSync.LastProblem = coinSync.LastProblem .. "; event-driven fail-open"
-        else
-            scheduleCoinSnapshotRetry(
-                coinSync.SnapshotBackoff[coinSync.SnapshotAttempts],
-                coinSync.LastProblem
-            )
-        end
-        return
-    end
     coinSync.SnapshotBusy = true
     local generation = coinGeneration
     local serialAtStart = coinMutationSerial
     local diagnosticId = requestDiagnostics.Id("invoke:Get Coins")
-    requestDiagnostics.Transition("Farm", diagnosticId, "INVOKE_IN_FLIGHT", "Library.Network.Invoke Get Coins")
-    local ok, response = pcall(network.Invoke, "Get Coins")
+    local remote, sourceName, sessionIndex, resolveProblem =
+        coinSync.NetworkTransport:Resolve(
+            coinSync.RemoteCaches.Command,
+            "resolveFunction",
+            "Get Coins",
+            "RemoteFunction"
+        )
+    local route = remote and (tostring(sourceName or "direct remote")
+        .. (sessionIndex and (" [session index " .. tostring(sessionIndex) .. "]") or ""))
+        or "unavailable"
+    requestDiagnostics.Transition("Farm", diagnosticId, "INVOKE_IN_FLIGHT", route .. " Get Coins")
+    local ok, response
+    if remote then
+        ok, response = pcall(remote.InvokeServer, remote)
+        if not ok then coinSync.RemoteCaches.Command["Get Coins"] = nil end
+    else
+        local network = networkReady()
+        if network and type(network.Invoke) == "function" then
+            route = "Library.Network.Invoke fallback"
+            ok, response = pcall(network.Invoke, "Get Coins")
+        else
+            ok, response = false, resolveProblem or "Get Coins route is unavailable"
+        end
+    end
     if not ok then
         requestDiagnostics.Complete("Farm", diagnosticId, "TRANSPORT_FAILED", tostring(response))
     elseif type(response) == "table" then
@@ -2219,12 +2227,24 @@ end
 
 local function connectCoinSignals()
     if coinSync.SignalsReady then return end
-    local network = networkReady()
-    if not network or type(network.Fired) ~= "function" then return end
 
     local function connect(name, callback)
         if coinSync.SignalConnections[name] then return true end
-        local ok, signal = pcall(network.Fired, name)
+        local remote = coinSync.NetworkTransport:Resolve(
+            coinSync.RemoteCaches.Event,
+            "resolveEvent",
+            name,
+            "RemoteEvent"
+        )
+        local signal = remote and remote.OnClientEvent or nil
+        if not signal then
+            local network = networkReady()
+            if network and type(network.Fired) == "function" then
+                local ok, fallbackSignal = pcall(network.Fired, name)
+                if ok then signal = fallbackSignal end
+            end
+        end
+        local ok = signal ~= nil
         if ok and signal and type(signal.Connect) == "function" then
             local connected, connection = pcall(function()
                 return signal:Connect(function(...)
@@ -3368,9 +3388,12 @@ function petFarm:EnsureEngine()
             end
         end,
         OnStaleAccepted = function(record, petIds)
-            local network = networkReady()
-            if not network or not record then return end
-            pcall(network.Invoke, "Leave Coin", tostring(record.Id), petIds)
+            if not record then return end
+            local remote = getCommandRemote("Leave Coin")
+            if remote then
+                local sent = pcall(remote.InvokeServer, remote, tostring(record.Id), petIds)
+                if not sent then coinSync.RemoteCaches.Command["Leave Coin"] = nil end
+            end
         end,
         Trace = trace,
         InspectorTransition = requestDiagnostics.Transition,
@@ -3443,14 +3466,17 @@ local function clearAssignments(sendBack, callback)
     table.clear(petFarm.NextTargetByPet)
     if petFarm.Engine then pcall(petFarm.Engine, "reset") end
     local groups, allPets = collectAssignmentsForReset()
-    local network = sendBack and networkReady() or nil
+    local changeTargetRemote = sendBack and getFireRemote("Change Pet Target") or nil
+    local leaveCoinRemote = sendBack and getCommandRemote("Leave Coin") or nil
     for _, state in pairs(petStates) do releasePetState(state) end
     table.clear(petStates)
     table.clear(rejectedUntil)
 
-    if not sendBack or not network then
-        if type(callback) == "function" then callback(network ~= nil or not sendBack) end
-        return network ~= nil or not sendBack
+    if not sendBack or (not changeTargetRemote and not leaveCoinRemote) then
+        if type(callback) == "function" then
+            callback(not sendBack or changeTargetRemote ~= nil or leaveCoinRemote ~= nil)
+        end
+        return not sendBack or changeTargetRemote ~= nil or leaveCoinRemote ~= nil
     end
 
     local jobs = {}
@@ -3463,7 +3489,13 @@ local function clearAssignments(sendBack, callback)
         end
     end
     for petId in pairs(allPets) do
-        pcall(network.Fire, "Change Pet Target", petId, "Player")
+        if changeTargetRemote then
+            local sent = pcall(changeTargetRemote.FireServer, changeTargetRemote, petId, "Player")
+            if not sent then
+                coinSync.RemoteCaches.Fire["Change Pet Target"] = nil
+                changeTargetRemote = nil
+            end
+        end
     end
 
     -- Reset traffic uses one tiny fixed-width drain instead of launching one
@@ -3483,7 +3515,18 @@ local function clearAssignments(sendBack, callback)
             head = head + 1
             active = active + 1
             local thread = coroutine.create(function()
-                pcall(network.Invoke, "Leave Coin", job.CoinId, job.PetIds)
+                if leaveCoinRemote then
+                    local sent = pcall(
+                        leaveCoinRemote.InvokeServer,
+                        leaveCoinRemote,
+                        job.CoinId,
+                        job.PetIds
+                    )
+                    if not sent then
+                        coinSync.RemoteCaches.Command["Leave Coin"] = nil
+                        leaveCoinRemote = nil
+                    end
+                end
                 active = math.max(active - 1, 0)
                 if head > #jobs and active == 0 then finish() else pumpReset() end
             end)
@@ -4079,6 +4122,7 @@ local function startAutoEggModule()
         PotatoEnabled = function() return config.PotatoMode == true end,
         InspectEgg = inspectEggThroughModule,
         InvokeCommand = invokeCommand,
+        FireCommand = fireCommand,
         GetEventRemote = getEventRemote,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
@@ -4947,18 +4991,9 @@ lootCollector.Context = {
         if fired then
             return true, nil, routeText(sourceName, sessionIndex)
         end
-        local network = networkReady()
-        if network and type(network.Fire) == "function" then
-            local fallback, fallbackProblem = pcall(
-                network.Fire,
-                commandName,
-                ...
-            )
-            if fallback then return true, nil, "Library.Network.Fire" end
-            problem = fallbackProblem
-        end
         return false, tostring(problem or "no live route"), "unavailable"
     end,
+    GetEventRemote = getEventRemote,
     Status = function(text) statusSetters.Set("Loot", text) end,
     StatusVisible = function() return statusSetters.IsVisible("Loot") end,
     ObserveCoin = function(rawId, data)
