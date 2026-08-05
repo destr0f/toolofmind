@@ -116,10 +116,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "88252373bf2f2d7893f1ba1798ec7a4324a16f9d",
-      "bytes": 60016,
-      "sha256": "e1adf2015434e2f54826a86ee5b60a10ce0126aea160663dc7d2eeb9d6e9621d",
-      "djb2": "07f1d540"
+      "commit": "614fb5f97ee2fcf91188f063910804c298dfab6a",
+      "bytes": 61731,
+      "sha256": "4947438a5c39e4fcc0cadb69b1aabebaac33556cd6da54489a6c14121eeebf7a",
+      "djb2": "61736a22"
     },
     "autoEgg": {
       "id": "autoEgg",
