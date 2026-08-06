@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Develop",
-    "version": "1.4.1-dev.47",
+    "version": "1.4.1-dev.48",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-dev.47",
+    "compatibleSuite": "1.4.1-dev.48",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.0.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-transport",
@@ -80,7 +80,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -112,7 +112,7 @@
       "version": "1.3.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.6.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.6.3",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.1.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-dev.47",
+      "compatibleSuite": "1.4.1-dev.48",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -310,6 +310,7 @@
         "tests/native_pet_coin_contract_test.js",
         "tests/machine_404_enchant_policy_test.lua",
         "tests/axolotl_ocean_hotfix_test.js",
+        "tests/boss_chest_presence_gate_test.js",
         "tests/hacker_portal_hotfix_test.js",
         "tests/farm_progress_lease_test.js",
         "tests/request_state_inspector_policy_test.js",
@@ -344,32 +345,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "5330d044650b44b0ce683bb91d0e5fbe5b4427c0",
+    "generatedFromCommit": "2bf7f1f59568bfb23d283fac4e76186055b765d2",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6714,
-      "sha256": "f98ae78c600703e61689d8397235af2abf1301475541540f8513cf9e26c89ed8",
-      "djb2": "83d380af"
+      "sha256": "289ab9c99e1f2e41c8881ef79871c2e8a32554997a733bcf5cfd8c7d522b9878",
+      "djb2": "f31ae7f9"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-dev.47",
-      "bytes": 261333,
-      "sha256": "6f6b1392128a19a8b75713a004c3afbfef2d4738f00d7837600f78fe7074e182",
-      "djb2": "65f8814d"
+      "version": "1.4.1-dev.48",
+      "bytes": 263797,
+      "sha256": "8339c619ecca1a594d20b077589b6259408a17116ae761b9eacdb7c9286c9ec9",
+      "djb2": "e79cf5fc"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 209698,
-        "sha256": "ae752d6357bdc3a840fd59089c0b02a5d4d3f94377bf2cdb89dd797f71b3fccb",
-        "djb2": "27639e44"
+        "bytes": 211035,
+        "sha256": "64d0caaf4eae414ab8f9acfb125a50607b3b6c7fa6d07328037d6e3ac95856b7",
+        "djb2": "648aea62"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 209698,
-        "sha256": "ae752d6357bdc3a840fd59089c0b02a5d4d3f94377bf2cdb89dd797f71b3fccb",
-        "djb2": "27639e44"
+        "bytes": 211035,
+        "sha256": "64d0caaf4eae414ab8f9acfb125a50607b3b6c7fa6d07328037d6e3ac95856b7",
+        "djb2": "648aea62"
       }
     }
   }
