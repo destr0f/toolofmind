@@ -103,10 +103,10 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.6.3"',
+    'local MODULE_VERSION = "3.6.4"',
     "ORB_BATCH_SIZE = 512",
     "MAX_PENDING_ORBS = 8192",
-    "ORB_FLUSH_INTERVAL = 0.25",
+    "ORB_FLUSH_INTERVAL = 0.55",
     "CLIENT_STAGGER_SLOTS = 16",
     "CLIENT_STAGGER_STEP = 0.01",
     "BAG_LANES = 4",
@@ -174,6 +174,8 @@ assert(loot.includes("run.OrbAckAvailable")
 assert(loot.includes("local function currentRTT()")
     && loot.includes("local function orbFlushInterval()")
     && loot.includes("context.GetPingSeconds")
+    && loot.includes("if rtt >= 2.00 then return 1.50 end")
+    && loot.includes("if rtt >= 0.25 then return 0.65 end")
     && loot.includes("local function orbConfirmationDelay()"),
     "orb pacing and bounded confirmation are not actual-ping aware");
 assert(loot.includes('record.Object = typeof(sourceObject) == "Instance" and sourceObject or nil')

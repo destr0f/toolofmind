@@ -4,10 +4,10 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.3"
+local MODULE_VERSION = "3.6.4"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
-local ORB_FLUSH_INTERVAL = 0.25
+local ORB_FLUSH_INTERVAL = 0.55
 local MAX_ORB_DELIVERY_ATTEMPTS = 2
 local ORB_CONFIRM_MIN_DELAY = 2.5
 local ORB_CONFIRM_MAX_DELAY = 8
@@ -306,10 +306,11 @@ end
 
 local function orbFlushInterval()
     local rtt = currentRTT()
-    if rtt >= 1.25 then return 0.90 end
-    if rtt >= 0.80 then return 0.70 end
-    if rtt >= 0.50 then return 0.45 end
-    if rtt >= 0.25 then return 0.30 end
+    if rtt >= 2.00 then return 1.50 end
+    if rtt >= 1.25 then return 1.20 end
+    if rtt >= 0.80 then return 1.00 end
+    if rtt >= 0.50 then return 0.80 end
+    if rtt >= 0.25 then return 0.65 end
     return ORB_FLUSH_INTERVAL
 end
 
