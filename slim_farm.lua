@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.47"
+local VERSION = "1.4.1-dev.48"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -1787,6 +1787,7 @@ local coinSync = {
     MaxSnapshotAttempts = 3,
     SnapshotBackoff = { 0.15, 0.45, 1.0 },
     RemoteCaches = { Command = {}, Event = {}, Fire = {} },
+    BossRejected = {},
     SignalsReady = false,
     SignalConnections = {},
     WorldSignalReady = false,
@@ -2260,7 +2261,28 @@ local function connectCoinSignals()
         return false
     end
 
-    connect("New Coin", function(id, data) applyCoinData(id, data, true) end)
+    connect("New Coin", function(id, data)
+        local coinId = tostring(id)
+        local previous = coinRecords[coinId]
+        local previousAlive = previous ~= nil and not previous.Removed
+            and (tonumber(previous.Health) or 0) > 0
+        local wasRejected = coinSync.BossRejected[coinId] == true
+        coinSync.BossRejected[coinId] = nil
+        local record = applyCoinData(id, data, true)
+        if record and BossChestNames[normalize(record.Name)] == true
+            and (wasRejected or not previousAlive) then
+            -- A respawning boss may reuse its coin ID without delivering a
+            -- matching Remove Coin first. Drop the stale lock synchronously;
+            -- requestAllocatorPulse schedules the replacement on this same
+            -- event turn instead of waiting for the recovery poll.
+            if type(releaseAssignmentsForCoin) == "function" then
+                releaseAssignmentsForCoin(coinId)
+            end
+            if type(requestAllocatorPulse) == "function" then
+                requestAllocatorPulse(true)
+            end
+        end
+    end)
     connect("Update Coin Health", function(id, health)
         local record = coinRecords[tostring(id)]
         if record then
@@ -2645,6 +2667,7 @@ releaseAssignmentsForCoin = function(rawId)
         end
         table.clear(petStates)
         table.clear(rejectedUntil)
+        table.clear(coinSync.BossRejected)
         return 0
     end
 
@@ -2659,6 +2682,7 @@ releaseAssignmentsForCoin = function(rawId)
         end
     end
     rejectedUntil[coinId] = nil
+    coinSync.BossRejected[coinId] = nil
     if released > 0 and type(petFarm.QueueFastDispatch) == "function" then
         petFarm:QueueFastDispatch()
     end
@@ -3135,7 +3159,14 @@ function petFarm:RunProgressLeases(token)
                 else
                     local coinId = tostring(state.CoinId)
                     local stagger = (math.abs(tonumber(player.UserId) or 0) % 7) * 0.05
-                    rejectedUntil[coinId] = now + 0.75 + stagger
+                    local record = coinRecords[coinId]
+                    if config.Mode == "Boss Chest Only" and record and isBossChest(record)
+                        and coinSync.SignalConnections["New Coin"] then
+                        coinSync.BossRejected[coinId] = true
+                        rejectedUntil[coinId] = nil
+                    else
+                        rejectedUntil[coinId] = now + 0.75 + stagger
+                    end
                     self.ProgressLeases[petId] = nil
                     petStates[petId] = nil
                     releasePetState(state, true)
@@ -3362,7 +3393,16 @@ function petFarm:EnsureEngine()
             releasePetState(state, true)
             local rejected = string.find(tostring(reason), "Join Coin rejected", 1, true) ~= nil
             if rejected and record then
-                rejectedUntil[tostring(record.Id)] = now + 0.75
+                local coinId = tostring(record.Id)
+                if config.Mode == "Boss Chest Only" and isBossChest(record)
+                    and coinSync.SignalConnections["New Coin"] then
+                    -- A rejected boss ID is absent/stale. Do not hammer it
+                    -- again; only the authoritative spawn event can re-arm it.
+                    coinSync.BossRejected[coinId] = true
+                    rejectedUntil[coinId] = nil
+                else
+                    rejectedUntil[coinId] = now + 0.75
+                end
             end
             self.FastPets[petId] = true
             if rejected then
@@ -3471,6 +3511,7 @@ local function clearAssignments(sendBack, callback)
     for _, state in pairs(petStates) do releasePetState(state) end
     table.clear(petStates)
     table.clear(rejectedUntil)
+    table.clear(coinSync.BossRejected)
 
     if not sendBack or (not changeTargetRemote and not leaveCoinRemote) then
         if type(callback) == "function" then
@@ -3789,7 +3830,9 @@ function petFarm:QueueFastDispatch(petId)
         local usable, now = self.Scratch.FastUsable, os.clock()
         table.clear(usable)
         for _, record in ipairs(targets) do
-            if now >= (rejectedUntil[tostring(record.Id)] or 0) then
+            local coinId = tostring(record.Id)
+            if not coinSync.BossRejected[coinId]
+                and now >= (rejectedUntil[coinId] or 0) then
                 usable[#usable + 1] = record
             end
         end
@@ -4799,13 +4842,19 @@ allocatorPass = function()
         table.clear(usable)
         local now = os.clock()
         for _, record in ipairs(targets) do
-            if now >= (rejectedUntil[tostring(record.Id)] or 0) then
+            local coinId = tostring(record.Id)
+            if not coinSync.BossRejected[coinId]
+                and now >= (rejectedUntil[coinId] or 0) then
                 table.insert(usable, record)
             end
         end
         if #usable == 0 then
             petFarm.TargetWindow = 0
-            if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
+            if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
+                driverStatus = "boss chest absent; waiting for New Coin"
+            elseif type(armFarmRecovery) == "function" then
+                armFarmRecovery(1.05)
+            end
             return
         end
 
@@ -5910,6 +5959,7 @@ local function finishShutdown()
         if type(scratch) == "table" then table.clear(scratch) end
     end
     table.clear(rejectedUntil)
+    table.clear(coinSync.BossRejected)
     table.clear(boundsCache)
     resetAreaCatalog()
     table.clear(coinSync.RemoteCaches.Command)
