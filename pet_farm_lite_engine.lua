@@ -14,6 +14,67 @@ local scheduler = task or {
     end,
 }
 
+local transportGate = {
+    Fire = {},
+    Invoke = {},
+    InFlight = {},
+    InvokeHistory = {},
+    Stats = {
+        SuppressedFire = 0,
+        CoalescedInvoke = 0,
+    },
+}
+
+local TRANSPORT_TTL = {
+    ["Change Pet Target"] = 0.08,
+    ["Farm Coin"] = 0.08,
+    ["Join Coin"] = 0.15,
+    ["Opening Egg"] = 0.12,
+    ["Open Egg"] = 0.12,
+    ["Buy Egg Yay"] = 0.2,
+    ["Delete Several Pets"] = 0.18,
+}
+
+local function transportSerialize(value, depth)
+    depth = depth or 0
+    if depth > 3 then return "[depth]" end
+
+    local valueType = type(value)
+    if valueType == "string" or valueType == "number" or valueType == "boolean" or valueType == "nil" then
+        return tostring(value)
+    end
+    if valueType == "Instance" then
+        local className = pcall(function() return value.ClassName end) and value.ClassName or "Instance"
+        local name = pcall(function() return value.Name end) and value.Name or ""
+        return string.format("Instance:%s:%s", className, tostring(name))
+    end
+    if valueType == "table" then
+        local list = {}
+        for key, item in ipairs(value) do
+            list[#list + 1] = transportSerialize(item, depth + 1)
+        end
+        if #list > 0 then
+            table.sort(list)
+            return "[" .. table.concat(list, ",") .. "]"
+        end
+        local ordered = {}
+        for key, item in pairs(value) do
+            ordered[#ordered + 1] = tostring(key) .. "=" .. transportSerialize(item, depth + 1)
+        end
+        table.sort(ordered)
+        return "{" .. table.concat(ordered, ",") .. "}"
+    end
+    return valueType
+end
+
+local function transportKey(command, ...)
+    local pieces = {tostring(command)}
+    for index = 1, select("#", ...) do
+        pieces[#pieces + 1] = transportSerialize(select(index, ...), 0)
+    end
+    return table.concat(pieces, "|")
+end
+
 local run = {
     Context = nil,
     Epoch = 0,
@@ -43,6 +104,8 @@ local run = {
     FarmSignals = 0,
     SignalFailures = 0,
     TransportFailures = 0,
+    TransportSuppressed = 0,
+    TransportCoalesced = 0,
     LocalTimeouts = 0,
     LastRoute = "unavailable",
     LastAssignmentAt = 0,
@@ -236,13 +299,52 @@ local function currentEntries(job)
     return entries, ids
 end
 
-local function callNamedInvoke(command, ...)
+local function transportInvokeCommand(command, ...)
+    local gateKey = transportKey(command, ...)
+    local ttl = tonumber(TRANSPORT_TTL[command]) or 0
+    local now = os.clock()
+    local inflight = transportGate.InFlight[gateKey]
+
+    if inflight then
+        while not inflight.done and os.clock() - inflight.start < math.max(ttl, 0.02) do
+            task.wait(math.min(0.012, ttl))
+        end
+        if inflight.done then
+            run.TransportCoalesced = run.TransportCoalesced + 1
+            return true, inflight.response, "coalesced invoke"
+        end
+        transportGate.InFlight[gateKey] = nil
+    end
+
+    if ttl > 0 and transportGate.Invoke[gateKey] then
+        local last = transportGate.Invoke[gateKey]
+        if now - last < ttl then
+            run.TransportSuppressed = run.TransportSuppressed + 1
+            return true, transportGate.InvokeHistory[gateKey], "coalesced invoke (fresh)"
+        end
+    end
+
+    transportGate.InFlight[gateKey] = {start = now, done = false}
+    transportGate.Invoke[gateKey] = now
+
     local context = run.Context
+    local response, route, success
     if context and type(context.GetCommandRemote) == "function" then
         local resolved, remote = pcall(context.GetCommandRemote, command)
         if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteFunction") then
-            local invoked, response = pcall(remote.InvokeServer, remote, ...)
-            if invoked then return true, response, "direct named remote" end
+            local invoked, payload = pcall(remote.InvokeServer, remote, ...)
+            if invoked then
+                response, route, success = true, payload, "direct named remote"
+                local entry = transportGate.InFlight[gateKey]
+                if entry then
+                    entry.done = true
+                    entry.response = response and payload or false
+                    entry.route = "direct named remote"
+                    transportGate.InvokeHistory[gateKey] = response and payload or payload
+                    transportGate.InFlight[gateKey] = nil
+                end
+                return true, payload, "direct named remote"
+            end
             if type(context.InvalidateCommand) == "function" then
                 pcall(context.InvalidateCommand, command, remote)
             end
@@ -252,20 +354,52 @@ local function callNamedInvoke(command, ...)
     local network = context and type(context.NetworkReady) == "function"
         and context.NetworkReady() or nil
     if not network or type(network.Invoke) ~= "function" then
+        local entry = transportGate.InFlight[gateKey]
+        if entry then
+            entry.done = true
+            entry.response = false
+            entry.route = "none"
+            transportGate.InFlight[gateKey] = nil
+        end
         return false, "Library.Network.Invoke unavailable", "none"
     end
-    local invoked, response = pcall(network.Invoke, command, ...)
-    if not invoked then return false, response, "Library.Network.Invoke" end
-    return true, response, "Library.Network.Invoke"
+
+    local invoked, payload = pcall(network.Invoke, command, ...)
+    if not invoked then
+        transportGate.InFlight[gateKey] = nil
+        return false, payload, "Library.Network.Invoke"
+    end
+
+    local entry = transportGate.InFlight[gateKey]
+    if entry then
+        entry.done = true
+        entry.response = payload
+        entry.route = "Library.Network.Invoke"
+        transportGate.InvokeHistory[gateKey] = payload
+        transportGate.InFlight[gateKey] = nil
+    end
+    return true, payload, "Library.Network.Invoke"
 end
 
-local function callNamedFire(command, ...)
+local function transportFireCommand(command, ...)
+    local gateKey = transportKey(command, ...)
+    local now = os.clock()
+    local ttl = tonumber(TRANSPORT_TTL[command]) or 0
+
+    if ttl > 0 and transportGate.Fire[gateKey] and now - transportGate.Fire[gateKey] < ttl then
+        run.TransportSuppressed = run.TransportSuppressed + 1
+        return true, "coalesced"
+    end
+
+    transportGate.Fire[gateKey] = now
     local context = run.Context
     if context and type(context.GetFireRemote) == "function" then
         local resolved, remote = pcall(context.GetFireRemote, command)
         if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent") then
             local fired = pcall(remote.FireServer, remote, ...)
-            if fired then return true, "direct named remote" end
+            if fired then
+                return true, "direct named remote"
+            end
             if type(context.InvalidateFire) == "function" then
                 pcall(context.InvalidateFire, command, remote)
             end
@@ -279,6 +413,15 @@ local function callNamedFire(command, ...)
     end
     local fired, problem = pcall(network.Fire, command, ...)
     return fired, fired and "Library.Network.Fire" or tostring(problem)
+end
+
+local function callNamedInvoke(command, ...)
+    local success, response, route = transportInvokeCommand(command, ...)
+    return success, response, route
+end
+
+local function callNamedFire(command, ...)
+    return transportFireCommand(command, ...)
 end
 
 local function normalizedPetId(value)
