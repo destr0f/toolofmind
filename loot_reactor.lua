@@ -10,7 +10,6 @@ local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.55
 local MAX_ORB_DELIVERY_ATTEMPTS = 2
 local ORB_CONFIRM_MIN_DELAY = 2.5
-local ORB_CONFIRM_MAX_DELAY = 8
 local CLIENT_STAGGER_SLOTS = 16
 local CLIENT_STAGGER_STEP = 0.01
 local BAG_LANES = 4
@@ -82,6 +81,7 @@ local run = {
     BagDelayed = {},
     BagPool = {},
     WaitingBagCount = 0,
+    BagLanes = BAG_LANES,
     BagWakeArmed = false,
     BagWakeAt = nil,
     StatusArmed = false,
@@ -289,33 +289,12 @@ local function clientStagger()
     return (math.abs(userId) % CLIENT_STAGGER_SLOTS) * CLIENT_STAGGER_STEP
 end
 
-local function currentRTT()
-    local context = run.Context
-    if not context then return 0 end
-    local rtt = 0
-    if type(context.GetRTT) == "function" then
-        local ok, value = pcall(context.GetRTT)
-        if ok then rtt = math.max(tonumber(value) or 0, 0) end
-    end
-    if type(context.GetPingSeconds) == "function" then
-        local ok, value = pcall(context.GetPingSeconds)
-        if ok then rtt = math.max(rtt, tonumber(value) or 0) end
-    end
-    return rtt
-end
-
 local function orbFlushInterval()
-    local rtt = currentRTT()
-    if rtt >= 2.00 then return 1.50 end
-    if rtt >= 1.25 then return 1.20 end
-    if rtt >= 0.80 then return 1.00 end
-    if rtt >= 0.50 then return 0.80 end
-    if rtt >= 0.25 then return 0.65 end
     return ORB_FLUSH_INTERVAL
 end
 
 local function orbConfirmationDelay()
-    return math.clamp(currentRTT() * 3, ORB_CONFIRM_MIN_DELAY, ORB_CONFIRM_MAX_DELAY)
+    return ORB_CONFIRM_MIN_DELAY
 end
 
 local function statusText()
@@ -351,7 +330,7 @@ local function statusText()
         run.OrbDropped,
         run.WaitingBagCount,
         MAX_PENDING_BAGS,
-        BAG_LANES,
+        run.BagLanes,
         run.BagEvents,
         run.BagSent,
         run.BagTransportCommitted,
@@ -874,10 +853,11 @@ end
 processBagWake = function()
     if not bagsEnabled() then return end
     local now = os.clock()
+    local lanes = BAG_LANES
     local nextAt = processDelayedBags(now)
     local queue = run.BagQueue
     local processed = 0
-    while processed < BAG_LANES and run.BagQueueHead <= #queue do
+    while processed < lanes and run.BagQueueHead <= #queue do
         local index = run.BagQueueHead
         local record = queue[index]
         queue[index] = false

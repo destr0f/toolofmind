@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.3.2"
+local MODULE_VERSION = "1.3.5"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -107,9 +107,11 @@ local run = {
     TransportSuppressed = 0,
     TransportCoalesced = 0,
     LocalTimeouts = 0,
+    LastRetryDelay = RETRY_DELAY,
     LastRoute = "unavailable",
     LastAssignmentAt = 0,
     LastTargetChangeAt = 0,
+    DispatchWidthConfig = DEFAULT_DISPATCH_WIDTH,
 }
 
 local pump
@@ -152,6 +154,10 @@ local function compactQueue()
     end
     for index = size, write, -1 do run.Queue[index] = nil end
     run.Head = 1
+end
+
+local function computeRetryDelay()
+    return RETRY_DELAY
 end
 
 local function clearPending(entries)
@@ -591,12 +597,14 @@ local function scheduleRetry(job, entries, reason, joined)
     end
     job.Attempt = nextAttempt
     job.Joined = joined == true
-    job.Due = os.clock() + RETRY_DELAY
+    local backoff = computeRetryDelay()
+    job.Due = os.clock() + backoff
     inspectTransition(job.DiagnosticId, "QUEUED", {
         attempt = nextAttempt,
         reason = reason,
-        delay = RETRY_DELAY,
+        delay = backoff,
     })
+    run.LastRetryDelay = backoff
     run.Delayed[#run.Delayed + 1] = job
     scheduleRetryTimer()
     return true
@@ -636,7 +644,7 @@ local function signalEntries(job, entries, route)
                     farmRoute
                 )
             end
-            local accepted = targetSent and farmSent
+            local accepted = (targetSent and farmSent)
             if accepted and context and type(context.OnAccepted) == "function" then
                 local called, result = pcall(
                     context.OnAccepted,
@@ -698,6 +706,7 @@ local function process(job)
     run.AverageRTT = run.AverageRTT == 0 and elapsed
         or run.AverageRTT * 0.85 + elapsed * 0.15
     run.LastRoute = tostring(route or "unavailable")
+    run.LastRetryDelay = computeRetryDelay()
 
     if not invoked then
         inspectComplete(attemptId, "TRANSPORT_FAILED", tostring(response))
@@ -749,10 +758,10 @@ local function process(job)
     if #rejectedEntries > 0 then
         run.Rejected = run.Rejected + #rejectedEntries
         run.LastProblem = "Join Coin rejected " .. tostring(#rejectedEntries) .. " pet(s)"
-        -- A successful InvokeServer transport followed by a rejected UID means
-        -- the coin is stale or contended. Retrying the same coin only burns one
-        -- more RTT and lets the pet drift back toward the player.
         failEntries(job, rejectedEntries, run.LastProblem)
+        if #acceptedEntries == 0 and #signalFailures == 0 then
+            return false
+        end
     elseif #signalFailures == 0 then
         run.LastProblem = "none"
     end
@@ -826,13 +835,15 @@ local function start(context)
     resetStats()
     run.Context = context
     local requested = math.floor(tonumber(context.DispatchWidth) or DEFAULT_DISPATCH_WIDTH)
-    run.Limit = math.max(1, math.min(requested, DEFAULT_DISPATCH_WIDTH))
+    run.DispatchWidthConfig = math.max(1, math.min(requested, DEFAULT_DISPATCH_WIDTH))
+    run.Limit = run.DispatchWidthConfig
     return true
 end
 
 local function setLimit(value)
     local requested = math.floor(tonumber(value) or DEFAULT_DISPATCH_WIDTH)
-    run.Limit = math.max(0, math.min(requested, DEFAULT_DISPATCH_WIDTH))
+    run.DispatchWidthConfig = math.max(1, math.min(requested, DEFAULT_DISPATCH_WIDTH))
+    run.Limit = run.DispatchWidthConfig
     pump()
     return run.Limit
 end
@@ -951,3 +962,4 @@ return function(action, context, value)
     if action == "version" then return MODULE_VERSION end
     return false, "unknown action"
 end
+
