@@ -117,10 +117,10 @@
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "3a2d208bd3368581883d36d972bbfd169d2b03ef",
-      "bytes": 27110,
-      "sha256": "acdef42604f786cb5e481081d0dde79c6b0b2c74cc851d91adbc01a1cb2d5291",
-      "djb2": "d6303595"
+      "commit": "8fd0bdcdac7a0f0da9b6102be7a114fdbf7cf5fd",
+      "bytes": 31809,
+      "sha256": "407a268d45636559608016ba1f53f3bf0e758c20f50d14648911a628a33658c8",
+      "djb2": "59bbbef6"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -345,12 +345,12 @@
     }
   },
   "build": {
-    "generatedFromCommit": "ca9981bfcdd7068b74c1a5b4e719405f3e0eb961",
+    "generatedFromCommit": "8fd0bdcdac7a0f0da9b6102be7a114fdbf7cf5fd",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6714,
-      "sha256": "71aa51dbb47a6153587fd5e702392b0de38849d7b3a875e418d78e76cb493162",
-      "djb2": "e23ede20"
+      "sha256": "2d9d8338599478b394b2c9b7a173dd49057197322579a1d761aaf5da49413362",
+      "djb2": "172b1baa"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -363,14 +363,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 211035,
-        "sha256": "88509cf1f6e724706f53ac1e288177db35db31264105d4684dccd380788f5237",
-        "djb2": "7ec2b437"
+        "sha256": "fb482de53101d44a4f9cfc29c50589dcf99a6b065e82e10dff520675907c939f",
+        "djb2": "858c073f"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 211035,
-        "sha256": "88509cf1f6e724706f53ac1e288177db35db31264105d4684dccd380788f5237",
-        "djb2": "7ec2b437"
+        "sha256": "fb482de53101d44a4f9cfc29c50589dcf99a6b065e82e10dff520675907c939f",
+        "djb2": "858c073f"
       }
     }
   }
