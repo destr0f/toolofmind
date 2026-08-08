@@ -180,7 +180,7 @@
       "load": "lazy",
       "role": "golden-conversion-worker",
       "path": "gold_machine_module.lua",
-      "commit": "1f2619c67536e44f924737b2711cf39265a7b63e",
+      "commit": "2122632922356bcaf038c2144b2d8f397389652a",
       "bytes": 22209,
       "sha256": "594f1373dd146b9f99be1de3abb873745e5385d9696b2bc31a773b7a55873643",
       "djb2": "a5ff4b9b"
@@ -196,7 +196,7 @@
       "load": "lazy",
       "role": "rainbow-conversion-worker",
       "path": "rainbow_machine_module.lua",
-      "commit": "1f2619c67536e44f924737b2711cf39265a7b63e",
+      "commit": "2122632922356bcaf038c2144b2d8f397389652a",
       "bytes": 22324,
       "sha256": "33fd9b8f6ab243b447f9afb4f6d8332e49bc3254daf6c384e96871c0a9951ae4",
       "djb2": "b851ea6b"
@@ -212,7 +212,7 @@
       "load": "lazy",
       "role": "dark-matter-queue-worker",
       "path": "dark_matter_module.lua",
-      "commit": "1f2619c67536e44f924737b2711cf39265a7b63e",
+      "commit": "2122632922356bcaf038c2144b2d8f397389652a",
       "bytes": 33202,
       "sha256": "f6abe7cec9dff53a454390f897188f2c5ed4a12dec5ab27fc6660aa288e33e67",
       "djb2": "f824a2dd"
