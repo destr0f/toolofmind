@@ -8,6 +8,10 @@ local MODULE_VERSION = "3.6.7"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.55
+local ORB_MIN_BATCH_NORMAL = 96
+local ORB_MIN_BATCH_LOW_TRAFFIC = 192
+local ORB_MAX_HOLD_NORMAL = 0.95
+local ORB_MAX_HOLD_LOW_TRAFFIC = 1.85
 local MAX_ORB_DELIVERY_ATTEMPTS = 2
 local ORB_CONFIRM_MIN_DELAY = 2.5
 local ORB_CONFIRM_MAX_DELAY = 8
@@ -17,7 +21,7 @@ local TRAFFIC_STAGGER_SLOTS = 29
 local TRAFFIC_STAGGER_STEP = 0.025
 local BAG_LANES = 4
 local MAX_PENDING_BAGS = 4096
-local BAG_FIRST_ATTEMPT_DELAY = 0.05
+local BAG_FIRST_ATTEMPT_DELAY = 0.22
 local BAG_TRANSPORT_RETRY_DELAY = 0.10
 local MAX_BAG_TRANSPORT_ATTEMPTS = 2
 local BAG_CONFIRM_MIN_DELAY = 0.60
@@ -82,6 +86,8 @@ local run = {
     OrbConfirmArmed = false,
     OrbRetryArmed = false,
     OrbLastFlushAt = 0,
+    OrbFirstPendingAt = 0,
+    OrbHeldForBatch = 0,
     OrbIdleBursts = 0,
     BagById = {},
     BagQueue = {},
@@ -119,6 +125,7 @@ local run = {
     BagOverflow = 0,
     BagRetiredNoAck = 0,
     BagSentUnverifiable = 0,
+    BagLiveAttached = 0,
     BagObjectAcknowledged = 0,
     BagNetworkAcknowledged = 0,
     BagTransportCommitted = 0,
@@ -355,6 +362,30 @@ local function orbFlushInterval()
     return ORB_FLUSH_INTERVAL
 end
 
+local function orbTargetBatchSize()
+    local rtt = currentRTT()
+    if lowTrafficActive() then
+        if rtt >= 0.90 then return 320 end
+        if rtt >= 0.55 then return 256 end
+        return ORB_MIN_BATCH_LOW_TRAFFIC
+    end
+    if rtt >= 0.80 then return 192 end
+    if rtt >= 0.45 then return 144 end
+    return ORB_MIN_BATCH_NORMAL
+end
+
+local function orbMaxHoldSeconds()
+    local rtt = currentRTT()
+    if lowTrafficActive() then
+        if rtt >= 0.90 then return 2.45 end
+        if rtt >= 0.55 then return 2.10 end
+        return ORB_MAX_HOLD_LOW_TRAFFIC
+    end
+    if rtt >= 0.80 then return 1.45 end
+    if rtt >= 0.45 then return 1.20 end
+    return ORB_MAX_HOLD_NORMAL
+end
+
 local function orbConfirmationDelay()
     return math.clamp(currentRTT() * 3, ORB_CONFIRM_MIN_DELAY, ORB_CONFIRM_MAX_DELAY)
 end
@@ -378,6 +409,17 @@ local function bagWakeDelay()
     if rtt >= 0.70 then return 0.42 end
     if rtt >= 0.45 then return 0.30 end
     return 0.18
+end
+
+local function bagFirstAttemptDelay()
+    local rtt = currentRTT()
+    local base = BAG_FIRST_ATTEMPT_DELAY
+    if lowTrafficActive() then
+        base = rtt >= 0.70 and 0.70 or (rtt >= 0.45 and 0.52 or 0.38)
+    elseif rtt >= 0.50 then
+        base = 0.34
+    end
+    return base + trafficStagger() * 0.35
 end
 
 local function bagRetryDelay(record)
@@ -540,6 +582,19 @@ local function flushOrbs()
     run.OrbFlushArmed = false
     if not orbsEnabled() or run.PendingOrbCount == 0 then return end
     local now = os.clock()
+    local firstPendingAt = tonumber(run.OrbFirstPendingAt) or 0
+    if firstPendingAt <= 0 then
+        firstPendingAt = now
+        run.OrbFirstPendingAt = now
+    end
+    local heldFor = now - firstPendingAt
+    local targetBatch = math.min(orbTargetBatchSize(), ORB_BATCH_SIZE)
+    if run.PendingOrbCount < targetBatch and heldFor < orbMaxHoldSeconds() then
+        run.OrbHeldForBatch = run.OrbHeldForBatch + 1
+        armOrbFlush(math.max(orbMaxHoldSeconds() - heldFor, 0.05))
+        armStatus()
+        return
+    end
     run.OrbLastFlushAt = now
     local profiled = profileBegin("PSX_OrbFlush")
     local ids = run.OrbBatch
@@ -576,6 +631,11 @@ local function flushOrbs()
                 end
             end
         end
+        if run.PendingOrbCount <= 0 then
+            run.OrbFirstPendingAt = 0
+        elseif run.OrbFirstPendingAt <= 0 then
+            run.OrbFirstPendingAt = now
+        end
         run.OrbBatches = run.OrbBatches + 1
         run.OrbIdsSent = run.OrbIdsSent + #ids
         run.OrbMaxBatch = math.max(run.OrbMaxBatch, #ids)
@@ -610,6 +670,10 @@ armOrbFlush = function(minimumDelay)
     local token = run.OrbToken
     local now = os.clock()
     local interval = orbFlushInterval()
+    local targetBatch = math.min(orbTargetBatchSize(), ORB_BATCH_SIZE)
+    if run.PendingOrbCount >= targetBatch then
+        interval = math.min(interval, 0.05 + trafficStagger() * 0.25)
+    end
     local earliest = (tonumber(run.OrbLastFlushAt) or 0) + interval
     local delaySeconds = math.max(earliest - now, tonumber(minimumDelay) or 0)
     if run.OrbLastFlushAt == 0 then
@@ -645,13 +709,14 @@ local function queueOrb(itemOrId, fromEvent, payload)
         end
         run.PendingOrbIds[orbId] = 0
         run.PendingOrbCount = run.PendingOrbCount + 1
+        if run.OrbFirstPendingAt <= 0 then run.OrbFirstPendingAt = os.clock() end
         queuedNew = true
     else
         run.OrbDeduplicated = run.OrbDeduplicated + 1
     end
     if fromEvent then run.OrbEvents = run.OrbEvents + 1 end
     if idleBurst and queuedNew then run.OrbIdleBursts = run.OrbIdleBursts + 1 end
-    armOrbFlush(idleBurst and queuedNew and trafficStagger() or nil)
+    armOrbFlush(nil)
     armStatus()
     return true
 end
@@ -673,6 +738,7 @@ local function removeQueuedOrb(id)
     run.OrbTransportFailures[id] = nil
     run.OrbDeliveryAttempts[id] = nil
     run.OrbAckObserved = true
+    if run.PendingOrbCount <= 0 then run.OrbFirstPendingAt = 0 end
     if found then run.OrbAcked = run.OrbAcked + 1 end
 end
 
@@ -921,7 +987,19 @@ local function queueBagEvent(id, payload, explicitPosition, sourceObject)
     if not bagsEnabled() then return false end
     id = id ~= nil and tostring(id) or nil
     if not id or id == "" then return false end
-    if run.BagById[id] then return true end
+    local existing = run.BagById[id]
+    if existing then
+        if typeof(sourceObject) == "Instance" and sourceObject.Parent then
+            existing.Object = sourceObject
+            existing.HadObject = true
+            existing.Position = objectPosition(sourceObject) or existing.Position
+            run.BagLiveAttached = run.BagLiveAttached + 1
+            if existing.State == "awaiting_ack" or existing.State == "queued" then
+                enqueueDelayedBag(existing, os.clock() + bagFirstAttemptDelay())
+            end
+        end
+        return true
+    end
     if run.WaitingBagCount >= MAX_PENDING_BAGS then
         run.BagOverflow = run.BagOverflow + 1
         armStatus()
@@ -952,7 +1030,7 @@ local function queueBagEvent(id, payload, explicitPosition, sourceObject)
     run.BagById[id] = record
     run.WaitingBagCount = run.WaitingBagCount + 1
     run.BagEvents = run.BagEvents + 1
-    enqueueDelayedBag(record, os.clock() + BAG_FIRST_ATTEMPT_DELAY + trafficStagger())
+    enqueueDelayedBag(record, os.clock() + bagFirstAttemptDelay())
     armStatus()
     return true
 end
@@ -1041,6 +1119,7 @@ local function clearOrbBinding()
     run.OrbConfirmArmed = false
     run.OrbRetryArmed = false
     run.OrbLastFlushAt = 0
+    run.OrbFirstPendingAt = 0
 end
 
 local function clearBagBinding()
@@ -1471,8 +1550,13 @@ local function installBagProducer()
             and record.Generation == run.Generation and bagsEnabled() then
             local ok, accepted = pcall(queueBagEvent, id, payload)
             if ok and accepted == true then
-                run.VisualInstancesPrevented = run.VisualInstancesPrevented + 1
-                return nil
+                -- Lootbags are server-collected more reliably when the native
+                -- object is allowed to exist briefly: magnet/gamepass logic can
+                -- move it to the player, then the folder watcher attaches that
+                -- live Instance to this queued record. We still coalesce the
+                -- network attempt and clean up after collect, but no longer
+                -- suppress the object before the native collector can see it.
+                return originalAdd(id, payload, ...)
             end
             record.FailOpen = true
             run.BagGate = false
@@ -1787,6 +1871,7 @@ local function resetStats()
     run.OrbDropped = 0
     run.OrbDeduplicated = 0
     run.OrbMaxBatch = 0
+    run.OrbHeldForBatch = 0
     run.OrbLocalSentUnacked = 0
     run.OrbTransportCommitted = 0
     run.OrbAckAvailable = false
@@ -1811,6 +1896,7 @@ local function resetStats()
     run.BagAckObserved = false
     run.BagAckSilenced = false
     run.BagLocalDestroyed = 0
+    run.BagLiveAttached = 0
     run.VisualInstancesPrevented = 0
     run.GateGeneration = 0
     run.LastRebindReason = "startup"
@@ -1919,6 +2005,8 @@ local function stats()
         LastRebindReason = run.LastRebindReason,
         LowTrafficActive = lowTrafficActive(),
         OrbFlushInterval = orbFlushInterval(),
+        OrbTargetBatch = orbTargetBatchSize(),
+        OrbMaxHold = orbMaxHoldSeconds(),
         BagLaneLimit = bagLaneLimit(),
         TrafficStagger = trafficStagger(),
         VisualInstancesPrevented = run.VisualInstancesPrevented,
@@ -1933,6 +2021,7 @@ local function stats()
         OrbEvents = run.OrbEvents,
         OrbBatches = run.OrbBatches,
         OrbIdleBursts = run.OrbIdleBursts,
+        OrbHeldForBatch = run.OrbHeldForBatch,
         OrbIdsSent = run.OrbIdsSent,
         OrbErrors = run.OrbErrors,
         OrbOverflow = run.OrbOverflow,
@@ -1962,6 +2051,7 @@ local function stats()
         BagAckObserved = run.BagAckObserved,
         BagAckSilenced = run.BagAckSilenced,
         BagLocalDestroyed = run.BagLocalDestroyed,
+        BagLiveAttached = run.BagLiveAttached,
         RouteLootbags = run.RouteLootbags,
     }
 end

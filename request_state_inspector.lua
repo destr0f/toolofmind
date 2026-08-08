@@ -696,7 +696,7 @@ local function updateUI(state)
     setText(state, "Farm", formatLane(state, "Farm") .. string.format(
         "\nworkers %s/%s +%s | idle %s | targets %s/%s"
             .. "\nqueued %s | invoke %s oldest %.1fs | RTT %.0fms"
-            .. "\nsignals target/farm/fail %s/%s/%s | transport/timeout %s/%s"
+            .. "\nsignals target/farm/deferred/fail %s/%s/%s/%s | transport/timeout %s/%s"
             .. "\naccepted/reject/stale %s/%s/%s | target cooldowns %s",
         tostring(gauge(state, "Farm", "working", 0)),
         tostring(gauge(state, "Farm", "equipped", 0)),
@@ -709,6 +709,7 @@ local function updateUI(state)
         tonumber(gauge(state, "Farm", "averageRtt", 0)) or 0,
         tostring(gauge(state, "Farm", "targetSignals", 0)),
         tostring(gauge(state, "Farm", "farmSignals", 0)),
+        tostring(gauge(state, "Farm", "deferredSignals", 0)),
         tostring(gauge(state, "Farm", "signalFailures", 0)),
         tostring(gauge(state, "Farm", "transportFailures", 0)),
         tostring(gauge(state, "Farm", "localTimeouts", 0)),

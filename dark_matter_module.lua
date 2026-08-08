@@ -2,11 +2,11 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.4.0"
+local MODULE_VERSION = "1.4.1"
 local TARGET_PET_NAME = "Hellish Axolotl"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
-local IDLE_CHECK_DELAY = 5
+local IDLE_CHECK_DELAY = 10
 local READY_SAFETY_DELAY = 30
 
 local ABBREVIATIONS = {
