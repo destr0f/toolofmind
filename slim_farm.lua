@@ -4213,7 +4213,21 @@ function env.PSX_OG_TRAFFIC_DIET:PingSeconds()
     local ok, pingMs = pcall(function()
         return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
     end)
-    return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
+    pingMs = ok and tonumber(pingMs) or nil
+    if not pingMs or pingMs <= 0 then
+        local inspector = requestDiagnostics and requestDiagnostics.Controller
+        if type(inspector) == "table" and type(inspector.State) == "function" then
+            local readOk, state = pcall(inspector.State, inspector)
+            if readOk and type(state) == "table" then
+                pingMs = tonumber(state.Ping) or pingMs
+            end
+        end
+    end
+    if not pingMs or pingMs <= 0 then
+        pingMs = tonumber(self.State and self.State.LastPingMs) or 0
+    end
+    if pingMs and pingMs > 0 then self.State.LastPingMs = pingMs end
+    return math.max((tonumber(pingMs) or 0) / 1000, 0)
 end
 
 function env.PSX_OG_TRAFFIC_DIET:ReadEggPending()
@@ -5205,10 +5219,7 @@ lootCollector.Context = {
         return math.max(tonumber(stats and stats.AverageRTT) or 0, 0)
     end,
     GetPingSeconds = function()
-        local ok, pingMs = pcall(function()
-            return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-        end)
-        return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
+        return env.PSX_OG_TRAFFIC_DIET:PingSeconds()
     end,
     LowTraffic = function() return env.PSX_OG_TRAFFIC_DIET:IsActive() end,
     TrafficSensitivity = function() return config.TrafficSensitivity end,
@@ -6604,6 +6615,9 @@ function requestDiagnostics.UpdateTelemetry()
         requestDiagnostics.Gauge("Loot", "orbDropped", tonumber(lootStats.OrbDropped) or 0)
         requestDiagnostics.Gauge("Loot", "orbDeduplicated", tonumber(lootStats.OrbDeduplicated) or 0)
         requestDiagnostics.Gauge("Loot", "orbRoute", tostring(lootStats.RouteOrbs or "unresolved"))
+        requestDiagnostics.Gauge("Loot", "lowTraffic", lootStats.LowTrafficActive == true)
+        requestDiagnostics.Gauge("Loot", "orbFlushInterval", tonumber(lootStats.OrbFlushInterval) or 0)
+        requestDiagnostics.Gauge("Loot", "bagLaneLimit", tonumber(lootStats.BagLaneLimit) or 0)
         local sampleAt = tonumber(requestDiagnostics.Loot.At) or 0
         local sampleIds = tonumber(requestDiagnostics.Loot.OrbIds) or 0
         local sampleBatches = tonumber(requestDiagnostics.Loot.OrbBatches) or 0

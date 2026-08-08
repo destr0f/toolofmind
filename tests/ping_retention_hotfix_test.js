@@ -22,6 +22,8 @@ requireText(inspector, "PING_BASELINE_SAMPLE_LIMIT = 30", "frozen ping baseline"
 requireText(inspector, "invokeAge <= 8", "normal invoke does not hide network warning");
 requireText(main, '["auto egg Open Egg"] = 2', "bounded hot trace");
 requireText(main, "PSX_OG_TRAFFIC_DIET:CanRunMaintenance", "shared maintenance traffic gate");
+requireText(main, "pcall(inspector.State, inspector)", "traffic diet inspector ping fallback");
+requireText(main, 'requestDiagnostics.Gauge("Loot", "lowTraffic"', "loot low traffic telemetry");
 requireText(main, "TrafficSensitivity", "traffic diet persisted config");
 requireText(egg, "trafficEggDelay", "auto egg traffic pacing");
 requireText(automationUI, "Traffic Diet / Multi Client", "traffic diet UI controls");
