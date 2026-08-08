@@ -3279,25 +3279,26 @@ function petFarm:RunSignalCommits(token)
         else
             local age = math.max(now - (tonumber(state.AcceptedAt) or now), 0)
             local attempt = tonumber(state.SignalCommitAttempt) or 0
-            if state.MembershipConfirmed == true or state.ProgressConfirmed == true then
-                self.SignalCommits[petId] = nil
-            else
-                local due = (attempt == 0 and age >= 0.22)
-                    or (attempt == 1 and age >= 0.60)
+            local due = state.MembershipConfirmed == true
+                or (attempt == 0 and age >= 0.22)
+                or (attempt == 1 and age >= 0.55)
             if due then
                 local sent = self:SendCommittedFarmSignals(petId, state)
                 if sent then
-                    self.WireRepairs = self.WireRepairs + 1
+                    if state.MembershipConfirmed then
+                        self.MembershipConfirms = self.MembershipConfirms + 1
+                    else
+                        self.WireRepairs = self.WireRepairs + 1
+                    end
                 end
                 attempt = tonumber(state.SignalCommitAttempt) or attempt
-                if attempt >= 2 or age >= 1.05 then
+                if state.MembershipConfirmed or attempt >= 2 or age >= 0.9 then
                     self.SignalCommits[petId] = nil
                 else
                     pending = true
                 end
             else
                 pending = true
-            end
             end
         end
     end
@@ -3347,10 +3348,9 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
             state.MembershipConfirmedAt = now
             self:ConfirmStateProgress(state, "membership", now)
             if firstMembership and state.AcceptedAt ~= nil then
-                -- Membership proves Join Coin was enough; cancel the optional
-                -- Change Pet Target/Farm Coin fallback before it can duplicate
-                -- the same assignment on the wire.
-                self.SignalCommits[tostring(petId)] = nil
+                -- The dispatch engine already sent Change Pet Target and Farm
+                -- Coin before OnAccepted. Membership is an acknowledgement,
+                -- not a reason to duplicate both wire signals again.
                 self.MembershipConfirms = self.MembershipConfirms + 1
             end
         end
@@ -3417,11 +3417,9 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state
                 or state.Generation ~= farmGeneration
                 or not recordAlive(record) then return false end
-            -- Join Coin is the authoritative assignment. The expensive named
-            -- target/farm signals are now a bounded fallback, sent only if no
-            -- membership or health progress confirms the lock shortly after
-            -- the server accepted the join. This cuts normal farm wire fan-out
-            -- from three calls to one call per assignment.
+            -- OnAccepted is reached only after the engine successfully sent both
+            -- named farm signals. Keep the target locked immediately; optional
+            -- game acknowledgements refine diagnostics and lease liveness.
             state.Phase = "working"
             state.RetryCount = math.max((tonumber(attempt) or 1) - 1, 0)
             state.AcceptedAt = os.clock()
@@ -3431,8 +3429,6 @@ function petFarm:EnsureEngine()
             state.ProgressDeadline = state.AcceptedAt + self:ProgressLeaseSeconds()
             self.ProgressProbeAccepted = self.ProgressProbeAccepted + 1
             self.ProgressLeases[petId] = state
-            self.SignalCommits[petId] = state
-            self:ScheduleSignalCommit(0.18)
             self:ScheduleProgressLease(0.5)
             driverStatus = "Lite lock accepted; awaiting real progress via " .. tostring(route)
             return true
@@ -4275,16 +4271,6 @@ env.PSX_OG_TRAFFIC_DIET = {
         LastRun = {},
         FirstDenied = {},
         GrantedUntil = {},
-        BackgroundSlotDelay = {
-            Boosts = 8,
-            Rewards = 10,
-            GoldMachine = 18,
-            RainbowMachine = 18,
-            DarkMatterMachine = 24,
-            DiamondPack = 45,
-            AutoEnchant = 45,
-            Default = 30,
-        },
         Minimum = {
             AutoEnchant = 18,
             Boosts = 8,
@@ -4498,14 +4484,10 @@ function env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance(owner)
         maintenance.FirstDenied[key] = now
     end
     local sinceDenied = now - firstDenied
-    local slotDelay = tonumber(maintenance.BackgroundSlotDelay[key])
-        or tonumber(maintenance.BackgroundSlotDelay.Default) or 30
-    local p3Maintenance = key == "Boosts" or key == "Rewards"
-        or key == "GoldMachine" or key == "RainbowMachine"
-        or key == "DarkMatterMachine" or key == "DiamondPack"
-    if p3Maintenance and sinceRun >= minimum and sinceDenied >= slotDelay then
+    local lowImpact = key == "Boosts" or key == "Rewards"
+    if lowImpact and sinceRun >= minimum and sinceDenied >= 10 then
         self:MarkMaintenanceRun(key, now)
-        return true, "bounded P3 background slot"
+        return true, "low-impact background slot"
     end
 
     if sinceRun >= forceAfter and sinceDenied >= forceAfter then
@@ -6708,7 +6690,6 @@ function requestDiagnostics.UpdateTelemetry(detailMode)
     requestDiagnostics.Gauge("Farm", "localTimeouts", tonumber(dispatchStats.LocalTimeouts) or 0)
     requestDiagnostics.Gauge("Farm", "targetSignals", tonumber(dispatchStats.TargetSignals) or 0)
     requestDiagnostics.Gauge("Farm", "farmSignals", tonumber(dispatchStats.FarmSignals) or 0)
-    requestDiagnostics.Gauge("Farm", "deferredSignals", tonumber(dispatchStats.DeferredSignals) or 0)
     requestDiagnostics.Gauge("Farm", "pendingSignalCommits", pendingSignalCommits)
     requestDiagnostics.Gauge("Farm", "pendingProgressLeases", pendingProgressLeases)
     requestDiagnostics.Gauge("Farm", "membershipConfirms", petFarm.MembershipConfirms)

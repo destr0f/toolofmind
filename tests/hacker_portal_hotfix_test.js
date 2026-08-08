@@ -25,17 +25,17 @@ const acceptedStart = source.indexOf("OnAccepted = function");
 const signalsStart = source.indexOf("OnSignalsSent = function", acceptedStart);
 assert(acceptedStart >= 0 && signalsStart > acceptedStart);
 assert(source.slice(acceptedStart, signalsStart).includes('state.Phase = "working"'),
-    "accepted Join Coin must commit the local lock without an unavailable progress ACK");
-assert(source.slice(acceptedStart, signalsStart).includes("self.SignalCommits[petId] = state")
-    && source.slice(acceptedStart, signalsStart).includes("self:ScheduleSignalCommit(0.18)"),
-    "accepted Join Coin must defer the optional target/farm signal pair behind a bounded fallback");
+    "accepted target/farm signals must commit the lock without an unavailable progress ACK");
+assert(!source.slice(acceptedStart, signalsStart).includes("self.SignalCommits[petId] = state")
+    && !source.slice(acceptedStart, signalsStart).includes("self:ScheduleSignalCommit("),
+    "accepted Join Coin duplicates the signal pair already sent by the engine");
 assert(source.includes('connect("Update Coin Pets", function(id, pets)'),
     "the authoritative server membership acknowledgement is not connected");
 assert(source.includes("function petFarm:ConfirmCoinPets(rawCoinId, payload)"));
 assert(source.includes('fireFast("Change Pet Target", petId, "Coin", coinId)'));
 assert(source.includes('fireFast("Farm Coin", coinId, petId)'));
 assert(source.includes("attempt == 0 and age >= 0.22"));
-assert(source.includes("attempt == 1 and age >= 0.60"));
+assert(source.includes("attempt == 1 and age >= 0.55"));
 const commitStart = source.indexOf("function petFarm:RunSignalCommits");
 const commitEnd = source.indexOf("function petFarm:ScheduleSignalCommit", commitStart);
 assert(commitStart >= 0 && commitEnd > commitStart);

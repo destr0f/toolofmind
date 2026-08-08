@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.3.3"
+local MODULE_VERSION = "1.3.2"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -155,7 +155,6 @@ local run = {
     ActiveInvokes = {},
     TargetSignals = 0,
     FarmSignals = 0,
-    DeferredSignals = 0,
     SignalFailures = 0,
     TransportFailures = 0,
     TransportSuppressed = 0,
@@ -312,7 +311,6 @@ local function resetStats()
     run.LastProblem = "none"
     run.TargetSignals = 0
     run.FarmSignals = 0
-    run.DeferredSignals = 0
     run.SignalFailures = 0
     run.TransportFailures = 0
     run.LocalTimeouts = 0
@@ -722,41 +720,6 @@ local function signalEntries(job, entries, route)
     return failed
 end
 
-local function acceptEntriesWithoutSignals(job, entries, route)
-    local failed = job.SignalFailures
-    table.clear(failed)
-    local context = run.Context
-    for _, entry in ipairs(entries) do
-        if entryCurrent(entry) then
-            local accepted = true
-            if context and type(context.OnAccepted) == "function" then
-                local called, result = pcall(
-                    context.OnAccepted,
-                    entry.PetId,
-                    entry.State,
-                    job.Record,
-                    nil,
-                    job.Attempt,
-                    route
-                )
-                accepted = called and result ~= false
-            end
-            if accepted then
-                run.Accepted = run.Accepted + 1
-                run.DeferredSignals = run.DeferredSignals + 1
-                run.LastAssignmentAt = os.clock()
-                clearPendingEntry(entry)
-            else
-                run.SignalFailures = run.SignalFailures + 1
-                failed[#failed + 1] = entry
-            end
-        else
-            clearPendingEntry(entry)
-        end
-    end
-    return failed
-end
-
 local function process(job)
     local entries, petIds = currentEntries(job)
     if #entries == 0 then
@@ -834,7 +797,7 @@ local function process(job)
         return false
     end
 
-    local signalFailures = acceptEntriesWithoutSignals(job, acceptedEntries, route)
+    local signalFailures = signalEntries(job, acceptedEntries, route)
     if #signalFailures > 0 then
         run.Errors = run.Errors + #signalFailures
         run.LastProblem = "post-join signal failure"
@@ -1022,7 +985,6 @@ local function stats()
         OldestInvokeAge = oldestInvokeAge,
         TargetSignals = run.TargetSignals,
         FarmSignals = run.FarmSignals,
-        DeferredSignals = run.DeferredSignals,
         SignalFailures = run.SignalFailures,
         TransportFailures = run.TransportFailures,
         TransportCacheEntries = transportGate.EntryCount,
