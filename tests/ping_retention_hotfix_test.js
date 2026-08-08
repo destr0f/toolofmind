@@ -45,8 +45,15 @@ if (main.includes('beginProfile("TOM:Invoke:" .. tostring(commandName))')
 requireText(main, "function requestDiagnostics.UpdateTelemetry(detailMode)", "lazy telemetry detail flag");
 requireText(main, "requestDiagnostics.UpdateTelemetry(monitorVisible)", "full telemetry detail is monitor-tab driven");
 requireText(main, "requestDiagnostics.LastFullTelemetryAt", "bounded hidden telemetry");
+requireText(main, "requestDiagnostics.LastLightTelemetryAt", "hidden telemetry has a cheap light cadence");
+requireText(main, "requestDiagnostics.LastLootTrafficAt", "loot traffic stats are sampled instead of swept every UI tick");
+requireText(main, "local hiddenFullInterval = trafficSnapshot.Active == true and 180 or 120", "hidden full telemetry is rare and traffic-aware");
 requireText(main, "pcall(inspector.State, inspector)", "traffic diet inspector ping fallback");
+requireText(main, "FarmStatsAt = 0", "traffic diet caches farm stats");
+requireText(main, "local farmStatsTTL = self.State.Active == true and 4.0 or 2.0", "traffic diet does not refresh farm stats every low-traffic probe");
+requireText(main, 'return true, "low-impact background slot"', "boosts and rewards cannot starve behind farm/loot telemetry");
 requireText(main, 'requestDiagnostics.Gauge("Loot", "lowTraffic"', "loot low traffic telemetry");
+requireText(main, 'requestDiagnostics.Gauge("Loot", "bagAckSilenced"', "silent lootbag ack path is visible in diagnostics");
 requireText(main, "TrafficSensitivity", "traffic diet persisted config");
 requireText(main, "sharedSaveCache", "shared Save.Get cache");
 requireText(main, "state.Active == true and 15 or MACHINE_PET_SNAPSHOT_TTL", "traffic-aware machine snapshot TTL");

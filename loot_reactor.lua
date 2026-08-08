@@ -23,7 +23,8 @@ local MAX_BAG_TRANSPORT_ATTEMPTS = 2
 local BAG_CONFIRM_MIN_DELAY = 0.60
 local BAG_CONFIRM_MAX_DELAY = 3.00
 local MAX_BAG_POOL = 256
-local STATUS_INTERVAL = 1
+local STATUS_INTERVAL = 2.5
+local BAG_ACK_SILENCE_SENT_THRESHOLD = 32
 local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"
 local NATIVE_PET_COIN_STAGE = "__PSX_HEADLESS_TARGET__"
 
@@ -124,6 +125,7 @@ local run = {
     BagTransportDropped = 0,
     BagAckAvailable = false,
     BagAckObserved = false,
+    BagAckSilenced = false,
     BagLocalDestroyed = 0,
 }
 
@@ -888,6 +890,12 @@ local function collectBag(record, now)
         run.BagSent = run.BagSent + 1
         record.State = "awaiting_ack"
         record.SentAt = now
+        if run.BagAckAvailable and not run.BagAckObserved
+            and run.BagSent >= BAG_ACK_SILENCE_SENT_THRESHOLD then
+            run.BagAckAvailable = false
+            run.BagAckSilenced = true
+            run.BagGateReason = "Remove Lootbag ack route stayed silent; using fire-and-retire"
+        end
         if typeof(liveObject) ~= "Instance" and record.Attempts == 1 then
             run.BagSentUnverifiable = run.BagSentUnverifiable + 1
         end
@@ -1514,6 +1522,7 @@ local function installBagProducer()
     local removeSignal = networkSignal("Remove Lootbag")
     if removeSignal then
         run.BagAckAvailable = true
+        run.BagAckSilenced = false
         run.BagGateConnections[#run.BagGateConnections + 1] =
             removeSignal:Connect(function(id) acknowledgeBag(id, "network") end)
     else
@@ -1545,6 +1554,7 @@ local function restoreBagGate()
     run.BagProducerRecord = nil
     run.BagGate = false
     run.BagAckAvailable = false
+    run.BagAckSilenced = false
     run.NativeLootbagCollect = nil
     run.LootbagsProducer = run.BagsOn and "fallback" or "disabled"
     run.BagGateReason = run.BagsOn
@@ -1799,6 +1809,7 @@ local function resetStats()
     run.BagTransportDropped = 0
     run.BagAckAvailable = false
     run.BagAckObserved = false
+    run.BagAckSilenced = false
     run.BagLocalDestroyed = 0
     run.VisualInstancesPrevented = 0
     run.GateGeneration = 0
@@ -1949,6 +1960,7 @@ local function stats()
         BagTransportDropped = run.BagTransportDropped,
         BagAckAvailable = run.BagAckAvailable,
         BagAckObserved = run.BagAckObserved,
+        BagAckSilenced = run.BagAckSilenced,
         BagLocalDestroyed = run.BagLocalDestroyed,
         RouteLootbags = run.RouteLootbags,
     }

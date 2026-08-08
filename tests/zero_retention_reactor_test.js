@@ -115,7 +115,8 @@ for (const marker of [
     "MAX_PENDING_BAGS = 4096",
     "BAG_TRANSPORT_RETRY_DELAY = 0.10",
     "MAX_BAG_TRANSPORT_ATTEMPTS = 2",
-    "STATUS_INTERVAL = 1",
+    "STATUS_INTERVAL = 2.5",
+    "BAG_ACK_SILENCE_SENT_THRESHOLD = 32",
     "PendingOrbIds = {}",
     "OrbBatch = table.create(ORB_BATCH_SIZE)",
     "BagById = {}",
@@ -151,6 +152,7 @@ for (const marker of [
     "record.Retired = true",
     "OrbDropped",
     "BagOverflow",
+    "BagAckSilenced",
 ]) {
     assert(loot.includes(marker), `missing native loot marker: ${marker}`);
 }
@@ -165,7 +167,8 @@ assert(loot.includes("run.BagSentUnverifiable = run.BagSentUnverifiable + 1")
     && loot.includes("run.NativeLootbagCollect = environment.Collect")
     && loot.includes("run.BagLocalDestroyed = run.BagLocalDestroyed + 1")
     && loot.includes("enqueueDelayedBag(record, now + bagConfirmationDelay())")
-    && loot.includes("run.BagTransportCommitted = run.BagTransportCommitted + 1"),
+    && loot.includes("run.BagTransportCommitted = run.BagTransportCommitted + 1")
+    && loot.includes("run.BagAckSilenced = true"),
     "successful bag sends are not retained through Remove Lootbag/local visual cleanup");
 assert(loot.includes("return originalScan(...)")
     && loot.includes("return originalRemove(id, ...)")

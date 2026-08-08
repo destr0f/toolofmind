@@ -717,6 +717,7 @@ local requestDiagnostics = {
     Egg = { Id = nil, LastState = nil, Successes = 0 },
     Startup = { RequestTimes = {}, LoaderWaiters = 0 },
     Loot = { At = 0, OrbIds = 0, OrbBatches = 0 },
+    Quick = { RateAt = 0, FarmAt = 0, Equipped = 0, Working = 0, Joining = 0 },
     Reload = { WorkerStarts = 0 },
     HotCommands = {
         ["Claim Orbs"] = true,
@@ -726,6 +727,8 @@ local requestDiagnostics = {
     },
     RouteSamples = {},
     LastFullTelemetryAt = 0,
+    LastLightTelemetryAt = 0,
+    LastLootTrafficAt = 0,
 }
 
 function requestDiagnostics.Id(prefix)
@@ -4259,6 +4262,8 @@ env.PSX_OG_TRAFFIC_DIET = {
         FarmActive = 0,
         FarmQueued = 0,
         FarmOldest = 0,
+        FarmStats = nil,
+        FarmStatsAt = 0,
         LastBadAt = 0,
         UpdatedAt = 0,
     },
@@ -4268,22 +4273,22 @@ env.PSX_OG_TRAFFIC_DIET = {
         GrantedUntil = {},
         Minimum = {
             AutoEnchant = 18,
-            Boosts = 15,
-            GoldMachine = 20,
-            RainbowMachine = 20,
-            DarkMatterMachine = 20,
-            DiamondPack = 60,
-            Rewards = 60,
+            Boosts = 8,
+            GoldMachine = 30,
+            RainbowMachine = 30,
+            DarkMatterMachine = 35,
+            DiamondPack = 90,
+            Rewards = 20,
             Default = 30,
         },
         ForceAfter = {
-            AutoEnchant = 90,
-            Boosts = 60,
-            GoldMachine = 120,
-            RainbowMachine = 120,
-            DarkMatterMachine = 120,
-            DiamondPack = 180,
-            Rewards = 120,
+            AutoEnchant = 75,
+            Boosts = 35,
+            GoldMachine = 75,
+            RainbowMachine = 75,
+            DarkMatterMachine = 90,
+            DiamondPack = 150,
+            Rewards = 45,
             Default = 120,
         },
     },
@@ -4322,12 +4327,29 @@ end
 
 function env.PSX_OG_TRAFFIC_DIET:Refresh(lootStats, farmStatsOverride)
     local now = os.clock()
-    if not lootStats and now - (tonumber(self.State.UpdatedAt) or 0) < 0.75 then
+    local hasFarmStatsOverride = type(farmStatsOverride) == "table"
+    local refreshTTL = self.State.Active == true and 2.0 or 1.25
+    if not lootStats and not hasFarmStatsOverride
+        and now - (tonumber(self.State.UpdatedAt) or 0) < refreshTTL then
         return self.State
     end
     local profile = self:Profile()
     local ping = self:PingSeconds()
-    local farmStats = type(farmStatsOverride) == "table" and farmStatsOverride or petFarm:RefreshStats()
+    local farmStats = farmStatsOverride
+    if hasFarmStatsOverride then
+        self.State.FarmStats = farmStats
+        self.State.FarmStatsAt = now
+    else
+        local farmStatsTTL = self.State.Active == true and 4.0 or 2.0
+        if type(self.State.FarmStats) == "table"
+            and now - (tonumber(self.State.FarmStatsAt) or 0) < farmStatsTTL then
+            farmStats = self.State.FarmStats
+        else
+            farmStats = petFarm:RefreshStats()
+            self.State.FarmStats = farmStats
+            self.State.FarmStatsAt = now
+        end
+    end
     local pendingOrbs = lootStats and tonumber(lootStats.PendingOrbs) or self.State.PendingOrbs
     local unconfirmedOrbs = lootStats and tonumber(lootStats.UnconfirmedOrbs) or self.State.UnconfirmedOrbs
     local waitingBags = lootStats and tonumber(lootStats.WaitingBags) or self.State.WaitingBags
@@ -4412,6 +4434,11 @@ function env.PSX_OG_TRAFFIC_DIET:MarkMaintenanceRun(key, now)
 end
 
 function env.PSX_OG_TRAFFIC_DIET:IsActive()
+    local state = self.State
+    local age = os.clock() - (tonumber(state.UpdatedAt) or 0)
+    if age >= 0 and age <= (state.Active == true and 1.25 or 0.75) then
+        return state.Active == true
+    end
     return self:Refresh().Active == true
 end
 
@@ -4457,6 +4484,11 @@ function env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance(owner)
         maintenance.FirstDenied[key] = now
     end
     local sinceDenied = now - firstDenied
+    local lowImpact = key == "Boosts" or key == "Rewards"
+    if lowImpact and sinceRun >= minimum and sinceDenied >= 10 then
+        self:MarkMaintenanceRun(key, now)
+        return true, "low-impact background slot"
+    end
 
     if sinceRun >= forceAfter and sinceDenied >= forceAfter then
         self:MarkMaintenanceRun(key, now)
@@ -4470,7 +4502,7 @@ function env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance(owner)
 end
 
 function env.PSX_OG_TRAFFIC_DIET:StatusText()
-    local state = self:Refresh()
+    local state = (tonumber(self.State.UpdatedAt) or 0) > 0 and self.State or self:Refresh()
     return string.format(
         "Traffic Diet: %s | reason: %s | ping: %.0fms\nLoot backlog: orbs %d/%d | bags %d | egg pending: %s\nFarm network: active/queued %d/%d | oldest invoke %.1fs",
         state.Active and "ON" or "OFF",
@@ -6581,11 +6613,29 @@ function requestDiagnostics.UpdateTelemetry(detailMode)
     local now = os.clock()
     detailMode = detailMode == true
 
-    if not detailMode and now - (tonumber(requestDiagnostics.LastFullTelemetryAt) or 0) < 30 then
+    if not detailMode then
+        local trafficSnapshot = env.PSX_OG_TRAFFIC_DIET.State or {}
+        local lastFull = tonumber(requestDiagnostics.LastFullTelemetryAt) or 0
+        if lastFull <= 0 then
+            lastFull = now
+            requestDiagnostics.LastFullTelemetryAt = now
+        end
+        local hiddenFullInterval = trafficSnapshot.Active == true and 180 or 120
+        local allowHiddenFull = now - lastFull >= hiddenFullInterval
+        local lightInterval = trafficSnapshot.Active == true and 12 or 8
+        if not allowHiddenFull
+            and now - (tonumber(requestDiagnostics.LastLightTelemetryAt) or 0) < lightInterval then
+            return
+        end
+        requestDiagnostics.LastLightTelemetryAt = now
+
         local lootStats
-        if lootCollector.Controller then
+        local lootInterval = trafficSnapshot.Active == true and 12 or 8
+        if lootCollector.Controller
+            and now - (tonumber(requestDiagnostics.LastLootTrafficAt) or 0) >= lootInterval then
             local called, value = pcall(lootCollector.Controller, "stats")
             if called and type(value) == "table" then lootStats = value end
+            requestDiagnostics.LastLootTrafficAt = now
         end
         local trafficState = env.PSX_OG_TRAFFIC_DIET:Refresh(lootStats)
         requestDiagnostics.Gauge("Traffic", "lowTraffic", trafficState.Active == true)
@@ -6595,8 +6645,14 @@ function requestDiagnostics.UpdateTelemetry(detailMode)
             (tonumber(trafficState.PendingOrbs) or 0)
                 + (tonumber(trafficState.UnconfirmedOrbs) or 0)
                 + (tonumber(trafficState.WaitingBags) or 0))
+        if lootStats then
+            requestDiagnostics.Gauge("Loot", "orbPending", tonumber(lootStats.PendingOrbs) or 0)
+            requestDiagnostics.Gauge("Loot", "orbUnconfirmed", tonumber(lootStats.UnconfirmedOrbs) or 0)
+            requestDiagnostics.Gauge("Loot", "bagsWaiting", tonumber(lootStats.WaitingBags) or 0)
+            requestDiagnostics.Gauge("Loot", "bagAckSilenced", lootStats.BagAckSilenced == true)
+        end
         statusSetters.Set("Traffic", env.PSX_OG_TRAFFIC_DIET:StatusText())
-        return
+        if not allowHiddenFull then return end
     end
     requestDiagnostics.LastFullTelemetryAt = now
 
@@ -6826,6 +6882,7 @@ function requestDiagnostics.UpdateTelemetry(detailMode)
         requestDiagnostics.Gauge("Loot", "bagRetries", tonumber(lootStats.BagRetried) or 0)
         requestDiagnostics.Gauge("Loot", "bagErrors", tonumber(lootStats.BagErrors) or 0)
         requestDiagnostics.Gauge("Loot", "bagOverflow", tonumber(lootStats.BagOverflow) or 0)
+        requestDiagnostics.Gauge("Loot", "bagAckSilenced", lootStats.BagAckSilenced == true)
         requestDiagnostics.Gauge("Loot", "bagRoute", tostring(lootStats.RouteLootbags or "unresolved"))
         requestDiagnostics.Gauge("Loot", "producerCold",
             string.find(producerText, "unavailable", 1, true) ~= nil
@@ -6870,6 +6927,7 @@ local function updateRuntimeTelemetry()
     if not running() then return end
     local function tick()
         if not running() then return end
+        local now = os.clock()
         local interfaceVisible = interfaceIsVisible()
         local monitorVisible = interfaceVisible and UI.MonitorTab
             and UI.MonitorTab.Selected == true
@@ -6878,10 +6936,14 @@ local function updateRuntimeTelemetry()
             and type(quickHUD) == "table"
             and quickHUD.Gui ~= nil
         local visibleDiagnostics = monitorVisible or quickVisible
+        local trafficActive = env.PSX_OG_TRAFFIC_DIET:IsActive()
         requestDiagnostics.UpdateTelemetry(monitorVisible)
-        local rateText = updateCurrencyMonitorStatus(
-            monitorVisible or (quickVisible and config.QuickHUDFarmRate == true)
-        )
+        local ratePublish = monitorVisible
+            or (quickVisible and config.QuickHUDFarmRate == true
+                and (not trafficActive
+                    or now - (tonumber(requestDiagnostics.Quick.RateAt) or 0) >= 12))
+        if ratePublish then requestDiagnostics.Quick.RateAt = now end
+        local rateText = ratePublish and updateCurrencyMonitorStatus(true) or lastRateText
 
         if interfaceVisible and UI.FarmTab and UI.FarmTab.Selected == true
             and zoneCatalogDirty then
@@ -6893,12 +6955,24 @@ local function updateRuntimeTelemetry()
         end
 
         local equippedCount, assignedCount, workingCount, joiningCount, dispatchStats
-        if monitorVisible or (quickVisible and config.QuickHUDFarmState == true) then
+        local farmStatePublish = monitorVisible
+            or (quickVisible and config.QuickHUDFarmState == true
+                and (not trafficActive
+                    or now - (tonumber(requestDiagnostics.Quick.FarmAt) or 0) >= 8))
+        if farmStatePublish then
+            requestDiagnostics.Quick.FarmAt = now
             local equippedIds = petFarm.LastEquippedIds or {}
             equippedCount = tonumber(petFarm.EquippedCount) or #equippedIds
             assignedCount = assignmentCount()
             workingCount, joiningCount = petFarm:PhaseCounts()
             dispatchStats = petFarm:RefreshStats()
+            requestDiagnostics.Quick.Equipped = equippedCount
+            requestDiagnostics.Quick.Working = workingCount
+            requestDiagnostics.Quick.Joining = joiningCount
+        else
+            equippedCount = tonumber(requestDiagnostics.Quick.Equipped) or 0
+            workingCount = tonumber(requestDiagnostics.Quick.Working) or 0
+            joiningCount = tonumber(requestDiagnostics.Quick.Joining) or 0
         end
 
         if monitorVisible then
@@ -6950,7 +7024,6 @@ local function updateRuntimeTelemetry()
             quickHUD:ApplyVisibility()
         end
         statusSetters.Flush()
-        local trafficActive = env.PSX_OG_TRAFFIC_DIET:IsActive()
         local nextDelay = visibleDiagnostics
             and (trafficActive and 4 or 2)
             or (trafficActive and 8 or 4)
