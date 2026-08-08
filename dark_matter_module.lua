@@ -467,6 +467,16 @@ local function runCheck(state, context)
         state.Busy = false
     end
 
+    if type(context.CanRunMaintenance) == "function" then
+        local checked, allowed, reason = pcall(context.CanRunMaintenance, context.OperationOwner)
+        if checked and allowed ~= true then
+            setStatus(state, context, "Traffic Diet hold: " .. tostring(reason)
+                .. "\nDark Matter worker skipped this cycle before inventory scan or request.")
+            finish(8)
+            return
+        end
+    end
+
     local save = context.GetSave()
     if not save then
         setStatus(state, context, "Player save is unavailable; no Dark Matter action was sent.")
@@ -511,7 +521,7 @@ local function runCheck(state, context)
             if not acquired then
                 setStatus(state, context, "A completed Dark Matter pet is ready, but pet inventory is reserved by "
                     .. tostring(owner) .. ". No claim sent.")
-                finish(0.2)
+                finish(string.find(tostring(owner), "traffic diet", 1, true) and 8 or 0.2)
                 return
             end
             local transportOk, accepted, message, sourceName, sessionIndex =
@@ -621,7 +631,7 @@ local function runCheck(state, context)
             .. "-pet Dark Matter batch is ready, but pet inventory is reserved by "
             .. tostring(owner) .. ". No request sent.\nPolicy: " .. policySummary
             .. "\n" .. statsText(stats))
-        finish(0.2)
+        finish(string.find(tostring(owner), "traffic diet", 1, true) and 8 or 0.2)
         return
     end
     local safe, selectedUIDs, labels, problem = validateSelection(context, selected)

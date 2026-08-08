@@ -272,7 +272,7 @@ local function runCycle(state, context)
     if activationCandidate then
         local acquired, owner = acquireOperation(state, context)
         if not acquired then
-            state.NextWakeAt = now + 0.25
+            state.NextWakeAt = now + (string.find(tostring(owner), "traffic diet", 1, true) and 6 or 0.25)
             setStatus(state, context, statusText(state, context, save,
                 "ready to activate " .. activationCandidate.Definition.Key
                 .. ", waiting for " .. tostring(owner)))
@@ -345,7 +345,7 @@ local function runCycle(state, context)
 
         local acquired, owner = acquireOperation(state, context)
         if not acquired then
-            state.NextWakeAt = now + 0.25
+            state.NextWakeAt = now + (string.find(tostring(owner), "traffic diet", 1, true) and 6 or 0.25)
             setStatus(state, context, statusText(state, context, save,
                 "bundle is needed, waiting for " .. tostring(owner)))
             return

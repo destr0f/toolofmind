@@ -357,6 +357,10 @@ local VIP_REWARD_COOLDOWN = 14400
 local REWARD_RETRY_DELAY = 60
 local rewardServerTime
 local rewardClockStarted
+local sharedSaveCache = {
+    At = -math.huge,
+    Save = nil,
+}
 local rewardStates = {
     VIP = {
         Label = "VIP",
@@ -714,6 +718,13 @@ local requestDiagnostics = {
     Startup = { RequestTimes = {}, LoaderWaiters = 0 },
     Loot = { At = 0, OrbIds = 0, OrbBatches = 0 },
     Reload = { WorkerStarts = 0 },
+    HotCommands = {
+        ["Claim Orbs"] = true,
+        ["Collect Lootbag"] = true,
+        ["Buy Egg Yay"] = true,
+        ["Delete Several Pets"] = true,
+    },
+    RouteSamples = {},
     LastFullTelemetryAt = 0,
 }
 
@@ -771,8 +782,15 @@ function requestDiagnostics.Subsystem(commandName)
     return "Background"
 end
 
+function requestDiagnostics.VerboseCommand(commandName)
+    return requestDiagnostics.HotCommands[tostring(commandName)] ~= true
+end
+
 function requestDiagnostics.Route(kind, commandName, resolved, problem)
     local key = tostring(kind) .. ":" .. tostring(commandName)
+    if requestDiagnostics.HotCommands[tostring(commandName)] == true and resolved == true then
+        return
+    end
     local wasUnresolved = requestDiagnostics.UnresolvedRoutes[key] == true
     if resolved then
         requestDiagnostics.Gauge("Routes", "lastResolved", key)
@@ -2843,26 +2861,31 @@ end
 
 local function invokeCommand(commandName, ...)
     local arguments = table.pack(...)
-    local subsystem = requestDiagnostics.Subsystem(commandName)
-    local diagnosticId = requestDiagnostics.Id("invoke:" .. tostring(commandName))
-    requestDiagnostics.Transition(subsystem, diagnosticId, "WAITING_READY", {
-        command = commandName,
-        argc = arguments.n,
-    })
+    local verboseDiagnostics = requestDiagnostics.VerboseCommand(commandName)
+    local subsystem
+    local diagnosticId
+    if verboseDiagnostics then
+        subsystem = requestDiagnostics.Subsystem(commandName)
+        diagnosticId = requestDiagnostics.Id("invoke:" .. tostring(commandName))
+        requestDiagnostics.Transition(subsystem, diagnosticId, "WAITING_READY", {
+            command = commandName,
+            argc = arguments.n,
+        })
+    end
     local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
     local result
     if remote then
         requestDiagnostics.Route("invoke", commandName, true)
-        requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
-            command = commandName,
-            route = sourceName,
-            index = sessionIndex,
-        })
-        local profiled = beginProfile("TOM:Invoke:" .. tostring(commandName))
+        if verboseDiagnostics then
+            requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
+                command = commandName,
+                route = sourceName,
+                index = sessionIndex,
+            })
+        end
         result = table.pack(pcall(function()
             return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
         end))
-        endProfile(profiled)
         if not result[1] then coinSync.RemoteCaches.Command[commandName] = nil end
     end
     if not remote or not result[1] then
@@ -2871,54 +2894,61 @@ local function invokeCommand(commandName, ...)
         if network and type(network.Invoke) == "function" then
             sourceName = "Library.Network.Invoke named fallback"
             sessionIndex = nil
-            requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
-                command = commandName,
-                route = sourceName,
-                fallback = directProblem,
-            })
-            local profiled = beginProfile("TOM:Invoke:" .. tostring(commandName))
+            if verboseDiagnostics then
+                requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
+                    command = commandName,
+                    route = sourceName,
+                    fallback = directProblem,
+                })
+            end
             result = table.pack(pcall(function()
                 return network.Invoke(commandName, table.unpack(arguments, 1, arguments.n))
             end))
-            endProfile(profiled)
             if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
         else
             result = table.pack(false, directProblem .. "; Library.Network.Invoke is unavailable")
         end
     end
     if not result[1] then
+        subsystem = subsystem or requestDiagnostics.Subsystem(commandName)
+        diagnosticId = diagnosticId or requestDiagnostics.Id("invoke:" .. tostring(commandName))
         requestDiagnostics.Route("invoke", commandName, false, tostring(result[2]))
         requestDiagnostics.Complete(subsystem, diagnosticId, "TRANSPORT_FAILED", tostring(result[2]))
         return false, false, tostring(result[2]), sourceName, sessionIndex
     end
-    if result[2] == true then
-        requestDiagnostics.Complete(subsystem, diagnosticId, "SERVER_ACCEPTED", "server returned true")
-    elseif result[2] == false or result[2] == nil then
-        requestDiagnostics.Complete(subsystem, diagnosticId, "SERVER_REJECTED", "server returned false/nil")
-    else
-        requestDiagnostics.Complete(subsystem, diagnosticId, "COMPLETED",
-            "server returned " .. tostring(type(result[2])))
+    if verboseDiagnostics then
+        if result[2] == true then
+            requestDiagnostics.Complete(subsystem, diagnosticId, "SERVER_ACCEPTED", "server returned true")
+        elseif result[2] == false or result[2] == nil then
+            requestDiagnostics.Complete(subsystem, diagnosticId, "SERVER_REJECTED", "server returned false/nil")
+        else
+            requestDiagnostics.Complete(subsystem, diagnosticId, "COMPLETED",
+                "server returned " .. tostring(type(result[2])))
+        end
     end
     return true, result[2] == true, result[3], sourceName, sessionIndex, result[4]
 end
 
 local function fireCommand(commandName, ...)
     local arguments = table.pack(...)
-    local subsystem = requestDiagnostics.Subsystem(commandName)
-    local diagnosticId = requestDiagnostics.Id("fire:" .. tostring(commandName))
-    requestDiagnostics.Transition(subsystem, diagnosticId, "WAITING_READY", {
-        command = commandName,
-        argc = arguments.n,
-    })
+    local verboseDiagnostics = requestDiagnostics.VerboseCommand(commandName)
+    local subsystem
+    local diagnosticId
+    if verboseDiagnostics then
+        subsystem = requestDiagnostics.Subsystem(commandName)
+        diagnosticId = requestDiagnostics.Id("fire:" .. tostring(commandName))
+        requestDiagnostics.Transition(subsystem, diagnosticId, "WAITING_READY", {
+            command = commandName,
+            argc = arguments.n,
+        })
+    end
     local remote, sourceName, sessionIndex, resolveProblem = getFireRemote(commandName)
     local ok, problem
     if remote then
         requestDiagnostics.Route("fire", commandName, true)
-        local profiled = beginProfile("TOM:Fire:" .. tostring(commandName))
         ok, problem = pcall(function()
             remote:FireServer(table.unpack(arguments, 1, arguments.n))
         end)
-        endProfile(profiled)
         if not ok then coinSync.RemoteCaches.Fire[commandName] = nil end
     end
     if not remote or not ok then
@@ -2927,28 +2957,30 @@ local function fireCommand(commandName, ...)
         if network and type(network.Fire) == "function" then
             sourceName = "Library.Network.Fire named fallback"
             sessionIndex = nil
-            local profiled = beginProfile("TOM:Fire:" .. tostring(commandName))
             ok, problem = pcall(function()
                 network.Fire(commandName, table.unpack(arguments, 1, arguments.n))
             end)
-            endProfile(profiled)
             if ok then requestDiagnostics.Route("fire", commandName, true) end
         else
             ok, problem = false, directProblem .. "; Library.Network.Fire is unavailable"
         end
     end
     if not ok then
+        subsystem = subsystem or requestDiagnostics.Subsystem(commandName)
+        diagnosticId = diagnosticId or requestDiagnostics.Id("fire:" .. tostring(commandName))
         requestDiagnostics.Route("fire", commandName, false, tostring(problem))
         requestDiagnostics.Complete(subsystem, diagnosticId, "TRANSPORT_FAILED", tostring(problem))
         return false, tostring(problem), sourceName, sessionIndex
     end
     -- A RemoteEvent has no response. Keep this explicitly unacknowledged until
     -- a subsystem observes its own existing game acknowledgement.
-    requestDiagnostics.Transition(subsystem, diagnosticId, "FIRE_LOCAL_SENT_UNACKED", {
-        command = commandName,
-        route = sourceName,
-        index = sessionIndex,
-    })
+    if verboseDiagnostics then
+        requestDiagnostics.Transition(subsystem, diagnosticId, "FIRE_LOCAL_SENT_UNACKED", {
+            command = commandName,
+            route = sourceName,
+            index = sessionIndex,
+        })
+    end
     return true, nil, sourceName, sessionIndex
 end
 
@@ -3972,10 +4004,21 @@ function statusSetters.Routes(text)
     statusSetters.Set("Routes", text)
 end
 local function getRewardSave()
+    local now = os.clock()
+    local diet = env.PSX_OG_TRAFFIC_DIET
+    local ttl = diet and diet.State and diet.State.Active == true and 12 or 3
+    if sharedSaveCache.Save and now - sharedSaveCache.At < ttl then
+        return sharedSaveCache.Save
+    end
     if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
     local save
     pcall(function() save = Library.Save.Get() end)
-    return type(save) == "table" and save or nil
+    if type(save) == "table" then
+        sharedSaveCache.Save = save
+        sharedSaveCache.At = now
+        return save
+    end
+    return nil
 end
 
 local rewardClockRetryAt = 0
@@ -4191,7 +4234,10 @@ local function inspectEggThroughModule(eggId, count, animation)
         Egg = eggId,
         Count = count,
         Animation = animation,
-        GetCurrency = getCurrentCurrency,
+        GetCurrency = function(currencyName)
+            local save = getRewardSave()
+            return getCurrentCurrency(currencyName, save, true, sharedSaveCache.At)
+        end,
         FormatNumber = formatRateNumber,
     })
 end
@@ -4219,25 +4265,26 @@ env.PSX_OG_TRAFFIC_DIET = {
     Maintenance = {
         LastRun = {},
         FirstDenied = {},
+        GrantedUntil = {},
         Minimum = {
-            AutoEnchant = 6,
-            Boosts = 8,
-            GoldMachine = 8,
-            RainbowMachine = 8,
-            DarkMatterMachine = 8,
-            DiamondPack = 20,
-            Rewards = 10,
-            Default = 12,
+            AutoEnchant = 18,
+            Boosts = 15,
+            GoldMachine = 20,
+            RainbowMachine = 20,
+            DarkMatterMachine = 20,
+            DiamondPack = 60,
+            Rewards = 60,
+            Default = 30,
         },
         ForceAfter = {
-            AutoEnchant = 30,
-            Boosts = 30,
-            GoldMachine = 45,
-            RainbowMachine = 45,
-            DarkMatterMachine = 45,
-            DiamondPack = 90,
-            Rewards = 45,
-            Default = 60,
+            AutoEnchant = 90,
+            Boosts = 60,
+            GoldMachine = 120,
+            RainbowMachine = 120,
+            DarkMatterMachine = 120,
+            DiamondPack = 180,
+            Rewards = 120,
+            Default = 120,
         },
     },
 }
@@ -4358,7 +4405,9 @@ end
 function env.PSX_OG_TRAFFIC_DIET:MarkMaintenanceRun(key, now)
     key = self:MaintenanceKey(key)
     local maintenance = self.Maintenance
-    maintenance.LastRun[key] = now or os.clock()
+    now = now or os.clock()
+    maintenance.LastRun[key] = now
+    maintenance.GrantedUntil[key] = now + 1.5
     maintenance.FirstDenied[key] = nil
 end
 
@@ -4379,28 +4428,45 @@ function env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance(owner)
     local key = self:MaintenanceKey(owner)
     local now = os.clock()
     local maintenance = self.Maintenance
-    if not state.Active and state.EggPending ~= true then
-        self:MarkMaintenanceRun(key, now)
-        return true
-    end
-
     local minimum = tonumber(maintenance.Minimum[key]) or tonumber(maintenance.Minimum.Default) or 12
     local forceAfter = tonumber(maintenance.ForceAfter[key]) or tonumber(maintenance.ForceAfter.Default) or 60
     local lastRun = tonumber(maintenance.LastRun[key]) or 0
     local firstDenied = tonumber(maintenance.FirstDenied[key]) or 0
     local sinceRun = lastRun > 0 and (now - lastRun) or math.huge
+    if now <= (tonumber(maintenance.GrantedUntil[key]) or 0) then
+        return true, "reserved maintenance slot"
+    end
+
+    local lootPressure = (tonumber(state.PendingOrbs) or 0)
+        + (tonumber(state.UnconfirmedOrbs) or 0)
+    local farmBusy = (tonumber(state.FarmQueued) or 0) > 0
+        or (tonumber(state.FarmOldest) or 0) >= 0.75
+    local quiet = state.Active ~= true
+        and state.EggPending ~= true
+        and lootPressure < 96
+        and (tonumber(state.WaitingBags) or 0) <= 0
+        and not farmBusy
+
+    if quiet and sinceRun >= minimum then
+        self:MarkMaintenanceRun(key, now)
+        return true, "quiet maintenance slot"
+    end
+
     if firstDenied <= 0 then
         firstDenied = now
         maintenance.FirstDenied[key] = now
     end
     local sinceDenied = now - firstDenied
 
-    if sinceRun >= minimum or sinceDenied >= forceAfter then
+    if sinceRun >= forceAfter and sinceDenied >= forceAfter then
         self:MarkMaintenanceRun(key, now)
-        return true, "fair maintenance slot"
+        return true, "forced background slot"
     end
-    return false, (state.EggPending and "egg request is pending" or state.Reason)
-        .. " | " .. key .. " in " .. string.format("%.1fs", math.max(minimum - sinceRun, 0))
+    local waitFor = quiet and math.max(minimum - sinceRun, 0)
+        or math.max(forceAfter - math.min(sinceRun, sinceDenied), 0)
+    local reason = quiet and "quiet cooldown" or (state.EggPending and "egg request is pending" or state.Reason)
+    return false, tostring(reason)
+        .. " | " .. key .. " in " .. string.format("%.1fs", math.max(waitFor, 0))
 end
 
 function env.PSX_OG_TRAFFIC_DIET:StatusText()
@@ -4497,12 +4563,16 @@ local machinePetSnapshot = {
 
 invalidateMachinePetSnapshot = function()
     machinePetSnapshot.At = -math.huge
+    sharedSaveCache.At = -math.huge
 end
 
 local function getMachinePetSnapshot(force)
     local now = os.clock()
+    local diet = env.PSX_OG_TRAFFIC_DIET
+    local state = (diet and diet.State) or { Active = false }
+    local ttl = state.Active == true and 15 or MACHINE_PET_SNAPSHOT_TTL
     if not force and machinePetSnapshot.Save
-        and now - machinePetSnapshot.At < MACHINE_PET_SNAPSHOT_TTL then
+        and now - machinePetSnapshot.At < ttl then
         return machinePetSnapshot
     end
     local save = getRewardSave()
@@ -4780,7 +4850,10 @@ local function startBoostModule()
             }
         end,
         GetSave = getRewardSave,
-        GetCurrency = getCurrentCurrency,
+        GetCurrency = function(currencyName)
+            local save = getRewardSave()
+            return getCurrentCurrency(currencyName, save, true, sharedSaveCache.At)
+        end,
         FormatNumber = formatRateNumber,
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
@@ -4851,6 +4924,7 @@ local function invokeReward(kind)
         reply = "Route/transport error; no claim confirmed: " .. tostring(serverMessage)
     elseif accepted then
         succeeded = true
+        sharedSaveCache.At = -math.huge
         if kind == "FreeGifts" and state.Argument ~= nil then
             state.LocalClaimed[state.Argument] = true
         end
@@ -4869,7 +4943,8 @@ local function runDiamondPackCheck()
     if diamondPackBusy then return end
     diamondPackBusy = true
 
-    local balance = getCurrentCurrency("Rainbow Coins")
+    local save = getRewardSave()
+    local balance = getCurrentCurrency("Rainbow Coins", save, true, sharedSaveCache.At)
     local balanceText = balance ~= nil and formatRateNumber(balance) or "unknown"
     local status
 
@@ -4881,7 +4956,7 @@ local function runDiamondPackCheck()
     else
         local canRun, quietReason = env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance("DiamondPack")
         if not canRun then
-            diamondPackNextCheck = os.clock() + 15
+            diamondPackNextCheck = os.clock() + 30
             diamondPackBusy = false
             statusSetters.Diamond("Traffic Diet hold: " .. tostring(quietReason)
                 .. "\nRainbow pack is ready but no purchase request was sent; retrying shortly.")
@@ -5015,7 +5090,7 @@ rewardWorker.Run = function(generation)
                 end
                 local successDelay = kind == "FreeGifts" and 0.25
                     or math.max(cooldown or 0, REWARD_RETRY_DELAY)
-                state.NextAttempt = now + (canRun and (succeeded and successDelay or REWARD_RETRY_DELAY) or 15)
+                state.NextAttempt = now + (canRun and (succeeded and successDelay or REWARD_RETRY_DELAY) or 30)
                 nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
             else
                 nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))

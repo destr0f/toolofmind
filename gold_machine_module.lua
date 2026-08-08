@@ -328,6 +328,16 @@ local function runCheck(state, context)
         state.Busy = false
     end
 
+    if type(context.CanRunMaintenance) == "function" then
+        local checked, allowed, reason = pcall(context.CanRunMaintenance, context.OperationOwner)
+        if checked and allowed ~= true then
+            context.SetStatus("Traffic Diet hold: " .. tostring(reason)
+                .. "\nGolden machine skipped this cycle before inventory scan or request.")
+            finish(8)
+            return
+        end
+    end
+
     local save = context.GetSave()
     if not save then
         context.SetStatus("Player save is unavailable; no pets were sent.")
@@ -379,7 +389,7 @@ local function runCheck(state, context)
     if not acquired then
         context.SetStatus("A " .. tostring(batchSize) .. "-pet Golden batch is ready, but pet inventory is reserved by "
             .. tostring(owner) .. ". No request sent.\n" .. statsText(stats))
-        finish(0.2)
+        finish(string.find(tostring(owner), "traffic diet", 1, true) and 8 or 0.2)
         return
     end
     local safe, selectedUIDs, selectedAudit, problem = validateSelection(context, selectedCandidates)

@@ -6,6 +6,10 @@ const inspector = fs.readFileSync("request_state_inspector.lua", "utf8");
 const main = fs.readFileSync("slim_farm.lua", "utf8");
 const egg = fs.readFileSync("auto_egg_module.lua", "utf8");
 const automationUI = fs.readFileSync("automation_ui_module.lua", "utf8");
+const goldMachine = fs.readFileSync("gold_machine_module.lua", "utf8");
+const rainbowMachine = fs.readFileSync("rainbow_machine_module.lua", "utf8");
+const darkMatter = fs.readFileSync("dark_matter_module.lua", "utf8");
+const boost = fs.readFileSync("boost_module.lua", "utf8");
 
 function requireText(source, needle, label) {
   if (!source.includes(needle)) throw new Error(`${label}: missing ${needle}`);
@@ -26,18 +30,38 @@ requireText(main, "PSX_OG_TRAFFIC_DIET:CanRunMaintenance", "shared maintenance t
 requireText(main, "Maintenance = {", "fair maintenance token state");
 requireText(main, "function env.PSX_OG_TRAFFIC_DIET:MaintenanceKey", "maintenance owner normalization");
 requireText(main, "function env.PSX_OG_TRAFFIC_DIET:MarkMaintenanceRun", "maintenance grant marker");
-requireText(main, 'return true, "fair maintenance slot"', "low-traffic maintenance escape hatch");
+requireText(main, "GrantedUntil = {}", "maintenance slot reservation");
+requireText(main, 'return true, "quiet maintenance slot"', "quiet-window maintenance escape hatch");
+requireText(main, 'return true, "forced background slot"', "bounded maintenance starvation escape hatch");
 requireText(main, 'if tostring(owner) == "AutoEgg" then return true end', "auto egg never waits on maintenance");
-requireText(main, 'beginProfile("TOM:Invoke:" .. tostring(commandName))', "network invoke profiler marker");
-requireText(main, 'beginProfile("TOM:Fire:" .. tostring(commandName))', "network fire profiler marker");
+requireText(main, "HotCommands = {", "hot request command map");
+requireText(main, "function requestDiagnostics.VerboseCommand", "hot request diagnostic gate");
+requireText(main, '["Claim Orbs"] = true', "orb fire is a hot request");
+requireText(main, '["Collect Lootbag"] = true', "lootbag fire is a hot request");
+if (main.includes('beginProfile("TOM:Invoke:" .. tostring(commandName))')
+    || main.includes('beginProfile("TOM:Fire:" .. tostring(commandName))')) {
+  throw new Error("per-request TOM network profiler marker returned to the hot path");
+}
 requireText(main, "function requestDiagnostics.UpdateTelemetry(detailMode)", "lazy telemetry detail flag");
 requireText(main, "requestDiagnostics.UpdateTelemetry(monitorVisible)", "full telemetry detail is monitor-tab driven");
 requireText(main, "requestDiagnostics.LastFullTelemetryAt", "bounded hidden telemetry");
 requireText(main, "pcall(inspector.State, inspector)", "traffic diet inspector ping fallback");
 requireText(main, 'requestDiagnostics.Gauge("Loot", "lowTraffic"', "loot low traffic telemetry");
 requireText(main, "TrafficSensitivity", "traffic diet persisted config");
+requireText(main, "sharedSaveCache", "shared Save.Get cache");
+requireText(main, "state.Active == true and 15 or MACHINE_PET_SNAPSHOT_TTL", "traffic-aware machine snapshot TTL");
 requireText(egg, "trafficEggDelay", "auto egg traffic pacing");
 requireText(automationUI, "Traffic Diet / Multi Client", "traffic diet UI controls");
+for (const [name, source] of [
+  ["gold", goldMachine],
+  ["rainbow", rainbowMachine],
+  ["dark matter", darkMatter],
+]) {
+  requireText(source, "context.CanRunMaintenance", `${name} pre-scan maintenance gate`);
+  requireText(source, "skipped this cycle before inventory scan or request", `${name} traffic hold does not scan inventory`);
+}
+requireText(boost, 'string.find(tostring(owner), "traffic diet", 1, true) and 6 or 0.25',
+  "boost traffic hold backs off instead of 0.25s gate polling");
 
 const retention = 0.5;
 const sweepInterval = 1;
