@@ -21,7 +21,7 @@ requireText(loot, "local function bagLaneLimit()", "adaptive lootbag lanes");
 requireText(inspector, "PING_BASELINE_SAMPLE_LIMIT = 30", "frozen ping baseline");
 requireText(inspector, "invokeAge <= 8", "normal invoke does not hide network warning");
 requireText(main, '["auto egg Open Egg"] = 2', "bounded hot trace");
-requireText(main, "trafficDiet:CanRunMaintenance", "shared maintenance traffic gate");
+requireText(main, "PSX_OG_TRAFFIC_DIET:CanRunMaintenance", "shared maintenance traffic gate");
 requireText(main, "TrafficSensitivity", "traffic diet persisted config");
 requireText(egg, "trafficEggDelay", "auto egg traffic pacing");
 requireText(automationUI, "Traffic Diet / Multi Client", "traffic diet UI controls");
