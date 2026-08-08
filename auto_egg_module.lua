@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.3"
+local MODULE_VERSION = "1.6.4"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1930,9 +1930,42 @@ local function handlePending(state, context, now)
     return true
 end
 
+local function trafficEggDelay(context)
+    if type(context.TrafficEggDelay) == "function" then
+        local ok, value = pcall(context.TrafficEggDelay)
+        if ok then return math.clamp(tonumber(value) or 0, 0, 2.0) end
+    end
+    if type(context.LowTraffic) == "function" then
+        local ok, active = pcall(context.LowTraffic)
+        if ok and active == true then
+            local ping = 0
+            if type(context.GetPingSeconds) == "function" then
+                local readOk, value = pcall(context.GetPingSeconds)
+                if readOk then ping = math.max(tonumber(value) or 0, 0) end
+            end
+            return math.clamp(0.55 + ping, 0.5, 2.0)
+        end
+    end
+    return 0
+end
+
 local function beginRequest(state, context, options, inspection)
     local headless = options.Animation == "Headless (No Animation)"
     local retryKey = requestRetryKey(options.Egg, options.Count, options.Animation)
+    local dietDelay = trafficEggDelay(context)
+    if dietDelay > 0 then
+        local last = tonumber(state.LastRequestAt) or 0
+        local dueAt = last + dietDelay
+        local now = os.clock()
+        if last > 0 and now < dueAt then
+            state.NextAction = dueAt
+            setStatus(state, context, string.format(
+                "Traffic Diet is coalescing egg requests for %.2fs.\nNo duplicate Buy Egg Yay request was sent.",
+                dueAt - now
+            ))
+            return
+        end
+    end
     if headless then
         reconcileEggWorldVisualGate(state, context, true)
         local producerReady, producerProblem = ensureHeadlessProducerGate(state, context)
@@ -2038,6 +2071,7 @@ local function beginRequest(state, context, options, inspection)
     }
     pending.ResponseDeadlineAt = pending.StartedAt + pending.TimeoutSeconds
     state.Pending = pending
+    state.LastRequestAt = pending.StartedAt
     state.Requests = state.Requests + 1
     if not headless then armNativeSkip(state, context, pending) end
     setStatus(state, context, string.format(
@@ -2222,6 +2256,7 @@ return function(action, context)
         OperationOwned = false,
         Pending = nil,
         NextAction = os.clock() + ARM_DELAY,
+        LastRequestAt = 0,
         RequestDelay = INITIAL_REQUEST_DELAY,
         SuspendedUntil = 0,
         AcknowledgedEvents = {},

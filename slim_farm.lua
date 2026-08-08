@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.49"
+local VERSION = "1.4.1-dev.50"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -341,6 +341,9 @@ local config = {
     QuickHUDFarmRate = true,
     QuickHUDFarmState = true,
     QuickHUDAutomation = true,
+    MultiClientMode = false,
+    AutoTrafficDiet = true,
+    TrafficSensitivity = "Medium",
 }
 
 local DIAMOND_PACK_TIER = 4
@@ -2974,6 +2977,13 @@ local function ensureSupportModule()
 end
 
 local function acquireOperation(owner)
+    local diet = env.PSX_OG_TRAFFIC_DIET
+    if diet and type(diet.CanRunMaintenance) == "function" then
+        local allowed, reason = diet:CanRunMaintenance(owner)
+        if allowed ~= true then
+            return false, "traffic diet: " .. tostring(reason or "waiting for quiet window")
+        end
+    end
     local controller, problem = ensureSupportModule()
     local gateId = "gate:" .. tostring(owner)
     if not controller then
@@ -4172,6 +4182,144 @@ local function inspectEggThroughModule(eggId, count, animation)
     })
 end
 
+env.PSX_OG_TRAFFIC_DIET = {
+    Profiles = {
+        Low = { PingOn = 0.70, PingOff = 0.40, OrbBacklog = 900, BagBacklog = 24, FarmAge = 3.5, Clear = 10, EggBase = 0.35 },
+        Medium = { PingOn = 0.50, PingOff = 0.30, OrbBacklog = 520, BagBacklog = 14, FarmAge = 2.5, Clear = 14, EggBase = 0.55 },
+        High = { PingOn = 0.38, PingOff = 0.22, OrbBacklog = 320, BagBacklog = 8, FarmAge = 1.8, Clear = 18, EggBase = 0.75 },
+    },
+    State = {
+        Active = false,
+        Reason = "normal",
+        Ping = 0,
+        PendingOrbs = 0,
+        UnconfirmedOrbs = 0,
+        WaitingBags = 0,
+        EggPending = false,
+        FarmActive = 0,
+        FarmQueued = 0,
+        FarmOldest = 0,
+        LastBadAt = 0,
+        UpdatedAt = 0,
+    },
+}
+
+function env.PSX_OG_TRAFFIC_DIET:Profile()
+    local selected = tostring(config.TrafficSensitivity or "Medium")
+    return self.Profiles[selected] or self.Profiles.Medium
+end
+
+function env.PSX_OG_TRAFFIC_DIET:PingSeconds()
+    local ok, pingMs = pcall(function()
+        return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
+end
+
+function env.PSX_OG_TRAFFIC_DIET:ReadEggPending()
+    local eggState = env.PSX_OG_FastEggState
+    return type(eggState) == "table" and eggState.Pending ~= nil
+end
+
+function env.PSX_OG_TRAFFIC_DIET:Refresh(lootStats)
+    local now = os.clock()
+    if not lootStats and now - (tonumber(self.State.UpdatedAt) or 0) < 0.75 then
+        return self.State
+    end
+    local profile = self:Profile()
+    local ping = self:PingSeconds()
+    local farmStats = petFarm:RefreshStats()
+    local pendingOrbs = lootStats and tonumber(lootStats.PendingOrbs) or self.State.PendingOrbs
+    local unconfirmedOrbs = lootStats and tonumber(lootStats.UnconfirmedOrbs) or self.State.UnconfirmedOrbs
+    local waitingBags = lootStats and tonumber(lootStats.WaitingBags) or self.State.WaitingBags
+    pendingOrbs = math.max(pendingOrbs or 0, 0)
+    unconfirmedOrbs = math.max(unconfirmedOrbs or 0, 0)
+    waitingBags = math.max(waitingBags or 0, 0)
+
+    local reason
+    if config.MultiClientMode == true then
+        reason = "manual multi-client mode"
+    end
+    if config.AutoTrafficDiet == true then
+        local onPing = (profile.PingOn or 0.5) * (config.MultiClientMode and 0.85 or 1)
+        if ping >= onPing then
+            reason = string.format("ping %.0fms", ping * 1000)
+        elseif pendingOrbs + unconfirmedOrbs >= (profile.OrbBacklog or 520) then
+            reason = "orb backlog " .. tostring(pendingOrbs + unconfirmedOrbs)
+        elseif waitingBags >= (profile.BagBacklog or 14) then
+            reason = "lootbag backlog " .. tostring(waitingBags)
+        elseif tonumber(farmStats.OldestInvokeAge) and farmStats.OldestInvokeAge >= (profile.FarmAge or 2.5) then
+            reason = string.format("farm invoke age %.1fs", farmStats.OldestInvokeAge)
+        elseif tonumber(farmStats.Queued) and farmStats.Queued >= 8 then
+            reason = "farm queue " .. tostring(farmStats.Queued)
+        end
+    end
+
+    if reason then
+        self.State.LastBadAt = now
+        self.State.Active = true
+        self.State.Reason = reason
+    elseif self.State.Active and now - (tonumber(self.State.LastBadAt) or 0) < (profile.Clear or 14) then
+        local previous = tostring(self.State.Reason or "traffic")
+        if string.sub(previous, 1, 14) ~= "cooldown after" then
+            self.State.Reason = "cooldown after " .. previous
+        end
+    else
+        self.State.Active = false
+        self.State.Reason = "normal"
+    end
+    if not self.State.Active and ping > (profile.PingOff or 0.3) and config.MultiClientMode == true then
+        self.State.Active = true
+        self.State.Reason = "multi-client floor"
+    end
+
+    self.State.Ping = ping
+    self.State.PendingOrbs = pendingOrbs
+    self.State.UnconfirmedOrbs = unconfirmedOrbs
+    self.State.WaitingBags = waitingBags
+    self.State.EggPending = self:ReadEggPending()
+    self.State.FarmActive = tonumber(farmStats.Active) or 0
+    self.State.FarmQueued = tonumber(farmStats.Queued) or 0
+    self.State.FarmOldest = tonumber(farmStats.OldestInvokeAge) or 0
+    self.State.UpdatedAt = now
+    return self.State
+end
+
+function env.PSX_OG_TRAFFIC_DIET:IsActive()
+    return self:Refresh().Active == true
+end
+
+function env.PSX_OG_TRAFFIC_DIET:EggDelay()
+    local state = self:Refresh()
+    if not state.Active then return 0 end
+    local profile = self:Profile()
+    return math.clamp((profile.EggBase or 0.55) + state.Ping, 0.5, 2.0)
+end
+
+function env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance(owner)
+    local state = self:Refresh()
+    if not state.Active and state.EggPending ~= true then return true end
+    if tostring(owner) == "AutoEgg" then return true end
+    return false, state.EggPending and "egg request is pending" or state.Reason
+end
+
+function env.PSX_OG_TRAFFIC_DIET:StatusText()
+    local state = self:Refresh()
+    return string.format(
+        "Traffic Diet: %s | reason: %s | ping: %.0fms\nLoot backlog: orbs %d/%d | bags %d | egg pending: %s\nFarm network: active/queued %d/%d | oldest invoke %.1fs",
+        state.Active and "ON" or "OFF",
+        tostring(state.Reason or "normal"),
+        (tonumber(state.Ping) or 0) * 1000,
+        tonumber(state.PendingOrbs) or 0,
+        tonumber(state.UnconfirmedOrbs) or 0,
+        tonumber(state.WaitingBags) or 0,
+        tostring(state.EggPending == true),
+        tonumber(state.FarmActive) or 0,
+        tonumber(state.FarmQueued) or 0,
+        tonumber(state.FarmOldest) or 0
+    )
+end
+
 local function startAutoEggModule()
     if not config.AutoEgg or not running() then return end
     local loaded, loadProblem = ensureAutoEggModule()
@@ -4203,6 +4351,9 @@ local function startAutoEggModule()
         ReleaseOperation = releaseOperation,
         CancelOperation = cancelOperation,
         OperationOwner = "AutoEgg",
+        GetPingSeconds = function() return env.PSX_OG_TRAFFIC_DIET:PingSeconds() end,
+        LowTraffic = function() return env.PSX_OG_TRAFFIC_DIET:IsActive() end,
+        TrafficEggDelay = function() return env.PSX_OG_TRAFFIC_DIET:EggDelay() end,
         InventoryChanged = invalidateMachinePetSnapshot,
         SetStatus = statusSetters.Egg,
         Trace = trace,
@@ -4366,6 +4517,7 @@ function enchantRuntime:Start()
         ReleaseOperation = releaseOperation,
         CancelOperation = cancelOperation,
         OperationOwner = "AutoEnchant",
+        CanRunMaintenance = function(owner) return env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance(owner or "AutoEnchant") end,
         GetNetworkPressure = function()
             local pingMs
             local pingOk, ping = pcall(function()
@@ -4466,6 +4618,7 @@ function machineModules:Start(kind)
         ReleaseOperation = releaseOperation,
         CancelOperation = cancelOperation,
         OperationOwner = kind .. "Machine",
+        CanRunMaintenance = function(owner) return env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance(owner or (kind .. "Machine")) end,
         SetStatus = entry.SetStatus,
         Trace = trace,
     }
@@ -4539,6 +4692,7 @@ local function startBoostModule()
         CancelOperation = cancelOperation,
         OperationStatus = operationGateStatus,
         OperationOwner = "Boosts",
+        CanRunMaintenance = function(owner) return env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance(owner or "Boosts") end,
         SetStatus = statusSetters.Boost,
         Trace = trace,
     }
@@ -4625,6 +4779,14 @@ local function runDiamondPackCheck()
         status = "Local threshold hold: " .. balanceText
             .. " is below 46B Rainbow Coins (45B pack + 1B reserve); no server request sent."
     else
+        local canRun, quietReason = env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance("DiamondPack")
+        if not canRun then
+            diamondPackNextCheck = os.clock() + 15
+            diamondPackBusy = false
+            statusSetters.Diamond("Traffic Diet hold: " .. tostring(quietReason)
+                .. "\nRainbow pack is ready but no purchase request was sent; retrying shortly.")
+            return
+        end
         local transportOk, accepted, serverMessage, sourceName, sessionIndex =
             invokeCommand("Buy DiamondPack", DIAMOND_PACK_TIER)
         if not transportOk then
@@ -4743,11 +4905,17 @@ rewardWorker.Run = function(generation)
                 end
             elseif now >= state.NextAttempt then
                 state.LastTimingError = nil
-                local succeeded = invokeReward(kind)
-                state.ArmedReported = false
+                local canRun, quietReason = env.PSX_OG_TRAFFIC_DIET:CanRunMaintenance("Rewards")
+                local succeeded = false
+                if canRun then
+                    succeeded = invokeReward(kind)
+                    state.ArmedReported = false
+                else
+                    trace(string.lower(state.Label) .. " reward", "Traffic Diet hold: " .. tostring(quietReason))
+                end
                 local successDelay = kind == "FreeGifts" and 0.25
                     or math.max(cooldown or 0, REWARD_RETRY_DELAY)
-                state.NextAttempt = now + (succeeded and successDelay or REWARD_RETRY_DELAY)
+                state.NextAttempt = now + (canRun and (succeeded and successDelay or REWARD_RETRY_DELAY) or 15)
                 nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
             else
                 nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))
@@ -5042,6 +5210,9 @@ lootCollector.Context = {
         end)
         return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
     end,
+    LowTraffic = function() return env.PSX_OG_TRAFFIC_DIET:IsActive() end,
+    TrafficSensitivity = function() return config.TrafficSensitivity end,
+    MultiClientMode = function() return config.MultiClientMode == true end,
     LocalLootOwner = function(item)
         for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
             local value = readObjectValue(item, key)
@@ -5579,6 +5750,7 @@ do
     statusTabs.EggCatalog = UI.EggTab
     statusTabs.Egg = UI.EggTab
     statusTabs.Routes = UI.MonitorTab
+    statusTabs.Traffic = UI.MonitorTab
     statusTabs.Gold = UI.MachinesTab
     statusTabs.Rainbow = UI.MachinesTab
     statusTabs.DarkMatter = UI.MachinesTab
@@ -6467,6 +6639,17 @@ function requestDiagnostics.UpdateTelemetry()
         requestDiagnostics.Gauge("Loot", "producerCold", lootCollector.WorkerActive and false or lootCollector:IsEnabled())
     end
 
+    local trafficState = env.PSX_OG_TRAFFIC_DIET:Refresh(lootStats)
+    requestDiagnostics.Gauge("Traffic", "lowTraffic", trafficState.Active == true)
+    requestDiagnostics.Gauge("Traffic", "reason", tostring(trafficState.Reason or "normal"))
+    requestDiagnostics.Gauge("Traffic", "pingMs", math.floor((tonumber(trafficState.Ping) or 0) * 1000 + 0.5))
+    requestDiagnostics.Gauge("Traffic", "lootBacklog",
+        (tonumber(trafficState.PendingOrbs) or 0)
+            + (tonumber(trafficState.UnconfirmedOrbs) or 0)
+            + (tonumber(trafficState.WaitingBags) or 0))
+    requestDiagnostics.Gauge("Traffic", "eggPending", trafficState.EggPending == true)
+    statusSetters.Set("Traffic", env.PSX_OG_TRAFFIC_DIET:StatusText())
+
     requestDiagnostics.Gauge("Background", "moduleLoaderBusy", moduleLoadState.Busy == true)
     requestDiagnostics.Gauge("Background", "moduleLoaderOwner", tostring(moduleLoadState.Owner or "idle"))
     local enabled = {}
@@ -6570,7 +6753,7 @@ local function updateRuntimeTelemetry()
             quickHUD:ApplyVisibility()
         end
         statusSetters.Flush()
-        task.delay(1, tick)
+        task.delay(env.PSX_OG_TRAFFIC_DIET:IsActive() and 3 or 1, tick)
     end
     task.delay(1, tick)
 end

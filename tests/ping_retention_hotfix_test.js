@@ -4,6 +4,8 @@ const farm = fs.readFileSync("pet_farm_lite_engine.lua", "utf8");
 const loot = fs.readFileSync("loot_reactor.lua", "utf8");
 const inspector = fs.readFileSync("request_state_inspector.lua", "utf8");
 const main = fs.readFileSync("slim_farm.lua", "utf8");
+const egg = fs.readFileSync("auto_egg_module.lua", "utf8");
+const automationUI = fs.readFileSync("automation_ui_module.lua", "utf8");
 
 function requireText(source, needle, label) {
   if (!source.includes(needle)) throw new Error(`${label}: missing ${needle}`);
@@ -14,9 +16,15 @@ requireText(farm, "transportGate.InvokeHistory[key] = nil", "invoke history prun
 requireText(farm, "clearTransportGate()", "transport reset cleanup");
 requireText(farm, "TransportCacheEntries", "transport retention gauge");
 requireText(loot, "idleBurst and queuedNew and clientStagger()", "idle orb staggering");
+requireText(loot, "local function lowTrafficActive()", "loot low traffic probe");
+requireText(loot, "local function bagLaneLimit()", "adaptive lootbag lanes");
 requireText(inspector, "PING_BASELINE_SAMPLE_LIMIT = 30", "frozen ping baseline");
 requireText(inspector, "invokeAge <= 8", "normal invoke does not hide network warning");
 requireText(main, '["auto egg Open Egg"] = 2', "bounded hot trace");
+requireText(main, "trafficDiet:CanRunMaintenance", "shared maintenance traffic gate");
+requireText(main, "TrafficSensitivity", "traffic diet persisted config");
+requireText(egg, "trafficEggDelay", "auto egg traffic pacing");
+requireText(automationUI, "Traffic Diet / Multi Client", "traffic diet UI controls");
 
 const retention = 0.5;
 const sweepInterval = 1;

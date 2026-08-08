@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.4.0"
+local MODULE_VERSION = "1.4.1"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -147,6 +147,46 @@ local function build(context)
         Desc = "Manual diagnostics are idle. Press Refresh when needed.",
     })
     yieldUI("route diagnostics")
+
+    local traffic = UI.MonitorTab:Section({ Title = "Traffic Diet / Multi Client", Box = true, Opened = true })
+    traffic:Paragraph({
+        Title = "LOW-TRAFFIC SAFETY",
+        Desc = "Coalesces loot/egg/maintenance traffic under high ping while pet farm dispatch stays priority #1.",
+    })
+    traffic:Toggle({
+        Flag = "multi_client_low_traffic",
+        Title = "Multi Client / Low Traffic Mode",
+        Desc = "Keeps background workers quieter when several accounts farm the same area.",
+        Value = config.MultiClientMode == true,
+        Callback = function(value)
+            config.MultiClientMode = value == true
+        end,
+    })
+    traffic:Toggle({
+        Flag = "auto_traffic_diet",
+        Title = "Auto Traffic Diet",
+        Desc = "Automatically turns pacing on from ping, loot backlog, egg pending and farm request age.",
+        Value = config.AutoTrafficDiet ~= false,
+        Callback = function(value)
+            config.AutoTrafficDiet = value == true
+        end,
+    })
+    traffic:Dropdown({
+        Flag = "traffic_sensitivity",
+        Title = "Traffic Sensitivity",
+        Desc = "High reacts sooner; Low waits for larger spikes.",
+        Values = { "Low", "Medium", "High" },
+        Value = config.TrafficSensitivity or "Medium",
+        Multi = false,
+        Callback = function(value)
+            config.TrafficSensitivity = tostring(value or "Medium")
+        end,
+    })
+    statusViews.Traffic = traffic:Paragraph({
+        Title = "Traffic Diet Status",
+        Desc = "Waiting for telemetry...",
+    })
+    yieldUI("traffic diet")
 
     local machines = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
     machines:Paragraph({

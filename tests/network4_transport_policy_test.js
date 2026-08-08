@@ -9,7 +9,7 @@ const autoEgg = fs.readFileSync(path.join(root, "auto_egg_module.lua"), "utf8");
 const loot = fs.readFileSync(path.join(root, "loot_reactor.lua"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "runtime_manifest.json"), "utf8"));
 
-assert.strictEqual(manifest.suite.version, "1.4.1-dev.49");
+assert.strictEqual(manifest.suite.version, "1.4.1-dev.50");
 assert(manifest.moduleOrder.includes("networkTransport"));
 assert.strictEqual(manifest.modules.networkTransport.path, "network4_transport_module.lua");
 assert.strictEqual(manifest.modules.networkTransport.load, "lazy");

@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.4"
+local MODULE_VERSION = "3.6.5"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.55
@@ -311,8 +311,21 @@ local function currentRTT()
     return rtt
 end
 
+local function lowTrafficActive()
+    local context = run.Context
+    if not context or type(context.LowTraffic) ~= "function" then return false end
+    local ok, active = pcall(context.LowTraffic)
+    return ok and active == true
+end
+
 local function orbFlushInterval()
     local rtt = currentRTT()
+    if lowTrafficActive() then
+        if rtt >= 1.00 then return 2.00 end
+        if rtt >= 0.70 then return 1.55 end
+        if rtt >= 0.45 then return 1.10 end
+        return 0.90
+    end
     if rtt >= 2.00 then return 1.50 end
     if rtt >= 1.25 then return 1.20 end
     if rtt >= 0.80 then return 1.00 end
@@ -326,7 +339,16 @@ local function orbConfirmationDelay()
 end
 
 local function bagConfirmationDelay()
-    return math.clamp(currentRTT() * 2, BAG_CONFIRM_MIN_DELAY, BAG_CONFIRM_MAX_DELAY)
+    local multiplier = lowTrafficActive() and 2.75 or 2
+    return math.clamp(currentRTT() * multiplier, BAG_CONFIRM_MIN_DELAY, BAG_CONFIRM_MAX_DELAY)
+end
+
+local function bagLaneLimit()
+    if not lowTrafficActive() then return BAG_LANES end
+    local rtt = currentRTT()
+    if rtt >= 1.00 then return 1 end
+    if rtt >= 0.55 then return 2 end
+    return 3
 end
 
 local function statusText()
@@ -362,7 +384,7 @@ local function statusText()
         run.OrbDropped,
         run.WaitingBagCount,
         MAX_PENDING_BAGS,
-        BAG_LANES,
+        bagLaneLimit(),
         run.BagEvents,
         run.BagSent,
         run.BagTransportCommitted,
@@ -923,7 +945,8 @@ processBagWake = function()
     local nextAt = processDelayedBags(now)
     local queue = run.BagQueue
     local processed = 0
-    while processed < BAG_LANES and run.BagQueueHead <= #queue do
+    local laneLimit = bagLaneLimit()
+    while processed < laneLimit and run.BagQueueHead <= #queue do
         local index = run.BagQueueHead
         local record = queue[index]
         queue[index] = false
@@ -1841,6 +1864,9 @@ local function stats()
         BagGateReason = run.BagGateReason,
         GateGeneration = run.GateGeneration,
         LastRebindReason = run.LastRebindReason,
+        LowTrafficActive = lowTrafficActive(),
+        OrbFlushInterval = orbFlushInterval(),
+        BagLaneLimit = bagLaneLimit(),
         VisualInstancesPrevented = run.VisualInstancesPrevented,
         PendingOrbs = run.PendingOrbCount,
         UnconfirmedOrbs = run.UnconfirmedOrbCount,
