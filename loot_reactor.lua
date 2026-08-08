@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.5"
+local MODULE_VERSION = "3.6.6"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.55
@@ -321,10 +321,10 @@ end
 local function orbFlushInterval()
     local rtt = currentRTT()
     if lowTrafficActive() then
-        if rtt >= 1.00 then return 2.00 end
-        if rtt >= 0.70 then return 1.55 end
-        if rtt >= 0.45 then return 1.10 end
-        return 0.90
+        if rtt >= 1.00 then return 2.25 end
+        if rtt >= 0.70 then return 1.80 end
+        if rtt >= 0.45 then return 1.35 end
+        return 1.20
     end
     if rtt >= 2.00 then return 1.50 end
     if rtt >= 1.25 then return 1.20 end
@@ -346,9 +346,17 @@ end
 local function bagLaneLimit()
     if not lowTrafficActive() then return BAG_LANES end
     local rtt = currentRTT()
-    if rtt >= 1.00 then return 1 end
-    if rtt >= 0.55 then return 2 end
-    return 3
+    if rtt >= 0.45 then return 1 end
+    return 2
+end
+
+local function bagWakeDelay()
+    if not lowTrafficActive() then return 0 end
+    local rtt = currentRTT()
+    if rtt >= 1.00 then return 0.55 end
+    if rtt >= 0.70 then return 0.42 end
+    if rtt >= 0.45 then return 0.30 end
+    return 0.18
 end
 
 local function statusText()
@@ -789,6 +797,11 @@ local function enqueueReadyBag(record)
     armBagWake(0)
 end
 
+local function bagRecordHasLiveObject(record)
+    local object = record and record.Object
+    return typeof(object) == "Instance" and object.Parent ~= nil
+end
+
 local function enqueueDelayedBag(record, due)
     if not record or run.BagById[record.Id] ~= record then return end
     record.Due = due
@@ -954,7 +967,8 @@ processBagWake = function()
         if record then record.Queued = false end
         if record and run.BagById[record.Id] == record and record.State ~= "sent" then
             if record.State == "awaiting_ack" then
-                if record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
+                if record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS
+                    and bagRecordHasLiveObject(record) then
                     collectBag(record, now)
                 else
                     closeBag(record, false, "transport committed")
@@ -969,7 +983,7 @@ processBagWake = function()
     end
     compactBagQueue()
     if run.BagQueueHead <= #run.BagQueue then
-        armBagWake(0)
+        armBagWake(bagWakeDelay())
     elseif nextAt then
         armBagWake(math.max(nextAt - os.clock(), 0))
     end

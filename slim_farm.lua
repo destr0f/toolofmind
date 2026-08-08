@@ -3862,7 +3862,12 @@ function petFarm:QueueFastDispatch(petId)
             end
         end
         if #usable == 0 then
-            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
+            self.TargetWindow = 0
+            if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
+                driverStatus = "boss chest absent; waiting for New Coin"
+            elseif type(requestAllocatorPulse) == "function" then
+                requestAllocatorPulse(true)
+            end
             return
         end
 

@@ -103,7 +103,7 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.6.5"',
+    'local MODULE_VERSION = "3.6.6"',
     "ORB_BATCH_SIZE = 512",
     "MAX_PENDING_ORBS = 8192",
     "ORB_FLUSH_INTERVAL = 0.55",
@@ -142,6 +142,8 @@ for (const marker of [
     "folder.ChildAdded:Connect(queueOrbFallback)",
     "folder.ChildAdded:Connect(watchBagFallback)",
     "record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS",
+    "bagRecordHasLiveObject(record)",
+    "local function bagWakeDelay()",
     "record.Retired = true",
     "OrbDropped",
     "BagOverflow",
@@ -171,6 +173,7 @@ assert(loot.includes("record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS")
     "lootbags do not retry a genuine transport failure once");
 assert(loot.includes("local earliest = (tonumber(run.OrbLastFlushAt) or 0) + interval")
     && loot.includes("delaySeconds = interval + clientStagger()")
+    && loot.includes("return 1.20")
     && !loot.includes("task.defer(function()\n        if generation ~= run.Generation or token ~= run.OrbToken then return end\n        flushOrbs()"),
     "orb callbacks can still create same-window microflushes");
 assert(loot.includes("run.OrbAckAvailable")
