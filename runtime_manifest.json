@@ -125,7 +125,7 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.6.5",
+      "version": "3.6.6",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.50",
@@ -133,10 +133,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "6255a41d860dbfd7c0b2c7e6306fe0e7382adadf",
-      "bytes": 68028,
-      "sha256": "779dca3557a1a90e4dd80cb7b16d2ca3fce6b9d34afe535ac4bc5593f274322a",
-      "djb2": "27994513"
+      "commit": "1adec77e1e1ee2bd178ab838c7493fc241bdb818",
+      "bytes": 68467,
+      "sha256": "a2ea99900728b386772578b1cd1dd76f1aa963f4f33c1e18f2113ad6ac835af1",
+      "djb2": "23009d80"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -346,32 +346,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "cd9a5ba9d5f434bda93101b0543571fed35dc1e7",
+    "generatedFromCommit": "1adec77e1e1ee2bd178ab838c7493fc241bdb818",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6714,
-      "sha256": "d60ffefb50c87c6ca1f6d4ffc1492aec49080bf4297448b64c19a42ec4e146e1",
-      "djb2": "77a41351"
+      "sha256": "22622221c0fa93b04a2e501ecbe23b3da78d6ea97b2c9dff9d78b88697b5ba55",
+      "djb2": "42548b76"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-dev.50",
-      "bytes": 273476,
-      "sha256": "bc1d866e2a88489ae22a5c58f6e6b6c094d486ecf0d53b68f03dd82b98213af4",
-      "djb2": "b71bc572"
+      "bytes": 273711,
+      "sha256": "77489e1ad3868e9d486dcf13491e56948cbede97c474ee68705c12d11156fab2",
+      "djb2": "80d6b9c1"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 218915,
-        "sha256": "cba06a58fb6b42246cdee0b35ea76c2ceee3cb855f7312f264d1067f694c9a49",
-        "djb2": "74a7446a"
+        "bytes": 219073,
+        "sha256": "6ccfbce7737030b98924fa86c60cfa69b60c4b83aa35f5a127126ce8320da579",
+        "djb2": "7eddf13e"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 218915,
-        "sha256": "cba06a58fb6b42246cdee0b35ea76c2ceee3cb855f7312f264d1067f694c9a49",
-        "djb2": "74a7446a"
+        "bytes": 219073,
+        "sha256": "6ccfbce7737030b98924fa86c60cfa69b60c4b83aa35f5a127126ce8320da579",
+        "djb2": "7eddf13e"
       }
     }
   }
