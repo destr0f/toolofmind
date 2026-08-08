@@ -133,10 +133,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "27ded5d3281690e0fc10848a88fc1dad28c7b614",
-      "bytes": 69603,
-      "sha256": "b2cca832b7bfa140365ab74ce4b68302c7edf8d28c6ea2ff9c8f949af5b682d0",
-      "djb2": "997468ad"
+      "commit": "adb4f62d222c32b0fc402cd6897f101aa8f5c7d5",
+      "bytes": 70128,
+      "sha256": "0e75bbe24a639e261117e58b4609b2a79d9881096e1b53a90314c70460d49ed8",
+      "djb2": "ad76b3de"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -346,32 +346,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "82fbf8416a487b8b7d3ce8db90515f4ec2ab79b2",
+    "generatedFromCommit": "adb4f62d222c32b0fc402cd6897f101aa8f5c7d5",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6714,
-      "sha256": "c927a46e36b7d89f8a022973996fa414ed407492b9b35e744c54aebc7cf861e9",
-      "djb2": "2e0d0ca2"
+      "sha256": "ff01fe45c873573c635bde8475c7083d3dfa1faace55bfc04c60b47c7f23d6b7",
+      "djb2": "3b63f72c"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-dev.50",
-      "bytes": 281333,
-      "sha256": "bf6e2a7671a2e7b381049344050586951a5ad721588f19ca62d972246d983483",
-      "djb2": "657241ba"
+      "bytes": 285009,
+      "sha256": "d6523b6dc396a8903366dd6ba9deb6a2c3f943e4de033b89059148dda49e707a",
+      "djb2": "943f8fc3"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 224939,
-        "sha256": "a1c72327c55e831846b9896c0771c2f50eb6be418b77d97b5995259655766b12",
-        "djb2": "0481444a"
+        "bytes": 227770,
+        "sha256": "a80cfdaaeedf757452dccfb786db94869cda1ddae1704463310b13b31665c1eb",
+        "djb2": "cb983b60"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 224939,
-        "sha256": "a1c72327c55e831846b9896c0771c2f50eb6be418b77d97b5995259655766b12",
-        "djb2": "0481444a"
+        "bytes": 227770,
+        "sha256": "a80cfdaaeedf757452dccfb786db94869cda1ddae1704463310b13b31665c1eb",
+        "djb2": "cb983b60"
       }
     }
   }
