@@ -53,10 +53,10 @@
       "load": "startup",
       "role": "passive-request-state-inspector",
       "path": "request_state_inspector.lua",
-      "commit": "a81451ed9c8b0fc2d248c3c23ecb9cbcd5f79228",
-      "bytes": 51942,
-      "sha256": "e6bed05b095cc28a4b5384e8f9b38083105e6a0c1299cac247a5dc06aa1c80e0",
-      "djb2": "76e1ebf2"
+      "commit": "4432e6415b0d7e23ccdd8da1a2c28685e6496e1b",
+      "bytes": 52239,
+      "sha256": "0533f2728eda2ac78e173b9eb793c813eed7bc6c22930882b10d99f0ef4da5c1",
+      "djb2": "43f8c651"
     },
     "networkTransport": {
       "id": "networkTransport",
@@ -117,10 +117,10 @@
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "8fd0bdcdac7a0f0da9b6102be7a114fdbf7cf5fd",
-      "bytes": 31809,
-      "sha256": "407a268d45636559608016ba1f53f3bf0e758c20f50d14648911a628a33658c8",
-      "djb2": "59bbbef6"
+      "commit": "4432e6415b0d7e23ccdd8da1a2c28685e6496e1b",
+      "bytes": 34002,
+      "sha256": "ae5672e6a44ef6ad7c4d9240442900b85850de1f62493b75d8dc4b30f3bceb9d",
+      "djb2": "e91147f9"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -133,10 +133,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "ca9981bfcdd7068b74c1a5b4e719405f3e0eb961",
-      "bytes": 64757,
-      "sha256": "ca26174c2e7e99a6470060c7fd917e8bbaff24734cc18a7427c45da4b99a53f3",
-      "djb2": "9f485af5"
+      "commit": "4432e6415b0d7e23ccdd8da1a2c28685e6496e1b",
+      "bytes": 65081,
+      "sha256": "31ce771371b6ba8c51bf7276935d14d0e1e142deef1824d64109abf247b44444",
+      "djb2": "7c3948b9"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -317,7 +317,8 @@
         "tests/network4_transport_test.lua",
         "tests/network4_transport_policy_test.js",
         "tests/autogifts_rainbow_pack_policy_test.js",
-        "tests/reward_clock_hotfix_test.js"
+        "tests/reward_clock_hotfix_test.js",
+        "tests/ping_retention_hotfix_test.js"
       ]
     },
     "documentation": {
@@ -345,32 +346,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "8fd0bdcdac7a0f0da9b6102be7a114fdbf7cf5fd",
+    "generatedFromCommit": "4432e6415b0d7e23ccdd8da1a2c28685e6496e1b",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6714,
-      "sha256": "2d9d8338599478b394b2c9b7a173dd49057197322579a1d761aaf5da49413362",
-      "djb2": "172b1baa"
+      "sha256": "db869e77efa0dc3bf7e0af0b2aa10af77eea0558fcd44226247267a9b6c299af",
+      "djb2": "523db961"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-dev.49",
-      "bytes": 263797,
-      "sha256": "a1633e3dc507fb263f6899975a4d05944cfaa0e8b5be5b42b5672060ef16dbc2",
-      "djb2": "cb50031d"
+      "bytes": 264293,
+      "sha256": "03d5e13cede39dfeeb746ab9587f6643ce3ccbc60f5f021589464cdbc13b5308",
+      "djb2": "17334016"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 211035,
-        "sha256": "fb482de53101d44a4f9cfc29c50589dcf99a6b065e82e10dff520675907c939f",
-        "djb2": "858c073f"
+        "bytes": 211438,
+        "sha256": "28f69a8a207d5980e18478dc4c78418ce3d74428dcc86c6c6690835213df0110",
+        "djb2": "c9acbedf"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 211035,
-        "sha256": "fb482de53101d44a4f9cfc29c50589dcf99a6b065e82e10dff520675907c939f",
-        "djb2": "858c073f"
+        "bytes": 211438,
+        "sha256": "28f69a8a207d5980e18478dc4c78418ce3d74428dcc86c6c6690835213df0110",
+        "djb2": "c9acbedf"
       }
     }
   }
