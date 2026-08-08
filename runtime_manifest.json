@@ -172,7 +172,7 @@
     "goldMachine": {
       "id": "goldMachine",
       "label": "Golden machine",
-      "version": "1.4.1",
+      "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.50",
@@ -181,14 +181,14 @@
       "role": "golden-conversion-worker",
       "path": "gold_machine_module.lua",
       "commit": "1f2619c67536e44f924737b2711cf39265a7b63e",
-      "bytes": 22210,
-      "sha256": "085af32232c1282ea5b7fb72d3a1dcbc86190559793e7c905525d48b8849bbef",
-      "djb2": "36ad6788"
+      "bytes": 22209,
+      "sha256": "594f1373dd146b9f99be1de3abb873745e5385d9696b2bc31a773b7a55873643",
+      "djb2": "a5ff4b9b"
     },
     "rainbowMachine": {
       "id": "rainbowMachine",
       "label": "Rainbow machine",
-      "version": "1.4.1",
+      "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.50",
@@ -197,14 +197,14 @@
       "role": "rainbow-conversion-worker",
       "path": "rainbow_machine_module.lua",
       "commit": "1f2619c67536e44f924737b2711cf39265a7b63e",
-      "bytes": 22325,
-      "sha256": "f359ac2984e0ecbeae57923eec77d1d4d02d5ed596fe70a7e99050ee689336cf",
-      "djb2": "f3968258"
+      "bytes": 22324,
+      "sha256": "33fd9b8f6ab243b447f9afb4f6d8332e49bc3254daf6c384e96871c0a9951ae4",
+      "djb2": "b851ea6b"
     },
     "darkMatter": {
       "id": "darkMatter",
       "label": "Dark Matter machine",
-      "version": "1.4.1",
+      "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.50",
@@ -213,9 +213,9 @@
       "role": "dark-matter-queue-worker",
       "path": "dark_matter_module.lua",
       "commit": "1f2619c67536e44f924737b2711cf39265a7b63e",
-      "bytes": 33203,
-      "sha256": "1fd0d699d2e511bdc983d584a4818cf2f757b3b7f1f593b14e1650480be6a4af",
-      "djb2": "f4e4c84a"
+      "bytes": 33202,
+      "sha256": "f6abe7cec9dff53a454390f897188f2c5ed4a12dec5ab27fc6660aa288e33e67",
+      "djb2": "f824a2dd"
     },
     "boost": {
       "id": "boost",
@@ -346,32 +346,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "adb4f62d222c32b0fc402cd6897f101aa8f5c7d5",
+    "generatedFromCommit": "1f2619c67536e44f924737b2711cf39265a7b63e",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6714,
-      "sha256": "ff01fe45c873573c635bde8475c7083d3dfa1faace55bfc04c60b47c7f23d6b7",
-      "djb2": "3b63f72c"
+      "sha256": "0b0a4eca030237528a6cc0ff2c7996f870f83ffc2de9fa5a404f6decea61e9dd",
+      "djb2": "4cb12f58"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-dev.50",
-      "bytes": 285009,
-      "sha256": "d6523b6dc396a8903366dd6ba9deb6a2c3f943e4de033b89059148dda49e707a",
-      "djb2": "943f8fc3"
+      "bytes": 285842,
+      "sha256": "5396ed280196a32cb45ab605dce7500f531bd0523ae0505c67ccf0d9fde2784b",
+      "djb2": "9d99f351"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 227770,
-        "sha256": "a80cfdaaeedf757452dccfb786db94869cda1ddae1704463310b13b31665c1eb",
-        "djb2": "cb983b60"
+        "bytes": 228290,
+        "sha256": "4f52a06d0f64305a6ad78a194d124417003e7a8520e6f06d506c5168afe08bcc",
+        "djb2": "57e62f4a"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 227770,
-        "sha256": "a80cfdaaeedf757452dccfb786db94869cda1ddae1704463310b13b31665c1eb",
-        "djb2": "cb983b60"
+        "bytes": 228290,
+        "sha256": "4f52a06d0f64305a6ad78a194d124417003e7a8520e6f06d506c5168afe08bcc",
+        "djb2": "57e62f4a"
       }
     }
   }

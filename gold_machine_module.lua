@@ -2,12 +2,12 @@
 -- The parent supplies a live pet catalog and a shared inventory-operation gate.
 
 local activeState
-local MODULE_VERSION = "1.4.1"
+local MODULE_VERSION = "1.4.0"
 local TARGET_PET_NAME = "Hellish Axolotl"
 
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
-local IDLE_CHECK_DELAY = 10
+local IDLE_CHECK_DELAY = 5
 
 local POWER_ABBREVIATIONS = {
     ["Agility"] = "AG",
