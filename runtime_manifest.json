@@ -125,7 +125,7 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.6.6",
+      "version": "3.6.7",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.50",
@@ -133,10 +133,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "1adec77e1e1ee2bd178ab838c7493fc241bdb818",
-      "bytes": 68467,
-      "sha256": "a2ea99900728b386772578b1cd1dd76f1aa963f4f33c1e18f2113ad6ac835af1",
-      "djb2": "23009d80"
+      "commit": "27ded5d3281690e0fc10848a88fc1dad28c7b614",
+      "bytes": 69603,
+      "sha256": "b2cca832b7bfa140365ab74ce4b68302c7edf8d28c6ea2ff9c8f949af5b682d0",
+      "djb2": "997468ad"
     },
     "autoEgg": {
       "id": "autoEgg",
