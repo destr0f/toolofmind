@@ -4189,9 +4189,9 @@ end
 
 env.PSX_OG_TRAFFIC_DIET = {
     Profiles = {
-        Low = { PingOn = 0.70, PingOff = 0.40, OrbBacklog = 900, BagBacklog = 24, FarmAge = 3.5, Clear = 10, EggBase = 0.35 },
-        Medium = { PingOn = 0.50, PingOff = 0.30, OrbBacklog = 520, BagBacklog = 14, FarmAge = 2.5, Clear = 14, EggBase = 0.55 },
-        High = { PingOn = 0.38, PingOff = 0.22, OrbBacklog = 320, BagBacklog = 8, FarmAge = 1.8, Clear = 18, EggBase = 0.75 },
+        Low = { PingOn = 0.62, PingOff = 0.35, OrbBacklog = 900, BagBacklog = 24, FarmAge = 3.5, Clear = 20, EggBase = 0.35 },
+        Medium = { PingOn = 0.42, PingOff = 0.26, OrbBacklog = 520, BagBacklog = 14, FarmAge = 2.4, Clear = 34, EggBase = 0.55 },
+        High = { PingOn = 0.32, PingOff = 0.18, OrbBacklog = 320, BagBacklog = 8, FarmAge = 1.8, Clear = 48, EggBase = 0.75 },
     },
     State = {
         Active = false,
@@ -6623,6 +6623,7 @@ function requestDiagnostics.UpdateTelemetry()
         requestDiagnostics.Gauge("Loot", "lowTraffic", lootStats.LowTrafficActive == true)
         requestDiagnostics.Gauge("Loot", "orbFlushInterval", tonumber(lootStats.OrbFlushInterval) or 0)
         requestDiagnostics.Gauge("Loot", "bagLaneLimit", tonumber(lootStats.BagLaneLimit) or 0)
+        requestDiagnostics.Gauge("Loot", "trafficStagger", tonumber(lootStats.TrafficStagger) or 0)
         local sampleAt = tonumber(requestDiagnostics.Loot.At) or 0
         local sampleIds = tonumber(requestDiagnostics.Loot.OrbIds) or 0
         local sampleBatches = tonumber(requestDiagnostics.Loot.OrbBatches) or 0

@@ -4,7 +4,7 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.6"
+local MODULE_VERSION = "3.6.7"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.55
@@ -13,6 +13,8 @@ local ORB_CONFIRM_MIN_DELAY = 2.5
 local ORB_CONFIRM_MAX_DELAY = 8
 local CLIENT_STAGGER_SLOTS = 16
 local CLIENT_STAGGER_STEP = 0.01
+local TRAFFIC_STAGGER_SLOTS = 29
+local TRAFFIC_STAGGER_STEP = 0.025
 local BAG_LANES = 4
 local MAX_PENDING_BAGS = 4096
 local BAG_FIRST_ATTEMPT_DELAY = 0.05
@@ -318,13 +320,30 @@ local function lowTrafficActive()
     return ok and active == true
 end
 
+local function trafficStagger()
+    local player = Players.LocalPlayer
+    local userId = math.abs(tonumber(player and player.UserId) or 0)
+    local slot = (userId * 17 + 11) % TRAFFIC_STAGGER_SLOTS
+    local spread = slot * TRAFFIC_STAGGER_STEP
+    local rtt = currentRTT()
+    if lowTrafficActive() then
+        if rtt >= 1.00 then return 0.45 + spread end
+        if rtt >= 0.70 then return 0.32 + spread end
+        if rtt >= 0.45 then return 0.22 + spread end
+        return 0.12 + spread * 0.75
+    end
+    if rtt >= 0.70 then return math.min(0.30 + spread * 0.35, 0.50) end
+    if rtt >= 0.45 then return math.min(0.18 + spread * 0.25, 0.35) end
+    return clientStagger()
+end
+
 local function orbFlushInterval()
     local rtt = currentRTT()
     if lowTrafficActive() then
-        if rtt >= 1.00 then return 2.25 end
-        if rtt >= 0.70 then return 1.80 end
-        if rtt >= 0.45 then return 1.35 end
-        return 1.20
+        if rtt >= 1.00 then return 2.65 end
+        if rtt >= 0.70 then return 2.10 end
+        if rtt >= 0.45 then return 1.55 end
+        return 1.25
     end
     if rtt >= 2.00 then return 1.50 end
     if rtt >= 1.25 then return 1.20 end
@@ -357,6 +376,15 @@ local function bagWakeDelay()
     if rtt >= 0.70 then return 0.42 end
     if rtt >= 0.45 then return 0.30 end
     return 0.18
+end
+
+local function bagRetryDelay(record)
+    local attempts = tonumber(record and record.Attempts) or 0
+    local rtt = currentRTT()
+    if lowTrafficActive() then
+        return math.clamp(1.10 + rtt + trafficStagger() * 0.35 + attempts * 0.35, 1.10, 3.75)
+    end
+    return math.clamp(0.45 + rtt * 1.4 + attempts * 0.18, 0.45, 1.75)
 end
 
 local function statusText()
@@ -583,7 +611,7 @@ armOrbFlush = function(minimumDelay)
     local earliest = (tonumber(run.OrbLastFlushAt) or 0) + interval
     local delaySeconds = math.max(earliest - now, tonumber(minimumDelay) or 0)
     if run.OrbLastFlushAt == 0 then
-        delaySeconds = interval + clientStagger()
+        delaySeconds = interval + trafficStagger()
     end
     task.delay(delaySeconds, function()
         if generation ~= run.Generation or token ~= run.OrbToken then return end
@@ -621,7 +649,7 @@ local function queueOrb(itemOrId, fromEvent, payload)
     end
     if fromEvent then run.OrbEvents = run.OrbEvents + 1 end
     if idleBurst and queuedNew then run.OrbIdleBursts = run.OrbIdleBursts + 1 end
-    armOrbFlush(idleBurst and queuedNew and clientStagger() or nil)
+    armOrbFlush(idleBurst and queuedNew and trafficStagger() or nil)
     armStatus()
     return true
 end
@@ -865,7 +893,7 @@ local function collectBag(record, now)
         end
         if run.BagById[record.Id] ~= record then return end
         if run.BagAckAvailable and record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
-            enqueueDelayedBag(record, now + bagConfirmationDelay())
+            enqueueDelayedBag(record, now + bagRetryDelay(record))
         elseif run.BagAckAvailable then
             enqueueDelayedBag(record, now + bagConfirmationDelay())
         else
@@ -916,7 +944,7 @@ local function queueBagEvent(id, payload, explicitPosition, sourceObject)
     run.BagById[id] = record
     run.WaitingBagCount = run.WaitingBagCount + 1
     run.BagEvents = run.BagEvents + 1
-    enqueueDelayedBag(record, os.clock() + BAG_FIRST_ATTEMPT_DELAY + clientStagger())
+    enqueueDelayedBag(record, os.clock() + BAG_FIRST_ATTEMPT_DELAY + trafficStagger())
     armStatus()
     return true
 end
@@ -1881,6 +1909,7 @@ local function stats()
         LowTrafficActive = lowTrafficActive(),
         OrbFlushInterval = orbFlushInterval(),
         BagLaneLimit = bagLaneLimit(),
+        TrafficStagger = trafficStagger(),
         VisualInstancesPrevented = run.VisualInstancesPrevented,
         PendingOrbs = run.PendingOrbCount,
         UnconfirmedOrbs = run.UnconfirmedOrbCount,

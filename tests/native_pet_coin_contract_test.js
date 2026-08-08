@@ -9,7 +9,7 @@ function assert(condition, message) {
 }
 
 for (const marker of [
-    'local MODULE_VERSION = "3.6.6"',
+    'local MODULE_VERSION = "3.6.7"',
     'local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"',
     "local function ensureNativePetCoinTarget(record, rawId)",
     'local target = folder:FindFirstChild("Coin")',
