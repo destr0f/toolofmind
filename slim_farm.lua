@@ -5,7 +5,22 @@ local VERSION = "1.4.1-dev.49"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
+env.PSX_OG_TRACE_LAST_AT = {}
+env.PSX_OG_TRACE_THROTTLE = {
+    ["auto egg Open Egg"] = 2,
+    ["auto egg native skip"] = 2,
+    ["auto egg headless reconcile"] = 2,
+    ["gold machine inventory"] = 2,
+    ["rainbow machine inventory"] = 2,
+}
+
 local function trace(stage, detail)
+    local interval = env.PSX_OG_TRACE_THROTTLE[stage]
+    if interval then
+        local now = os.clock()
+        if now - (env.PSX_OG_TRACE_LAST_AT[stage] or -math.huge) < interval then return end
+        env.PSX_OG_TRACE_LAST_AT[stage] = now
+    end
     print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
 end
 

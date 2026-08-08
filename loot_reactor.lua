@@ -76,6 +76,7 @@ local run = {
     OrbConfirmArmed = false,
     OrbRetryArmed = false,
     OrbLastFlushAt = 0,
+    OrbIdleBursts = 0,
     BagById = {},
     BagQueue = {},
     BagQueueHead = 1,
@@ -562,6 +563,8 @@ local function queueOrb(itemOrId, fromEvent, payload)
         return true
     end
 
+    local idleBurst = run.PendingOrbCount == 0 and not run.OrbFlushArmed
+    local queuedNew = false
     if run.UnconfirmedOrbIds[orbId] ~= nil then
         run.OrbDeduplicated = run.OrbDeduplicated + 1
     elseif not run.PendingOrbIds[orbId] then
@@ -572,11 +575,13 @@ local function queueOrb(itemOrId, fromEvent, payload)
         end
         run.PendingOrbIds[orbId] = 0
         run.PendingOrbCount = run.PendingOrbCount + 1
+        queuedNew = true
     else
         run.OrbDeduplicated = run.OrbDeduplicated + 1
     end
     if fromEvent then run.OrbEvents = run.OrbEvents + 1 end
-    armOrbFlush()
+    if idleBurst and queuedNew then run.OrbIdleBursts = run.OrbIdleBursts + 1 end
+    armOrbFlush(idleBurst and queuedNew and clientStagger() or nil)
     armStatus()
     return true
 end
@@ -1789,6 +1794,7 @@ local function stats()
         WaitingBags = run.WaitingBagCount,
         OrbEvents = run.OrbEvents,
         OrbBatches = run.OrbBatches,
+        OrbIdleBursts = run.OrbIdleBursts,
         OrbIdsSent = run.OrbIdsSent,
         OrbErrors = run.OrbErrors,
         OrbOverflow = run.OrbOverflow,

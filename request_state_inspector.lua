@@ -7,6 +7,9 @@ local SNAPSHOT_CAPACITY = 8
 local ACTIVE_CAPACITY = 96
 local UPDATE_EXPANDED = 0.5
 local UPDATE_MINIMIZED = 2
+local PING_BASELINE_SAMPLE_LIMIT = 30
+local PING_ABSOLUTE_WARNING = 900
+local PING_RELATIVE_MULTIPLIER = 2.5
 
 local TERMINAL = {
     COALESCED_INTO = true,
@@ -547,7 +550,8 @@ local function classify(state)
     local startupBurst = tonumber(gauge(state, "Startup", "requests5s", 0)) or 0
     local ghost = tonumber(gauge(state, "Reload", "ghostOperations", 0)) or 0
 
-    state.HighPingSamples = (ping > 2000 or (baseline > 0 and ping > baseline * 4))
+    state.HighPingSamples = (ping > PING_ABSOLUTE_WARNING
+        or (baseline > 0 and ping > baseline * PING_RELATIVE_MULTIPLIER))
         and (state.HighPingSamples + 1) or 0
     setIncident(state, "FARM_STUCK_INVOKE", invokeAge > 8,
         string.format("oldest invoke %.1fs", invokeAge))
@@ -571,7 +575,7 @@ local function classify(state)
         "old-generation operations=" .. tostring(ghost))
     setIncident(state, "CLIENT_SCHEDULER_STALL", schedulerDelay > 2,
         string.format("scheduler delay %.2fs", schedulerDelay))
-    local noLocalPressure = state.ActiveInvokes == 0 and farmQueue == 0 and gateWaiters == 0
+    local noLocalPressure = invokeAge <= 8 and farmQueue == 0 and gateWaiters == 0
         and schedulerDelay <= 2
     setIncident(state, "NETWORK_OR_EXECUTOR_UNKNOWN", state.HighPingSamples >= 3 and noLocalPressure,
         string.format("ping %.0fms baseline %.0fms", ping, baseline))
@@ -607,9 +611,10 @@ local function readPing(state)
     value = ok and tonumber(value) or nil
     if not value then return end
     state.Ping = value
-    if value < 2000 then
+    if value < 2000 and state.PingBaselineSamples < PING_BASELINE_SAMPLE_LIMIT then
         state.PingBaseline = state.PingBaseline == 0 and value
             or state.PingBaseline * 0.92 + value * 0.08
+        state.PingBaselineSamples = state.PingBaselineSamples + 1
     end
 end
 
@@ -998,7 +1003,7 @@ local function start(context)
         Operations = {}, OperationCount = 0, Lanes = {}, Gauges = {},
         Sequence = 0, ActiveInvokes = 0, UnackedFires = 0, StartupRequests = 0,
         ExplicitDrops = 0, InstrumentedTransitions = 0,
-        Ping = 0, PingBaseline = 0, HighPingSamples = 0,
+        Ping = 0, PingBaseline = 0, PingBaselineSamples = 0, HighPingSamples = 0,
         SchedulerDelay = 0, ExpectedAt = nil, PrimaryIncident = "none", Health = "UNKNOWN",
         Incidents = {}, IncidentMuted = {}, Connections = {}, Minimized = false,
         UI = { Gui = nil, Labels = {}, Last = {}, Collapsed = {} },

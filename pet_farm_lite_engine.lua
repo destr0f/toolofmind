@@ -7,6 +7,9 @@ local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
 local RETRY_DELAY = 0.25
+local TRANSPORT_SWEEP_INTERVAL = 1
+local TRANSPORT_CACHE_RETENTION = 0.5
+local TRANSPORT_INFLIGHT_RETENTION = 30
 
 local scheduler = task or {
     delay = function(_, callback)
@@ -19,9 +22,13 @@ local transportGate = {
     Invoke = {},
     InFlight = {},
     InvokeHistory = {},
+    NextSweepAt = 0,
+    EntryCount = 0,
     Stats = {
         SuppressedFire = 0,
         CoalescedInvoke = 0,
+        CacheSweeps = 0,
+        CachePruned = 0,
     },
 }
 
@@ -73,6 +80,52 @@ local function transportKey(command, ...)
         pieces[#pieces + 1] = transportSerialize(select(index, ...), 0)
     end
     return table.concat(pieces, "|")
+end
+
+local function sweepTransportGate(now, force)
+    now = tonumber(now) or os.clock()
+    if not force and now < transportGate.NextSweepAt then return end
+    transportGate.NextSweepAt = now + TRANSPORT_SWEEP_INTERVAL
+
+    local retained, pruned = 0, 0
+    for key, sentAt in pairs(transportGate.Fire) do
+        if now - (tonumber(sentAt) or 0) > TRANSPORT_CACHE_RETENTION then
+            transportGate.Fire[key] = nil
+            pruned = pruned + 1
+        else
+            retained = retained + 1
+        end
+    end
+    for key, sentAt in pairs(transportGate.Invoke) do
+        if now - (tonumber(sentAt) or 0) > TRANSPORT_CACHE_RETENTION then
+            transportGate.Invoke[key] = nil
+            transportGate.InvokeHistory[key] = nil
+            pruned = pruned + 1
+        else
+            retained = retained + 1
+        end
+    end
+    for key, entry in pairs(transportGate.InFlight) do
+        local startedAt = type(entry) == "table" and tonumber(entry.start) or nil
+        if not startedAt or now - startedAt > TRANSPORT_INFLIGHT_RETENTION then
+            transportGate.InFlight[key] = nil
+            pruned = pruned + 1
+        else
+            retained = retained + 1
+        end
+    end
+    transportGate.EntryCount = retained
+    transportGate.Stats.CacheSweeps = transportGate.Stats.CacheSweeps + 1
+    transportGate.Stats.CachePruned = transportGate.Stats.CachePruned + pruned
+end
+
+local function clearTransportGate()
+    table.clear(transportGate.Fire)
+    table.clear(transportGate.Invoke)
+    table.clear(transportGate.InFlight)
+    table.clear(transportGate.InvokeHistory)
+    transportGate.NextSweepAt = 0
+    transportGate.EntryCount = 0
 end
 
 local run = {
@@ -243,6 +296,7 @@ local function resetQueue()
     run.RetryDue = nil
     table.clear(run.PendingByPet)
     table.clear(run.ActiveInvokes)
+    clearTransportGate()
 end
 
 local function resetStats()
@@ -300,9 +354,10 @@ local function currentEntries(job)
 end
 
 local function transportInvokeCommand(command, ...)
+    local now = os.clock()
+    sweepTransportGate(now, false)
     local gateKey = transportKey(command, ...)
     local ttl = tonumber(TRANSPORT_TTL[command]) or 0
-    local now = os.clock()
     local inflight = transportGate.InFlight[gateKey]
 
     if inflight then
@@ -382,8 +437,9 @@ local function transportInvokeCommand(command, ...)
 end
 
 local function transportFireCommand(command, ...)
-    local gateKey = transportKey(command, ...)
     local now = os.clock()
+    sweepTransportGate(now, false)
+    local gateKey = transportKey(command, ...)
     local ttl = tonumber(TRANSPORT_TTL[command]) or 0
 
     if ttl > 0 and transportGate.Fire[gateKey] and now - transportGate.Fire[gateKey] < ttl then
@@ -901,6 +957,7 @@ end
 
 local function stats()
     local now, activeInvokeCount, oldestInvokeAge = os.clock(), 0, 0
+    sweepTransportGate(now, false)
     for _, startedAt in pairs(run.ActiveInvokes) do
         activeInvokeCount = activeInvokeCount + 1
         oldestInvokeAge = math.max(oldestInvokeAge, now - (tonumber(startedAt) or now))
@@ -930,6 +987,9 @@ local function stats()
         FarmSignals = run.FarmSignals,
         SignalFailures = run.SignalFailures,
         TransportFailures = run.TransportFailures,
+        TransportCacheEntries = transportGate.EntryCount,
+        TransportCacheSweeps = transportGate.Stats.CacheSweeps,
+        TransportCachePruned = transportGate.Stats.CachePruned,
         LocalTimeouts = run.LocalTimeouts,
         LastRoute = run.LastRoute,
         LastAssignmentAt = run.LastAssignmentAt,
