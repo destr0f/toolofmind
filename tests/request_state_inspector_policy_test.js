@@ -31,12 +31,13 @@ assert(!/[.:](?:InvokeServer|FireServer)\s*\(/.test(inspector),
     "passive inspector performs a direct remote call");
 
 for (const marker of [
-    'local MODULE_VERSION = "1.0.1"',
-    "local EVENT_CAPACITY = 128",
-    "local SNAPSHOT_CAPACITY = 8",
-    "local ACTIVE_CAPACITY = 96",
-    "local UPDATE_EXPANDED = 0.5",
-    "local UPDATE_MINIMIZED = 2",
+    'local MODULE_VERSION = "1.0.2"',
+    "local EVENT_CAPACITY = 48",
+    "local SNAPSHOT_CAPACITY = 4",
+    "local ACTIVE_CAPACITY = 48",
+    "local UPDATE_EXPANDED = 2",
+    "local UPDATE_MINIMIZED = 8",
+    "local HIGH_FREQUENCY_EVENT_INTERVAL = 2.5",
     'Name = "PSX_OG_RequestInspector"',
     'button("Snap"',
     'button("Copy"',
@@ -48,6 +49,9 @@ for (const marker of [
     "function controller:Snapshot(",
     "function controller:Destroy(",
     "task.delay(delay, function() updateLoop(state) end)",
+    "local function shouldRecordEvent(",
+    'root.Visible = false',
+    'show.Visible = true',
 ]) {
     assert(inspector.includes(marker), `inspector contract misses ${marker}`);
 }
@@ -155,5 +159,5 @@ assert(support.includes("now - gate.OwnerSince > 45")
 
 process.stdout.write(
     "Passive request inspector policy OK | network=0 | hooks=0"
-    + " | events=128 | snapshots=8 | active=96 | hotPolicy=unchanged\n"
+    + " | events=48 | snapshots=4 | active=48 | sampledLoot=on | hotPolicy=unchanged\n"
 );

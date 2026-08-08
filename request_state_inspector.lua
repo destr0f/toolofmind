@@ -1,15 +1,16 @@
 -- Passive request-state diagnostics for PSX OG Nova develop.
 -- This module never invokes/fires a remote and never changes automation policy.
 
-local MODULE_VERSION = "1.0.1"
-local EVENT_CAPACITY = 128
-local SNAPSHOT_CAPACITY = 8
-local ACTIVE_CAPACITY = 96
-local UPDATE_EXPANDED = 0.5
-local UPDATE_MINIMIZED = 2
-local PING_BASELINE_SAMPLE_LIMIT = 30
+local MODULE_VERSION = "1.0.2"
+local EVENT_CAPACITY = 48
+local SNAPSHOT_CAPACITY = 4
+local ACTIVE_CAPACITY = 48
+local UPDATE_EXPANDED = 2
+local UPDATE_MINIMIZED = 8
+local PING_BASELINE_SAMPLE_LIMIT = 20
 local PING_ABSOLUTE_WARNING = 900
 local PING_RELATIVE_MULTIPLIER = 2.5
+local HIGH_FREQUENCY_EVENT_INTERVAL = 2.5
 
 local TERMINAL = {
     COALESCED_INTO = true,
@@ -171,7 +172,7 @@ local function copyPrimitiveMap(source, depth)
     local result, count = {}, 0
     for key, value in pairs(source) do
         count = count + 1
-        if count > 96 then
+        if count > 48 then
             result.__truncated = true
             break
         end
@@ -277,7 +278,25 @@ local function setGauge(state, subsystem, key, value)
     subsystem, key = tostring(subsystem or "Background"), tostring(key or "value")
     local group = state.Gauges[subsystem]
     if not group then group = {}; state.Gauges[subsystem] = group end
-    group[key] = primitive(value)
+    local safe = primitive(value)
+    if group[key] == safe then return true end
+    group[key] = safe
+    return true
+end
+
+local function shouldRecordEvent(state, subsystem, stateName, operation, detailText, now)
+    if subsystem ~= "Loot" then return true end
+    if stateName ~= "WAITING_READY" and stateName ~= "FIRE_LOCAL_SENT_UNACKED" then return true end
+    local command = operation and operation.Command or nil
+    if command == nil or command == "" or command == "unknown" then
+        command = string.match(tostring(detailText or ""), "command=([^,]+)") or "unknown"
+    end
+    command = tostring(command)
+    if command ~= "Claim Orbs" and command ~= "Collect Lootbag" then return true end
+    local key = subsystem .. ":" .. stateName .. ":" .. command
+    local last = tonumber(state.EventThrottle[key]) or 0
+    if now - last < HIGH_FREQUENCY_EVENT_INTERVAL then return false end
+    state.EventThrottle[key] = now
     return true
 end
 
@@ -378,7 +397,9 @@ local function transition(state, subsystem, requestId, stateName, detail)
             group.Failed = group.Failed + 1
         end
     end
-    recordEvent(state, subsystem, requestId, stateName, detailText, operation, now)
+    if shouldRecordEvent(state, subsystem, stateName, operation, detailText, now) then
+        recordEvent(state, subsystem, requestId, stateName, detailText, operation, now)
+    end
     if TERMINAL[stateName] and operation then
         state.Operations[key] = nil
         state.OperationCount = math.max(state.OperationCount - 1, 0)
@@ -422,7 +443,7 @@ local function snapshot(state, reason)
     local now = os.clock()
     local events = ringValues(state, "Events", "EventCursor", "EventCount", EVENT_CAPACITY)
     local recentEvents = {}
-    local first = math.max(#events - 63, 1)
+    local first = math.max(#events - 23, 1)
     for index = first, #events do
         recentEvents[#recentEvents + 1] = copyPrimitiveMap(events[index])
     end
@@ -944,6 +965,9 @@ local function createUI(state)
     end)
     gui.Parent = parent
     root.Parent = gui
+    root.Visible = false
+    show.Visible = true
+    state.Minimized = true
     state.UI.Root, state.UI.Body, state.UI.Layout = root, body, layout
     return true
 end
@@ -1000,12 +1024,12 @@ local function start(context)
         Generation = tonumber(context.Generation) or 0,
         Events = {}, EventCursor = 1, EventCount = 0,
         Snapshots = {}, SnapshotCursor = 1, SnapshotCount = 0,
-        Operations = {}, OperationCount = 0, Lanes = {}, Gauges = {},
+        Operations = {}, OperationCount = 0, Lanes = {}, Gauges = {}, EventThrottle = {},
         Sequence = 0, ActiveInvokes = 0, UnackedFires = 0, StartupRequests = 0,
         ExplicitDrops = 0, InstrumentedTransitions = 0,
         Ping = 0, PingBaseline = 0, PingBaselineSamples = 0, HighPingSamples = 0,
         SchedulerDelay = 0, ExpectedAt = nil, PrimaryIncident = "none", Health = "UNKNOWN",
-        Incidents = {}, IncidentMuted = {}, Connections = {}, Minimized = false,
+        Incidents = {}, IncidentMuted = {}, Connections = {}, Minimized = true,
         UI = { Gui = nil, Labels = {}, Last = {}, Collapsed = {} },
     }
     local controller = {}
@@ -1107,8 +1131,9 @@ local function start(context)
     else
         setGauge(state, "Startup", "inspectorUI", "ready")
     end
-    state.ExpectedAt = os.clock() + UPDATE_EXPANDED
-    task.delay(UPDATE_EXPANDED, function() updateLoop(state) end)
+    local initialDelay = state.Minimized and UPDATE_MINIMIZED or UPDATE_EXPANDED
+    state.ExpectedAt = os.clock() + initialDelay
+    task.delay(initialDelay, function() updateLoop(state) end)
     return controller
 end
 

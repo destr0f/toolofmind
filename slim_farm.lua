@@ -6773,7 +6773,12 @@ local function updateRuntimeTelemetry()
             quickHUD:ApplyVisibility()
         end
         statusSetters.Flush()
-        task.delay(env.PSX_OG_TRAFFIC_DIET:IsActive() and 3 or 1, tick)
+        local trafficActive = env.PSX_OG_TRAFFIC_DIET:IsActive()
+        local visibleDiagnostics = monitorVisible or quickVisible
+        local nextDelay = visibleDiagnostics
+            and (trafficActive and 4 or 2)
+            or (trafficActive and 8 or 4)
+        task.delay(nextDelay, tick)
     end
     task.delay(1, tick)
 end

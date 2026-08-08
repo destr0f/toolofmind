@@ -19,7 +19,7 @@ requireText(loot, "idleBurst and queuedNew and trafficStagger()", "idle orb stag
 requireText(loot, "local function trafficStagger()", "multi-client traffic staggering");
 requireText(loot, "local function lowTrafficActive()", "loot low traffic probe");
 requireText(loot, "local function bagLaneLimit()", "adaptive lootbag lanes");
-requireText(inspector, "PING_BASELINE_SAMPLE_LIMIT = 30", "frozen ping baseline");
+requireText(inspector, "PING_BASELINE_SAMPLE_LIMIT = 20", "lightweight ping baseline");
 requireText(inspector, "invokeAge <= 8", "normal invoke does not hide network warning");
 requireText(main, '["auto egg Open Egg"] = 2', "bounded hot trace");
 requireText(main, "PSX_OG_TRAFFIC_DIET:CanRunMaintenance", "shared maintenance traffic gate");
