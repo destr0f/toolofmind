@@ -31,7 +31,7 @@ for (const marker of [
     "local DIAMOND_PACK_PRICE = 45e9",
     "local DIAMOND_PACK_RESERVE = 1e9",
     "local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE",
-    'getCurrentCurrency("Rainbow Coins", save, true, sharedSaveCache.At)',
+    'getCurrentCurrency("Rainbow Coins", save, true, rewardStates.sharedSaveCache.At)',
     "below 46B",
     'Command = "Redeem Free Gift"',
     "FreeGiftsRedeemed",

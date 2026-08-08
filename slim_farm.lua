@@ -357,11 +357,11 @@ local VIP_REWARD_COOLDOWN = 14400
 local REWARD_RETRY_DELAY = 60
 local rewardServerTime
 local rewardClockStarted
-local sharedSaveCache = {
-    At = -math.huge,
-    Save = nil,
-}
 local rewardStates = {
+    sharedSaveCache = {
+        At = -math.huge,
+        Save = nil,
+    },
     VIP = {
         Label = "VIP",
         Command = "Redeem VIP Rewards",
@@ -4007,15 +4007,15 @@ local function getRewardSave()
     local now = os.clock()
     local diet = env.PSX_OG_TRAFFIC_DIET
     local ttl = diet and diet.State and diet.State.Active == true and 12 or 3
-    if sharedSaveCache.Save and now - sharedSaveCache.At < ttl then
-        return sharedSaveCache.Save
+    if rewardStates.sharedSaveCache.Save and now - rewardStates.sharedSaveCache.At < ttl then
+        return rewardStates.sharedSaveCache.Save
     end
     if not Library.Save or type(Library.Save.Get) ~= "function" then return nil end
     local save
     pcall(function() save = Library.Save.Get() end)
     if type(save) == "table" then
-        sharedSaveCache.Save = save
-        sharedSaveCache.At = now
+        rewardStates.sharedSaveCache.Save = save
+        rewardStates.sharedSaveCache.At = now
         return save
     end
     return nil
@@ -4236,7 +4236,7 @@ local function inspectEggThroughModule(eggId, count, animation)
         Animation = animation,
         GetCurrency = function(currencyName)
             local save = getRewardSave()
-            return getCurrentCurrency(currencyName, save, true, sharedSaveCache.At)
+            return getCurrentCurrency(currencyName, save, true, rewardStates.sharedSaveCache.At)
         end,
         FormatNumber = formatRateNumber,
     })
@@ -4563,7 +4563,7 @@ local machinePetSnapshot = {
 
 invalidateMachinePetSnapshot = function()
     machinePetSnapshot.At = -math.huge
-    sharedSaveCache.At = -math.huge
+    rewardStates.sharedSaveCache.At = -math.huge
 end
 
 local function getMachinePetSnapshot(force)
@@ -4852,7 +4852,7 @@ local function startBoostModule()
         GetSave = getRewardSave,
         GetCurrency = function(currencyName)
             local save = getRewardSave()
-            return getCurrentCurrency(currencyName, save, true, sharedSaveCache.At)
+            return getCurrentCurrency(currencyName, save, true, rewardStates.sharedSaveCache.At)
         end,
         FormatNumber = formatRateNumber,
         GetCommandRemote = getCommandRemote,
@@ -4924,7 +4924,7 @@ local function invokeReward(kind)
         reply = "Route/transport error; no claim confirmed: " .. tostring(serverMessage)
     elseif accepted then
         succeeded = true
-        sharedSaveCache.At = -math.huge
+        rewardStates.sharedSaveCache.At = -math.huge
         if kind == "FreeGifts" and state.Argument ~= nil then
             state.LocalClaimed[state.Argument] = true
         end
@@ -4944,7 +4944,7 @@ local function runDiamondPackCheck()
     diamondPackBusy = true
 
     local save = getRewardSave()
-    local balance = getCurrentCurrency("Rainbow Coins", save, true, sharedSaveCache.At)
+    local balance = getCurrentCurrency("Rainbow Coins", save, true, rewardStates.sharedSaveCache.At)
     local balanceText = balance ~= nil and formatRateNumber(balance) or "unknown"
     local status
 
