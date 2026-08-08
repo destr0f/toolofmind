@@ -153,11 +153,18 @@ assert(loot.includes("run.UnconfirmedOrbIds[orbId] = now")
     && loot.includes("run.OrbAckObserved and attempts < MAX_ORB_DELIVERY_ATTEMPTS")
     && loot.includes("run.OrbExpiredUnverified = run.OrbExpiredUnverified + 1"),
     "orb delivery is not retained and retried within a bounded ACK policy");
-assert(loot.includes("record.State = \"committed\"")
-    && loot.includes("run.BagSentUnverifiable = run.BagSentUnverifiable + 1")
-    && loot.includes('closeBag(record, false, "transport committed")')
+assert(loot.includes("run.BagSentUnverifiable = run.BagSentUnverifiable + 1")
+    && loot.includes("record.State = \"awaiting_ack\"")
+    && loot.includes("collectNativeBagObject(record, liveObject)")
+    && loot.includes("run.NativeLootbagCollect = environment.Collect")
+    && loot.includes("run.BagLocalDestroyed = run.BagLocalDestroyed + 1")
+    && loot.includes("enqueueDelayedBag(record, now + bagConfirmationDelay())")
     && loot.includes("run.BagTransportCommitted = run.BagTransportCommitted + 1"),
-    "successful bag sends are not closed after one native transport commit");
+    "successful bag sends are not retained through Remove Lootbag/local visual cleanup");
+assert(loot.includes("return originalScan(...)")
+    && loot.includes("return originalRemove(id, ...)")
+    && !loot.includes("if bagsEnabled() and not record.FailOpen then return nil end"),
+    "lootbag native scan/remove fallback can still be suppressed");
 assert(loot.includes("record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS")
     && loot.includes("record.State = \"retry\"")
     && loot.includes("enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)"),

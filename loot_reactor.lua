@@ -18,6 +18,8 @@ local MAX_PENDING_BAGS = 4096
 local BAG_FIRST_ATTEMPT_DELAY = 0.05
 local BAG_TRANSPORT_RETRY_DELAY = 0.10
 local MAX_BAG_TRANSPORT_ATTEMPTS = 2
+local BAG_CONFIRM_MIN_DELAY = 0.60
+local BAG_CONFIRM_MAX_DELAY = 3.00
 local MAX_BAG_POOL = 256
 local STATUS_INTERVAL = 1
 local NATIVE_PET_COIN_SHELL_ATTRIBUTE = "PSXHeadlessTargetShell"
@@ -54,6 +56,7 @@ local run = {
     OrbProducerRecord = nil,
     BagProducerRecord = nil,
     CoinProducerRecord = nil,
+    NativeLootbagCollect = nil,
     PlayerScripts = nil,
     ProducerRebindArmed = false,
     ProducerRebindSerial = 0,
@@ -117,6 +120,9 @@ local run = {
     BagNetworkAcknowledged = 0,
     BagTransportCommitted = 0,
     BagTransportDropped = 0,
+    BagAckAvailable = false,
+    BagAckObserved = false,
+    BagLocalDestroyed = 0,
 }
 
 local function disconnect(connection)
@@ -319,6 +325,10 @@ local function orbConfirmationDelay()
     return math.clamp(currentRTT() * 3, ORB_CONFIRM_MIN_DELAY, ORB_CONFIRM_MAX_DELAY)
 end
 
+local function bagConfirmationDelay()
+    return math.clamp(currentRTT() * 2, BAG_CONFIRM_MIN_DELAY, BAG_CONFIRM_MAX_DELAY)
+end
+
 local function statusText()
     return string.format(
         "Orbs producer: %s (%s) | Coins producer: %s (%s)\n"
@@ -327,7 +337,7 @@ local function statusText()
             .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
             .. "Orbs: pending/unconfirmed/ack %d/%d/%d | events/batches %d/%d | retry/expired/error/overflow/drop %d/%d/%d/%d/%d\n"
             .. "Lootbags: waiting %d/%d | lanes %d | events/sent/committed/ack/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d/%d\n"
-            .. "Retention: bounded Orb Removed confirmation; one retry only after a live ACK is observed",
+            .. "Retention: bounded Orb Removed and Remove Lootbag confirmation; native visual fallback stays live",
         run.OrbsProducer,
         run.OrbGateReason,
         run.CoinsProducer,
@@ -677,9 +687,25 @@ local function releaseBagRecord(record)
     record.Queued = nil
     record.Delayed = nil
     record.Retired = nil
+    record.SentAt = nil
+    record.CreatedAt = nil
+    record.NativeCollected = nil
     if #run.BagPool < MAX_BAG_POOL then
         run.BagPool[#run.BagPool + 1] = record
     end
+end
+
+local function collectNativeBagObject(record, object)
+    if typeof(object) ~= "Instance" or not object.Parent then return false end
+    local collect = run.NativeLootbagCollect
+    if type(collect) ~= "function" then return false end
+    local ok = pcall(collect, object)
+    if ok then
+        record.Object = nil
+        record.NativeCollected = true
+        run.BagLocalDestroyed = run.BagLocalDestroyed + 1
+    end
+    return ok
 end
 
 local function closeBag(record, acknowledged, reason)
@@ -777,26 +803,39 @@ end
 
 local function collectBag(record, now)
     local liveObject = record.Object
+    local nativeCollected = false
     if typeof(liveObject) == "Instance" and liveObject.Parent then
         -- Collect Lootbag expects the bag's current landed position. The first
         -- fallback observation can happen while the object is still moving.
         record.Position = objectPosition(liveObject) or record.Position
+        nativeCollected = collectNativeBagObject(record, liveObject)
+        if run.BagById[record.Id] ~= record then return end
     end
-    local profiled = profileBegin("PSX_LootbagFlush")
-    local sent, _, route = fire("Collect Lootbag", record.Id, record.Position)
-    profileEnd(profiled)
+    local sent, route
+    if nativeCollected then
+        sent, route = true, "native Collect"
+    else
+        local profiled = profileBegin("PSX_LootbagFlush")
+        sent, _, route = fire("Collect Lootbag", record.Id, record.Position)
+        profileEnd(profiled)
+    end
     run.RouteLootbags = route or "unavailable"
     record.Attempts = (record.Attempts or 0) + 1
     if sent then
         run.BagSent = run.BagSent + 1
-        record.State = "committed"
+        record.State = "awaiting_ack"
+        record.SentAt = now
         if typeof(liveObject) ~= "Instance" and record.Attempts == 1 then
             run.BagSentUnverifiable = run.BagSentUnverifiable + 1
         end
-        -- RemoteEvents are reliable and ordered. The native Lootbags script
-        -- sends once and immediately destroys its local object; missing
-        -- Remove Lootbag callbacks are not evidence of transport failure.
-        closeBag(record, false, "transport committed")
+        if run.BagById[record.Id] ~= record then return end
+        if run.BagAckAvailable and record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
+            enqueueDelayedBag(record, now + bagConfirmationDelay())
+        elseif run.BagAckAvailable then
+            enqueueDelayedBag(record, now + bagConfirmationDelay())
+        else
+            closeBag(record, false, "transport committed")
+        end
     elseif record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
         run.BagRetried = run.BagRetried + 1
         record.State = "retry"
@@ -838,6 +877,7 @@ local function queueBagEvent(id, payload, explicitPosition, sourceObject)
     record.HadObject = record.Object ~= nil
     record.Attempts = 0
     record.State = "queued"
+    record.CreatedAt = os.clock()
     run.BagById[id] = record
     run.WaitingBagCount = run.WaitingBagCount + 1
     run.BagEvents = run.BagEvents + 1
@@ -866,6 +906,7 @@ end
 local function acknowledgeBag(id, source)
     id = id ~= nil and tostring(id) or nil
     local record = id and run.BagById[id] or nil
+    run.BagAckObserved = true
     if not record then return end
     if source == "object" then
         run.BagObjectAcknowledged = run.BagObjectAcknowledged + 1
@@ -889,7 +930,15 @@ processBagWake = function()
         run.BagQueueHead = index + 1
         if record then record.Queued = false end
         if record and run.BagById[record.Id] == record and record.State ~= "sent" then
-            collectBag(record, now)
+            if record.State == "awaiting_ack" then
+                if record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
+                    collectBag(record, now)
+                else
+                    closeBag(record, false, "transport committed")
+                end
+            else
+                collectBag(record, now)
+            end
             processed = processed + 1
         elseif record and record.Retired and not record.Delayed then
             releaseBagRecord(record)
@@ -1156,15 +1205,15 @@ local function installOrbProducer()
     for _, name in ipairs({ "OrbLoop", "PlaySounds" }) do
         local original = record.Originals[name]
         if original then
-            record.Wrappers[name] = (function(savedOriginal)
+            record.Wrappers[name] = (function(savedName, savedOriginal)
                 return function(...)
-                    if record.Active and record.Generation == run.Generation
-                        and orbsEnabled() then
+                    if savedName == "PlaySounds" and record.Active
+                        and record.Generation == run.Generation and orbsEnabled() then
                         return nil
                     end
                     return savedOriginal(...)
                 end
-            end)(original)
+            end)(name, original)
         end
     end
 
@@ -1336,6 +1385,12 @@ local function installBagProducer()
     for _, name in ipairs({ "Add", "ScanForCollection", "Remove" }) do
         record.Originals[name] = environment[name]
     end
+    if type(environment.Collect) == "function" then
+        record.Originals.Collect = environment.Collect
+        run.NativeLootbagCollect = environment.Collect
+    else
+        run.NativeLootbagCollect = nil
+    end
 
     local originalAdd = record.Originals.Add
     record.Wrappers.Add = function(id, payload, ...)
@@ -1359,10 +1414,6 @@ local function installBagProducer()
 
     local originalScan = record.Originals.ScanForCollection
     record.Wrappers.ScanForCollection = function(...)
-        if record.Active and not record.FailOpen
-            and record.Generation == run.Generation and bagsEnabled() then
-            return nil
-        end
         return originalScan(...)
     end
 
@@ -1370,7 +1421,6 @@ local function installBagProducer()
     record.Wrappers.Remove = function(id, ...)
         if record.Active and record.Generation == run.Generation then
             pcall(acknowledgeBag, id, "game remove")
-            if bagsEnabled() and not record.FailOpen then return nil end
         end
         return originalRemove(id, ...)
     end
@@ -1398,8 +1448,11 @@ local function installBagProducer()
 
     local removeSignal = networkSignal("Remove Lootbag")
     if removeSignal then
+        run.BagAckAvailable = true
         run.BagGateConnections[#run.BagGateConnections + 1] =
             removeSignal:Connect(function(id) acknowledgeBag(id, "network") end)
+    else
+        run.BagAckAvailable = false
     end
     return true
 end
@@ -1426,6 +1479,8 @@ local function restoreBagGate()
     restoreProducerRecord(run.BagProducerRecord)
     run.BagProducerRecord = nil
     run.BagGate = false
+    run.BagAckAvailable = false
+    run.NativeLootbagCollect = nil
     run.LootbagsProducer = run.BagsOn and "fallback" or "disabled"
     run.BagGateReason = run.BagsOn
         and "producer gate unavailable" or "collection disabled"
@@ -1677,6 +1732,9 @@ local function resetStats()
     run.BagNetworkAcknowledged = 0
     run.BagTransportCommitted = 0
     run.BagTransportDropped = 0
+    run.BagAckAvailable = false
+    run.BagAckObserved = false
+    run.BagLocalDestroyed = 0
     run.VisualInstancesPrevented = 0
     run.GateGeneration = 0
     run.LastRebindReason = "startup"
@@ -1820,6 +1878,9 @@ local function stats()
         BagNetworkAcknowledged = run.BagNetworkAcknowledged,
         BagTransportCommitted = run.BagTransportCommitted,
         BagTransportDropped = run.BagTransportDropped,
+        BagAckAvailable = run.BagAckAvailable,
+        BagAckObserved = run.BagAckObserved,
+        BagLocalDestroyed = run.BagLocalDestroyed,
         RouteLootbags = run.RouteLootbags,
     }
 end
