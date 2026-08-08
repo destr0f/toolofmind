@@ -45,7 +45,7 @@
     "requestInspector": {
       "id": "requestInspector",
       "label": "Passive request-state inspector",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.50",
@@ -53,10 +53,10 @@
       "load": "startup",
       "role": "passive-request-state-inspector",
       "path": "request_state_inspector.lua",
-      "commit": "4432e6415b0d7e23ccdd8da1a2c28685e6496e1b",
-      "bytes": 52239,
-      "sha256": "0533f2728eda2ac78e173b9eb793c813eed7bc6c22930882b10d99f0ef4da5c1",
-      "djb2": "43f8c651"
+      "commit": "09ddcc19d7d191874042a6cd3cc9ea517c019fe8",
+      "bytes": 53446,
+      "sha256": "6743ffa57979003a6b986a114dd01342a4f97b1deed8ec9655838419c16af5b0",
+      "djb2": "9444f870"
     },
     "networkTransport": {
       "id": "networkTransport",
