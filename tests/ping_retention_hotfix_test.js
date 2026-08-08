@@ -23,6 +23,16 @@ requireText(inspector, "PING_BASELINE_SAMPLE_LIMIT = 20", "lightweight ping base
 requireText(inspector, "invokeAge <= 8", "normal invoke does not hide network warning");
 requireText(main, '["auto egg Open Egg"] = 2', "bounded hot trace");
 requireText(main, "PSX_OG_TRAFFIC_DIET:CanRunMaintenance", "shared maintenance traffic gate");
+requireText(main, "Maintenance = {", "fair maintenance token state");
+requireText(main, "function env.PSX_OG_TRAFFIC_DIET:MaintenanceKey", "maintenance owner normalization");
+requireText(main, "function env.PSX_OG_TRAFFIC_DIET:MarkMaintenanceRun", "maintenance grant marker");
+requireText(main, 'return true, "fair maintenance slot"', "low-traffic maintenance escape hatch");
+requireText(main, 'if tostring(owner) == "AutoEgg" then return true end', "auto egg never waits on maintenance");
+requireText(main, 'beginProfile("TOM:Invoke:" .. tostring(commandName))', "network invoke profiler marker");
+requireText(main, 'beginProfile("TOM:Fire:" .. tostring(commandName))', "network fire profiler marker");
+requireText(main, "function requestDiagnostics.UpdateTelemetry(detailMode)", "lazy telemetry detail flag");
+requireText(main, "requestDiagnostics.UpdateTelemetry(monitorVisible)", "full telemetry detail is monitor-tab driven");
+requireText(main, "requestDiagnostics.LastFullTelemetryAt", "bounded hidden telemetry");
 requireText(main, "pcall(inspector.State, inspector)", "traffic diet inspector ping fallback");
 requireText(main, 'requestDiagnostics.Gauge("Loot", "lowTraffic"', "loot low traffic telemetry");
 requireText(main, "TrafficSensitivity", "traffic diet persisted config");

@@ -110,7 +110,7 @@ for (const incident of [
 // a server acceptance or completion.
 assert(farm.includes('"requestInspector"')
     && farm.includes("requestDiagnostics.Start()")
-    && farm.includes("requestDiagnostics.UpdateTelemetry()")
+    && farm.includes("requestDiagnostics.UpdateTelemetry(monitorVisible)")
     && farm.includes("InspectorTransition = requestDiagnostics.Transition")
     && farm.includes("InspectorComplete = requestDiagnostics.Complete"),
     "main runtime does not bridge its existing boundaries into the inspector");
