@@ -3,6 +3,7 @@
 
 local VERSION = "1.4.1-dev.49-minimal.1"
 local env = type(getgenv) == "function" and getgenv() or _G
+local CANDIDATE_PING_DIET = true
 
 local function trace(stage, detail)
     print("[PSX SLIM] " .. tostring(stage) .. (detail and (" | " .. tostring(detail)) or ""))
@@ -948,7 +949,11 @@ function requestDiagnostics.Start()
     return true
 end
 
-requestDiagnostics.Start()
+if CANDIDATE_PING_DIET then
+    trace("request inspector", "disabled for candidate ping diet")
+else
+    requestDiagnostics.Start()
+end
 
 local function normalize(value)
     value = string.lower(tostring(value or ""))
@@ -3095,6 +3100,9 @@ local function ensureSupportModule()
 end
 
 local function acquireOperation(owner)
+    if CANDIDATE_PING_DIET then
+        return true, tostring(owner or "candidate-direct")
+    end
     local controller, problem = ensureSupportModule()
     local gateId = "gate:" .. tostring(owner)
     if not controller then
@@ -3123,6 +3131,10 @@ local function acquireOperation(owner)
 end
 
 local function releaseOperation(owner)
+    if CANDIDATE_PING_DIET then
+        requestDiagnostics.GateState[tostring(owner)] = nil
+        return true
+    end
     if not supportController then return false end
     local called, released = pcall(supportController, "release", supportContext, owner)
     requestDiagnostics.GateState[tostring(owner)] = nil
@@ -3133,6 +3145,10 @@ local function releaseOperation(owner)
 end
 
 local function cancelOperation(owner)
+    if CANDIDATE_PING_DIET then
+        requestDiagnostics.GateState[tostring(owner)] = nil
+        return true
+    end
     if not supportController then return false end
     local called, cancelled = pcall(supportController, "cancel", supportContext, owner)
     requestDiagnostics.GateState[tostring(owner)] = nil
@@ -3143,6 +3159,7 @@ local function cancelOperation(owner)
 end
 
 local function operationGateStatus()
+    if CANDIDATE_PING_DIET then return "candidate direct", 0 end
     if not supportController then return "idle", 0 end
     local called, owner, waiting = pcall(supportController, "status", supportContext)
     if not called then return "coordinator error", 0 end
@@ -3150,6 +3167,7 @@ local function operationGateStatus()
 end
 
 function requestDiagnostics.GateDiagnostics()
+    if CANDIDATE_PING_DIET then return nil end
     if not supportController then return nil end
     local called, diagnostics = pcall(supportController, "diagnostics", supportContext)
     if not called or type(diagnostics) ~= "table" then return nil end
