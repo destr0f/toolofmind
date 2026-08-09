@@ -2,7 +2,6 @@
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
 local VERSION = "1.4.1-dev.49-minimal.1"
-local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -10,6 +9,9 @@ local function trace(stage, detail)
 end
 
 trace("00 entered", "version=" .. VERSION)
+
+do
+local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 
 local function runtimeDjb2(source)
     local hash = 5381
@@ -102,6 +104,7 @@ local function validateRuntimeManifest()
 end
 
 validateRuntimeManifest()
+end
 
 env.PSX_OG_REQUEST_INSPECTOR_BOOT = {
     PreviousGeneration = tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0,
