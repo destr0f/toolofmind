@@ -10,9 +10,6 @@ end
 
 trace("00 entered", "version=" .. VERSION)
 
-do
-local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
-
 local function runtimeDjb2(source)
     local hash = 5381
     for index = 1, #source do
@@ -36,6 +33,9 @@ local function verifyRuntimeSource(entry, source)
     end
     return true
 end
+
+do
+local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 
 local function validateRuntimeManifest()
     if type(RUNTIME_MANIFEST) ~= "table" then
@@ -104,6 +104,7 @@ local function validateRuntimeManifest()
 end
 
 validateRuntimeManifest()
+env.PSX_OG_RUNTIME_MANIFEST = RUNTIME_MANIFEST
 end
 
 env.PSX_OG_REQUEST_INSPECTOR_BOOT = {
@@ -626,7 +627,7 @@ trace("02 Library required")
 local WindUI
 do
     trace("03 WindUI download")
-    local windEntry = RUNTIME_MANIFEST.windUI
+    local windEntry = env.PSX_OG_RUNTIME_MANIFEST.windUI
     local windSource = game:HttpGet(windEntry.url)
     trace("04 WindUI received", #windSource)
     local windVerified, windVerifyProblem = verifyRuntimeSource(windEntry, windSource)
@@ -776,7 +777,7 @@ function requestDiagnostics.Route(kind, commandName, resolved, problem)
 end
 
 local function runtimeModuleURL(entry)
-    local repository = RUNTIME_MANIFEST.repository
+    local repository = env.PSX_OG_RUNTIME_MANIFEST.repository
     return tostring(repository.rawBase) .. "/" .. tostring(repository.owner)
         .. "/" .. tostring(repository.name) .. "/" .. tostring(entry.commit)
         .. "/" .. tostring(entry.path)
@@ -784,7 +785,7 @@ local function runtimeModuleURL(entry)
 end
 
 local function loadRemoteController(moduleKey, label, statusCallback)
-    local entry = RUNTIME_MANIFEST.modules[moduleKey]
+    local entry = env.PSX_OG_RUNTIME_MANIFEST.modules[moduleKey]
     if type(entry) ~= "table" then return nil, "module is absent from runtime manifest: " .. tostring(moduleKey) end
     if entry.compatibleSuite ~= VERSION then
         return nil, "module " .. tostring(moduleKey) .. " is incompatible with suite " .. VERSION
@@ -933,7 +934,7 @@ function requestDiagnostics.Start()
         Env = env,
         Player = player,
         Version = VERSION,
-        Commit = RUNTIME_MANIFEST.build and RUNTIME_MANIFEST.build.sourceCommit or "unknown",
+        Commit = env.PSX_OG_RUNTIME_MANIFEST.build and env.PSX_OG_RUNTIME_MANIFEST.build.sourceCommit or "unknown",
         Generation = env.PSX_OG_RUNTIME_GENERATION,
         Trace = trace,
     })
