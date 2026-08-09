@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.3.2"
+local MODULE_VERSION = "1.3.3"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -351,6 +351,29 @@ local function transportInvokeCommand(command, ...)
         end
     end
 
+    if context and type(context.GetCommandBridge) == "function" then
+        local resolved, bridge = pcall(context.GetCommandBridge, command)
+        if resolved and typeof(bridge) == "Instance" and bridge:IsA("BindableFunction") then
+            local invoked, payload = pcall(bridge.Invoke, bridge, ...)
+            if invoked then
+                local entry = transportGate.InFlight[gateKey]
+                if entry then
+                    entry.done = true
+                    entry.response = payload
+                    entry.route = "native Network4 bridge"
+                    transportGate.InvokeHistory[gateKey] = payload
+                    transportGate.InFlight[gateKey] = nil
+                end
+                return true, payload, "native Network4 bridge"
+            end
+        end
+    end
+
+    if context and context.NoNamedFallback == true then
+        transportGate.InFlight[gateKey] = nil
+        return false, "native Network4 invoke route unavailable", "none"
+    end
+
     local network = context and type(context.NetworkReady) == "function"
         and context.NetworkReady() or nil
     if not network or type(network.Invoke) ~= "function" then
@@ -404,6 +427,18 @@ local function transportFireCommand(command, ...)
                 pcall(context.InvalidateFire, command, remote)
             end
         end
+    end
+
+    if context and type(context.GetFireBridge) == "function" then
+        local resolved, bridge = pcall(context.GetFireBridge, command)
+        if resolved and typeof(bridge) == "Instance" and bridge:IsA("BindableEvent") then
+            local fired = pcall(bridge.Fire, bridge, ...)
+            if fired then return true, "native Network4 bridge" end
+        end
+    end
+
+    if context and context.NoNamedFallback == true then
+        return false, "native Network4 fire route unavailable"
     end
 
     local network = context and type(context.NetworkReady) == "function"

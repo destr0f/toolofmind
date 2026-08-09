@@ -2,7 +2,7 @@
 -- The caller owns target selection and lock state. This module owns one queue,
 -- one retry timer and a fixed number of concurrent yielding Network invokes.
 
-local MODULE_VERSION = "3.1.0"
+local MODULE_VERSION = "3.0.0"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 64
 local MAX_JOIN_ATTEMPTS = 3
@@ -184,20 +184,6 @@ local function callNamedInvoke(command, ...)
         end
     end
 
-    if context and type(context.GetCommandBridge) == "function" then
-        local resolved, bridge = pcall(context.GetCommandBridge, command)
-        if resolved and typeof(bridge) == "Instance" and bridge:IsA("BindableFunction") then
-            local result = table.pack(pcall(function()
-                return bridge:Invoke(table.unpack(arguments, 1, arguments.n))
-            end))
-            if result[1] then return true, result[2], "native Network4 bridge" end
-        end
-    end
-
-    if context and context.NoNamedFallback == true then
-        return false, "native Network4 invoke route unavailable", "none"
-    end
-
     local network = context and type(context.NetworkReady) == "function"
         and context.NetworkReady() or nil
     if not network or type(network.Invoke) ~= "function" then
@@ -223,21 +209,6 @@ local function callNamedFire(command, ...)
                 pcall(context.InvalidateFire, command, remote)
             end
         end
-    end
-
-
-    if context and type(context.GetFireBridge) == "function" then
-        local resolved, bridge = pcall(context.GetFireBridge, command)
-        if resolved and typeof(bridge) == "Instance" and bridge:IsA("BindableEvent") then
-            local fired = pcall(function()
-                bridge:Fire(table.unpack(arguments, 1, arguments.n))
-            end)
-            if fired then return true, "native Network4 bridge" end
-        end
-    end
-
-    if context and context.NoNamedFallback == true then
-        return false, "native Network4 fire route unavailable"
     end
 
     local network = context and type(context.NetworkReady) == "function"
