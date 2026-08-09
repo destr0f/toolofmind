@@ -3469,18 +3469,9 @@ function petFarm:EnsureEngine()
         Running = running,
         Enabled = function() return config.PetFarm end,
         Resetting = function() return farmResetRunning end,
-        NoNamedFallback = true,
         NetworkReady = networkReady,
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
-        GetCommandBridge = function(commandName)
-            return coinSync.NetworkTransport:ResolveCommandBridge(
-                "resolveInvokeBridge", commandName, "BindableFunction")
-        end,
-        GetFireBridge = function(commandName)
-            return coinSync.NetworkTransport:ResolveCommandBridge(
-                "resolveFireBridge", commandName, "BindableEvent")
-        end,
         InvalidateCommand = function(commandName, remote)
             coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Command, commandName, remote)
         end,

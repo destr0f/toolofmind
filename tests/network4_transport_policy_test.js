@@ -46,7 +46,17 @@ assert(invokeBridge >= 0 && invokeNamed > invokeBridge,
 assert(fireBridge >= 0 && fireNamed > fireBridge,
     "pet farm does not prefer the native fire bridge over named Network.Fire");
 assert(petEngine.includes('context.NoNamedFallback == true'));
-assert(source.includes('NoNamedFallback = true'));
+const farmContextStart = source.indexOf(
+    "local context = {\n        Running = running,\n        Enabled = function() return config.PetFarm end"
+);
+const farmContextEnd = source.indexOf("DispatchWidth = 16,", farmContextStart);
+assert(farmContextStart >= 0 && farmContextEnd > farmContextStart,
+    "pet farm runtime context was not found");
+const farmContext = source.slice(farmContextStart, farmContextEnd);
+assert(!farmContext.includes("NoNamedFallback"),
+    "pet farm must keep the known-good named fallback path available");
+assert(!farmContext.includes("GetCommandBridge") && !farmContext.includes("GetFireBridge"),
+    "pet farm must not use the RobloxScript-bound native bridge path");
 
 assert(source.includes('FireCommand = fireCommand'));
 assert(source.includes('GetEventRemote = getEventRemote'));

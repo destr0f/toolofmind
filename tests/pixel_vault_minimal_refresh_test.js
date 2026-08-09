@@ -24,4 +24,18 @@ for (const marker of [
 assert(!source.includes("AcceptJoinWithoutSignals"),
     "minimal refresh unexpectedly imported the later Join-only fallback");
 
+const farmContextStart = source.indexOf(
+    "local context = {\n        Running = running,\n        Enabled = function() return config.PetFarm end"
+);
+assert(farmContextStart >= 0, "pet farm Lite context was not found");
+const farmContextEnd = source.indexOf("DispatchWidth = 16,", farmContextStart);
+assert(farmContextEnd > farmContextStart, "pet farm Lite context end was not found");
+const farmContext = source.slice(farmContextStart, farmContextEnd);
+for (const forbidden of ["NoNamedFallback", "GetCommandBridge", "GetFireBridge"]) {
+    assert(!farmContext.includes(forbidden),
+        `pet farm must not use Network4 native bridge path: ${forbidden}`);
+}
+assert(farmContext.includes("NetworkReady = networkReady"),
+    "pet farm must keep the known-good Library.Network fallback available");
+
 console.log("Pixel Vault minimal refresh OK | old farm retained | current routes resolved locally");
