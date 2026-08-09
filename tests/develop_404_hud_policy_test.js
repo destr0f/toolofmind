@@ -16,10 +16,10 @@ const machines = [
     read("dark_matter_module.lua"),
 ];
 
-assert(support.includes('["hellish axolotl"] = "Hellish Axolotl"'),
-    "shared machine catalog does not select exact Hellish Axolotl");
+assert(support.includes('["pixel demon"] = "Pixel Demon"'),
+    "shared machine catalog does not select exact Pixel Demon");
 for (const [index, machine] of machines.entries()) {
-    assert(machine.includes('local TARGET_PET_NAME = "Hellish Axolotl"')
+    assert(machine.includes('local TARGET_PET_NAME = "Pixel Demon"')
         && machine.includes("context.GetMachinePetCatalog")
         && !machine.includes("TARGET_PET_ID"),
         `machine ${index + 1} does not enforce the live exact-name catalog`);
@@ -67,5 +67,5 @@ for (const marker of [
 }
 
 process.stdout.write(
-    "Develop Hellish/HUD policy OK | machines=exact-name | pack=45B+1B | gifts=timer-gated | HUD=coalesced | reload=quiesced\n"
+    "Develop Pixel/HUD policy OK | machines=exact-name | pack=45B+1B | gifts=timer-gated | HUD=coalesced | reload=quiesced\n"
 );

@@ -35,6 +35,16 @@ local TRANSPORT_TTL = {
     ["Delete Several Pets"] = 0.18,
 }
 
+local COMMAND_ROUTE_ALIASES = {
+    ["Join Coin"] = { "Join The Coin", "Join Coin" },
+    ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
+    ["Leave Coin"] = { "Leave The Coin", "Leave Coin" },
+}
+
+local function routeCandidates(command)
+    return COMMAND_ROUTE_ALIASES[command] or command
+end
+
 local function transportSerialize(value, depth)
     depth = depth or 0
     if depth > 3 then return "[depth]" end
@@ -328,25 +338,28 @@ local function transportInvokeCommand(command, ...)
     transportGate.Invoke[gateKey] = now
 
     local context = run.Context
-    local response, route, success
     if context and type(context.GetCommandRemote) == "function" then
-        local resolved, remote = pcall(context.GetCommandRemote, command)
-        if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteFunction") then
-            local invoked, payload = pcall(remote.InvokeServer, remote, ...)
-            if invoked then
-                response, route, success = true, payload, "direct named remote"
-                local entry = transportGate.InFlight[gateKey]
-                if entry then
-                    entry.done = true
-                    entry.response = response and payload or false
-                    entry.route = "direct named remote"
-                    transportGate.InvokeHistory[gateKey] = response and payload or payload
-                    transportGate.InFlight[gateKey] = nil
+        local candidates = routeCandidates(command)
+        if type(candidates) ~= "table" then candidates = { candidates } end
+        for _, routedCommand in ipairs(candidates) do
+            local resolved, remote = pcall(context.GetCommandRemote, routedCommand)
+            if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteFunction") then
+                local invoked, payload = pcall(remote.InvokeServer, remote, ...)
+                if invoked then
+                    local route = "direct named remote [" .. tostring(routedCommand) .. "]"
+                    local entry = transportGate.InFlight[gateKey]
+                    if entry then
+                        entry.done = true
+                        entry.response = payload
+                        entry.route = route
+                        transportGate.InvokeHistory[gateKey] = payload
+                        transportGate.InFlight[gateKey] = nil
+                    end
+                    return true, payload, route
                 end
-                return true, payload, "direct named remote"
-            end
-            if type(context.InvalidateCommand) == "function" then
-                pcall(context.InvalidateCommand, command, remote)
+                if type(context.InvalidateCommand) == "function" then
+                    pcall(context.InvalidateCommand, routedCommand, remote)
+                end
             end
         end
     end
@@ -364,7 +377,14 @@ local function transportInvokeCommand(command, ...)
         return false, "Library.Network.Invoke unavailable", "none"
     end
 
-    local invoked, payload = pcall(network.Invoke, command, ...)
+    local candidates = routeCandidates(command)
+    if type(candidates) ~= "table" then candidates = { candidates } end
+    local invoked, payload, routedCommand
+    for _, candidate in ipairs(candidates) do
+        routedCommand = candidate
+        invoked, payload = pcall(network.Invoke, candidate, ...)
+        if invoked then break end
+    end
     if not invoked then
         transportGate.InFlight[gateKey] = nil
         return false, payload, "Library.Network.Invoke"
@@ -374,11 +394,11 @@ local function transportInvokeCommand(command, ...)
     if entry then
         entry.done = true
         entry.response = payload
-        entry.route = "Library.Network.Invoke"
+        entry.route = "Library.Network.Invoke [" .. tostring(routedCommand or command) .. "]"
         transportGate.InvokeHistory[gateKey] = payload
         transportGate.InFlight[gateKey] = nil
     end
-    return true, payload, "Library.Network.Invoke"
+    return true, payload, "Library.Network.Invoke [" .. tostring(routedCommand or command) .. "]"
 end
 
 local function transportFireCommand(command, ...)
@@ -394,14 +414,18 @@ local function transportFireCommand(command, ...)
     transportGate.Fire[gateKey] = now
     local context = run.Context
     if context and type(context.GetFireRemote) == "function" then
-        local resolved, remote = pcall(context.GetFireRemote, command)
-        if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent") then
-            local fired = pcall(remote.FireServer, remote, ...)
-            if fired then
-                return true, "direct named remote"
-            end
-            if type(context.InvalidateFire) == "function" then
-                pcall(context.InvalidateFire, command, remote)
+        local candidates = routeCandidates(command)
+        if type(candidates) ~= "table" then candidates = { candidates } end
+        for _, routedCommand in ipairs(candidates) do
+            local resolved, remote = pcall(context.GetFireRemote, routedCommand)
+            if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent") then
+                local fired = pcall(remote.FireServer, remote, ...)
+                if fired then
+                    return true, "direct named remote [" .. tostring(routedCommand) .. "]"
+                end
+                if type(context.InvalidateFire) == "function" then
+                    pcall(context.InvalidateFire, routedCommand, remote)
+                end
             end
         end
     end
@@ -411,8 +435,15 @@ local function transportFireCommand(command, ...)
     if not network or type(network.Fire) ~= "function" then
         return false, "Library.Network.Fire unavailable"
     end
-    local fired, problem = pcall(network.Fire, command, ...)
-    return fired, fired and "Library.Network.Fire" or tostring(problem)
+    local candidates = routeCandidates(command)
+    if type(candidates) ~= "table" then candidates = { candidates } end
+    local fired, problem, routedCommand
+    for _, candidate in ipairs(candidates) do
+        routedCommand = candidate
+        fired, problem = pcall(network.Fire, candidate, ...)
+        if fired then break end
+    end
+    return fired, fired and ("Library.Network.Fire [" .. tostring(routedCommand or command) .. "]") or tostring(problem)
 end
 
 local function callNamedInvoke(command, ...)

@@ -35,4 +35,22 @@ assert(support.includes('invoke("Redeem Free Gift")'),
 assert(!/GetChildren\s*\(\s*\)\s*\[\s*18\s*\]/.test(source + support),
     "Auto Gifts relies on the floating ReplicatedStorage child index 18");
 
+const timingStart = source.indexOf("local function getRewardTiming(kind)");
+const timingEnd = source.indexOf("local rankTimer = tonumber(save.RankTimer)", timingStart);
+assert(timingStart >= 0 && timingEnd > timingStart, "reward timing block missing");
+const timing = source.slice(timingStart, timingEnd);
+assert(timing.indexOf('if kind == "FreeGifts" then') >= 0
+    && timing.indexOf('if kind == "FreeGifts" then') < timing.indexOf("local serverTime, clockProblem = getRewardServerTime()"),
+    "Free Gifts are still blocked by server clock/Get OSTime before local timer checks");
+
+for (const marker of [
+    "coinSync.NetworkTransport.RouteAliases",
+    '"Join The Coin"',
+    '"Farm The Coin"',
+    '"Leave The Coin"',
+    "CommandRouteCandidates(commandName)",
+]) {
+    assert(source.includes(marker), `route alias policy misses ${marker}`);
+}
+
 process.stdout.write("Auto Gifts + 45B Rainbow pack policy OK\n");

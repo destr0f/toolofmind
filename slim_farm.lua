@@ -2825,7 +2825,47 @@ function coinSync.NetworkTransport:Resolve(cache, action, commandName, className
     return remote, sourceName, sessionIndex, nil
 end
 
+coinSync.NetworkTransport.RouteAliases = {
+    ["Join Coin"] = { "Join The Coin", "Join Coin" },
+    ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
+    ["Leave Coin"] = { "Leave The Coin", "Leave Coin" },
+}
+
+function coinSync.NetworkTransport:CommandRouteCandidates(commandName)
+    return self.RouteAliases[commandName] or commandName
+end
+
+function coinSync.NetworkTransport:ClearAliases(cache, commandName, remote)
+    local candidates = self:CommandRouteCandidates(commandName)
+    if type(candidates) == "table" then
+        for _, candidate in ipairs(candidates) do
+            local cached = cache[candidate]
+            if not remote or (type(cached) == "table" and cached.Remote == remote) then
+                cache[candidate] = nil
+            end
+        end
+    end
+    local cached = cache[commandName]
+    if not remote or (type(cached) == "table" and cached.Remote == remote) then
+        cache[commandName] = nil
+    end
+end
+
 local function getCommandRemote(commandName)
+    local candidates = coinSync.NetworkTransport:CommandRouteCandidates(commandName)
+    if type(candidates) == "table" then
+        local lastSource, lastSessionIndex, lastProblem
+        for _, candidate in ipairs(candidates) do
+            local remote, sourceName, sessionIndex, problem = coinSync.NetworkTransport:Resolve(
+                coinSync.RemoteCaches.Command, "resolveFunction", candidate, "RemoteFunction")
+            if remote then
+                return remote, tostring(sourceName or "Network4") .. " [" .. tostring(candidate) .. "]",
+                    sessionIndex, nil, candidate
+            end
+            lastSource, lastSessionIndex, lastProblem = sourceName, sessionIndex, problem
+        end
+        return nil, lastSource, lastSessionIndex, lastProblem
+    end
     return coinSync.NetworkTransport:Resolve(
         coinSync.RemoteCaches.Command, "resolveFunction", commandName, "RemoteFunction")
 end
@@ -2836,6 +2876,20 @@ local function getEventRemote(commandName)
 end
 
 local function getFireRemote(commandName)
+    local candidates = coinSync.NetworkTransport:CommandRouteCandidates(commandName)
+    if type(candidates) == "table" then
+        local lastSource, lastSessionIndex, lastProblem
+        for _, candidate in ipairs(candidates) do
+            local remote, sourceName, sessionIndex, problem = coinSync.NetworkTransport:Resolve(
+                coinSync.RemoteCaches.Fire, "resolveEvent", candidate, "RemoteEvent")
+            if remote then
+                return remote, tostring(sourceName or "Network4") .. " [" .. tostring(candidate) .. "]",
+                    sessionIndex, nil, candidate
+            end
+            lastSource, lastSessionIndex, lastProblem = sourceName, sessionIndex, problem
+        end
+        return nil, lastSource, lastSessionIndex, lastProblem
+    end
     return coinSync.NetworkTransport:Resolve(
         coinSync.RemoteCaches.Fire, "resolveEvent", commandName, "RemoteEvent")
 end
@@ -2848,7 +2902,7 @@ local function invokeCommand(commandName, ...)
         command = commandName,
         argc = arguments.n,
     })
-    local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
+    local remote, sourceName, sessionIndex, resolveProblem, routedCommand = getCommandRemote(commandName)
     local result
     if remote then
         requestDiagnostics.Route("invoke", commandName, true)
@@ -2860,7 +2914,9 @@ local function invokeCommand(commandName, ...)
         result = table.pack(pcall(function()
             return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
         end))
-        if not result[1] then coinSync.RemoteCaches.Command[commandName] = nil end
+        if not result[1] then
+            coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Command, commandName, remote)
+        end
     end
     if not remote or not result[1] then
         local directProblem = remote and tostring(result[2]) or tostring(resolveProblem)
@@ -2873,9 +2929,15 @@ local function invokeCommand(commandName, ...)
                 route = sourceName,
                 fallback = directProblem,
             })
-            result = table.pack(pcall(function()
-                return network.Invoke(commandName, table.unpack(arguments, 1, arguments.n))
-            end))
+            local candidates = routedCommand or coinSync.NetworkTransport:CommandRouteCandidates(commandName)
+            if type(candidates) ~= "table" then candidates = { candidates } end
+            for _, candidate in ipairs(candidates) do
+                routedCommand = candidate
+                result = table.pack(pcall(function()
+                    return network.Invoke(candidate, table.unpack(arguments, 1, arguments.n))
+                end))
+                if result[1] then break end
+            end
             if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
         else
             result = table.pack(false, directProblem .. "; Library.Network.Invoke is unavailable")
@@ -2905,14 +2967,16 @@ local function fireCommand(commandName, ...)
         command = commandName,
         argc = arguments.n,
     })
-    local remote, sourceName, sessionIndex, resolveProblem = getFireRemote(commandName)
+    local remote, sourceName, sessionIndex, resolveProblem, routedCommand = getFireRemote(commandName)
     local ok, problem
     if remote then
         requestDiagnostics.Route("fire", commandName, true)
         ok, problem = pcall(function()
             remote:FireServer(table.unpack(arguments, 1, arguments.n))
         end)
-        if not ok then coinSync.RemoteCaches.Fire[commandName] = nil end
+        if not ok then
+            coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Fire, commandName, remote)
+        end
     end
     if not remote or not ok then
         local directProblem = remote and tostring(problem) or tostring(resolveProblem)
@@ -2920,9 +2984,15 @@ local function fireCommand(commandName, ...)
         if network and type(network.Fire) == "function" then
             sourceName = "Library.Network.Fire named fallback"
             sessionIndex = nil
-            ok, problem = pcall(function()
-                network.Fire(commandName, table.unpack(arguments, 1, arguments.n))
-            end)
+            local candidates = routedCommand or coinSync.NetworkTransport:CommandRouteCandidates(commandName)
+            if type(candidates) ~= "table" then candidates = { candidates } end
+            for _, candidate in ipairs(candidates) do
+                routedCommand = candidate
+                ok, problem = pcall(function()
+                    network.Fire(candidate, table.unpack(arguments, 1, arguments.n))
+                end)
+                if ok then break end
+            end
             if ok then requestDiagnostics.Route("fire", commandName, true) end
         else
             ok, problem = false, directProblem .. "; Library.Network.Fire is unavailable"
@@ -3064,15 +3134,21 @@ function petFarm:SendCommittedFarmSignals(petId, state)
     if not recordAlive(record) then return false end
 
     local function fireFast(command, ...)
-        local remote = getFireRemote(command)
+        local remote, _, _, _, routedCommand = getFireRemote(command)
         if remote then
             local sent = pcall(remote.FireServer, remote, ...)
             if sent then return true end
-            coinSync.RemoteCaches.Fire[command] = nil
+            coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Fire, command, remote)
         end
         local network = networkReady()
-        return network and type(network.Fire) == "function"
-            and pcall(network.Fire, command, ...) or false
+        if not network or type(network.Fire) ~= "function" then return false end
+        local candidates = routedCommand or coinSync.NetworkTransport:CommandRouteCandidates(command)
+        if type(candidates) ~= "table" then candidates = { candidates } end
+        for _, candidate in ipairs(candidates) do
+            local sent = pcall(network.Fire, candidate, ...)
+            if sent then return true end
+        end
+        return false
     end
 
     state.SignalCommitAttempt = (tonumber(state.SignalCommitAttempt) or 0) + 1
@@ -3345,16 +3421,10 @@ function petFarm:EnsureEngine()
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
         InvalidateCommand = function(commandName, remote)
-            local cached = coinSync.RemoteCaches.Command[commandName]
-            if not remote or (type(cached) == "table" and cached.Remote == remote) then
-                coinSync.RemoteCaches.Command[commandName] = nil
-            end
+            coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Command, commandName, remote)
         end,
         InvalidateFire = function(commandName, remote)
-            local cached = coinSync.RemoteCaches.Fire[commandName]
-            if not remote or (type(cached) == "table" and cached.Remote == remote) then
-                coinSync.RemoteCaches.Fire[commandName] = nil
-            end
+            coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Fire, commandName, remote)
         end,
         AcceptJoinWithoutSignals = function(record, targetSent, farmSent)
             if targetSent and farmSent then return false end
@@ -3465,7 +3535,9 @@ function petFarm:EnsureEngine()
             local remote = getCommandRemote("Leave Coin")
             if remote then
                 local sent = pcall(remote.InvokeServer, remote, tostring(record.Id), petIds)
-                if not sent then coinSync.RemoteCaches.Command["Leave Coin"] = nil end
+                if not sent then
+                    coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Command, "Leave Coin", remote)
+                end
             end
         end,
         Trace = trace,
@@ -3566,7 +3638,7 @@ local function clearAssignments(sendBack, callback)
         if changeTargetRemote then
             local sent = pcall(changeTargetRemote.FireServer, changeTargetRemote, petId, "Player")
             if not sent then
-                coinSync.RemoteCaches.Fire["Change Pet Target"] = nil
+                coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Fire, "Change Pet Target", changeTargetRemote)
                 changeTargetRemote = nil
             end
         end
@@ -3597,7 +3669,7 @@ local function clearAssignments(sendBack, callback)
                         job.PetIds
                     )
                     if not sent then
-                        coinSync.RemoteCaches.Command["Leave Coin"] = nil
+                        coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Command, "Leave Coin", leaveCoinRemote)
                         leaveCoinRemote = nil
                     end
                 end
@@ -3674,7 +3746,7 @@ local function dispatchPlan(record, petIds)
     payload.Record = record
     payload.CoinId = coinId
     payload.Entries = entries
-    local profiled = beginProfile("PSX_FarmDispatch")
+    local profiled = beginProfile("TOM_FarmDispatch")
     local called, accepted, problem = pcall(petFarm.Engine, "dispatch", payload)
     endProfile(profiled)
     if not called or accepted ~= true then
@@ -3919,7 +3991,7 @@ function statusSetters.IsVisible(key)
 end
 function statusSetters.Flush()
     if not interfaceIsVisible() then return end
-    local profiled = beginProfile("PSX_UIRefresh")
+    local profiled = beginProfile("TOM_UIUpdate")
     for key, text in pairs(statusSetters.Pending) do
         local view = statusViews[key]
         if statusSetters.IsVisible(key) and statusSetters.Published[key] ~= text then
@@ -4026,20 +4098,6 @@ local function getRewardTiming(kind)
     local save = getRewardSave()
     if not save then return nil, nil, "player save is unavailable" end
 
-    local serverTime, clockProblem = getRewardServerTime()
-    if serverTime == nil then
-        return nil, nil, clockProblem or "server clock is unavailable"
-    end
-
-    if kind == "VIP" then
-        local lastClaim = tonumber(save.VIPCooldown)
-        if lastClaim == nil then
-            return nil, VIP_REWARD_COOLDOWN, "VIPCooldown is unavailable; no claim sent"
-        end
-        return math.max(0, VIP_REWARD_COOLDOWN - (serverTime - lastClaim)),
-            VIP_REWARD_COOLDOWN, nil
-    end
-
     if kind == "FreeGifts" then
         local state = rewardStates.FreeGifts
         local directory = Library.Directory and Library.Directory.FreeGifts
@@ -4095,9 +4153,26 @@ local function getRewardTiming(kind)
 
         state.Argument = nil
         if resetTime ~= nil then
-            return math.max(5, resetTime - serverTime), 0.25, nil
+            local serverTime = getRewardServerTime()
+            if serverTime ~= nil then
+                return math.max(5, resetTime - serverTime), 0.25, nil
+            end
         end
         return 60, 0.25, nil
+    end
+
+    local serverTime, clockProblem = getRewardServerTime()
+    if serverTime == nil then
+        return nil, nil, clockProblem or "server clock is unavailable"
+    end
+
+    if kind == "VIP" then
+        local lastClaim = tonumber(save.VIPCooldown)
+        if lastClaim == nil then
+            return nil, VIP_REWARD_COOLDOWN, "VIPCooldown is unavailable; no claim sent"
+        end
+        return math.max(0, VIP_REWARD_COOLDOWN - (serverTime - lastClaim)),
+            VIP_REWARD_COOLDOWN, nil
     end
 
     local rankTimer = tonumber(save.RankTimer)
@@ -4477,7 +4552,9 @@ function machineModules:Start(kind)
             return hours > 0 and hours * 3600 or nil
         end,
         GetCommandRemote = getCommandRemote,
-        InvalidateCommand = function(commandName) coinSync.RemoteCaches.Command[commandName] = nil end,
+        InvalidateCommand = function(commandName)
+            coinSync.NetworkTransport:ClearAliases(coinSync.RemoteCaches.Command, commandName)
+        end,
         InvokeCommand = invokeCommand,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
@@ -4763,7 +4840,7 @@ rewardWorker.Run = function(generation)
                 state.LastTimingError = nil
                 local succeeded = invokeReward(kind)
                 state.ArmedReported = false
-                local successDelay = kind == "FreeGifts" and 0.25
+                local successDelay = kind == "FreeGifts" and 0.5
                     or math.max(cooldown or 0, REWARD_RETRY_DELAY)
                 state.NextAttempt = now + (succeeded and successDelay or REWARD_RETRY_DELAY)
                 nextWake = math.min(nextWake, math.max(state.NextAttempt - now, 0.25))

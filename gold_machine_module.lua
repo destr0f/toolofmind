@@ -2,8 +2,8 @@
 -- The parent supplies a live pet catalog and a shared inventory-operation gate.
 
 local activeState
-local MODULE_VERSION = "1.4.0"
-local TARGET_PET_NAME = "Hellish Axolotl"
+local MODULE_VERSION = "1.4.1"
+local TARGET_PET_NAME = "Pixel Demon"
 
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
@@ -135,7 +135,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Hellish Axolotl found: %d | eligible: %d | Rainbow Coins V protected: %d | equipped skipped: %d | locked: %d | upgraded: %d | pending: %d",
+        "Pixel Demon found: %d | eligible: %d | Rainbow Coins V protected: %d | equipped skipped: %d | locked: %d | upgraded: %d | pending: %d",
         stats.Found, stats.Eligible, stats.Protected, stats.Equipped,
         stats.Locked, stats.Upgraded, stats.Pending
     )

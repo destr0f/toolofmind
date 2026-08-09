@@ -137,13 +137,13 @@ for (const marker of [
     assert(engine.includes(marker), `farm hot policy changed: ${marker}`);
 }
 for (const marker of [
-    "local ORB_BATCH_SIZE = 512",
-    "local MAX_PENDING_ORBS = 8192",
+    "local ORB_BATCH_SIZE = 8",
+    "local MAX_PENDING_ORBS = 2048",
     "local BAG_LANES = 4",
     "local MAX_PENDING_BAGS = 4096",
-    "local BAG_TRANSPORT_RETRY_DELAY = 0.10",
+    "local BAG_TRANSPORT_RETRY_DELAY = 0.35",
     "local MAX_BAG_TRANSPORT_ATTEMPTS = 2",
-    "local ORB_FLUSH_INTERVAL = 0.55",
+    "local ORB_FLUSH_INTERVAL = 0.25",
 ]) {
     assert(loot.includes(marker), `loot hot policy changed: ${marker}`);
 }

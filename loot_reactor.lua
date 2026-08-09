@@ -4,10 +4,10 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.4"
-local ORB_BATCH_SIZE = 512
-local MAX_PENDING_ORBS = 8192
-local ORB_FLUSH_INTERVAL = 0.55
+local MODULE_VERSION = "3.6.5"
+local ORB_BATCH_SIZE = 8
+local MAX_PENDING_ORBS = 2048
+local ORB_FLUSH_INTERVAL = 0.25
 local MAX_ORB_DELIVERY_ATTEMPTS = 2
 local ORB_CONFIRM_MIN_DELAY = 2.5
 local ORB_CONFIRM_MAX_DELAY = 8
@@ -16,7 +16,9 @@ local CLIENT_STAGGER_STEP = 0.01
 local BAG_LANES = 4
 local MAX_PENDING_BAGS = 4096
 local BAG_FIRST_ATTEMPT_DELAY = 0.05
-local BAG_TRANSPORT_RETRY_DELAY = 0.10
+local BAG_TRANSPORT_RETRY_DELAY = 0.35
+local BAG_ACK_TIMEOUT = 3.0
+local BAG_FINAL_TIMEOUT = 10.0
 local MAX_BAG_TRANSPORT_ATTEMPTS = 2
 local MAX_BAG_POOL = 256
 local STATUS_INTERVAL = 1
@@ -306,11 +308,8 @@ end
 
 local function orbFlushInterval()
     local rtt = currentRTT()
-    if rtt >= 2.00 then return 1.50 end
-    if rtt >= 1.25 then return 1.20 end
-    if rtt >= 0.80 then return 1.00 end
-    if rtt >= 0.50 then return 0.80 end
-    if rtt >= 0.25 then return 0.65 end
+    if rtt >= 0.80 then return 0.35 end
+    if rtt >= 0.25 then return 0.30 end
     return ORB_FLUSH_INTERVAL
 end
 
@@ -470,7 +469,7 @@ local function flushOrbs()
     if not orbsEnabled() or run.PendingOrbCount == 0 then return end
     local now = os.clock()
     run.OrbLastFlushAt = now
-    local profiled = profileBegin("PSX_OrbFlush")
+    local profiled = profileBegin("TOM_OrbFlush")
     local ids = run.OrbBatch
     table.clear(ids)
     for orbId in pairs(run.PendingOrbIds) do
@@ -604,13 +603,23 @@ end
 
 local function payloadWorldAllowed(payload)
     if type(payload) ~= "table" or payload.world == nil then return true end
+    local function normalizeWorld(value)
+        value = string.lower(tostring(value or ""))
+        value = string.gsub(value, "[%p_]+", " ")
+        value = string.gsub(value, "%s+", " ")
+        value = string.match(value, "^%s*(.-)%s*$") or value
+        value = string.gsub(value, "%s+world$", "")
+        value = string.gsub(value, "%s+ocean$", " ocean")
+        return value
+    end
     local context = run.Context
     local save = context and context.Library and context.Library.Save
     local ok, data = pcall(function()
         return save and type(save.Get) == "function" and save.Get() or nil
     end)
     return not ok or type(data) ~= "table"
-        or data.World == nil or data.World == payload.world
+        or data.World == nil
+        or normalizeWorld(data.World) == normalizeWorld(payload.world)
 end
 
 local BAG_OWNER_KEYS = { "OwnerUserId", "UserId", "Owner", "Player", "User" }
@@ -667,6 +676,7 @@ local function releaseBagRecord(record)
     record.Object = nil
     record.HadObject = nil
     record.Attempts = nil
+    record.SentAt = nil
     record.Due = nil
     record.State = nil
     record.Queued = nil
@@ -685,6 +695,8 @@ local function closeBag(record, acknowledged, reason)
         run.BagAcked = run.BagAcked + 1
     elseif reason == "transport committed" then
         run.BagTransportCommitted = run.BagTransportCommitted + 1
+    elseif reason == "soft timeout" then
+        run.BagRetiredNoAck = run.BagRetiredNoAck + 1
     elseif reason == "transport dropped" then
         run.BagTransportDropped = run.BagTransportDropped + 1
     end
@@ -777,7 +789,7 @@ local function collectBag(record, now)
         -- fallback observation can happen while the object is still moving.
         record.Position = objectPosition(liveObject) or record.Position
     end
-    local profiled = profileBegin("PSX_LootbagFlush")
+    local profiled = profileBegin("TOM_LootbagFlush")
     local sent, _, route = fire("Collect Lootbag", record.Id, record.Position)
     profileEnd(profiled)
     run.RouteLootbags = route or "unavailable"
@@ -785,13 +797,12 @@ local function collectBag(record, now)
     if sent then
         run.BagSent = run.BagSent + 1
         record.State = "committed"
+        record.SentAt = now
         if typeof(liveObject) ~= "Instance" and record.Attempts == 1 then
             run.BagSentUnverifiable = run.BagSentUnverifiable + 1
         end
-        -- RemoteEvents are reliable and ordered. The native Lootbags script
-        -- sends once and immediately destroys its local object; missing
-        -- Remove Lootbag callbacks are not evidence of transport failure.
-        closeBag(record, false, "transport committed")
+        run.BagTransportCommitted = run.BagTransportCommitted + 1
+        enqueueDelayedBag(record, now + BAG_ACK_TIMEOUT)
     elseif record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
         run.BagRetried = run.BagRetried + 1
         record.State = "retry"
@@ -883,9 +894,19 @@ processBagWake = function()
         queue[index] = false
         run.BagQueueHead = index + 1
         if record then record.Queued = false end
-        if record and run.BagById[record.Id] == record and record.State ~= "sent" then
-            collectBag(record, now)
-            processed = processed + 1
+        if record and run.BagById[record.Id] == record then
+            if record.State == "committed" then
+                local age = now - (tonumber(record.SentAt) or now)
+                if age >= BAG_FINAL_TIMEOUT then
+                    closeBag(record, false, "soft timeout")
+                else
+                    enqueueDelayedBag(record, now + math.max(BAG_FINAL_TIMEOUT - age, 0.5))
+                end
+                processed = processed + 1
+            else
+                collectBag(record, now)
+                processed = processed + 1
+            end
         elseif record and record.Retired and not record.Delayed then
             releaseBagRecord(record)
         end

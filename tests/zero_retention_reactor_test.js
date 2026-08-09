@@ -103,15 +103,17 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.6.4"',
-    "ORB_BATCH_SIZE = 512",
-    "MAX_PENDING_ORBS = 8192",
-    "ORB_FLUSH_INTERVAL = 0.55",
+    'local MODULE_VERSION = "3.6.5"',
+    "ORB_BATCH_SIZE = 8",
+    "MAX_PENDING_ORBS = 2048",
+    "ORB_FLUSH_INTERVAL = 0.25",
     "CLIENT_STAGGER_SLOTS = 16",
     "CLIENT_STAGGER_STEP = 0.01",
     "BAG_LANES = 4",
     "MAX_PENDING_BAGS = 4096",
-    "BAG_TRANSPORT_RETRY_DELAY = 0.10",
+    "BAG_TRANSPORT_RETRY_DELAY = 0.35",
+    "BAG_ACK_TIMEOUT = 3.0",
+    "BAG_FINAL_TIMEOUT = 10.0",
     "MAX_BAG_TRANSPORT_ATTEMPTS = 2",
     "STATUS_INTERVAL = 1",
     "PendingOrbIds = {}",
@@ -120,8 +122,8 @@ for (const marker of [
     "BagQueue = {}",
     "BagDelayed = {}",
     "BagPool = {}",
-    'profileBegin("PSX_OrbFlush")',
-    'profileBegin("PSX_LootbagFlush")',
+    'profileBegin("TOM_OrbFlush")',
+    'profileBegin("TOM_LootbagFlush")',
     'fire("Claim Orbs", ids)',
     'fire("Collect Lootbag", record.Id, record.Position)',
     "task.delay(delaySeconds, function()",
@@ -154,10 +156,13 @@ assert(loot.includes("run.UnconfirmedOrbIds[orbId] = now")
     && loot.includes("run.OrbExpiredUnverified = run.OrbExpiredUnverified + 1"),
     "orb delivery is not retained and retried within a bounded ACK policy");
 assert(loot.includes("record.State = \"committed\"")
+    && loot.includes("record.SentAt = now")
     && loot.includes("run.BagSentUnverifiable = run.BagSentUnverifiable + 1")
-    && loot.includes('closeBag(record, false, "transport committed")')
+    && loot.includes("enqueueDelayedBag(record, now + BAG_ACK_TIMEOUT)")
+    && loot.includes('closeBag(record, false, "soft timeout")')
+    && loot.includes("run.BagRetiredNoAck = run.BagRetiredNoAck + 1")
     && loot.includes("run.BagTransportCommitted = run.BagTransportCommitted + 1"),
-    "successful bag sends are not closed after one native transport commit");
+    "successful bag sends are not retained until ack or bounded soft timeout");
 assert(loot.includes("record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS")
     && loot.includes("record.State = \"retry\"")
     && loot.includes("enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)"),
@@ -174,8 +179,8 @@ assert(loot.includes("run.OrbAckAvailable")
 assert(loot.includes("local function currentRTT()")
     && loot.includes("local function orbFlushInterval()")
     && loot.includes("context.GetPingSeconds")
-    && loot.includes("if rtt >= 2.00 then return 1.50 end")
-    && loot.includes("if rtt >= 0.25 then return 0.65 end")
+    && loot.includes("if rtt >= 0.80 then return 0.35 end")
+    && loot.includes("if rtt >= 0.25 then return 0.30 end")
     && loot.includes("local function orbConfirmationDelay()"),
     "orb pacing and bounded confirmation are not actual-ping aware");
 assert(loot.includes('record.Object = typeof(sourceObject) == "Instance" and sourceObject or nil')
@@ -207,8 +212,8 @@ for (const forbidden of [
 }
 const profileLabels = [...loot.matchAll(/profileBegin\("([^"]+)"\)/g)].map((match) => match[1]);
 assert(profileLabels.length === 2
-    && profileLabels.includes("PSX_OrbFlush")
-    && profileLabels.includes("PSX_LootbagFlush"),
+    && profileLabels.includes("TOM_OrbFlush")
+    && profileLabels.includes("TOM_LootbagFlush"),
     `unexpected loot profiler labels: ${profileLabels.join(", ")}`);
 
 // Graphics uses one temporary one-pass drain and no high-rate descendants.

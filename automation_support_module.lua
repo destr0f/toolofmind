@@ -1,7 +1,7 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.4.0"
+local MODULE_VERSION = "1.4.1"
 
 local gate = {
     Owner = nil,
@@ -27,7 +27,7 @@ local catalogCache = {
 }
 
 local MACHINE_PET_NAMES = {
-    ["hellish axolotl"] = "Hellish Axolotl",
+    ["pixel demon"] = "Pixel Demon",
 }
 
 local function normalize(value)
@@ -260,7 +260,7 @@ local function getCatalog(context, force)
     end
     table.sort(names)
     table.sort(eventEggs)
-    local summary = string.format("%d exact Hellish Axolotl species from %d scanned event egg(s): %s",
+    local summary = string.format("%d exact Pixel Demon species from %d scanned event egg(s): %s",
         #names, #eventEggs, #names > 0 and table.concat(names, ", ") or "none")
     catalogCache = {
         ExpiresAt = now + 60,
