@@ -1,21 +1,26 @@
 local transport = require("../network4_transport_module")
 
-assert(transport("version") == "1.0.0")
+assert(transport("version") == "1.1.0")
 assert(transport("sha256", "") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 assert(transport("sha256", "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 
 local remoteMaps = { {}, {} }
+local bridgeMaps = { {}, {}, {}, {} }
 local hashMaps = { {}, {} }
 local function lookup() return remoteMaps end
+local function bridgeLookup() return bridgeMaps end
 local function hasher() return hashMaps end
 local function accessor() return lookup, hasher end
+local function bridgeAccessor() return bridgeLookup, hasher end
 local function validator() return true end
-local function invoke() return validator, accessor end
+local function invoke() return validator, accessor, bridgeAccessor end
 
 local upvalues = {
-    [invoke] = { validator, accessor },
+    [invoke] = { validator, accessor, bridgeAccessor },
     [accessor] = { lookup, hasher },
+    [bridgeAccessor] = { bridgeLookup, hasher },
     [lookup] = { remoteMaps },
+    [bridgeLookup] = { bridgeMaps },
     [hasher] = { hashMaps },
 }
 local fakeGame = {
@@ -35,6 +40,9 @@ local context = {
     IsRemote = function(remote, className)
         return type(remote) == "table" and remote.ClassName == className
     end,
+    IsBridge = function(bridge, className)
+        return type(bridge) == "table" and bridge.ClassName == className
+    end,
     RemoteSessionIndex = function() return 99 end,
 }
 
@@ -52,4 +60,14 @@ assert(resolved == remote, tostring(problem))
 assert(string.find(source, "Network4 hashed RemoteFunction", 1, true))
 assert(sessionIndex == 99)
 
-print("PASS Network4 SHA-256 and read-only route resolution")
+local bridge = { ClassName = "BindableFunction" }
+bridgeMaps[4][hash] = bridge
+local resolvedBridge, bridgeSource, _, bridgeProblem = transport(
+    "resolveInvokeBridge",
+    context,
+    "Buy Boost Bundle"
+)
+assert(resolvedBridge == bridge, tostring(bridgeProblem))
+assert(string.find(bridgeSource, "Network4 native BindableFunction bridge", 1, true))
+
+print("PASS Network4 SHA-256, remote resolution and native bridge resolution")

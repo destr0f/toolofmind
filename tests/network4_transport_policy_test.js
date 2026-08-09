@@ -5,6 +5,7 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "slim_farm.lua"), "utf8");
 const transport = fs.readFileSync(path.join(root, "network4_transport_module.lua"), "utf8");
+const petEngine = fs.readFileSync(path.join(root, "pet_farm_engine.lua"), "utf8");
 const autoEgg = fs.readFileSync(path.join(root, "auto_egg_module.lua"), "utf8");
 const loot = fs.readFileSync(path.join(root, "loot_reactor.lua"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "runtime_manifest.json"), "utf8"));
@@ -17,19 +18,35 @@ assert.strictEqual(manifest.modules.networkTransport.load, "lazy");
 assert(transport.includes('"duskissexyyyyy123iloveudUsk/Network4/"'));
 assert(transport.includes('return resolve(context, 1, commandName)'));
 assert(transport.includes('return resolve(context, 2, commandName)'));
+assert(transport.includes('return resolveBridge(context, 1, commandName)'));
+assert(transport.includes('return resolveBridge(context, 2, commandName)'));
 assert(transport.includes("rawget(hashMaps[kind], commandName)"));
 assert(transport.includes("rawget(remoteMaps[kind], hash)"));
+assert(transport.includes("rawget(bridgeMaps[bridgeKind], hash)"));
 assert(!transport.includes("pcall(accessor"));
 assert(!transport.includes("accessor(commandName"));
 
 assert(source.includes("coinSync.NetworkTransport"));
 assert(source.includes('loadRemoteController("networkTransport", "Network4 transport adapter")'));
+assert(source.includes('"resolveInvokeBridge", commandName, "BindableFunction"'));
+assert(source.includes('"resolveFireBridge", commandName, "BindableEvent"'));
 assert(source.includes('sourceName = "Library.Network.Invoke named fallback"'));
 assert(source.includes('sourceName = "Library.Network.Fire named fallback"'));
 assert(!source.includes("pcall(accessor, commandName)"));
 assert(!source.includes("pcall(candidate, commandName)"));
 assert(!source.includes('"Network.Invoke GetRemoteFunction upvalue #2"'));
 assert(!source.includes('"Network.Fire GetRemoteEvent upvalue #2"'));
+
+const invokeBridge = petEngine.indexOf('type(context.GetCommandBridge) == "function"');
+const invokeNamed = petEngine.indexOf('type(network.Invoke) ~= "function"');
+const fireBridge = petEngine.indexOf('type(context.GetFireBridge) == "function"');
+const fireNamed = petEngine.indexOf('type(network.Fire) ~= "function"');
+assert(invokeBridge >= 0 && invokeNamed > invokeBridge,
+    "pet farm does not prefer the native invoke bridge over named Network.Invoke");
+assert(fireBridge >= 0 && fireNamed > fireBridge,
+    "pet farm does not prefer the native fire bridge over named Network.Fire");
+assert(petEngine.includes('context.NoNamedFallback == true'));
+assert(source.includes('NoNamedFallback = true'));
 
 assert(source.includes('FireCommand = fireCommand'));
 assert(source.includes('GetEventRemote = getEventRemote'));

@@ -2,7 +2,7 @@
 -- Reads Network4's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.0.0"
+local MODULE_VERSION = "1.1.0"
 local UINT32 = 4294967296
 
 local SHA256_K = {
@@ -25,6 +25,7 @@ local SHA256_K = {
 }
 
 local routeCache = { [1] = {}, [2] = {} }
+local bridgeCache = { [1] = {}, [2] = {} }
 
 local function add32(...)
     local total = 0
@@ -104,6 +105,11 @@ local function liveRemote(context, remote, className)
         and (not storage or remote:IsDescendantOf(storage))
 end
 
+local function liveBridge(context, bridge, className)
+    if type(context.IsBridge) == "function" then return context.IsBridge(bridge, className) end
+    return typeof(bridge) == "Instance" and bridge:IsA(className) and bridge.Parent ~= nil
+end
+
 local function readUpvalue(context, callback, index)
     if type(context.FunctionUpvalueAt) ~= "function" then return nil end
     local value = context.FunctionUpvalueAt(callback, index)
@@ -111,21 +117,51 @@ local function readUpvalue(context, callback, index)
 end
 
 local function networkTables(context, method)
+    local remoteMaps, bridgeMaps, hashMaps
+    local remoteAccessorIndex, bridgeAccessorIndex
     for accessorIndex = 1, 8 do
         local accessor = readUpvalue(context, method, accessorIndex)
         if type(accessor) == "function" then
             local lookup = readUpvalue(context, accessor, 1)
             local hasher = readUpvalue(context, accessor, 2)
-            local remoteMaps = type(lookup) == "function" and readUpvalue(context, lookup, 1) or nil
-            local hashMaps = type(hasher) == "function" and readUpvalue(context, hasher, 1) or nil
-            if type(remoteMaps) == "table" and type(remoteMaps[1]) == "table"
-                and type(remoteMaps[2]) == "table" and type(hashMaps) == "table"
-                and type(hashMaps[1]) == "table" and type(hashMaps[2]) == "table" then
-                return remoteMaps, hashMaps, accessorIndex
+            local candidateMaps = type(lookup) == "function"
+                and readUpvalue(context, lookup, 1) or nil
+            local candidateHashes = type(hasher) == "function"
+                and readUpvalue(context, hasher, 1) or nil
+            local validMaps = type(candidateMaps) == "table"
+                and type(candidateMaps[1]) == "table"
+                and type(candidateMaps[2]) == "table"
+            local validHashes = type(candidateHashes) == "table"
+                and type(candidateHashes[1]) == "table"
+                and type(candidateHashes[2]) == "table"
+            if validMaps and validHashes then
+                hashMaps = hashMaps or candidateHashes
+                if type(candidateMaps[3]) == "table" and type(candidateMaps[4]) == "table" then
+                    bridgeMaps = bridgeMaps or candidateMaps
+                    bridgeAccessorIndex = bridgeAccessorIndex or accessorIndex
+                else
+                    remoteMaps = remoteMaps or candidateMaps
+                    remoteAccessorIndex = remoteAccessorIndex or accessorIndex
+                end
             end
         end
     end
-    return nil, nil, nil
+    return remoteMaps, bridgeMaps, hashMaps, remoteAccessorIndex, bridgeAccessorIndex
+end
+
+local function routeState(context, kind, commandName)
+    local network = context.Library and context.Library.Network
+    local method = network and (kind == 1 and network.Fire or network.Invoke)
+    if type(method) ~= "function" then
+        return nil, nil, nil, nil, nil, "Library.Network method is unavailable"
+    end
+
+    local remoteMaps, bridgeMaps, hashMaps, remoteIndex, bridgeIndex =
+        networkTables(context, method)
+    local hash = type(hashMaps) == "table" and type(hashMaps[kind]) == "table"
+        and rawget(hashMaps[kind], commandName) or nil
+    if type(hash) ~= "string" or hash == "" then hash = routeHash(context, kind, commandName) end
+    return remoteMaps, bridgeMaps, hash, remoteIndex, bridgeIndex, nil
 end
 
 local function resolve(context, kind, commandName)
@@ -142,16 +178,9 @@ local function resolve(context, kind, commandName)
     end
     routeCache[kind][commandName] = nil
 
-    local network = context.Library and context.Library.Network
-    local method = network and (kind == 1 and network.Fire or network.Invoke)
-    if type(method) ~= "function" then
-        return nil, "Network4", nil, "Library.Network method is unavailable"
-    end
-
-    local remoteMaps, hashMaps, accessorIndex = networkTables(context, method)
-    local hash = type(hashMaps) == "table" and type(hashMaps[kind]) == "table"
-        and rawget(hashMaps[kind], commandName) or nil
-    if type(hash) ~= "string" or hash == "" then hash = routeHash(context, kind, commandName) end
+    local remoteMaps, _, hash, accessorIndex, _, stateProblem =
+        routeState(context, kind, commandName)
+    if stateProblem then return nil, "Network4", nil, stateProblem end
 
     local remote = type(remoteMaps) == "table" and type(remoteMaps[kind]) == "table"
         and rawget(remoteMaps[kind], hash) or nil
@@ -177,6 +206,38 @@ local function resolve(context, kind, commandName)
     return remote, source, sessionIndex, nil
 end
 
+local function resolveBridge(context, kind, commandName)
+    if type(context) ~= "table" then return nil, "Network4", nil, "context is missing" end
+    if kind ~= 1 and kind ~= 2 then return nil, "Network4", nil, "invalid network kind" end
+    if type(commandName) ~= "string" or commandName == "" then
+        return nil, "Network4", nil, "command name is invalid"
+    end
+
+    local className = kind == 1 and "BindableEvent" or "BindableFunction"
+    local cached = bridgeCache[kind][commandName]
+    if type(cached) == "table" and liveBridge(context, cached.Bridge, className) then
+        return cached.Bridge, cached.Source, nil, nil
+    end
+    bridgeCache[kind][commandName] = nil
+
+    local _, bridgeMaps, hash, _, accessorIndex, stateProblem =
+        routeState(context, kind, commandName)
+    if stateProblem then return nil, "Network4", nil, stateProblem end
+    local bridgeKind = kind + 2
+    local bridge = type(bridgeMaps) == "table" and type(bridgeMaps[bridgeKind]) == "table"
+        and rawget(bridgeMaps[bridgeKind], hash) or nil
+    if not liveBridge(context, bridge, className) then
+        return nil, "Network4 native " .. className, nil,
+            bridgeMaps and "native command bridge is absent"
+                or "Network4 bridge tables are unavailable"
+    end
+
+    local source = "Network4 native " .. className .. " bridge"
+        .. (accessorIndex and (" via accessor #" .. tostring(accessorIndex)) or "")
+    bridgeCache[kind][commandName] = { Bridge = bridge, Source = source }
+    return bridge, source, nil, nil
+end
+
 return function(action, ...)
     if action == "version" then return MODULE_VERSION end
     if action == "sha256" then return sha256(...) end
@@ -189,9 +250,19 @@ return function(action, ...)
         local context, commandName = ...
         return resolve(context, 2, commandName)
     end
+    if action == "resolveFireBridge" then
+        local context, commandName = ...
+        return resolveBridge(context, 1, commandName)
+    end
+    if action == "resolveInvokeBridge" then
+        local context, commandName = ...
+        return resolveBridge(context, 2, commandName)
+    end
     if action == "clear" then
         table.clear(routeCache[1])
         table.clear(routeCache[2])
+        table.clear(bridgeCache[1])
+        table.clear(bridgeCache[2])
         return true
     end
     return nil, "unknown Network4 transport action: " .. tostring(action)

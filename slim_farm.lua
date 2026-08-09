@@ -2781,6 +2781,10 @@ function coinSync.NetworkTransport.Context.IsRemote(remote, className)
         and remote:IsDescendantOf(ReplicatedStorage)
 end
 
+function coinSync.NetworkTransport.Context.IsBridge(bridge, className)
+    return typeof(bridge) == "Instance" and bridge:IsA(className) and bridge.Parent ~= nil
+end
+
 function coinSync.NetworkTransport:Ensure()
     if self.Controller then return self.Controller end
     if os.clock() < self.RetryAt then return nil, self.LoadProblem end
@@ -2851,6 +2855,28 @@ function coinSync.NetworkTransport:ClearRoute(cache, commandName, remote)
     end
 end
 
+function coinSync.NetworkTransport:ResolveCommandBridge(action, commandName, className)
+    local controller, loadProblem = self:Ensure()
+    if not controller then return nil, "Network4 adapter", nil, loadProblem, nil end
+    local lastSource, lastProblem
+    for _, candidate in ipairs(self:CommandRouteCandidates(commandName)) do
+        local ok, bridge, sourceName, _, problem = pcall(
+            controller, action, self.Context, candidate)
+        if ok and typeof(bridge) == "Instance" and bridge:IsA(className)
+            and bridge.Parent ~= nil then
+            return bridge,
+                tostring(sourceName or "Network4 native bridge")
+                    .. " [" .. tostring(candidate) .. "]",
+                nil,
+                nil,
+                candidate
+        end
+        lastSource = ok and sourceName or "Network4 adapter"
+        lastProblem = ok and problem or bridge
+    end
+    return nil, lastSource, nil, tostring(lastProblem or "native command bridge unavailable"), nil
+end
+
 local function resolveCommandRoute(cache, action, commandName, className)
     local lastSource, lastSessionIndex, lastProblem
     for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
@@ -2909,26 +2935,46 @@ local function invokeCommand(commandName, ...)
     end
     if not remote or not result[1] then
         local directProblem = remote and tostring(result[2]) or tostring(resolveProblem)
-        local network = networkReady()
-        if network and type(network.Invoke) == "function" then
-            sourceName = "Library.Network.Invoke named fallback"
-            sessionIndex = nil
+        local bridge, bridgeSource, _, bridgeProblem, bridgeCommand =
+            coinSync.NetworkTransport:ResolveCommandBridge(
+                "resolveInvokeBridge", commandName, "BindableFunction")
+        if bridge then
+            sourceName = bridgeSource
+            routedCommand = bridgeCommand
             requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
                 command = commandName,
                 route = sourceName,
                 fallback = directProblem,
             })
-            result = table.pack(false, directProblem)
-            for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
-                routedCommand = candidate
-                result = table.pack(pcall(function()
-                    return network.Invoke(candidate, table.unpack(arguments, 1, arguments.n))
-                end))
-                if result[1] then break end
-            end
+            result = table.pack(pcall(function()
+                return bridge:Invoke(table.unpack(arguments, 1, arguments.n))
+            end))
             if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
-        else
-            result = table.pack(false, directProblem .. "; Library.Network.Invoke is unavailable")
+        end
+        if not bridge or not result[1] then
+            local bridgeFailure = bridge and tostring(result[2]) or tostring(bridgeProblem)
+            local network = networkReady()
+            if network and type(network.Invoke) == "function" then
+                sourceName = "Library.Network.Invoke named fallback"
+                sessionIndex = nil
+                requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
+                    command = commandName,
+                    route = sourceName,
+                    fallback = directProblem .. "; bridge=" .. bridgeFailure,
+                })
+                result = table.pack(false, directProblem)
+                for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
+                    routedCommand = candidate
+                    result = table.pack(pcall(function()
+                        return network.Invoke(candidate, table.unpack(arguments, 1, arguments.n))
+                    end))
+                    if result[1] then break end
+                end
+                if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
+            else
+                result = table.pack(false, directProblem .. "; bridge=" .. bridgeFailure
+                    .. "; Library.Network.Invoke is unavailable")
+            end
         end
     end
     if not result[1] then
@@ -2968,21 +3014,36 @@ local function fireCommand(commandName, ...)
     end
     if not remote or not ok then
         local directProblem = remote and tostring(problem) or tostring(resolveProblem)
-        local network = networkReady()
-        if network and type(network.Fire) == "function" then
-            sourceName = "Library.Network.Fire named fallback"
-            sessionIndex = nil
-            ok, problem = false, directProblem
-            for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
-                routedCommand = candidate
-                ok, problem = pcall(function()
-                    network.Fire(candidate, table.unpack(arguments, 1, arguments.n))
-                end)
-                if ok then break end
-            end
+        local bridge, bridgeSource, _, bridgeProblem, bridgeCommand =
+            coinSync.NetworkTransport:ResolveCommandBridge(
+                "resolveFireBridge", commandName, "BindableEvent")
+        if bridge then
+            sourceName = bridgeSource
+            routedCommand = bridgeCommand
+            ok, problem = pcall(function()
+                bridge:Fire(table.unpack(arguments, 1, arguments.n))
+            end)
             if ok then requestDiagnostics.Route("fire", commandName, true) end
-        else
-            ok, problem = false, directProblem .. "; Library.Network.Fire is unavailable"
+        end
+        if not bridge or not ok then
+            local bridgeFailure = bridge and tostring(problem) or tostring(bridgeProblem)
+            local network = networkReady()
+            if network and type(network.Fire) == "function" then
+                sourceName = "Library.Network.Fire named fallback"
+                sessionIndex = nil
+                ok, problem = false, directProblem
+                for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
+                    routedCommand = candidate
+                    ok, problem = pcall(function()
+                        network.Fire(candidate, table.unpack(arguments, 1, arguments.n))
+                    end)
+                    if ok then break end
+                end
+                if ok then requestDiagnostics.Route("fire", commandName, true) end
+            else
+                ok, problem = false, directProblem .. "; bridge=" .. bridgeFailure
+                    .. "; Library.Network.Fire is unavailable"
+            end
         end
     end
     if not ok then
@@ -3126,6 +3187,12 @@ function petFarm:SendCommittedFarmSignals(petId, state)
             local sent = pcall(remote.FireServer, remote, ...)
             if sent then return true end
             coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Fire, command, remote)
+        end
+        local bridge = coinSync.NetworkTransport:ResolveCommandBridge(
+            "resolveFireBridge", command, "BindableEvent")
+        if bridge then
+            local sent = pcall(bridge.Fire, bridge, ...)
+            if sent then return true end
         end
         local network = networkReady()
         if not network or type(network.Fire) ~= "function" then return false end
@@ -3402,9 +3469,18 @@ function petFarm:EnsureEngine()
         Running = running,
         Enabled = function() return config.PetFarm end,
         Resetting = function() return farmResetRunning end,
+        NoNamedFallback = true,
         NetworkReady = networkReady,
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
+        GetCommandBridge = function(commandName)
+            return coinSync.NetworkTransport:ResolveCommandBridge(
+                "resolveInvokeBridge", commandName, "BindableFunction")
+        end,
+        GetFireBridge = function(commandName)
+            return coinSync.NetworkTransport:ResolveCommandBridge(
+                "resolveFireBridge", commandName, "BindableEvent")
+        end,
         InvalidateCommand = function(commandName, remote)
             coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Command, commandName, remote)
         end,
