@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.8"
+local MODULE_VERSION = "1.6.9"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1621,11 +1621,13 @@ local function startHeadlessReconcile(state, context, pending)
                 local acknowledged, ackProblem =
                     acknowledgeOpeningEgg(state, context, pending.Egg, pets)
                 if not acknowledged then
-                    pending.AckFailure = tostring(ackProblem)
-                    pending.ReconcileDone = true
-                    return
+                    pending.AckSoftFailure = tostring(ackProblem)
+                    if context and type(context.Trace) == "function" then
+                        context.Trace("auto egg Opening Egg ACK",
+                            "non-fatal acknowledgement issue after inventory delta: "
+                                .. tostring(ackProblem))
+                    end
                 end
-
                 pending.Acknowledged = true
                 pending.ReconcileDone = true
                 pending.ReconcileThread = nil
@@ -1875,16 +1877,37 @@ local function handlePending(state, context, now)
     end
 
     if pending.AckFailure then
-        stopForSafety(state, context, pending,
-            "Opening Egg acknowledgement failed; auto hatch stopped without sending a duplicate: "
-            .. tostring(pending.AckFailure))
+        if pending.EventReceived or pending.Pets or pending.Accepted then
+            pending.AckSoftFailure = tostring(pending.AckFailure)
+            pending.AckFailure = nil
+            pending.Acknowledged = true
+            if pending.Headless and pending.Pets
+                and not pending.PostProcessStarted and not pending.PostProcessDone then
+                startHeadlessPostProcess(state, context, pending)
+            end
+            setStatus(state, context,
+                "Opening Egg ACK route was unavailable, but the hatch was already observed; continuing safely.")
+        else
+            stopForSafety(state, context, pending,
+                "Opening Egg acknowledgement failed before any hatch evidence; auto hatch stopped without sending a duplicate: "
+                .. tostring(pending.AckFailure))
+        end
         return true
     end
 
     if pending.PostProcessFailure then
-        stopForSafety(state, context, pending,
-            "Auto hatch stopped because the game Auto Delete settings could not be applied safely: "
-            .. tostring(pending.PostProcessFailure))
+        pending.PostProcessNote = "Auto Delete post-process reported: "
+            .. tostring(pending.PostProcessFailure)
+            .. " | continuing; next hatch stays single-flight"
+        pending.PostProcessFailure = nil
+        pending.PostProcessDone = true
+        if pending.EventReceived or pending.Accepted or pending.Pets then
+            finishSuccess(state, context, pending, completionNote(pending))
+        else
+            stopForSafety(state, context, pending,
+                "Auto hatch stopped before hatch evidence because Auto Delete post-process failed: "
+                .. tostring(pending.PostProcessNote))
+        end
         return true
     end
 
@@ -2402,7 +2425,11 @@ return function(action, context)
                         state.AcknowledgedEvents[signature] = now
                         if matching then pending.Acknowledged = true end
                     elseif matching then
-                        pending.AckFailure = tostring(ackProblem)
+                        pending.AckSoftFailure = tostring(ackProblem)
+                        pending.Acknowledged = true
+                        context.Trace("auto egg Opening Egg ACK",
+                            "non-fatal acknowledgement issue after Open Egg event: "
+                                .. tostring(ackProblem))
                     end
                 elseif ownsAcknowledgement and matching then
                     pending.Acknowledged = true

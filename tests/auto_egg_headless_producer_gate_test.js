@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.8"',
+requireText('local MODULE_VERSION = "1.6.9"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -90,6 +90,10 @@ requireText('pcall(context.GetFireRemote, "Opening Egg")',
     "Opening Egg acknowledgement does not use the read-only hashed RemoteEvent resolver");
 requireText('server openegggg event (no named Network.Fire fallback)',
     "a confirmed server hatch still fails when the optional Opening Egg ACK route is absent");
+requireText('non-fatal acknowledgement issue after Open Egg event',
+    "a confirmed hatch can still be stopped by an optional ACK failure");
+requireText('Opening Egg ACK route was unavailable, but the hatch was already observed; continuing safely.',
+    "soft ACK failures do not continue the single-flight hatch loop");
 requireText('allCandidateUidsAbsent(context, candidates)',
     "Auto Delete rejection is not idempotent after a native/manual delete race");
 
