@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.6"',
+requireText('local MODULE_VERSION = "1.6.7"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -30,6 +30,8 @@ requireText('local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer g
     "missing OpenEgg exports do not have a direct RemoteEvent producer gate");
 requireText('captureHeadlessEventGate(signal, eventRoute)',
     "native Open Egg dispatcher is not captured before the module listener");
+requireText('or that command\'s private BindableEvent signal',
+    "Library.Network.Fired fallback is not accepted as a command-specific producer gate");
 requireText('local direct, sourceName, sessionIndex = directSignal(commandName)',
     "Network4's lazy Fired binding is not followed by a direct RemoteEvent retry");
 requireText('after Library.Network.Fired binding',
@@ -89,6 +91,9 @@ requireText('allCandidateUidsAbsent(context, candidates)',
 
 if (source.includes('local gateFallback =')) {
     throw new Error("broad owned-gate event matching can still steal a manual hatch");
+}
+if (source.includes('string.find(route, "remoteevent", 1, true)')) {
+    throw new Error("command-specific Library.Network.Fired signals are still rejected by their route label");
 }
 
 const beginRequest = source.indexOf("local function beginRequest");

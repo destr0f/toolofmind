@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.6"
+local MODULE_VERSION = "1.6.7"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -654,19 +654,19 @@ end
 
 local function captureHeadlessEventGate(signal, eventRoute)
     if typeof(signal) ~= "RBXScriptSignal" then
-        return nil, "Open Egg is using a custom Signal rather than a direct RemoteEvent"
-    end
-    local route = lower(eventRoute)
-    if not string.find(route, "remoteevent", 1, true) then
-        return nil, "the resolved Open Egg RemoteEvent is not command-specific"
+        return nil, "Open Egg command signal is not an RBXScriptSignal: " .. tostring(eventRoute)
     end
     if type(getconnections) ~= "function" then
         return nil, "getconnections is unavailable"
     end
 
+    -- Library.Network.Fired(name) returns either the hashed RemoteEvent signal
+    -- or that command's private BindableEvent signal. Both are already scoped
+    -- to openegggg/Open Egg, so either can safely gate only the native visual
+    -- callback while our listener remains connected.
     local ok, connections = pcall(getconnections, signal)
     if not ok or type(connections) ~= "table" then
-        return nil, "Open Egg RemoteEvent connections are unavailable: " .. tostring(connections)
+        return nil, "Open Egg command signal connections are unavailable: " .. tostring(connections)
     end
 
     local candidates, openEggCandidates, networkCandidates = {}, {}, {}
