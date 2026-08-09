@@ -4261,6 +4261,7 @@ local function startAutoEggModule()
         InvokeCommand = invokeCommand,
         FireCommand = fireCommand,
         GetEventRemote = getEventRemote,
+        GetFireRemote = getFireRemote,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
         ReleaseOperation = releaseOperation,

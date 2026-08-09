@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.7"',
+requireText('local MODULE_VERSION = "1.6.8"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -86,6 +86,10 @@ requireText('local exactMatch = pending and not pending.EventReceived',
     "a duplicate/manual event can still replace an owned pending payload");
 requireText('pending.ProducerGateRoute == HEADLESS_EVENT_GATE',
     "acknowledgement ownership is not scoped to the direct producer gate");
+requireText('pcall(context.GetFireRemote, "Opening Egg")',
+    "Opening Egg acknowledgement does not use the read-only hashed RemoteEvent resolver");
+requireText('server openegggg event (no named Network.Fire fallback)',
+    "a confirmed server hatch still fails when the optional Opening Egg ACK route is absent");
 requireText('allCandidateUidsAbsent(context, candidates)',
     "Auto Delete rejection is not idempotent after a native/manual delete race");
 
@@ -94,6 +98,9 @@ if (source.includes('local gateFallback =')) {
 }
 if (source.includes('string.find(route, "remoteevent", 1, true)')) {
     throw new Error("command-specific Library.Network.Fired signals are still rejected by their route label");
+}
+if (source.includes('pcall(context.FireCommand, "Opening Egg"')) {
+    throw new Error("Opening Egg still falls back through the executor-incompatible named Network.Fire route");
 }
 
 const beginRequest = source.indexOf("local function beginRequest");

@@ -33,6 +33,7 @@ assert(!source.includes('"Network.Fire GetRemoteEvent upvalue #2"'));
 
 assert(source.includes('FireCommand = fireCommand'));
 assert(source.includes('GetEventRemote = getEventRemote'));
+assert(source.includes('GetFireRemote = getFireRemote'));
 assert(source.includes('coinSync.NetworkTransport:Resolve('));
 assert(source.includes('"Get Coins",\n            "RemoteFunction"'));
 assert(source.includes('local sent = pcall(remote.InvokeServer, remote, tostring(record.Id), petIds)'));
@@ -43,8 +44,10 @@ const directEggEvent = autoEgg.indexOf('pcall(context.GetEventRemote, commandNam
 const fallbackEggEvent = autoEgg.indexOf('pcall(network.Fired, commandName)');
 assert(directEggEvent >= 0 && fallbackEggEvent > directEggEvent);
 assert(autoEgg.includes('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }'));
-assert(autoEgg.includes('acknowledgeOpeningEgg(context, pending.Egg, pets)'));
-assert(autoEgg.includes('acknowledgeOpeningEgg(context, eggName, pets)'));
+assert(autoEgg.includes('acknowledgeOpeningEgg(state, context, pending.Egg, pets)'));
+assert(autoEgg.includes('acknowledgeOpeningEgg(state, context, eggName, pets)'));
+assert(autoEgg.includes('pcall(context.GetFireRemote, "Opening Egg")'));
+assert(!autoEgg.includes('pcall(context.FireCommand, "Opening Egg"'));
 assert(!autoEgg.includes('pcall(network.Fire, "Opening Egg"'));
 
 const directLootEvent = loot.indexOf('pcall(context.GetEventRemote, name)');

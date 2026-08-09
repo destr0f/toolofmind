@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.7"
+local MODULE_VERSION = "1.6.8"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1527,17 +1527,62 @@ local function startHeadlessPostProcess(state, context, pending)
     end)
 end
 
-local function acknowledgeOpeningEgg(context, eggName, pets)
-    if type(context.FireCommand) ~= "function" then
-        return false, "Opening Egg direct route is unavailable"
+local function resolveOpeningEggAckRemote(state, context)
+    local cached = state.OpeningEggAckRemote
+    if typeof(cached) == "Instance" and cached:IsA("RemoteEvent")
+        and cached:IsDescendantOf(game:GetService("ReplicatedStorage")) then
+        return cached
     end
-    local called, sent, problem, sourceName, sessionIndex =
-        pcall(context.FireCommand, "Opening Egg", eggName, pets)
-    if not called then return false, tostring(sent) end
-    if sent ~= true then
-        return false, tostring(problem or "Opening Egg was not sent")
+    state.OpeningEggAckRemote = nil
+
+    local now = os.clock()
+    if now < (tonumber(state.NextOpeningEggAckResolveAt) or 0) then return nil end
+    state.NextOpeningEggAckResolveAt = now + 30
+
+    local called, remote, sourceName, sessionIndex, problem =
+        pcall(context.GetFireRemote, "Opening Egg")
+    if called and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
+        and remote:IsDescendantOf(game:GetService("ReplicatedStorage")) then
+        state.OpeningEggAckRemote = remote
+        state.OpeningEggAckRoute = context.RouteText(sourceName, sessionIndex)
+        state.OpeningEggAckProblem = nil
+        return remote
     end
-    return true, context.RouteText(sourceName, sessionIndex)
+
+    state.OpeningEggAckProblem = tostring(called and problem or remote)
+    return nil
+end
+
+local function acknowledgeOpeningEgg(state, context, eggName, pets)
+    local remote = resolveOpeningEggAckRemote(state, context)
+    if remote then
+        local sent, problem = pcall(function()
+            remote:FireServer(eggName, pets)
+        end)
+        if sent then
+            state.OpeningEggAcks = (tonumber(state.OpeningEggAcks) or 0) + 1
+            return true, state.OpeningEggAckRoute
+        end
+        state.OpeningEggAckRemote = nil
+        state.OpeningEggAckProblem = tostring(problem)
+        state.NextOpeningEggAckResolveAt = os.clock() + 30
+    end
+
+    -- openegggg is the authoritative server hatch event and already carries
+    -- the exact pets. Some Network4 sessions expose no separate Opening Egg
+    -- RemoteEvent until the native RobloxScript callback runs. Calling the
+    -- named Network.Fire fallback from an injected callback now raises
+    -- "Cannot require a non-RobloxScript module from a RobloxScript". Do not
+    -- call that fallback and do not stop a confirmed purchase because an
+    -- optional client acknowledgement route is unavailable.
+    state.OpeningEggAckBypassed = (tonumber(state.OpeningEggAckBypassed) or 0) + 1
+    if not state.OpeningEggAckBypassTraced then
+        state.OpeningEggAckBypassTraced = true
+        context.Trace("auto egg Opening Egg ACK",
+            "direct hashed RemoteEvent unavailable; server openegggg event is authoritative | "
+                .. tostring(state.OpeningEggAckProblem or "route absent"))
+    end
+    return true, "server openegggg event (no named Network.Fire fallback)"
 end
 
 local function startHeadlessReconcile(state, context, pending)
@@ -1574,7 +1619,7 @@ local function startHeadlessReconcile(state, context, pending)
                 pending.MatchMode = "inventory delta auto-detection"
 
                 local acknowledged, ackProblem =
-                    acknowledgeOpeningEgg(context, pending.Egg, pets)
+                    acknowledgeOpeningEgg(state, context, pending.Egg, pets)
                 if not acknowledged then
                     pending.AckFailure = tostring(ackProblem)
                     pending.ReconcileDone = true
@@ -2226,7 +2271,7 @@ return function(action, context)
     if type(context) ~= "table" then return false, "module context is missing" end
     for _, key in ipairs({
         "Library", "Running", "Enabled", "GetOptions", "InspectEgg", "InvokeCommand",
-        "FireCommand", "GetEventRemote",
+        "GetEventRemote", "GetFireRemote",
         "RouteText", "AcquireOperation", "ReleaseOperation", "CancelOperation",
         "OperationOwner", "SetStatus", "Trace", "Disable",
     }) do
@@ -2295,6 +2340,13 @@ return function(action, context)
         EventGateConnection = eventGateConnection,
         EventGateProblem = eventGateProblem,
         EventGateDisabled = false,
+        OpeningEggAckRemote = nil,
+        OpeningEggAckRoute = nil,
+        OpeningEggAckProblem = nil,
+        OpeningEggAcks = 0,
+        OpeningEggAckBypassed = 0,
+        OpeningEggAckBypassTraced = false,
+        NextOpeningEggAckResolveAt = 0,
         HeadlessVisualsSuppressed = 0,
         EggWorldVisualsSuppressed = 0,
         EggWorldGateRecord = nil,
@@ -2345,7 +2397,7 @@ return function(action, context)
                 local ownsAcknowledgement = pending and pending.Headless
                     and pending.ProducerGateRoute == HEADLESS_EVENT_GATE
                 if ownsAcknowledgement and not state.AcknowledgedEvents[signature] then
-                    local ackOk, ackProblem = acknowledgeOpeningEgg(context, eggName, pets)
+                    local ackOk, ackProblem = acknowledgeOpeningEgg(state, context, eggName, pets)
                     if ackOk then
                         state.AcknowledgedEvents[signature] = now
                         if matching then pending.Acknowledged = true end
