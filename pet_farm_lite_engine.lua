@@ -624,7 +624,30 @@ local function signalEntries(job, entries, route)
                 run.LastTargetChangeAt = os.clock()
             end
             if farmSent then run.FarmSignals = run.FarmSignals + 1 end
-            if context and type(context.OnSignalsSent) == "function" then
+            local accepted = targetSent and farmSent
+            local acceptedRoute = route
+            local fallbackAccepted = false
+            if not accepted and context and type(context.AcceptJoinWithoutSignals) == "function" then
+                local checked, allowed, fallbackRoute = pcall(
+                    context.AcceptJoinWithoutSignals,
+                    job.Record,
+                    targetSent,
+                    farmSent,
+                    targetRoute,
+                    farmRoute,
+                    job.CoinId,
+                    entry.PetId
+                )
+                if checked and allowed == true then
+                    accepted = true
+                    fallbackAccepted = true
+                    acceptedRoute = fallbackRoute
+                        or route
+                        or "Join Coin accepted; optional farm fire routes unavailable"
+                end
+            end
+            if context and type(context.OnSignalsSent) == "function"
+                and not fallbackAccepted then
                 pcall(
                     context.OnSignalsSent,
                     entry.PetId,
@@ -636,7 +659,6 @@ local function signalEntries(job, entries, route)
                     farmRoute
                 )
             end
-            local accepted = targetSent and farmSent
             if accepted and context and type(context.OnAccepted) == "function" then
                 local called, result = pcall(
                     context.OnAccepted,
@@ -645,7 +667,7 @@ local function signalEntries(job, entries, route)
                     job.Record,
                     nil,
                     job.Attempt,
-                    route
+                    acceptedRoute
                 )
                 accepted = called and result ~= false
             end

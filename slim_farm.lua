@@ -1214,6 +1214,10 @@ local ZoneAliases = {
     ["Hacker Portals"] = "Hacker Portal",
     ["Hacker Portal Area"] = "Hacker Portal",
     ["Hacker Portals Area"] = "Hacker Portal",
+    ["Pixel Chest"] = "Pixel Vault",
+    ["Giant Pixel Chest"] = "Pixel Vault",
+    ["Pixel Vault Chest"] = "Pixel Vault",
+    ["Giant Pixel Vault Chest"] = "Pixel Vault",
 }
 
 local WorldAliases = {
@@ -1473,7 +1477,11 @@ local BossChestNames = {
     ["giant ocean chest"] = true,
     ["ocean chest"] = true,
     ["giant underwater chest"] = true,
+    ["pixel chest"] = true,
+    ["pixel vault chest"] = true,
     ["giant pixel chest"] = true,
+    ["giant pixel vault chest"] = true,
+    ["pixel vault giant pixel chest"] = true,
     ["giant cat chest"] = true,
     ["giant throne chest"] = true,
     ["giant doodle oasis chest"] = true,
@@ -1508,6 +1516,11 @@ BossChestZones = {
     ["giant ocean chest"] = "Axolotl Cave",
     ["ocean chest"] = "Axolotl Cave",
     ["giant underwater chest"] = "Axolotl Cave",
+    ["pixel chest"] = "Pixel Vault",
+    ["pixel vault chest"] = "Pixel Vault",
+    ["giant pixel chest"] = "Pixel Vault",
+    ["giant pixel vault chest"] = "Pixel Vault",
+    ["pixel vault giant pixel chest"] = "Pixel Vault",
 }
 
 local cachedWorld, nextWorldCheck = nil, 0
@@ -2443,12 +2456,31 @@ local function recordInZone(record, zone, zoneAnchor)
         and positionInsideNamedArea(record.Position, zone, 36) then
         return true
     end
+    if namesMatch(zone, "Pixel Vault")
+        and positionInsideNamedArea(record.Position, zone, 42) then
+        return true
+    end
     local nearAnchor = zoneAnchor ~= nil and record.Position ~= nil
         and (record.Position - zoneAnchor).Magnitude <= 240
-    -- Hacker Portal overlaps the terminal Tech World area boundary. Trust its
-    -- live chest/area anchor when the nearest-area classifier says Glitch.
+    -- Terminal chest zones can overlap the previous area boundary. Trust their
+    -- live chest/area anchor when the nearest-area classifier is stale.
     if namesMatch(zone, "Hacker Portal") then return nearAnchor end
+    if namesMatch(zone, "Pixel Vault") then return nearAnchor end
     return detected == nil and nearAnchor
+end
+
+local function allowPixelVaultJoinWithoutSignals(record, targetSent, farmSent)
+    if targetSent and farmSent then return false end
+    if not recordAlive(record) then return false end
+    local zone = getSelectedZone()
+    if not namesMatch(zone, "Pixel Vault") then return false end
+    local world = getSelectedWorld()
+    if world and not worldMatches(record.World, world) then return false end
+    if not recordInZone(record, zone, findZoneAnchor(zone)) then return false end
+    -- Pixel Vault on the fresh update can accept Join Coin while the optional
+    -- per-pet Fire routes are still unresolved in Network4. Keep this scoped to
+    -- the selected Pixel Vault zone and let the progress lease evict stale IDs.
+    return true, "Pixel Vault Join Coin fallback"
 end
 
 targetRecordAllowed = function(record, mode, world, zone, zoneAnchor)
@@ -3338,6 +3370,9 @@ function petFarm:EnsureEngine()
                 coinSync.RemoteCaches.Fire[commandName] = nil
             end
         end,
+        AcceptJoinWithoutSignals = function(record, targetSent, farmSent)
+            return allowPixelVaultJoinWithoutSignals(record, targetSent, farmSent)
+        end,
         RecordAlive = recordAlive,
         StateCurrent = function(petId, state)
             return petStates[tostring(petId)] == state
@@ -3348,9 +3383,10 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state
                 or state.Generation ~= farmGeneration
                 or not recordAlive(record) then return false end
-            -- OnAccepted is reached only after the engine successfully sent both
-            -- named farm signals. Keep the target locked immediately; optional
-            -- game acknowledgements refine diagnostics and lease liveness.
+            -- OnAccepted is reached after the engine committed the assignment.
+            -- Most worlds require both named fire signals; Pixel Vault can fall
+            -- back to server-accepted Join Coin while those fire routes resolve.
+            -- Optional game acknowledgements refine diagnostics and lease liveness.
             state.Phase = "working"
             state.RetryCount = math.max((tonumber(attempt) or 1) - 1, 0)
             state.AcceptedAt = os.clock()
