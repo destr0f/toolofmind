@@ -77,7 +77,7 @@
     "automationSupport": {
       "id": "automationSupport",
       "label": "Automation support coordinator",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.49",
@@ -85,10 +85,10 @@
       "load": "lazy",
       "role": "shared-automation-coordinator",
       "path": "automation_support_module.lua",
-      "commit": "3a3a6f9ed589e53563dac18caaeb600a9df55bc4",
-      "bytes": 12450,
-      "sha256": "1071d72f81de4ccd69cc6e1f9043943907f5f56587f19404306971796aed0f20",
-      "djb2": "fe0ebd06"
+      "commit": "e144e972211bf26896712b719f2c5d4195f71813",
+      "bytes": 12438,
+      "sha256": "cfc6669c61987a9811cb49b21bbd2dc0e05bce46ef5b1e278710f344565feaaa",
+      "djb2": "d67232e2"
     },
     "automationUI": {
       "id": "automationUI",
@@ -101,10 +101,10 @@
       "load": "startup",
       "role": "automation-ui-extension",
       "path": "automation_ui_module.lua",
-      "commit": "3a3a6f9ed589e53563dac18caaeb600a9df55bc4",
-      "bytes": 18204,
-      "sha256": "975b850d03622fcefec0f4ff32d5e1b100b9d366247e8abcbceec2aaef511dd2",
-      "djb2": "dab180b3"
+      "commit": "e144e972211bf26896712b719f2c5d4195f71813",
+      "bytes": 18168,
+      "sha256": "e668495a2eed7d8dae0ea189693b7c64e0b9e019b3245e8ea28f5f7b05270690",
+      "djb2": "201c3064"
     },
     "petFarmEngine": {
       "id": "petFarmEngine",
@@ -117,15 +117,15 @@
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "eb40d111be763ae8ee569f7f52bbeb6077ffc2e0",
-      "bytes": 32738,
-      "sha256": "9315649a39dad10975f74ef8887afdbef1452c6eea3fa4f16cc358c4c44b0f8f",
-      "djb2": "f221e117"
+      "commit": "e144e972211bf26896712b719f2c5d4195f71813",
+      "bytes": 34202,
+      "sha256": "bf3ccc1e4e8246c26bd9058cfcfb6fc1234c5d19d2a9fb280d362f87329898a7",
+      "djb2": "96be9e70"
     },
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.6.4",
+      "version": "3.6.5",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.49",
@@ -133,10 +133,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "ca9981bfcdd7068b74c1a5b4e719405f3e0eb961",
-      "bytes": 64757,
-      "sha256": "ca26174c2e7e99a6470060c7fd917e8bbaff24734cc18a7427c45da4b99a53f3",
-      "djb2": "9f485af5"
+      "commit": "e144e972211bf26896712b719f2c5d4195f71813",
+      "bytes": 65527,
+      "sha256": "1273ae74e47425aecb55760f42db29e5ca3750b6706d147814388e3994f704d1",
+      "djb2": "4481a1c3"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -172,7 +172,7 @@
     "goldMachine": {
       "id": "goldMachine",
       "label": "Golden machine",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.49",
@@ -180,15 +180,15 @@
       "load": "lazy",
       "role": "golden-conversion-worker",
       "path": "gold_machine_module.lua",
-      "commit": "3a3a6f9ed589e53563dac18caaeb600a9df55bc4",
-      "bytes": 21720,
-      "sha256": "9615d617f3acd1674e9b1584650aef87015ff9aaaad767bfc270d0b94e606822",
-      "djb2": "838c78d4"
+      "commit": "e144e972211bf26896712b719f2c5d4195f71813",
+      "bytes": 21712,
+      "sha256": "63eca0c88524f1c749659c81854252b7f71b47893b3144a7d955f00a75b78445",
+      "djb2": "6b7ba527"
     },
     "rainbowMachine": {
       "id": "rainbowMachine",
       "label": "Rainbow machine",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.49",
@@ -196,15 +196,15 @@
       "load": "lazy",
       "role": "rainbow-conversion-worker",
       "path": "rainbow_machine_module.lua",
-      "commit": "3a3a6f9ed589e53563dac18caaeb600a9df55bc4",
-      "bytes": 21834,
-      "sha256": "2b17fe48ab6f20b31cb4b05202cf8b89655a1d9993cad560bfcc8e2b92d22dbf",
-      "djb2": "76d3486b"
+      "commit": "e144e972211bf26896712b719f2c5d4195f71813",
+      "bytes": 21826,
+      "sha256": "a5ab076dc9d1aea851425e0f3ca1a05c3b80401fc04c332bae797f9c4f92870a",
+      "djb2": "8186921e"
     },
     "darkMatter": {
       "id": "darkMatter",
       "label": "Dark Matter machine",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-dev.49",
@@ -212,10 +212,10 @@
       "load": "lazy",
       "role": "dark-matter-queue-worker",
       "path": "dark_matter_module.lua",
-      "commit": "3a3a6f9ed589e53563dac18caaeb600a9df55bc4",
-      "bytes": 32638,
-      "sha256": "1cba5cdb3aca385bc90e25d1cd8acde8316781343b4daf81bb68e810c049c983",
-      "djb2": "94129f39"
+      "commit": "e144e972211bf26896712b719f2c5d4195f71813",
+      "bytes": 32630,
+      "sha256": "35d7e59eec7b8c6fdebcfdc7fe1a91387145a75b931be392e07b212193287804",
+      "djb2": "713383ac"
     },
     "boost": {
       "id": "boost",
@@ -346,32 +346,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "6b6d6653227e64040eac79a5f78e8fb8498253da",
+    "generatedFromCommit": "e144e972211bf26896712b719f2c5d4195f71813",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 6714,
-      "sha256": "207438584060dd1cb9235fe5342de5f79b8a6c3aa32fa769c332f5739e4508b0",
-      "djb2": "07215d19"
+      "sha256": "7b4983ee8421d72dac4c117414e6e09f10c1e59c9d636475de5d75eddf292abb",
+      "djb2": "84995ac6"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-dev.49",
-      "bytes": 265516,
-      "sha256": "1ceb76651b204af349a5883e75b23205b959165f4b6cfd7fac3189bc632529ab",
-      "djb2": "a253470f"
+      "bytes": 269363,
+      "sha256": "6a654bc43d61371ff7489948b8a8218d4057f6ccc0912c8752af9ed77c54b4d1",
+      "djb2": "3c431acd"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 212126,
-        "sha256": "877b3c767fee4474cc4fc2d5f9d00b1b733ae92a01429fc1fd816aafd32e03bc",
-        "djb2": "2f1f3a00"
+        "bytes": 215090,
+        "sha256": "37fae20310b24836e50aa0072dec7610e5b661214fff52a113703cd502265f45",
+        "djb2": "264ddde1"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 212126,
-        "sha256": "877b3c767fee4474cc4fc2d5f9d00b1b733ae92a01429fc1fd816aafd32e03bc",
-        "djb2": "2f1f3a00"
+        "bytes": 215090,
+        "sha256": "37fae20310b24836e50aa0072dec7610e5b661214fff52a113703cd502265f45",
+        "djb2": "264ddde1"
       }
     }
   }
