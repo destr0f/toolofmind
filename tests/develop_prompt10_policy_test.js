@@ -56,6 +56,10 @@ assert(rejectionBranch.includes("failEntries(") && !rejectionBranch.includes("sc
     "stale/contended Join rejection still retries the same coin");
 assert(engine.includes("local DEFAULT_DISPATCH_WIDTH = 16"),
     "transport lane ceiling is not 16");
+assert(engine.includes('["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" }'),
+    "lite transport does not prefer the current Change Pet Target NOW route");
+assert(farm.includes('["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" }'),
+    "main transport does not prefer the current Change Pet Target NOW route");
 
 for (const file of [
     "slim_farm.lua",

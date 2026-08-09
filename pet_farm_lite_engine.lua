@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.3.2"
+local MODULE_VERSION = "1.3.3"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -36,6 +36,7 @@ local TRANSPORT_TTL = {
 }
 
 local COMMAND_ROUTE_ALIASES = {
+    ["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" },
     ["Join Coin"] = { "Join The Coin", "Join Coin" },
     ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
     ["Leave Coin"] = { "Leave The Coin", "Leave Coin" },

@@ -28,11 +28,11 @@ assert(!ui.includes("Galaxy Fox + Silver Stag + Silver Dragon + Santa Paws"),
     "machine UI still advertises the legacy target catalog");
 
 for (const marker of [
-    "local DIAMOND_PACK_PRICE = 45e9",
-    "local DIAMOND_PACK_RESERVE = 1e9",
+    "local DIAMOND_PACK_PRICE = 250e9",
+    "local DIAMOND_PACK_RESERVE = 0.5e9",
     "local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE",
     'getCurrentCurrency("Rainbow Coins")',
-    "below 46B",
+    "below 250.5B",
     'Command = "Redeem Free Gift"',
     "FreeGiftsRedeemed",
 ]) {
@@ -67,5 +67,5 @@ for (const marker of [
 }
 
 process.stdout.write(
-    "Develop Pixel/HUD policy OK | machines=exact-name | pack=45B+1B | gifts=timer-gated | HUD=coalesced | reload=quiesced\n"
+    "Develop Pixel/HUD policy OK | machines=exact-name | pack=250B+0.5B | gifts=timer-gated | HUD=coalesced | reload=quiesced\n"
 );

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.49"
+local VERSION = "1.4.1-dev.50"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -329,8 +329,8 @@ local config = {
 }
 
 local DIAMOND_PACK_TIER = 4
-local DIAMOND_PACK_PRICE = 45e9
-local DIAMOND_PACK_RESERVE = 1e9
+local DIAMOND_PACK_PRICE = 250e9
+local DIAMOND_PACK_RESERVE = 0.5e9
 local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE
 local DIAMOND_PACK_INTERVAL = 180
 local diamondPackNextCheck = 0
@@ -582,7 +582,7 @@ function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
     if config.AutoGoldenGalaxyFox then active[#active + 1] = "Gold" end
     if config.AutoRainbowGalaxyFox then active[#active + 1] = "RB" end
     if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then active[#active + 1] = "DM" end
-    if config.AutoTechDiamondPack then active[#active + 1] = "45B Pack" end
+    if config.AutoTechDiamondPack then active[#active + 1] = "250.5B Pack" end
     if config.AutoVIPRewards or config.AutoRankRewards or config.AutoFreeGifts then
         active[#active + 1] = "Rewards"
     end
@@ -2826,6 +2826,7 @@ function coinSync.NetworkTransport:Resolve(cache, action, commandName, className
 end
 
 coinSync.NetworkTransport.RouteAliases = {
+    ["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" },
     ["Join Coin"] = { "Join The Coin", "Join Coin" },
     ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
     ["Leave Coin"] = { "Leave The Coin", "Leave Coin" },
@@ -4718,7 +4719,7 @@ local function runDiamondPackCheck()
         status = "Local check: Rainbow Coins balance was not found; no request sent."
     elseif balance < DIAMOND_PACK_MINIMUM then
         status = "Local threshold hold: " .. balanceText
-            .. " is below 46B Rainbow Coins (45B pack + 1B reserve); no server request sent."
+            .. " is below 250.5B Rainbow Coins (250B pack + 500M reserve); no server request sent."
     else
         local transportOk, accepted, serverMessage, sourceName, sessionIndex =
             invokeCommand("Buy DiamondPack", DIAMOND_PACK_TIER)
@@ -5688,12 +5689,12 @@ UI.DiamondSection = UI.MachinesTab:Section({ Title = "Rainbow Diamond Exchange",
 UI.DiamondSection:Toggle({
     Flag = "auto_tech_diamond_pack",
     Title = "Auto Best Rainbow Diamond Pack",
-    Desc = "Tier 4 costs 45B / checks every 3 minutes / buys only at 46B to preserve 1B",
+    Desc = "Tier 4 costs 250B / checks every 3 minutes / buys only at 250.5B to preserve 500M",
     Value = false,
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
         if config.AutoTechDiamondPack then
-            statusSetters.Diamond("Enabled. A local balance check will run now; below 46B no request is sent.")
+            statusSetters.Diamond("Enabled. A local balance check will run now; below 250.5B no request is sent.")
         else
             statusSetters.Diamond("Disabled. No purchase requests will be sent.")
         end

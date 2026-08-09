@@ -21,11 +21,11 @@ for (const marker of [
 }
 
 for (const marker of [
-    "local DIAMOND_PACK_PRICE = 45e9",
-    "local DIAMOND_PACK_RESERVE = 1e9",
+    "local DIAMOND_PACK_PRICE = 250e9",
+    "local DIAMOND_PACK_RESERVE = 0.5e9",
     "local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE",
     'getCurrentCurrency("Rainbow Coins")',
-    "below 46B Rainbow Coins",
+    "below 250.5B Rainbow Coins",
 ]) {
     assert(source.includes(marker), `Rainbow pack policy misses ${marker}`);
 }
@@ -48,9 +48,10 @@ for (const marker of [
     '"Join The Coin"',
     '"Farm The Coin"',
     '"Leave The Coin"',
+    '"Change Pet Target NOW"',
     "CommandRouteCandidates(commandName)",
 ]) {
     assert(source.includes(marker), `route alias policy misses ${marker}`);
 }
 
-process.stdout.write("Auto Gifts + 45B Rainbow pack policy OK\n");
+process.stdout.write("Auto Gifts + 250B Rainbow pack policy OK\n");
