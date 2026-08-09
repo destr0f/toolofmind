@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.5"
+local MODULE_VERSION = "1.6.6"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -669,24 +669,33 @@ local function captureHeadlessEventGate(signal, eventRoute)
         return nil, "Open Egg RemoteEvent connections are unavailable: " .. tostring(connections)
     end
 
-    local candidates, networkCandidates = {}, {}
+    local candidates, openEggCandidates, networkCandidates = {}, {}, {}
     for _, connection in pairs(connections) do
         if connectionMethod(connection, "Disable") and connectionMethod(connection, "Enable") then
             candidates[#candidates + 1] = connection
             local source = connectionSource(connection)
-            if string.find(source, "network", 1, true)
+            if string.find(source, "open eggs", 1, true)
+                or string.find(source, "openegg", 1, true) then
+                openEggCandidates[#openEggCandidates + 1] = connection
+            elseif string.find(source, "network", 1, true)
                 or string.find(source, "framework", 1, true) then
                 networkCandidates[#networkCandidates + 1] = connection
             end
         end
     end
 
-    local selected = #networkCandidates == 1 and networkCandidates[1]
-        or (#networkCandidates == 0 and #candidates == 1 and candidates[1] or nil)
+    -- When Open Eggs connected while the hashed RemoteEvent already existed,
+    -- its callback is attached directly to OnClientEvent. Prefer that exact
+    -- visual producer. Older sessions may route through Network's bridge, in
+    -- which case disabling the unique bridge still leaves our direct listener.
+    local selected = #openEggCandidates == 1 and openEggCandidates[1]
+        or (#openEggCandidates == 0 and #networkCandidates == 1 and networkCandidates[1]
+            or (#openEggCandidates == 0 and #networkCandidates == 0
+                and #candidates == 1 and candidates[1] or nil))
     if not selected then
         return nil, string.format(
-            "Open Egg native dispatcher is ambiguous (%d compatible, %d network-labelled)",
-            #candidates, #networkCandidates
+            "Open Egg native dispatcher is ambiguous (%d compatible, %d Open Eggs, %d network-labelled)",
+            #candidates, #openEggCandidates, #networkCandidates
         )
     end
 
@@ -703,7 +712,7 @@ local function resolveOpenEggSignal(context)
     local replicatedStorage = game:GetService("ReplicatedStorage")
     local problems = {}
 
-    for _, commandName in ipairs(OPEN_EGG_EVENT_NAMES) do
+    local function directSignal(commandName)
         local resolved, remote, sourceName, sessionIndex, problem =
             pcall(context.GetEventRemote, commandName)
         if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
@@ -711,10 +720,17 @@ local function resolveOpenEggSignal(context)
             return remote.OnClientEvent,
                 tostring(sourceName or "dynamic RemoteEvent"),
                 sessionIndex,
-                commandName
+                nil
         end
-        problems[#problems + 1] = commandName .. ": "
-            .. tostring(resolved and problem or remote)
+        return nil, nil, nil, tostring(resolved and problem or remote)
+    end
+
+    for _, commandName in ipairs(OPEN_EGG_EVENT_NAMES) do
+        local signal, sourceName, sessionIndex, problem = directSignal(commandName)
+        if signal then
+            return signal, sourceName, sessionIndex, commandName
+        end
+        problems[#problems + 1] = commandName .. ": " .. tostring(problem)
     end
 
     local network = context.Library and context.Library.Network
@@ -722,6 +738,17 @@ local function resolveOpenEggSignal(context)
         for _, commandName in ipairs(OPEN_EGG_EVENT_NAMES) do
             local signalOk, fallbackSignal = pcall(network.Fired, commandName)
             if signalOk and fallbackSignal and type(fallbackSignal.Connect) == "function" then
+                -- Network4 binds a per-session hashed RemoteEvent lazily inside
+                -- Fired(). Retry the read-only resolver after that local bind;
+                -- this performs no FireServer/InvokeServer call and lets us
+                -- gate the visual producer before the first purchase.
+                local direct, sourceName, sessionIndex = directSignal(commandName)
+                if direct then
+                    return direct,
+                        tostring(sourceName) .. " after Library.Network.Fired binding",
+                        sessionIndex,
+                        commandName
+                end
                 return fallbackSignal,
                     "Library.Network.Fired fallback",
                     nil,

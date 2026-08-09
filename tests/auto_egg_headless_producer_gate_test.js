@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.5"',
+requireText('local MODULE_VERSION = "1.6.6"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -30,6 +30,12 @@ requireText('local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer g
     "missing OpenEgg exports do not have a direct RemoteEvent producer gate");
 requireText('captureHeadlessEventGate(signal, eventRoute)',
     "native Open Egg dispatcher is not captured before the module listener");
+requireText('local direct, sourceName, sessionIndex = directSignal(commandName)',
+    "Network4's lazy Fired binding is not followed by a direct RemoteEvent retry");
+requireText('after Library.Network.Fired binding',
+    "the direct post-bind route is not exposed in diagnostics");
+requireText('#openEggCandidates == 1 and openEggCandidates[1]',
+    "the exact Open Eggs visual callback is not preferred over Network's bridge");
 requireText('callConnectionMethod(state.EventGateConnection, "Disable")',
     "direct headless route does not pause the native visual dispatcher");
 requireText('callConnectionMethod(state.EventGateConnection, "Enable")',
