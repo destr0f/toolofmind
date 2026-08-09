@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.3"',
+requireText('local MODULE_VERSION = "1.6.5"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -66,6 +66,14 @@ requireText('return true, state.OpenEggGateRoute',
     "a missing OpenEgg export still blocks the exact inventory-delta fallback");
 requireText('ProducerGateRoute = headless and state.OpenEggGateRoute or nil',
     "the selected headless acknowledgement route is not retained per request");
+requireText('pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK',
+    "the visible compatibility route cannot be isolated from true producer-gated Headless");
+requireText('policy = tostring(policy) .. " | headless fallback local skip"',
+    "the compatibility callback is left waiting on its native animation");
+requireText('or state.OpenEggGateRoute == HEADLESS_INVENTORY_FALLBACK)',
+    "headless fallback does not snapshot the game skip callback before purchase");
+requireText('if not headless or pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK then',
+    "headless fallback never arms the local animation skip");
 requireText('local exactMatch = pending and not pending.EventReceived',
     "a duplicate/manual event can still replace an owned pending payload");
 requireText('pending.ProducerGateRoute == HEADLESS_EVENT_GATE',

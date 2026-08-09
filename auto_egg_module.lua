@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.3"
+local MODULE_VERSION = "1.6.5"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1169,8 +1169,18 @@ local function emitLocalSkipInput(context, pending)
 end
 
 local function armNativeSkip(state, context, pending)
-    if pending.SkipScheduled or pending.Headless then return end
+    local fallbackHeadless = pending.Headless
+        and pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK
+    if pending.SkipScheduled or (pending.Headless and not fallbackHeadless) then return end
     local allowed, policy = gameAllPetsSkipPolicy(context)
+    if fallbackHeadless then
+        -- The current Open Eggs script no longer exports OpenEgg. In this
+        -- compatibility route the game owns Auto Delete and starts its native
+        -- callback, so Headless must use the existing local skip callback to
+        -- finish it. This sends no additional purchase or server request.
+        allowed = true
+        policy = tostring(policy) .. " | headless fallback local skip"
+    end
     pending.SkipPolicy = policy
     pending.SkipScheduled = allowed
     if not allowed then return end
@@ -2030,7 +2040,9 @@ local function beginRequest(state, context, options, inspection)
         LastHeadlessEventAt = 0,
         RequestThread = nil,
         Attempt = tonumber(state.NetworkAttempt) or 1,
-        InputConnections = not headless and inputConnectionSnapshot(context) or nil,
+        InputConnections = (not headless
+            or state.OpenEggGateRoute == HEADLESS_INVENTORY_FALLBACK)
+            and inputConnectionSnapshot(context) or nil,
         Inspection = inspection,
         VisualSuppressed = false,
         NativeOpenEggSeen = false,
@@ -2039,7 +2051,9 @@ local function beginRequest(state, context, options, inspection)
     pending.ResponseDeadlineAt = pending.StartedAt + pending.TimeoutSeconds
     state.Pending = pending
     state.Requests = state.Requests + 1
-    if not headless then armNativeSkip(state, context, pending) end
+    if not headless or pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK then
+        armNativeSkip(state, context, pending)
+    end
     setStatus(state, context, string.format(
         "Sending Buy Egg Yay: %s | connection attempt %d/%d\n"
             .. "Distance: %.1f/15 | request #%d | one request in flight | dynamic Network route\n%s",
