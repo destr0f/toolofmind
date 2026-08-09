@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.4"
+local MODULE_VERSION = "1.6.3"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -36,7 +36,6 @@ local MAX_POST_PROCESS_WAIT_SLICES = 12
 local HEADLESS_EVENT_SETTLE_DELAY = 0.35
 local HEADLESS_INVENTORY_FALLBACK = "exact inventory-delta compatibility fallback"
 local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer gate"
-local HEADLESS_NATIVE_WARMUP = "native Opening Egg route warm-up"
 -- The August Network4 build renamed the inbound hatch event while keeping the
 -- purchase command unchanged. Resolve the live name first, then retain the old
 -- name as a compatibility alias for older servers.
@@ -769,25 +768,6 @@ local function restoreHeadlessProducerGate(state)
     state.OpenEggGateRoute = nil
 end
 
-local function openingEggRemoteAvailable(context)
-    if not context or type(context.GetFireRemote) ~= "function" then return false end
-    local ok, remote = pcall(context.GetFireRemote, "Opening Egg")
-    return ok and typeof(remote) == "Instance" and remote:IsA("RemoteEvent")
-end
-
-local function selectEventGateRoute(state, context, openEggScript)
-    state.OpenEggScript = openEggScript
-    if openingEggRemoteAvailable(context) then
-        state.OpenEggGateRoute = HEADLESS_EVENT_GATE
-    else
-        -- Network4 creates some command entries lazily. Keep the game's exact
-        -- callback for one hatch so it registers/sends Opening Egg itself;
-        -- the next cycle can use the direct event gate without blind retries.
-        state.OpenEggGateRoute = HEADLESS_NATIVE_WARMUP
-    end
-    return true, state.OpenEggGateRoute
-end
-
 local function ensureHeadlessProducerGate(state, context)
     local openEggScript = openEggScriptFor(context)
     if not openEggScript then
@@ -795,7 +775,9 @@ local function ensureHeadlessProducerGate(state, context)
     end
     if type(getsenv) ~= "function" then
         if state.EventGateConnection then
-            return selectEventGateRoute(state, context, openEggScript)
+            state.OpenEggScript = openEggScript
+            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
+            return true, state.OpenEggGateRoute
         end
         return false, "getsenv is unavailable; Headless refuses to fall back to visible animation"
     end
@@ -803,7 +785,9 @@ local function ensureHeadlessProducerGate(state, context)
     local environmentOk, scriptEnvironment = pcall(getsenv, openEggScript)
     if not environmentOk or type(scriptEnvironment) ~= "table" then
         if state.EventGateConnection then
-            return selectEventGateRoute(state, context, openEggScript)
+            state.OpenEggScript = openEggScript
+            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
+            return true, state.OpenEggGateRoute
         end
         return false, "Open Eggs environment is unavailable: " .. tostring(scriptEnvironment)
     end
@@ -818,9 +802,10 @@ local function ensureHeadlessProducerGate(state, context)
     local original = scriptEnvironment.OpenEgg
     if type(original) ~= "function" then
         if state.EventGateConnection then
-            selectEventGateRoute(state, context, openEggScript)
+            state.OpenEggScript = openEggScript
+            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
             context.Trace("auto egg headless gate",
-                "Open Eggs.OpenEgg is not exported; selected " .. tostring(state.OpenEggGateRoute))
+                "Open Eggs.OpenEgg is not exported; using the exact command-specific RemoteEvent dispatcher gate")
             return true, state.OpenEggGateRoute
         end
         state.OpenEggScript = openEggScript
@@ -1611,9 +1596,7 @@ local function completionNote(pending)
     if pending.Route and pending.Route ~= "" then notes[#notes + 1] = pending.Route end
     if pending.Headless then
         notes[#notes + 1] = "Egg Skip: immediate headless acknowledgement"
-        if pending.ProducerGateRoute == HEADLESS_NATIVE_WARMUP then
-            notes[#notes + 1] = "Headless compatibility: native callback warmed the Opening Egg route once"
-        elseif pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK then
+        if pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK then
             notes[#notes + 1] = "Headless visuals: native OpenEgg was not exported; inventory-delta fallback used"
         else
             notes[#notes + 1] = pending.VisualSuppressed
@@ -1882,8 +1865,7 @@ local function handlePending(state, context, now)
                     startHeadlessPostProcess(state, context, pending)
                 end
                 if pending.Acknowledged and pending.PostProcessDone then
-                    if (pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK
-                        or pending.ProducerGateRoute == HEADLESS_NATIVE_WARMUP) and openingNow then
+                    if pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK and openingNow then
                         setStatus(state, context, "Native compatibility callback is finishing for "
                             .. requestLabel(pending)
                             .. "; acknowledgement and Auto Delete are not being duplicated...")
@@ -2023,8 +2005,7 @@ local function beginRequest(state, context, options, inspection)
         Acknowledged = false,
         Pets = nil,
         PostProcessStarted = false,
-        PostProcessDone = not headless
-            or state.OpenEggGateRoute == HEADLESS_NATIVE_WARMUP,
+        PostProcessDone = not headless,
         PostProcessFailure = nil,
         SkipScheduled = false,
         NativeOpeningSeen = false,
@@ -2341,8 +2322,7 @@ return function(action, context)
             end
 
             local queuedPostProcess = false
-            if pending and pending.Headless and state.GateOwned and payloadCount > 0
-                and pending.ProducerGateRoute ~= HEADLESS_NATIVE_WARMUP then
+            if pending and pending.Headless and state.GateOwned and payloadCount > 0 then
                 if matching or pending.ProducerGateRoute ~= HEADLESS_INVENTORY_FALLBACK then
                     queuedPostProcess = queueHeadlessPostProcess(pending, eggName, pets)
                     if queuedPostProcess and not matching then
