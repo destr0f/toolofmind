@@ -141,17 +141,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.6.4",
+      "version": "1.6.3",
       "versionAuthority": "source-constant+content-hash",
       "compatibleSuite": "1.4.1-dev.49-minimal.1",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "c3d2136fdcb36c59932fa612b2f0f107bc36dbe6",
-      "bytes": 101771,
-      "sha256": "6a9d2a3768c431b1d1acf3a1a00d37db6c197eaad0a7d434b731dc8bc76ebb65",
-      "djb2": "96b3e239"
+      "commit": "802d727d097106c959a944eade96f6dff203a308",
+      "bytes": 100684,
+      "sha256": "4dfadf83b772568d54b7a2141c97b2fe04b69d6ec26457ef2f9e41bccda959c6",
+      "djb2": "752a2a34"
     },
     "enchant": {
       "id": "enchant",
