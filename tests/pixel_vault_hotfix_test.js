@@ -24,8 +24,8 @@ for (const marker of [
     '["pixel vault giant pixel chest"] = "Pixel Vault"',
     'if namesMatch(zone, "Pixel Vault")',
     'and positionInsideNamedArea(record.Position, zone, 42) then',
-    'local function allowPixelVaultJoinWithoutSignals(record, targetSent, farmSent)',
     'AcceptJoinWithoutSignals = function(record, targetSent, farmSent)',
+    'optional per-pet Fire routes are still unresolved in Network4',
     'return true, "Pixel Vault Join Coin fallback"',
 ]) {
     assert(source.includes(marker), `missing Pixel Vault farm marker: ${marker}`);

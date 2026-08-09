@@ -2469,20 +2469,6 @@ local function recordInZone(record, zone, zoneAnchor)
     return detected == nil and nearAnchor
 end
 
-local function allowPixelVaultJoinWithoutSignals(record, targetSent, farmSent)
-    if targetSent and farmSent then return false end
-    if not recordAlive(record) then return false end
-    local zone = getSelectedZone()
-    if not namesMatch(zone, "Pixel Vault") then return false end
-    local world = getSelectedWorld()
-    if world and not worldMatches(record.World, world) then return false end
-    if not recordInZone(record, zone, findZoneAnchor(zone)) then return false end
-    -- Pixel Vault on the fresh update can accept Join Coin while the optional
-    -- per-pet Fire routes are still unresolved in Network4. Keep this scoped to
-    -- the selected Pixel Vault zone and let the progress lease evict stale IDs.
-    return true, "Pixel Vault Join Coin fallback"
-end
-
 targetRecordAllowed = function(record, mode, world, zone, zoneAnchor)
     local boss = isBossChest(record)
     local hackerPortal = namesMatch(zone, "Hacker Portal")
@@ -3371,7 +3357,18 @@ function petFarm:EnsureEngine()
             end
         end,
         AcceptJoinWithoutSignals = function(record, targetSent, farmSent)
-            return allowPixelVaultJoinWithoutSignals(record, targetSent, farmSent)
+            if targetSent and farmSent then return false end
+            if not recordAlive(record) then return false end
+            local zone = getSelectedZone()
+            if not namesMatch(zone, "Pixel Vault") then return false end
+            local world = getSelectedWorld()
+            if world and not worldMatches(record.World, world) then return false end
+            if not recordInZone(record, zone, findZoneAnchor(zone)) then return false end
+            -- Pixel Vault on the fresh update can accept Join Coin while the
+            -- optional per-pet Fire routes are still unresolved in Network4.
+            -- Keep this scoped to the selected Pixel Vault zone and let the
+            -- progress lease evict stale IDs.
+            return true, "Pixel Vault Join Coin fallback"
         end,
         RecordAlive = recordAlive,
         StateCurrent = function(petId, state)
