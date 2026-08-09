@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.49"
+local VERSION = "1.4.1-dev.49-minimal.1"
 local RUNTIME_MANIFEST = nil --[[__PSX_RUNTIME_MANIFEST__]]
 local env = type(getgenv) == "function" and getgenv() or _G
 
@@ -329,8 +329,8 @@ local config = {
 }
 
 local DIAMOND_PACK_TIER = 4
-local DIAMOND_PACK_PRICE = 45e9
-local DIAMOND_PACK_RESERVE = 1e9
+local DIAMOND_PACK_PRICE = 250e9
+local DIAMOND_PACK_RESERVE = 0.5e9
 local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE
 local DIAMOND_PACK_INTERVAL = 180
 local diamondPackNextCheck = 0
@@ -582,7 +582,7 @@ function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
     if config.AutoGoldenGalaxyFox then active[#active + 1] = "Gold" end
     if config.AutoRainbowGalaxyFox then active[#active + 1] = "RB" end
     if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then active[#active + 1] = "DM" end
-    if config.AutoTechDiamondPack then active[#active + 1] = "45B Pack" end
+    if config.AutoTechDiamondPack then active[#active + 1] = "250.5B Pack" end
     if config.AutoVIPRewards or config.AutoRankRewards or config.AutoFreeGifts then
         active[#active + 1] = "Rewards"
     end
@@ -1214,6 +1214,10 @@ local ZoneAliases = {
     ["Hacker Portals"] = "Hacker Portal",
     ["Hacker Portal Area"] = "Hacker Portal",
     ["Hacker Portals Area"] = "Hacker Portal",
+    ["Pixel Chest"] = "Pixel Vault",
+    ["Giant Pixel Chest"] = "Pixel Vault",
+    ["Pixel Vault Chest"] = "Pixel Vault",
+    ["Giant Pixel Vault Chest"] = "Pixel Vault",
 }
 
 local WorldAliases = {
@@ -1473,7 +1477,11 @@ local BossChestNames = {
     ["giant ocean chest"] = true,
     ["ocean chest"] = true,
     ["giant underwater chest"] = true,
+    ["pixel chest"] = true,
+    ["pixel vault chest"] = true,
     ["giant pixel chest"] = true,
+    ["giant pixel vault chest"] = true,
+    ["pixel vault giant pixel chest"] = true,
     ["giant cat chest"] = true,
     ["giant throne chest"] = true,
     ["giant doodle oasis chest"] = true,
@@ -1508,6 +1516,11 @@ BossChestZones = {
     ["giant ocean chest"] = "Axolotl Cave",
     ["ocean chest"] = "Axolotl Cave",
     ["giant underwater chest"] = "Axolotl Cave",
+    ["pixel chest"] = "Pixel Vault",
+    ["pixel vault chest"] = "Pixel Vault",
+    ["giant pixel chest"] = "Pixel Vault",
+    ["giant pixel vault chest"] = "Pixel Vault",
+    ["pixel vault giant pixel chest"] = "Pixel Vault",
 }
 
 local cachedWorld, nextWorldCheck = nil, 0
@@ -2443,11 +2456,16 @@ local function recordInZone(record, zone, zoneAnchor)
         and positionInsideNamedArea(record.Position, zone, 36) then
         return true
     end
+    if namesMatch(zone, "Pixel Vault")
+        and positionInsideNamedArea(record.Position, zone, 42) then
+        return true
+    end
     local nearAnchor = zoneAnchor ~= nil and record.Position ~= nil
         and (record.Position - zoneAnchor).Magnitude <= 240
     -- Hacker Portal overlaps the terminal Tech World area boundary. Trust its
     -- live chest/area anchor when the nearest-area classifier says Glitch.
     if namesMatch(zone, "Hacker Portal") then return nearAnchor end
+    if namesMatch(zone, "Pixel Vault") then return nearAnchor end
     return detected == nil and nearAnchor
 end
 
@@ -2807,8 +2825,47 @@ function coinSync.NetworkTransport:Resolve(cache, action, commandName, className
     return remote, sourceName, sessionIndex, nil
 end
 
+-- Logical command names stay stable inside the farm. Only this tiny table tracks
+-- game-side route renames; Network4 still resolves the per-session hashed remote.
+coinSync.NetworkTransport.RouteAliases = {
+    ["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" },
+    ["Join Coin"] = { "Join The Coin", "Join Coin" },
+    ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
+    ["Leave Coin"] = { "Leave The Coin", "Leave Coin" },
+}
+
+function coinSync.NetworkTransport:CommandRouteCandidates(commandName)
+    return self.RouteAliases[commandName] or { commandName }
+end
+
+function coinSync.NetworkTransport:ClearRoute(cache, commandName, remote)
+    for _, candidate in ipairs(self:CommandRouteCandidates(commandName)) do
+        local cached = cache[candidate]
+        if not remote or (type(cached) == "table" and cached.Remote == remote) then
+            cache[candidate] = nil
+        end
+    end
+end
+
+local function resolveCommandRoute(cache, action, commandName, className)
+    local lastSource, lastSessionIndex, lastProblem
+    for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
+        local remote, sourceName, sessionIndex, problem = coinSync.NetworkTransport:Resolve(
+            cache, action, candidate, className)
+        if remote then
+            return remote,
+                tostring(sourceName or "Network4") .. " [" .. tostring(candidate) .. "]",
+                sessionIndex,
+                nil,
+                candidate
+        end
+        lastSource, lastSessionIndex, lastProblem = sourceName, sessionIndex, problem
+    end
+    return nil, lastSource, lastSessionIndex, lastProblem, nil
+end
+
 local function getCommandRemote(commandName)
-    return coinSync.NetworkTransport:Resolve(
+    return resolveCommandRoute(
         coinSync.RemoteCaches.Command, "resolveFunction", commandName, "RemoteFunction")
 end
 
@@ -2818,7 +2875,7 @@ local function getEventRemote(commandName)
 end
 
 local function getFireRemote(commandName)
-    return coinSync.NetworkTransport:Resolve(
+    return resolveCommandRoute(
         coinSync.RemoteCaches.Fire, "resolveEvent", commandName, "RemoteEvent")
 end
 
@@ -2830,7 +2887,7 @@ local function invokeCommand(commandName, ...)
         command = commandName,
         argc = arguments.n,
     })
-    local remote, sourceName, sessionIndex, resolveProblem = getCommandRemote(commandName)
+    local remote, sourceName, sessionIndex, resolveProblem, routedCommand = getCommandRemote(commandName)
     local result
     if remote then
         requestDiagnostics.Route("invoke", commandName, true)
@@ -2842,7 +2899,9 @@ local function invokeCommand(commandName, ...)
         result = table.pack(pcall(function()
             return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
         end))
-        if not result[1] then coinSync.RemoteCaches.Command[commandName] = nil end
+        if not result[1] then
+            coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Command, commandName, remote)
+        end
     end
     if not remote or not result[1] then
         local directProblem = remote and tostring(result[2]) or tostring(resolveProblem)
@@ -2855,9 +2914,14 @@ local function invokeCommand(commandName, ...)
                 route = sourceName,
                 fallback = directProblem,
             })
-            result = table.pack(pcall(function()
-                return network.Invoke(commandName, table.unpack(arguments, 1, arguments.n))
-            end))
+            result = table.pack(false, directProblem)
+            for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
+                routedCommand = candidate
+                result = table.pack(pcall(function()
+                    return network.Invoke(candidate, table.unpack(arguments, 1, arguments.n))
+                end))
+                if result[1] then break end
+            end
             if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
         else
             result = table.pack(false, directProblem .. "; Library.Network.Invoke is unavailable")
@@ -2887,14 +2951,16 @@ local function fireCommand(commandName, ...)
         command = commandName,
         argc = arguments.n,
     })
-    local remote, sourceName, sessionIndex, resolveProblem = getFireRemote(commandName)
+    local remote, sourceName, sessionIndex, resolveProblem, routedCommand = getFireRemote(commandName)
     local ok, problem
     if remote then
         requestDiagnostics.Route("fire", commandName, true)
         ok, problem = pcall(function()
             remote:FireServer(table.unpack(arguments, 1, arguments.n))
         end)
-        if not ok then coinSync.RemoteCaches.Fire[commandName] = nil end
+        if not ok then
+            coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Fire, commandName, remote)
+        end
     end
     if not remote or not ok then
         local directProblem = remote and tostring(problem) or tostring(resolveProblem)
@@ -2902,9 +2968,14 @@ local function fireCommand(commandName, ...)
         if network and type(network.Fire) == "function" then
             sourceName = "Library.Network.Fire named fallback"
             sessionIndex = nil
-            ok, problem = pcall(function()
-                network.Fire(commandName, table.unpack(arguments, 1, arguments.n))
-            end)
+            ok, problem = false, directProblem
+            for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
+                routedCommand = candidate
+                ok, problem = pcall(function()
+                    network.Fire(candidate, table.unpack(arguments, 1, arguments.n))
+                end)
+                if ok then break end
+            end
             if ok then requestDiagnostics.Route("fire", commandName, true) end
         else
             ok, problem = false, directProblem .. "; Library.Network.Fire is unavailable"
@@ -3050,11 +3121,15 @@ function petFarm:SendCommittedFarmSignals(petId, state)
         if remote then
             local sent = pcall(remote.FireServer, remote, ...)
             if sent then return true end
-            coinSync.RemoteCaches.Fire[command] = nil
+            coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Fire, command, remote)
         end
         local network = networkReady()
-        return network and type(network.Fire) == "function"
-            and pcall(network.Fire, command, ...) or false
+        if not network or type(network.Fire) ~= "function" then return false end
+        for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(command)) do
+            local sent = pcall(network.Fire, candidate, ...)
+            if sent then return true end
+        end
+        return false
     end
 
     state.SignalCommitAttempt = (tonumber(state.SignalCommitAttempt) or 0) + 1
@@ -3327,16 +3402,10 @@ function petFarm:EnsureEngine()
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
         InvalidateCommand = function(commandName, remote)
-            local cached = coinSync.RemoteCaches.Command[commandName]
-            if not remote or (type(cached) == "table" and cached.Remote == remote) then
-                coinSync.RemoteCaches.Command[commandName] = nil
-            end
+            coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Command, commandName, remote)
         end,
         InvalidateFire = function(commandName, remote)
-            local cached = coinSync.RemoteCaches.Fire[commandName]
-            if not remote or (type(cached) == "table" and cached.Remote == remote) then
-                coinSync.RemoteCaches.Fire[commandName] = nil
-            end
+            coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Fire, commandName, remote)
         end,
         RecordAlive = recordAlive,
         StateCurrent = function(petId, state)
@@ -3432,7 +3501,10 @@ function petFarm:EnsureEngine()
             local remote = getCommandRemote("Leave Coin")
             if remote then
                 local sent = pcall(remote.InvokeServer, remote, tostring(record.Id), petIds)
-                if not sent then coinSync.RemoteCaches.Command["Leave Coin"] = nil end
+                if not sent then
+                    coinSync.NetworkTransport:ClearRoute(
+                        coinSync.RemoteCaches.Command, "Leave Coin", remote)
+                end
             end
         end,
         Trace = trace,
@@ -3533,7 +3605,8 @@ local function clearAssignments(sendBack, callback)
         if changeTargetRemote then
             local sent = pcall(changeTargetRemote.FireServer, changeTargetRemote, petId, "Player")
             if not sent then
-                coinSync.RemoteCaches.Fire["Change Pet Target"] = nil
+                coinSync.NetworkTransport:ClearRoute(
+                    coinSync.RemoteCaches.Fire, "Change Pet Target", changeTargetRemote)
                 changeTargetRemote = nil
             end
         end
@@ -3564,7 +3637,8 @@ local function clearAssignments(sendBack, callback)
                         job.PetIds
                     )
                     if not sent then
-                        coinSync.RemoteCaches.Command["Leave Coin"] = nil
+                        coinSync.NetworkTransport:ClearRoute(
+                            coinSync.RemoteCaches.Command, "Leave Coin", leaveCoinRemote)
                         leaveCoinRemote = nil
                     end
                 end
@@ -4444,7 +4518,9 @@ function machineModules:Start(kind)
             return hours > 0 and hours * 3600 or nil
         end,
         GetCommandRemote = getCommandRemote,
-        InvalidateCommand = function(commandName) coinSync.RemoteCaches.Command[commandName] = nil end,
+        InvalidateCommand = function(commandName)
+            coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Command, commandName)
+        end,
         InvokeCommand = invokeCommand,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
@@ -4608,7 +4684,7 @@ local function runDiamondPackCheck()
         status = "Local check: Rainbow Coins balance was not found; no request sent."
     elseif balance < DIAMOND_PACK_MINIMUM then
         status = "Local threshold hold: " .. balanceText
-            .. " is below 46B Rainbow Coins (45B pack + 1B reserve); no server request sent."
+            .. " is below 250.5B Rainbow Coins (250B pack + 500M reserve); no server request sent."
     else
         local transportOk, accepted, serverMessage, sourceName, sessionIndex =
             invokeCommand("Buy DiamondPack", DIAMOND_PACK_TIER)
@@ -5578,12 +5654,12 @@ UI.DiamondSection = UI.MachinesTab:Section({ Title = "Rainbow Diamond Exchange",
 UI.DiamondSection:Toggle({
     Flag = "auto_tech_diamond_pack",
     Title = "Auto Best Rainbow Diamond Pack",
-    Desc = "Tier 4 costs 45B / checks every 3 minutes / buys only at 46B to preserve 1B",
+    Desc = "Tier 4 costs 250B / checks every 3 minutes / buys only at 250.5B to preserve 500M",
     Value = false,
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
         if config.AutoTechDiamondPack then
-            statusSetters.Diamond("Enabled. A local balance check will run now; below 46B no request is sent.")
+            statusSetters.Diamond("Enabled. A local balance check will run now; below 250.5B no request is sent.")
         else
             statusSetters.Diamond("Disabled. No purchase requests will be sent.")
         end

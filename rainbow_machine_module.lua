@@ -2,8 +2,8 @@
 -- Converts verified golden pets through a user-selected server tier.
 
 local activeState
-local MODULE_VERSION = "1.4.0"
-local TARGET_PET_NAME = "Hellish Axolotl"
+local MODULE_VERSION = "1.4.1"
+local TARGET_PET_NAME = "Pixel Demon"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
 local IDLE_CHECK_DELAY = 5
@@ -157,7 +157,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Hellish Axolotl found: %d | golden: %d | eligible: %d | Rainbow Coins IV-V protected: %d | equipped skipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
+        "Pixel Demon found: %d | golden: %d | eligible: %d | Rainbow Coins IV-V protected: %d | equipped skipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
         stats.All, stats.Golden, stats.Eligible, stats.Protected, stats.Equipped,
         stats.Locked, stats.Upgraded, stats.Normal, stats.Pending
     )

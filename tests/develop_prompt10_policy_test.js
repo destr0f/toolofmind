@@ -17,14 +17,14 @@ const machineFiles = [
 
 for (const [file, minimum] of machineFiles) {
     const source = read(file);
-    assert(source.includes('local TARGET_PET_NAME = "Hellish Axolotl"')
+    assert(source.includes('local TARGET_PET_NAME = "Pixel Demon"')
         && source.includes("context.GetMachinePetCatalog"),
-        `${file} does not resolve exact Hellish Axolotl from the live catalog`);
+        `${file} does not resolve exact Pixel Demon from the live catalog`);
     assert(source.includes(`level >= ${minimum}`),
         `${file} has the wrong Rainbow Coins protection floor`);
     assert(source.includes('compactName == "rainbowcoins"'),
         `${file} does not protect Rainbow Coins`);
-    assert(source.includes("Hellish Axolotl found:"),
+    assert(source.includes("Pixel Demon found:"),
         `${file} does not expose the target inventory count`);
 }
 
@@ -97,5 +97,5 @@ for (const [pets, targets, expectedAssigned] of [
 }
 
 process.stdout.write(
-    "Prompt 10 policy OK | machines=Hellish Axolotl | Hacker Portal=regular pool | allocator=balanced/16 | stale=no-retry\n"
+    "Prompt 10 policy OK | machines=Pixel Demon | Hacker Portal=regular pool | allocator=balanced/16 | stale=no-retry\n"
 );

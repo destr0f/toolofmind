@@ -2,8 +2,8 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.4.0"
-local TARGET_PET_NAME = "Hellish Axolotl"
+local MODULE_VERSION = "1.4.1"
+local TARGET_PET_NAME = "Pixel Demon"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 local IDLE_CHECK_DELAY = 5
@@ -210,7 +210,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Hellish Axolotl found: %d | rainbow: %d | eligible: %d | Rainbow Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
+        "Pixel Demon found: %d | rainbow: %d | eligible: %d | Rainbow Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
         stats.All, stats.Rainbow, stats.Eligible, stats.Protected,
         stats.Equipped, stats.Locked, stats.Other, stats.Pending
     )

@@ -21,11 +21,11 @@ for (const marker of [
 }
 
 for (const marker of [
-    "local DIAMOND_PACK_PRICE = 45e9",
-    "local DIAMOND_PACK_RESERVE = 1e9",
+    "local DIAMOND_PACK_PRICE = 250e9",
+    "local DIAMOND_PACK_RESERVE = 0.5e9",
     "local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE",
     'getCurrentCurrency("Rainbow Coins")',
-    "below 46B Rainbow Coins",
+    "below 250.5B Rainbow Coins",
 ]) {
     assert(source.includes(marker), `Rainbow pack policy misses ${marker}`);
 }
@@ -35,4 +35,14 @@ assert(support.includes('invoke("Redeem Free Gift")'),
 assert(!/GetChildren\s*\(\s*\)\s*\[\s*18\s*\]/.test(source + support),
     "Auto Gifts relies on the floating ReplicatedStorage child index 18");
 
-process.stdout.write("Auto Gifts + 45B Rainbow pack policy OK\n");
+for (const marker of [
+    '"Change Pet Target NOW"',
+    '"Join The Coin"',
+    '"Farm The Coin"',
+    '"Leave The Coin"',
+    "CommandRouteCandidates(commandName)",
+]) {
+    assert(source.includes(marker), `current farm route policy misses ${marker}`);
+}
+
+process.stdout.write("Auto Gifts + 250B Rainbow pack policy OK\n");

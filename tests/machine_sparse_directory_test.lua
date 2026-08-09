@@ -1,6 +1,6 @@
 local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local machine = require(modulePath)
-    assert(machine("version") == "1.4.0")
+    assert(machine("version") == "1.4.1")
 
     local callback
     local calls = {}
@@ -17,7 +17,7 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         DarkMatterSlots = 1,
     }
     local context = {
-        Library = { Directory = { Pets = { ["301"] = { name = "Hellish Axolotl" } } } },
+        Library = { Directory = { Pets = { ["404"] = { name = "Pixel Demon" } } } },
         Task = workerTask,
         Running = function() return true end,
         Enabled = function() return enabled end,
@@ -27,7 +27,7 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         GetCurrency = function() return 1e15 end,
         FormatNumber = tostring,
         GetMachinePetCatalog = function()
-            return { ["301"] = true }, { "Hellish Axolotl" }, "live exact-name catalog"
+            return { ["404"] = true }, { "Pixel Demon" }, "live exact-name catalog"
         end,
         BatchSize = function() return 1 end,
         MaxWaitSeconds = function() return nil end,
@@ -71,20 +71,20 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
 end
 
 exercise("../gold_machine_module", {
-    id = "301",
-    uid = "hellish-axolotl-normal",
+    id = "404",
+    uid = "pixel-demon-normal",
 }, "Get Golden Machine Info", "Use Golden Machine", false)
 
 exercise("../rainbow_machine_module", {
-    id = "301",
-    uid = "hellish-axolotl-golden",
+    id = "404",
+    uid = "pixel-demon-golden",
     g = true,
 }, "Get Rainbow Machine Info", "Use Rainbow Machine", false)
 
 exercise("../dark_matter_module", {
-    id = "301",
-    uid = "hellish-axolotl-rainbow",
+    id = "404",
+    uid = "pixel-demon-rainbow",
     r = true,
 }, "Get Dark Matter Machine Info", "Convert To Dark Matter", true)
 
-print("PASS Gold, Rainbow and Dark Matter use the live Hellish Axolotl catalog")
+print("PASS Gold, Rainbow and Dark Matter use the live Pixel Demon catalog")

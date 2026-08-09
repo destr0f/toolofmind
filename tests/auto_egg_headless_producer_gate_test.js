@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.6.3"',
+requireText('local MODULE_VERSION = "1.6.4"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -28,6 +28,14 @@ requireText('scriptEnvironment.OpenEgg = wrapper',
     "native OpenEgg producer is not replaced");
 requireText('local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer gate"',
     "missing OpenEgg exports do not have a direct RemoteEvent producer gate");
+requireText('local HEADLESS_NATIVE_WARMUP = "native Opening Egg route warm-up"',
+    "headless does not have a bounded native route warm-up");
+requireText('openingEggRemoteAvailable(context)',
+    "headless does not preflight the Opening Egg route locally");
+requireText('selectEventGateRoute(state, context, openEggScript)',
+    "missing OpenEgg exports cannot choose between direct gating and one native warm-up");
+requireText('pending.ProducerGateRoute ~= HEADLESS_NATIVE_WARMUP',
+    "native warm-up can still duplicate the game Auto Delete pipeline");
 requireText('captureHeadlessEventGate(signal, eventRoute)',
     "native Open Egg dispatcher is not captured before the module listener");
 requireText('callConnectionMethod(state.EventGateConnection, "Disable")',

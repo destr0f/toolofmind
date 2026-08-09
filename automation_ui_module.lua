@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.4.0"
+local MODULE_VERSION = "1.4.1"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -151,7 +151,7 @@ local function build(context)
     local machines = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
     machines:Paragraph({
         Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
-        Desc = "Hellish Axolotl only; its live Directory.Pets ID is resolved per session and every batch is revalidated from Save.",
+        Desc = "Pixel Demon only; its live Directory.Pets ID is resolved per session and every batch is revalidated from Save.",
     })
     machines:Slider({
         Flag = "machine_batch_size",
@@ -164,8 +164,8 @@ local function build(context)
         end,
     })
     machines:Button({
-        Title = "VERIFY HELLISH AXOLOTL CATALOG",
-        Desc = "Resolves the exact Hellish Axolotl species from live Directory.Pets; no machine request.",
+        Title = "VERIFY PIXEL DEMON CATALOG",
+        Desc = "Resolves the exact Pixel Demon species from live Directory.Pets; no machine request.",
         Icon = "refresh-cw",
         Callback = function()
             task.spawn(function()
@@ -179,8 +179,8 @@ local function build(context)
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
         Flag = "auto_golden_galaxy_fox",
-        Title = "Auto Golden Hellish Axolotl",
-        Desc = "Only normal Hellish Axolotl; protects Rainbow Coins V, equipped and locked pets.",
+        Title = "Auto Golden Pixel Demon",
+        Desc = "Only normal Pixel Demon; protects Rainbow Coins V, equipped and locked pets.",
         Value = false,
         Callback = function(value)
             config.AutoGoldenGalaxyFox = value == true
@@ -202,8 +202,8 @@ local function build(context)
     local rainbow = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
     rainbow:Toggle({
         Flag = "auto_rainbow_galaxy_fox",
-        Title = "Auto Rainbow Hellish Axolotl",
-        Desc = "Only golden Hellish Axolotl; protects Rainbow Coins IV-V, equipped and locked pets.",
+        Title = "Auto Rainbow Pixel Demon",
+        Desc = "Only golden Pixel Demon; protects Rainbow Coins IV-V, equipped and locked pets.",
         Value = false,
         Callback = function(value)
             config.AutoRainbowGalaxyFox = value == true
@@ -255,8 +255,8 @@ local function build(context)
     })
     darkMatter:Toggle({
         Flag = "auto_dark_matter_galaxy_fox",
-        Title = "Auto Dark Matter Hellish Axolotl",
-        Desc = "Only rainbow Hellish Axolotl; protects Rainbow Coins IV-V, equipped and locked pets.",
+        Title = "Auto Dark Matter Pixel Demon",
+        Desc = "Only rainbow Pixel Demon; protects Rainbow Coins IV-V, equipped and locked pets.",
         Value = false,
         Callback = function(value)
             config.AutoDarkMatterGalaxyFox = value == true
