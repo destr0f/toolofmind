@@ -11,8 +11,8 @@ const farm = read("slim_farm.lua");
 const engine = read("pet_farm_lite_engine.lua");
 const machineFiles = [
     ["gold_machine_module.lua", 5],
-    ["rainbow_machine_module.lua", 4],
-    ["dark_matter_module.lua", 4],
+    ["rainbow_machine_module.lua", 5],
+    ["dark_matter_module.lua", 5],
 ];
 
 for (const [file, minimum] of machineFiles) {

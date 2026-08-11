@@ -203,7 +203,7 @@ local function build(context)
     rainbow:Toggle({
         Flag = "auto_rainbow_galaxy_fox",
         Title = "Auto Rainbow Pixel Demon",
-        Desc = "Only golden Pixel Demon; protects Rainbow Coins IV-V, equipped and locked pets.",
+        Desc = "Only golden Pixel Demon; protects Rainbow Coins V, equipped and locked pets.",
         Value = false,
         Callback = function(value)
             config.AutoRainbowGalaxyFox = value == true
@@ -256,7 +256,7 @@ local function build(context)
     darkMatter:Toggle({
         Flag = "auto_dark_matter_galaxy_fox",
         Title = "Auto Dark Matter Pixel Demon",
-        Desc = "Only rainbow Pixel Demon; protects Rainbow Coins IV-V, equipped and locked pets.",
+        Desc = "Only rainbow Pixel Demon; protects Rainbow Coins V, equipped and locked pets.",
         Value = false,
         Callback = function(value)
             config.AutoDarkMatterGalaxyFox = value == true

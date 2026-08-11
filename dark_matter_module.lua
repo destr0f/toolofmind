@@ -46,7 +46,7 @@ local function protectedRainbowCoins(pet)
     local function inspect(power, key)
         local name, level = readPower(power, key)
         local compactName = string.lower(tostring(name or "")):gsub("%W", "")
-        return compactName == "rainbowcoins" and level ~= nil and level >= 4, level
+        return compactName == "rainbowcoins" and level ~= nil and level >= 5, level
     end
     if powers.name or powers.Name or powers.power or powers.Power then
         local protected, level = inspect(powers)
@@ -210,7 +210,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Pixel Demon found: %d | rainbow: %d | eligible: %d | Rainbow Coins IV-V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
+        "Pixel Demon found: %d | rainbow: %d | eligible: %d | Rainbow Coins V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
         stats.All, stats.Rainbow, stats.Eligible, stats.Protected,
         stats.Equipped, stats.Locked, stats.Other, stats.Pending
     )
