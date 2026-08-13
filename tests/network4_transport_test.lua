@@ -1,6 +1,6 @@
 local transport = require("../network4_transport_module")
 
-assert(transport("version") == "1.1.0")
+assert(transport("version") == "1.2.0")
 assert(transport("sha256", "") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 assert(transport("sha256", "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 
@@ -30,6 +30,7 @@ local fakeGame = {
     JobId = "job-test",
 }
 local context = {
+    Generation = 1,
     Game = fakeGame,
     Library = { Network = { Invoke = invoke } },
     ReplicatedStorage = { FindFirstChild = function() return nil end },
@@ -70,4 +71,34 @@ local resolvedBridge, bridgeSource, _, bridgeProblem = transport(
 assert(resolvedBridge == bridge, tostring(bridgeProblem))
 assert(string.find(bridgeSource, "Network4 native BindableFunction bridge", 1, true))
 
-print("PASS Network4 SHA-256, remote resolution and native bridge resolution")
+local stats = transport("stats")
+assert(stats.FunctionRoutes == 1 and stats.InvokeBridges == 1)
+
+-- Exact invalidation removes only one command and never keeps a stale remote
+-- after the live Network map is rebound.
+local secondHash = transport("routeHash", context, 2, "Get OSTime")
+local secondRemote = { ClassName = "RemoteFunction" }
+remoteMaps[2][secondHash] = secondRemote
+assert(transport("resolveFunction", context, "Get OSTime") == secondRemote)
+assert(transport("stats").FunctionRoutes == 2)
+
+local replacement = { ClassName = "RemoteFunction" }
+remoteMaps[2][hash] = replacement
+assert(transport("invalidate", context, 2, "Buy Boost Bundle", remote) == true)
+assert(transport("resolveFunction", context, "Buy Boost Bundle") == replacement)
+assert(transport("resolveFunction", context, "Get OSTime") == secondRemote,
+    "exact invalidation evicted an unrelated route")
+
+-- A generation change invalidates cached session objects without a global
+-- clear and resolves against the current map.
+context.Generation = 2
+local generationRemote = { ClassName = "RemoteFunction" }
+remoteMaps[2][secondHash] = generationRemote
+assert(transport("resolveFunction", context, "Get OSTime") == generationRemote)
+
+transport("clear")
+local empty = transport("stats")
+assert(empty.EventRoutes == 0 and empty.FunctionRoutes == 0
+    and empty.FireBridges == 0 and empty.InvokeBridges == 0)
+
+print("PASS Network4/5 hash, generation cache, exact invalidation and bridge resolution")

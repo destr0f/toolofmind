@@ -11,14 +11,10 @@ const body = (startMarker, endMarker) => {
     return source.slice(start, end);
 };
 
-const send = body(
-    "function petFarm:SendCommittedFarmSignals",
-    "function petFarm:ConfirmStateProgress"
-);
-assert(send.includes('state.Phase = "working"'),
-    "a successful named target/farm signal pair must commit the local lock");
-assert(send.includes('fireFast("Change Pet Target", petId, "Coin", coinId)'));
-assert(send.includes('fireFast("Farm Coin", coinId, petId)'));
+assert(!source.includes("function petFarm:SendCommittedFarmSignals")
+    && !source.includes("function petFarm:RunSignalCommits")
+    && !source.includes("function petFarm:ScheduleSignalCommit"),
+    "the deleted farm signal replay worker returned");
 
 const confirm = body(
     "function petFarm:ConfirmStateProgress",
@@ -42,21 +38,20 @@ const lease = body(
     "function petFarm:ScheduleProgressLease"
 );
 assert(lease.includes("now >= (tonumber(state.ProgressDeadline) or now)"));
-assert(lease.includes("self:SendCommittedFarmSignals(petId, state)"));
-assert(lease.includes("self.ProgressLeaseRepairs = self.ProgressLeaseRepairs + 1"));
 assert(lease.includes("petStates[petId] = nil"),
     "a genuinely removed coin must still free its pet");
 assert(lease.includes("self.FastPets[petId] = true"));
 assert(lease.includes("self:QueueFastDispatch()"));
-assert(lease.includes('local maxRepairs = config.Mode == "Boss Chest Only" and 3 or 2'),
-    "progress watchdog lost its bounded regular/boss repair policy");
-assert(lease.includes("rejectedUntil[coinId] = now + 0.75 + stagger"),
-    "an exhausted stale target is not cooled down before rerouting");
-assert(lease.includes("self.ProgressLeaseEvictions = self.ProgressLeaseEvictions + 1"));
 assert(lease.includes("self.FastReroutes = self.FastReroutes + released"));
-assert(!lease.includes('self.ProgressAckMode = "fail-open"'),
-    "a successful local Fire must not become permanent fake progress");
-for (const forbidden of ["Get Coins", "refreshWorkspaceCoins", "getgc", "getconnections", "Update Coin Pets"]) {
+assert(lease.includes("state.ProgressDeadline = now + self:ProgressLeaseSeconds()"),
+    "a live accepted lock must renew locally without another transport wave");
+for (const forbidden of [
+    "SendCommittedFarmSignals", "Change Pet Target", "Farm Coin", "Join Coin", "Leave Coin",
+    "ProgressLeaseRepairs", "ProgressLeaseEvictions",
+]) {
+    assert(!lease.includes(forbidden), `progress watchdog reintroduced transport work: ${forbidden}`);
+}
+for (const forbidden of ["Get Coins", "refreshWorkspaceCoins", "getgc", "getconnections", "ConfirmCoinPets("]) {
     assert(!lease.includes(forbidden), `progress watchdog became a scan/hook path: ${forbidden}`);
 }
 
@@ -80,6 +75,10 @@ assert(membership.includes("self.MembershipConfirms = self.MembershipConfirms + 
 assert(!membership.includes("self.SignalCommits[tostring(petId)] = state")
     && !membership.includes("self:ScheduleSignalCommit("),
     "membership acknowledgement must not resend a committed signal pair");
+assert(membership.includes("now - (tonumber(state.AcceptedAt) or now) >= 0.05")
+    && membership.includes("self.ProgressLeaseEvictions = self.ProgressLeaseEvictions + 1")
+    && membership.includes("self:QueueFastDispatch()"),
+    "authoritative membership absence must release only the stale pet and reroute it immediately");
 
 assert((source.match(/ProgressLeaseToken = petFarm\.ProgressLeaseToken \+ 1/g) || []).length >= 3,
     "reload/reset cleanup does not invalidate every progress watchdog scheduler");

@@ -1,8 +1,8 @@
--- Session-safe PSX Network4 resolver.
--- Reads Network4's existing route tables without executing its internal
+-- Session-safe PSX Network4/Network5 resolver.
+-- Reads the live network module's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0"
 local UINT32 = 4294967296
 
 local SHA256_K = {
@@ -26,6 +26,16 @@ local SHA256_K = {
 
 local routeCache = { [1] = {}, [2] = {} }
 local bridgeCache = { [1] = {}, [2] = {} }
+
+local function generationOf(context)
+    return type(context) == "table" and tonumber(context.Generation) or 0
+end
+
+local function cacheSize(cache)
+    local count = 0
+    for _ in pairs(cache) do count = count + 1 end
+    return count
+end
 
 local function add32(...)
     local total = 0
@@ -90,7 +100,10 @@ local function routeHash(context, kind, commandName)
     local gameObject = context.Game or game
     local jobId = tostring(gameObject.JobId or "")
     if jobId == "" then jobId = "00000000-0000-0000-0000-000000000000" end
-    local source = "duskissexyyyyy123iloveudUsk/Network4/"
+    -- Current PSX OG sessions use Network5. This is only a fail-safe when the
+    -- live hash map has not materialised the requested command yet; normal
+    -- resolution still reads the current session's map first.
+    local source = "mmmmmmevilfanta54125612512416124/Network5/"
         .. tostring(gameObject.GameId) .. "/"
         .. tostring(gameObject.PlaceId) .. "/"
         .. tostring(gameObject.PlaceVersion) .. "/"
@@ -172,8 +185,10 @@ local function resolve(context, kind, commandName)
     end
 
     local className = kind == 1 and "RemoteEvent" or "RemoteFunction"
+    local generation = generationOf(context)
     local cached = routeCache[kind][commandName]
-    if type(cached) == "table" and liveRemote(context, cached.Remote, className) then
+    if type(cached) == "table" and cached.Generation == generation
+        and liveRemote(context, cached.Remote, className) then
         return cached.Remote, cached.Source, cached.SessionIndex, nil
     end
     routeCache[kind][commandName] = nil
@@ -202,6 +217,7 @@ local function resolve(context, kind, commandName)
         Remote = remote,
         Source = source,
         SessionIndex = sessionIndex,
+        Generation = generation,
     }
     return remote, source, sessionIndex, nil
 end
@@ -214,8 +230,10 @@ local function resolveBridge(context, kind, commandName)
     end
 
     local className = kind == 1 and "BindableEvent" or "BindableFunction"
+    local generation = generationOf(context)
     local cached = bridgeCache[kind][commandName]
-    if type(cached) == "table" and liveBridge(context, cached.Bridge, className) then
+    if type(cached) == "table" and cached.Generation == generation
+        and liveBridge(context, cached.Bridge, className) then
         return cached.Bridge, cached.Source, nil, nil
     end
     bridgeCache[kind][commandName] = nil
@@ -234,8 +252,40 @@ local function resolveBridge(context, kind, commandName)
 
     local source = "Network4 native " .. className .. " bridge"
         .. (accessorIndex and (" via accessor #" .. tostring(accessorIndex)) or "")
-    bridgeCache[kind][commandName] = { Bridge = bridge, Source = source }
+    bridgeCache[kind][commandName] = {
+        Bridge = bridge,
+        Source = source,
+        Generation = generation,
+    }
     return bridge, source, nil, nil
+end
+
+local function invalidate(context, kind, commandName, expected)
+    if kind ~= 1 and kind ~= 2 then return false, "invalid network kind" end
+    if type(commandName) ~= "string" or commandName == "" then
+        return false, "command name is invalid"
+    end
+    local generation = generationOf(context)
+    local route = routeCache[kind][commandName]
+    if type(route) == "table" and route.Generation == generation
+        and (expected == nil or route.Remote == expected) then
+        routeCache[kind][commandName] = nil
+    end
+    local bridge = bridgeCache[kind][commandName]
+    if type(bridge) == "table" and bridge.Generation == generation
+        and (expected == nil or bridge.Bridge == expected) then
+        bridgeCache[kind][commandName] = nil
+    end
+    return true
+end
+
+local function stats()
+    return {
+        EventRoutes = cacheSize(routeCache[1]),
+        FunctionRoutes = cacheSize(routeCache[2]),
+        FireBridges = cacheSize(bridgeCache[1]),
+        InvokeBridges = cacheSize(bridgeCache[2]),
+    }
 end
 
 return function(action, ...)
@@ -258,6 +308,11 @@ return function(action, ...)
         local context, commandName = ...
         return resolveBridge(context, 2, commandName)
     end
+    if action == "invalidate" then
+        local context, kind, commandName, expected = ...
+        return invalidate(context, kind, commandName, expected)
+    end
+    if action == "stats" then return stats() end
     if action == "clear" then
         table.clear(routeCache[1])
         table.clear(routeCache[2])

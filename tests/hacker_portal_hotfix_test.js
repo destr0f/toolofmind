@@ -5,7 +5,7 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "slim_farm.lua"), "utf8");
 
-assert(source.includes('local VERSION = "1.4.1-dev.49-minimal.1"'));
+assert(source.includes('local VERSION = "1.4.1-dev.50-network4.1"'));
 assert(source.includes('["hacker portal chest"] = true'));
 assert(source.includes('["giant hacker portal chest"] = "Hacker Portal"'));
 assert(source.includes('["Hacker Portals"] = "Hacker Portal"'));
@@ -32,16 +32,19 @@ assert(!source.slice(acceptedStart, signalsStart).includes("self.SignalCommits[p
 assert(source.includes('connect("Update Coin Pets", function(id, pets)'),
     "the authoritative server membership acknowledgement is not connected");
 assert(source.includes("function petFarm:ConfirmCoinPets(rawCoinId, payload)"));
-assert(source.includes('fireFast("Change Pet Target", petId, "Coin", coinId)'));
-assert(source.includes('fireFast("Farm Coin", coinId, petId)'));
-assert(source.includes("attempt == 0 and age >= 0.22"));
-assert(source.includes("attempt == 1 and age >= 0.55"));
-const commitStart = source.indexOf("function petFarm:RunSignalCommits");
-const commitEnd = source.indexOf("function petFarm:ScheduleSignalCommit", commitStart);
-assert(commitStart >= 0 && commitEnd > commitStart);
-const commitBody = source.slice(commitStart, commitEnd);
-assert(!commitBody.includes('"Join Coin"'), "commit worker must never repeat Join Coin");
-assert(!commitBody.includes('"Leave Coin"'), "commit worker must never detach a live assignment");
+assert(!source.includes("function petFarm:RunSignalCommits")
+    && !source.includes("function petFarm:ScheduleSignalCommit")
+    && !source.includes("function petFarm:SendCommittedFarmSignals"),
+    "the dead signal replay worker returned");
+const leaseStart = source.indexOf("function petFarm:RunProgressLeases");
+const leaseEnd = source.indexOf("function petFarm:ScheduleProgressLease", leaseStart);
+assert(leaseStart >= 0 && leaseEnd > leaseStart);
+const leaseBody = source.slice(leaseStart, leaseEnd);
+assert(!leaseBody.includes('"Join Coin"')
+    && !leaseBody.includes('"Leave Coin"')
+    && !leaseBody.includes('"Change Pet Target"')
+    && !leaseBody.includes('"Farm Coin"'),
+    "progress leases must never replay live farm transport");
 assert(!source.slice(signalsStart, source.indexOf("OnRetry = function", signalsStart))
     .includes('FIRE_LOCAL_SENT_UNACKED'),
     "successful per-pet fire signals must stay on aggregate counters instead of the inspector hot path");

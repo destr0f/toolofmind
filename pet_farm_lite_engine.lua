@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.3.3"
+local MODULE_VERSION = "1.3.4"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -18,21 +18,15 @@ local transportGate = {
     Fire = {},
     Invoke = {},
     InFlight = {},
+    -- Kept as an explicit diagnostic map. Completed state-changing Invoke
+    -- responses are never inserted or replayed.
     InvokeHistory = {},
-    Stats = {
-        SuppressedFire = 0,
-        CoalescedInvoke = 0,
-    },
 }
 
 local TRANSPORT_TTL = {
     ["Change Pet Target"] = 0.08,
     ["Farm Coin"] = 0.08,
     ["Join Coin"] = 0.15,
-    ["Opening Egg"] = 0.12,
-    ["Open Egg"] = 0.12,
-    ["Buy Egg Yay"] = 0.2,
-    ["Delete Several Pets"] = 0.18,
 }
 
 local function transportSerialize(value, depth)
@@ -104,12 +98,14 @@ local run = {
     FarmSignals = 0,
     SignalFailures = 0,
     TransportFailures = 0,
+    JoinInvokes = 0,
     TransportSuppressed = 0,
     TransportCoalesced = 0,
     LocalTimeouts = 0,
     LastRoute = "unavailable",
     LastAssignmentAt = 0,
     LastTargetChangeAt = 0,
+    NextLaunchAt = 0,
 }
 
 local pump
@@ -152,6 +148,25 @@ local function compactQueue()
     end
     for index = size, write, -1 do run.Queue[index] = nil end
     run.Head = 1
+end
+
+local function clearTransportGate()
+    table.clear(transportGate.Fire)
+    table.clear(transportGate.Invoke)
+    table.clear(transportGate.InFlight)
+    table.clear(transportGate.InvokeHistory)
+end
+
+local function expiringMark(map, key, ttl)
+    local timestamp = os.clock()
+    map[key] = timestamp
+    if ttl > 0 then
+        local epoch = run.Epoch
+        scheduler.delay(ttl, function()
+            if run.Epoch == epoch and map[key] == timestamp then map[key] = nil end
+        end)
+    end
+    return timestamp
 end
 
 local function clearPending(entries)
@@ -243,6 +258,8 @@ local function resetQueue()
     run.RetryDue = nil
     table.clear(run.PendingByPet)
     table.clear(run.ActiveInvokes)
+    run.NextLaunchAt = 0
+    clearTransportGate()
 end
 
 local function resetStats()
@@ -259,6 +276,9 @@ local function resetStats()
     run.FarmSignals = 0
     run.SignalFailures = 0
     run.TransportFailures = 0
+    run.JoinInvokes = 0
+    run.TransportSuppressed = 0
+    run.TransportCoalesced = 0
     run.LocalTimeouts = 0
     run.LastRoute = "unavailable"
     run.LastAssignmentAt = 0
@@ -299,50 +319,44 @@ local function currentEntries(job)
     return entries, ids
 end
 
-local function transportInvokeCommand(command, ...)
-    local gateKey = transportKey(command, ...)
-    local ttl = tonumber(TRANSPORT_TTL[command]) or 0
-    local now = os.clock()
-    local inflight = transportGate.InFlight[gateKey]
-
-    if inflight then
-        while not inflight.done and os.clock() - inflight.start < math.max(ttl, 0.02) do
-            task.wait(math.min(0.012, ttl))
-        end
-        if inflight.done then
-            run.TransportCoalesced = run.TransportCoalesced + 1
-            return true, inflight.response, "coalesced invoke"
-        end
+local function finishInvoke(gateKey, entry, success, payload, route)
+    entry.done = true
+    entry.success = success == true
+    entry.response = payload
+    entry.route = route
+    if transportGate.InFlight[gateKey] == entry then
         transportGate.InFlight[gateKey] = nil
     end
+    if transportGate.Invoke[gateKey] == entry.timestamp then
+        transportGate.Invoke[gateKey] = nil
+    end
+end
 
-    if ttl > 0 and transportGate.Invoke[gateKey] then
-        local last = transportGate.Invoke[gateKey]
-        if now - last < ttl then
-            run.TransportSuppressed = run.TransportSuppressed + 1
-            return true, transportGate.InvokeHistory[gateKey], "coalesced invoke (fresh)"
+local function transportInvokeCommand(command, ...)
+    local gateKey = transportKey(command, ...)
+    local ttl = tonumber(TRANSPORT_TTL[command]) or 0.15
+    local inflight = transportGate.InFlight[gateKey]
+    if inflight then
+        run.TransportCoalesced = run.TransportCoalesced + 1
+        while not inflight.done and os.clock() - inflight.start < 8 do
+            task.wait(0.01)
         end
+        if inflight.done then
+            return inflight.success, inflight.response, inflight.route or "coalesced invoke"
+        end
+        return false, "identical invoke is still in flight", "coalesced in-flight"
     end
 
-    transportGate.InFlight[gateKey] = {start = now, done = false}
-    transportGate.Invoke[gateKey] = now
-
+    local entry = {start = os.clock(), done = false}
+    entry.timestamp = expiringMark(transportGate.Invoke, gateKey, math.max(ttl, 0.15))
+    transportGate.InFlight[gateKey] = entry
     local context = run.Context
-    local response, route, success
     if context and type(context.GetCommandRemote) == "function" then
         local resolved, remote = pcall(context.GetCommandRemote, command)
         if resolved and typeof(remote) == "Instance" and remote:IsA("RemoteFunction") then
             local invoked, payload = pcall(remote.InvokeServer, remote, ...)
             if invoked then
-                response, route, success = true, payload, "direct named remote"
-                local entry = transportGate.InFlight[gateKey]
-                if entry then
-                    entry.done = true
-                    entry.response = response and payload or false
-                    entry.route = "direct named remote"
-                    transportGate.InvokeHistory[gateKey] = response and payload or payload
-                    transportGate.InFlight[gateKey] = nil
-                end
+                finishInvoke(gateKey, entry, true, payload, "direct named remote")
                 return true, payload, "direct named remote"
             end
             if type(context.InvalidateCommand) == "function" then
@@ -356,65 +370,48 @@ local function transportInvokeCommand(command, ...)
         if resolved and typeof(bridge) == "Instance" and bridge:IsA("BindableFunction") then
             local invoked, payload = pcall(bridge.Invoke, bridge, ...)
             if invoked then
-                local entry = transportGate.InFlight[gateKey]
-                if entry then
-                    entry.done = true
-                    entry.response = payload
-                    entry.route = "native Network4 bridge"
-                    transportGate.InvokeHistory[gateKey] = payload
-                    transportGate.InFlight[gateKey] = nil
-                end
+                finishInvoke(gateKey, entry, true, payload, "native Network4 bridge")
                 return true, payload, "native Network4 bridge"
             end
         end
     end
 
     if context and context.NoNamedFallback == true then
-        transportGate.InFlight[gateKey] = nil
+        finishInvoke(gateKey, entry, false, "native Network4 invoke route unavailable", "none")
         return false, "native Network4 invoke route unavailable", "none"
     end
 
     local network = context and type(context.NetworkReady) == "function"
         and context.NetworkReady() or nil
     if not network or type(network.Invoke) ~= "function" then
-        local entry = transportGate.InFlight[gateKey]
-        if entry then
-            entry.done = true
-            entry.response = false
-            entry.route = "none"
-            transportGate.InFlight[gateKey] = nil
-        end
+        finishInvoke(gateKey, entry, false, "Library.Network.Invoke unavailable", "none")
         return false, "Library.Network.Invoke unavailable", "none"
     end
 
     local invoked, payload = pcall(network.Invoke, command, ...)
     if not invoked then
-        transportGate.InFlight[gateKey] = nil
+        finishInvoke(gateKey, entry, false, payload, "Library.Network.Invoke")
         return false, payload, "Library.Network.Invoke"
     end
-
-    local entry = transportGate.InFlight[gateKey]
-    if entry then
-        entry.done = true
-        entry.response = payload
-        entry.route = "Library.Network.Invoke"
-        transportGate.InvokeHistory[gateKey] = payload
-        transportGate.InFlight[gateKey] = nil
-    end
+    finishInvoke(gateKey, entry, true, payload, "Library.Network.Invoke")
     return true, payload, "Library.Network.Invoke"
 end
 
 local function transportFireCommand(command, ...)
     local gateKey = transportKey(command, ...)
     local now = os.clock()
-    local ttl = tonumber(TRANSPORT_TTL[command]) or 0
+    local ttl = tonumber(TRANSPORT_TTL[command]) or 0.08
 
     if ttl > 0 and transportGate.Fire[gateKey] and now - transportGate.Fire[gateKey] < ttl then
         run.TransportSuppressed = run.TransportSuppressed + 1
         return true, "coalesced"
     end
 
-    transportGate.Fire[gateKey] = now
+    local timestamp = expiringMark(transportGate.Fire, gateKey, ttl)
+    local function failed(problem)
+        if transportGate.Fire[gateKey] == timestamp then transportGate.Fire[gateKey] = nil end
+        return false, problem
+    end
     local context = run.Context
     if context and type(context.GetFireRemote) == "function" then
         local resolved, remote = pcall(context.GetFireRemote, command)
@@ -438,16 +435,17 @@ local function transportFireCommand(command, ...)
     end
 
     if context and context.NoNamedFallback == true then
-        return false, "native Network4 fire route unavailable"
+        return failed("native Network4 fire route unavailable")
     end
 
     local network = context and type(context.NetworkReady) == "function"
         and context.NetworkReady() or nil
     if not network or type(network.Fire) ~= "function" then
-        return false, "Library.Network.Fire unavailable"
+        return failed("Library.Network.Fire unavailable")
     end
     local fired, problem = pcall(network.Fire, command, ...)
-    return fired, fired and "Library.Network.Fire" or tostring(problem)
+    if not fired then return failed(tostring(problem)) end
+    return true, "Library.Network.Fire"
 end
 
 local function callNamedInvoke(command, ...)
@@ -726,6 +724,7 @@ local function process(job)
         queuedFor = math.max(startedAt - (tonumber(job.QueuedAt) or startedAt), 0),
     })
     run.ActiveInvokes[attemptId] = startedAt
+    run.JoinInvokes = run.JoinInvokes + 1
     local invoked, response, route = callNamedInvoke("Join Coin", job.CoinId, petIds)
     run.ActiveInvokes[attemptId] = nil
     local elapsed = math.max(os.clock() - startedAt, 0)
@@ -797,6 +796,57 @@ local function process(job)
     return false
 end
 
+local function executeJob(job)
+    if not contextActive(job) then
+        clearPending(job and job.Entries)
+        releaseJob(job)
+        run.Active = math.max(run.Active - 1, 0)
+        pump()
+        return
+    end
+    local thread = coroutine.create(function()
+        local handled, retained = pcall(process, job)
+        if not handled then
+            run.Errors = run.Errors + 1
+            run.LastProblem = tostring(retained)
+            local current = currentEntries(job)
+            retained = scheduleRetry(
+                job,
+                current,
+                "dispatch call failed: " .. tostring(run.LastProblem),
+                job.Joined
+            )
+            trace("lite pet dispatch", tostring(run.LastProblem))
+        end
+        if not retained then
+            inspectComplete(job.DiagnosticId,
+                handled and "COMPLETED" or "DROPPED_WITH_REASON",
+                handled and "pet transport cycle finished" or tostring(run.LastProblem))
+            releaseJob(job)
+        end
+        run.Active = math.max(run.Active - 1, 0)
+        pump()
+    end)
+    local resumed, problem = coroutine.resume(thread)
+    if resumed then return end
+    run.Errors = run.Errors + 1
+    run.LastProblem = tostring(problem)
+    run.Active = math.max(run.Active - 1, 0)
+    local current = currentEntries(job)
+    local retained = scheduleRetry(
+        job,
+        current,
+        "dispatch coroutine failed: " .. tostring(problem),
+        job.Joined
+    )
+    if not retained then
+        inspectComplete(job.DiagnosticId, "DROPPED_WITH_REASON", tostring(problem))
+        releaseJob(job)
+    end
+    trace("lite pet dispatch", tostring(problem))
+    pump()
+end
+
 pump = function()
     compactQueue()
     while run.Context and run.Active < run.Limit and run.Head <= #run.Queue do
@@ -805,48 +855,18 @@ pump = function()
         run.Head = run.Head + 1
         if contextActive(job) then
             run.Active = run.Active + 1
-            local thread = coroutine.create(function()
-                local handled, retained = pcall(process, job)
-                if not handled then
-                    run.Errors = run.Errors + 1
-                    run.LastProblem = tostring(retained)
-                    local current = currentEntries(job)
-                    retained = scheduleRetry(
-                        job,
-                        current,
-                        "dispatch call failed: " .. tostring(run.LastProblem),
-                        job.Joined
-                    )
-                    trace("lite pet dispatch", tostring(run.LastProblem))
-                end
-                if not retained then
-                    inspectComplete(job.DiagnosticId,
-                        handled and "COMPLETED" or "DROPPED_WITH_REASON",
-                        handled and "pet transport cycle finished" or tostring(run.LastProblem))
-                    releaseJob(job)
-                end
-                run.Active = math.max(run.Active - 1, 0)
-                pump()
-            end)
-            local resumed, problem = coroutine.resume(thread)
-            if not resumed then
-                run.Errors = run.Errors + 1
-                run.LastProblem = tostring(problem)
-                run.Active = math.max(run.Active - 1, 0)
-                local current = currentEntries(job)
-                local retained = scheduleRetry(
-                    job,
-                    current,
-                    "dispatch coroutine failed: " .. tostring(problem),
-                    job.Joined
-                )
-                if not retained then
-                    inspectComplete(job.DiagnosticId, "DROPPED_WITH_REASON", tostring(problem))
-                    releaseJob(job)
-                end
-                trace("lite pet dispatch", tostring(problem))
-                pump()
+            local now = os.clock()
+            local context = run.Context
+            local spacing = math.clamp(tonumber(context.DispatchSpacing) or 0.012, 0.01, 0.015)
+            if run.NextLaunchAt <= now then
+                local phase = math.clamp(tonumber(context.DispatchPhaseOffset) or 0, 0, 0.015)
+                run.NextLaunchAt = now + phase
             end
+            local due = run.NextLaunchAt
+            run.NextLaunchAt = due + spacing
+            scheduler.delay(math.max(due - now, 0), function()
+                executeJob(job)
+            end)
         else
             clearPending(job and job.Entries)
             releaseJob(job)
@@ -940,6 +960,11 @@ local function stats()
         activeInvokeCount = activeInvokeCount + 1
         oldestInvokeAge = math.max(oldestInvokeAge, now - (tonumber(startedAt) or now))
     end
+    local function mapSize(map)
+        local count = 0
+        for _ in pairs(map) do count = count + 1 end
+        return count
+    end
     return {
         Version = MODULE_VERSION,
         Epoch = run.Epoch,
@@ -965,11 +990,18 @@ local function stats()
         FarmSignals = run.FarmSignals,
         SignalFailures = run.SignalFailures,
         TransportFailures = run.TransportFailures,
+        JoinInvokes = run.JoinInvokes,
+        TransportSuppressed = run.TransportSuppressed,
+        TransportCoalesced = run.TransportCoalesced,
         LocalTimeouts = run.LocalTimeouts,
         LastRoute = run.LastRoute,
         LastAssignmentAt = run.LastAssignmentAt,
         LastTargetChangeAt = run.LastTargetChangeAt,
         QueueCapacity = MAX_QUEUED_JOBS,
+        TransportFireCache = mapSize(transportGate.Fire),
+        TransportInvokeCache = mapSize(transportGate.Invoke),
+        TransportInFlightCache = mapSize(transportGate.InFlight),
+        TransportInvokeHistoryCache = mapSize(transportGate.InvokeHistory),
     }
 end
 

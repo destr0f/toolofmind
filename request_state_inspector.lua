@@ -1,12 +1,13 @@
 -- Passive request-state diagnostics for PSX OG Nova develop.
 -- This module never invokes/fires a remote and never changes automation policy.
 
-local MODULE_VERSION = "1.0.1"
+local MODULE_VERSION = "1.0.2"
 local EVENT_CAPACITY = 128
 local SNAPSHOT_CAPACITY = 8
 local ACTIVE_CAPACITY = 96
+local PING_CAPACITY = 120
 local UPDATE_EXPANDED = 0.5
-local UPDATE_MINIMIZED = 2
+local UPDATE_MINIMIZED = 5
 
 local TERMINAL = {
     COALESCED_INTO = true,
@@ -607,6 +608,23 @@ local function readPing(state)
     value = ok and tonumber(value) or nil
     if not value then return end
     state.Ping = value
+    state.PingCursor = (state.PingCursor % PING_CAPACITY) + 1
+    state.PingSamples[state.PingCursor] = value
+    state.PingCount = math.min(state.PingCount + 1, PING_CAPACITY)
+    table.clear(state.PingSort)
+    for index = 1, state.PingCount do
+        state.PingSort[index] = state.PingSamples[index]
+    end
+    table.sort(state.PingSort)
+    if state.PingCount > 0 then
+        state.PingP50 = state.PingSort[math.max(math.ceil(state.PingCount * 0.50), 1)] or value
+        state.PingP95 = state.PingSort[math.max(math.ceil(state.PingCount * 0.95), 1)] or value
+        state.PingMax = state.PingSort[state.PingCount] or value
+    end
+    local memoryOk, memory = pcall(function() return stats:GetTotalMemoryUsageMb() end)
+    if memoryOk then state.MemoryMb = tonumber(memory) or state.MemoryMb end
+    local fpsOk, fps = pcall(function() return workspace:GetRealPhysicsFPS() end)
+    if fpsOk then state.FPS = tonumber(fps) or state.FPS end
     if value < 2000 then
         state.PingBaseline = state.PingBaseline == 0 and value
             or state.PingBaseline * 0.92 + value * 0.08
@@ -662,16 +680,18 @@ local function updateUI(state)
     local gateAge = tonumber(gauge(state, "Gate", "ownerAge", 0)) or 0
     local queue = tonumber(gauge(state, "Farm", "queued", 0)) or 0
     setText(state, "Top", string.format(
-        "build %s | commit %s | gen %d\nping %.0fms (base %.0f) | scheduler +%.3fs\ninvokes %d | unacked fires %d | queue %d | gate %s %.1fs\nhealth %s | incident %s",
+        "build %s | commit %s | gen %d\nping %.0fms | p50/p95/max %.0f/%.0f/%.0f | base %.0f\nfps %.0f | memory %.0fMB | scheduler +%.3fs\ninvokes %d | unacked fires %d | queue %d | gate %s %.1fs\nhealth %s | incident %s",
         state.Build, string.sub(state.Commit, 1, 10), state.Generation,
-        state.Ping, state.PingBaseline, state.SchedulerDelay,
+        state.Ping, state.PingP50, state.PingP95, state.PingMax, state.PingBaseline,
+        state.FPS, state.MemoryMb, state.SchedulerDelay,
         state.ActiveInvokes, state.UnackedFires, queue, tostring(gateOwner), gateAge,
         state.Health, state.PrimaryIncident))
     setText(state, "Farm", formatLane(state, "Farm") .. string.format(
         "\nworkers %s/%s +%s | idle %s | targets %s/%s"
             .. "\nqueued %s | invoke %s oldest %.1fs | RTT %.0fms"
             .. "\nsignals target/farm/fail %s/%s/%s | transport/timeout %s/%s"
-            .. "\naccepted/reject/stale %s/%s/%s | target cooldowns %s",
+            .. "\naccepted/reject/stale %s/%s/%s | target cooldowns %s"
+            .. "\nrates join/target/farm %.1f/%.1f/%.1f/s | cache F/I/live/history %s/%s/%s/%s",
         tostring(gauge(state, "Farm", "working", 0)),
         tostring(gauge(state, "Farm", "equipped", 0)),
         tostring(gauge(state, "Farm", "joining", 0)),
@@ -689,7 +709,14 @@ local function updateUI(state)
         tostring(gauge(state, "Farm", "accepted", 0)),
         tostring(gauge(state, "Farm", "rejects", 0)),
         tostring(gauge(state, "Farm", "stale", 0)),
-        tostring(gauge(state, "Farm", "targetCooldowns", 0))))
+        tostring(gauge(state, "Farm", "targetCooldowns", 0)),
+        tonumber(gauge(state, "Farm", "joinInvokesPerSecond", 0)) or 0,
+        tonumber(gauge(state, "Farm", "targetSignalsPerSecond", 0)) or 0,
+        tonumber(gauge(state, "Farm", "farmSignalsPerSecond", 0)) or 0,
+        tostring(gauge(state, "Farm", "transportFireCache", 0)),
+        tostring(gauge(state, "Farm", "transportInvokeCache", 0)),
+        tostring(gauge(state, "Farm", "transportInFlightCache", 0)),
+        tostring(gauge(state, "Farm", "transportInvokeHistoryCache", 0))))
     setText(state, "Egg", formatLane(state, "Egg") .. string.format(
         "\n%s x%s | attempt %s | request/ack/post %.1f/%.1f/%.1fs"
             .. "\nrequest/success/reject/timeout %s/%s/%s/%s | retry %s/%s"
@@ -769,10 +796,21 @@ local function updateUI(state)
     setText(state, "Background", formatLane(state, "Background") .. "\n"
         .. compactLane(state, "Machines") .. " | " .. compactLane(state, "Enchant") .. "\n"
         .. compactLane(state, "Boosts") .. " | " .. compactLane(state, "Rewards")
+        .. string.format("\nrequests/min machine/boost/reward %.1f/%.1f/%.1f",
+            tonumber(gauge(state, "Machines", "invokesPerMinute", 0)) or 0,
+            tonumber(gauge(state, "Boosts", "invokesPerMinute", 0)) or 0,
+            tonumber(gauge(state, "Rewards", "invokesPerMinute", 0)) or 0)
         .. "\nmodule loader " .. tostring(gauge(state, "Background", "moduleLoaderOwner", "idle"))
         .. " | busy=" .. tostring(gauge(state, "Background", "moduleLoaderBusy", false)))
     setText(state, "Routes", formatLane(state, "Routes")
+        .. "\nresolved/total " .. tostring(gauge(state, "Routes", "resolved", 0))
+        .. "/" .. tostring(gauge(state, "Routes", "total", 0))
+        .. " | cache E/F/BE/BF " .. tostring(gauge(state, "Routes", "eventCache", 0))
+        .. "/" .. tostring(gauge(state, "Routes", "functionCache", 0))
+        .. "/" .. tostring(gauge(state, "Routes", "fireBridgeCache", 0))
+        .. "/" .. tostring(gauge(state, "Routes", "invokeBridgeCache", 0))
         .. "\nunresolved " .. tostring(gauge(state, "Routes", "unresolved", 0))
+        .. " | " .. tostring(gauge(state, "Routes", "unresolvedNames", "none"))
         .. "\nlast resolved " .. tostring(gauge(state, "Routes", "lastResolved", "none"))
         .. "\nlast unresolved " .. tostring(gauge(state, "Routes", "lastUnresolved", "none")))
     setText(state, "Startup", formatLane(state, "Startup") .. string.format(
@@ -998,7 +1036,9 @@ local function start(context)
         Operations = {}, OperationCount = 0, Lanes = {}, Gauges = {},
         Sequence = 0, ActiveInvokes = 0, UnackedFires = 0, StartupRequests = 0,
         ExplicitDrops = 0, InstrumentedTransitions = 0,
-        Ping = 0, PingBaseline = 0, HighPingSamples = 0,
+        Ping = 0, PingBaseline = 0, PingP50 = 0, PingP95 = 0, PingMax = 0,
+        PingSamples = {}, PingSort = {}, PingCursor = 0, PingCount = 0,
+        FPS = 0, MemoryMb = 0, HighPingSamples = 0,
         SchedulerDelay = 0, ExpectedAt = nil, PrimaryIncident = "none", Health = "UNKNOWN",
         Incidents = {}, IncidentMuted = {}, Connections = {}, Minimized = false,
         UI = { Gui = nil, Labels = {}, Last = {}, Collapsed = {} },
@@ -1041,10 +1081,16 @@ local function start(context)
         return true
     end
     function controller:Destroy(reason) return destroy(state, reason) end
+    function controller:IsVisible()
+        return state.Alive and state.Minimized ~= true
+            and state.UI.Root ~= nil and state.UI.Root.Visible ~= false
+    end
     function controller:State()
         return {
             Version = MODULE_VERSION, Alive = state.Alive, Generation = state.Generation,
             Ping = state.Ping, Baseline = state.PingBaseline,
+            PingP50 = state.PingP50, PingP95 = state.PingP95, PingMax = state.PingMax,
+            FPS = state.FPS, MemoryMb = state.MemoryMb,
             ActiveInvokes = state.ActiveInvokes, UnackedFires = state.UnackedFires,
             ActiveOperations = state.OperationCount, Incident = state.PrimaryIncident,
             Health = state.Health, ExplicitDrops = state.ExplicitDrops,

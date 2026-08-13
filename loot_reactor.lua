@@ -4,11 +4,10 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.4"
+local MODULE_VERSION = "3.6.5"
 local ORB_BATCH_SIZE = 512
 local MAX_PENDING_ORBS = 8192
-local ORB_FLUSH_INTERVAL = 0.55
-local MAX_ORB_DELIVERY_ATTEMPTS = 2
+local ORB_FLUSH_INTERVAL = 0.25
 local ORB_CONFIRM_MIN_DELAY = 2.5
 local ORB_CONFIRM_MAX_DELAY = 8
 local CLIENT_STAGGER_SLOTS = 16
@@ -67,14 +66,12 @@ local run = {
     -- FireServer call returned locally but have not produced Orb Removed yet.
     PendingOrbIds = {},
     UnconfirmedOrbIds = {},
-    OrbDeliveryAttempts = {},
     OrbTransportFailures = {},
     PendingOrbCount = 0,
     UnconfirmedOrbCount = 0,
     OrbBatch = table.create(ORB_BATCH_SIZE),
     OrbFlushArmed = false,
     OrbConfirmArmed = false,
-    OrbRetryArmed = false,
     OrbLastFlushAt = 0,
     BagById = {},
     BagQueue = {},
@@ -99,7 +96,6 @@ local run = {
     OrbLocalSentUnacked = 0,
     OrbTransportCommitted = 0,
     OrbAckAvailable = false,
-    OrbAckObserved = false,
     OrbAcked = 0,
     OrbRetried = 0,
     OrbExpiredUnverified = 0,
@@ -305,12 +301,6 @@ local function currentRTT()
 end
 
 local function orbFlushInterval()
-    local rtt = currentRTT()
-    if rtt >= 2.00 then return 1.50 end
-    if rtt >= 1.25 then return 1.20 end
-    if rtt >= 0.80 then return 1.00 end
-    if rtt >= 0.50 then return 0.80 end
-    if rtt >= 0.25 then return 0.65 end
     return ORB_FLUSH_INTERVAL
 end
 
@@ -326,7 +316,7 @@ local function statusText()
             .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
             .. "Orbs: pending/unconfirmed/ack %d/%d/%d | events/batches %d/%d | retry/expired/error/overflow/drop %d/%d/%d/%d/%d\n"
             .. "Lootbags: waiting %d/%d | lanes %d | events/sent/committed/ack/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d/%d\n"
-            .. "Retention: bounded Orb Removed confirmation; one retry only after a live ACK is observed",
+            .. "Retention: one-shot orb commit; Orb Removed is cleanup/statistics only",
         run.OrbsProducer,
         run.OrbGateReason,
         run.CoinsProducer,
@@ -434,20 +424,14 @@ local function reconcileUnconfirmedOrbs()
         if now >= dueAt then
             run.UnconfirmedOrbIds[orbId] = nil
             run.UnconfirmedOrbCount = math.max(run.UnconfirmedOrbCount - 1, 0)
-            local attempts = tonumber(run.OrbDeliveryAttempts[orbId]) or 1
-            if run.OrbAckObserved and attempts < MAX_ORB_DELIVERY_ATTEMPTS then
-                run.PendingOrbIds[orbId] = 0
-                run.PendingOrbCount = run.PendingOrbCount + 1
-                run.OrbRetried = run.OrbRetried + 1
-            else
-                run.OrbDeliveryAttempts[orbId] = nil
-                run.OrbExpiredUnverified = run.OrbExpiredUnverified + 1
-            end
+            -- RemoteEvent has no protocol ACK. A locally successful FireServer
+            -- is one-shot committed; missing Orb Removed only expires local
+            -- confirmation state and never requeues this or any other ID.
+            run.OrbExpiredUnverified = run.OrbExpiredUnverified + 1
         elseif not nextAt or dueAt < nextAt then
             nextAt = dueAt
         end
     end
-    if run.PendingOrbCount > 0 then armOrbFlush(orbFlushInterval()) end
     if run.UnconfirmedOrbCount > 0 then
         armOrbConfirmation(math.max((nextAt or (now + delay)) - now, 0.05))
     end
@@ -493,15 +477,11 @@ local function flushOrbs()
                 run.PendingOrbIds[orbId] = nil
                 run.PendingOrbCount = math.max(run.PendingOrbCount - 1, 0)
                 run.OrbTransportCommitted = run.OrbTransportCommitted + 1
-                local attempts = (tonumber(run.OrbDeliveryAttempts[orbId]) or 0) + 1
-                run.OrbDeliveryAttempts[orbId] = attempts
                 if run.OrbAckAvailable then
                     if run.UnconfirmedOrbIds[orbId] == nil then
                         run.UnconfirmedOrbIds[orbId] = now
                         run.UnconfirmedOrbCount = run.UnconfirmedOrbCount + 1
                     end
-                else
-                    run.OrbDeliveryAttempts[orbId] = nil
                 end
             end
         end
@@ -528,11 +508,13 @@ local function flushOrbs()
     end
     table.clear(ids)
     profileEnd(profiled)
-    if run.PendingOrbCount > 0 then armOrbFlush(orbFlushInterval()) end
+    if run.PendingOrbCount > 0 then
+        armOrbFlush(sent and 0 or orbFlushInterval(), sent == true)
+    end
     armStatus()
 end
 
-armOrbFlush = function(minimumDelay)
+armOrbFlush = function(minimumDelay, immediateContinuation)
     if run.OrbFlushArmed or not orbsEnabled() or run.PendingOrbCount == 0 then return end
     run.OrbFlushArmed = true
     local generation = run.Generation
@@ -540,8 +522,9 @@ armOrbFlush = function(minimumDelay)
     local now = os.clock()
     local interval = orbFlushInterval()
     local earliest = (tonumber(run.OrbLastFlushAt) or 0) + interval
-    local delaySeconds = math.max(earliest - now, tonumber(minimumDelay) or 0)
-    if run.OrbLastFlushAt == 0 then
+    local delaySeconds = immediateContinuation == true and 0
+        or math.max(earliest - now, tonumber(minimumDelay) or 0)
+    if run.OrbLastFlushAt == 0 and immediateContinuation ~= true then
         delaySeconds = interval + clientStagger()
     end
     task.delay(delaySeconds, function()
@@ -596,8 +579,6 @@ local function removeQueuedOrb(id)
         found = true
     end
     run.OrbTransportFailures[id] = nil
-    run.OrbDeliveryAttempts[id] = nil
-    run.OrbAckObserved = true
     if found then run.OrbAcked = run.OrbAcked + 1 end
 end
 
@@ -792,7 +773,12 @@ local function collectBag(record, now)
         -- sends once and immediately destroys its local object; missing
         -- Remove Lootbag callbacks are not evidence of transport failure.
         closeBag(record, false, "transport committed")
-    elseif record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS then
+        if typeof(liveObject) == "Instance" and liveObject.Parent then
+            pcall(liveObject.Destroy, liveObject)
+        end
+    elseif record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS
+        and (record.HadObject ~= true
+            or (typeof(liveObject) == "Instance" and liveObject.Parent ~= nil)) then
         run.BagRetried = run.BagRetried + 1
         record.State = "retry"
         enqueueDelayedBag(record, now + BAG_TRANSPORT_RETRY_DELAY)
@@ -905,14 +891,12 @@ local function clearOrbBinding()
     run.OrbFolder = nil
     table.clear(run.PendingOrbIds)
     table.clear(run.UnconfirmedOrbIds)
-    table.clear(run.OrbDeliveryAttempts)
     table.clear(run.OrbTransportFailures)
     table.clear(run.OrbBatch)
     run.PendingOrbCount = 0
     run.UnconfirmedOrbCount = 0
     run.OrbFlushArmed = false
     run.OrbConfirmArmed = false
-    run.OrbRetryArmed = false
     run.OrbLastFlushAt = 0
 end
 
@@ -1655,7 +1639,6 @@ local function resetStats()
     run.OrbLocalSentUnacked = 0
     run.OrbTransportCommitted = 0
     run.OrbAckAvailable = false
-    run.OrbAckObserved = false
     run.OrbAcked = 0
     run.OrbRetried = 0
     run.OrbExpiredUnverified = 0
@@ -1782,7 +1765,6 @@ local function stats()
         PendingOrbs = run.PendingOrbCount,
         UnconfirmedOrbs = run.UnconfirmedOrbCount,
         OrbAckAvailable = run.OrbAckAvailable,
-        OrbAckObserved = run.OrbAckObserved,
         OrbAcked = run.OrbAcked,
         OrbRetried = run.OrbRetried,
         OrbExpiredUnverified = run.OrbExpiredUnverified,

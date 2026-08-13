@@ -31,12 +31,12 @@ assert(!/[.:](?:InvokeServer|FireServer)\s*\(/.test(inspector),
     "passive inspector performs a direct remote call");
 
 for (const marker of [
-    'local MODULE_VERSION = "1.0.1"',
+    'local MODULE_VERSION = "1.0.2"',
     "local EVENT_CAPACITY = 128",
     "local SNAPSHOT_CAPACITY = 8",
     "local ACTIVE_CAPACITY = 96",
     "local UPDATE_EXPANDED = 0.5",
-    "local UPDATE_MINIMIZED = 2",
+    "local UPDATE_MINIMIZED = 5",
     'Name = "PSX_OG_RequestInspector"',
     'button("Snap"',
     'button("Copy"',
@@ -143,7 +143,7 @@ for (const marker of [
     "local MAX_PENDING_BAGS = 4096",
     "local BAG_TRANSPORT_RETRY_DELAY = 0.10",
     "local MAX_BAG_TRANSPORT_ATTEMPTS = 2",
-    "local ORB_FLUSH_INTERVAL = 0.55",
+    "local ORB_FLUSH_INTERVAL = 0.25",
 ]) {
     assert(loot.includes(marker), `loot hot policy changed: ${marker}`);
 }

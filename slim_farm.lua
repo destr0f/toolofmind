@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.49-minimal.1"
+local VERSION = "1.4.1-dev.50-network4.1"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -700,6 +700,8 @@ local requestDiagnostics = {
     Startup = { RequestTimes = {}, LoaderWaiters = 0 },
     Loot = { At = 0, OrbIds = 0, OrbBatches = 0 },
     Reload = { WorkerStarts = 0 },
+    CommandCounters = {},
+    TelemetryRates = { At = 0, Values = {} },
 }
 
 function requestDiagnostics.Id(prefix)
@@ -726,6 +728,25 @@ function requestDiagnostics.Gauge(subsystem, key, value)
     if type(inspector) ~= "table" or type(inspector.SetGauge) ~= "function" then return false end
     local ok, accepted = pcall(inspector.SetGauge, inspector, subsystem, key, value)
     return ok and accepted == true
+end
+
+function requestDiagnostics.CountCommand(subsystem, commandName, kind)
+    local group = tostring(subsystem or "Background")
+    local counters = requestDiagnostics.CommandCounters
+    counters[group] = (tonumber(counters[group]) or 0) + 1
+    local key = tostring(kind or "request") .. ":" .. tostring(commandName or "unknown")
+    counters[key] = (tonumber(counters[key]) or 0) + 1
+end
+
+function requestDiagnostics.SampleRate(key, current, now, scale)
+    current = tonumber(current) or 0
+    now = tonumber(now) or os.clock()
+    local state = requestDiagnostics.TelemetryRates
+    local previous = tonumber(state.Values[key])
+    state.Values[key] = current
+    local elapsed = now - (tonumber(state.At) or now)
+    if previous == nil or elapsed <= 0 then return 0 end
+    return math.max(current - previous, 0) / elapsed * (tonumber(scale) or 1)
 end
 
 function requestDiagnostics.Subsystem(commandName)
@@ -1146,6 +1167,9 @@ local function getCurrentCurrency(currencyName, save, allowFallback, now)
     local normalized = normalizeCurrencyName(currencyName)
     local mapped = buildCurrencyMap(save, currencyName)
     if mapped[normalized] ~= nil then return mapped[normalized] end
+    -- A live Save is authoritative. Avoid a periodic GetDescendants scan just
+    -- because a selected currency is absent from that Save snapshot.
+    if type(save) == "table" then return nil end
     if allowFallback == false then return nil end
     local fallback = refreshCurrencyFallback(now)
     if fallback[normalized] ~= nil then return fallback[normalized] end
@@ -2152,13 +2176,18 @@ refreshCoinSnapshot = function()
     local generation = coinGeneration
     local serialAtStart = coinMutationSerial
     local diagnosticId = requestDiagnostics.Id("invoke:Get Coins")
-    local remote, sourceName, sessionIndex, resolveProblem =
-        coinSync.NetworkTransport:Resolve(
-            coinSync.RemoteCaches.Command,
-            "resolveFunction",
-            "Get Coins",
-            "RemoteFunction"
-        )
+    local remote, sourceName, sessionIndex, resolveProblem, routedCommand
+    for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates("Get Coins")) do
+        routedCommand = candidate
+        remote, sourceName, sessionIndex, resolveProblem =
+            coinSync.NetworkTransport:Resolve(
+                coinSync.RemoteCaches.Command,
+                "resolveFunction",
+                candidate,
+                "RemoteFunction"
+            )
+        if remote then break end
+    end
     local route = remote and (tostring(sourceName or "direct remote")
         .. (sessionIndex and (" [session index " .. tostring(sessionIndex) .. "]") or ""))
         or "unavailable"
@@ -2166,16 +2195,24 @@ refreshCoinSnapshot = function()
     local ok, response
     if remote then
         ok, response = pcall(remote.InvokeServer, remote)
-        if not ok then coinSync.RemoteCaches.Command["Get Coins"] = nil end
+        if not ok then
+            coinSync.NetworkTransport:ClearRoute(
+                coinSync.RemoteCaches.Command, routedCommand or "Get Coins", remote)
+        end
     else
         local network = networkReady()
         if network and type(network.Invoke) == "function" then
             route = "Library.Network.Invoke fallback"
-            ok, response = pcall(network.Invoke, "Get Coins")
+            for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates("Get Coins")) do
+                routedCommand = candidate
+                ok, response = pcall(network.Invoke, candidate)
+                if ok then break end
+            end
         else
             ok, response = false, resolveProblem or "Get Coins route is unavailable"
         end
     end
+    if ok then requestDiagnostics.CountCommand("Farm", routedCommand or "Get Coins", "invoke") end
     if not ok then
         requestDiagnostics.Complete("Farm", diagnosticId, "TRANSPORT_FAILED", tostring(response))
     elseif type(response) == "table" then
@@ -2359,6 +2396,8 @@ local function connectCoinSignals()
                 if coinSync.NetworkTransport and coinSync.NetworkTransport.Controller then
                     pcall(coinSync.NetworkTransport.Controller, "clear")
                 end
+                table.clear(coinSync.NetworkTransport.ResolvedRoutes)
+                table.clear(coinSync.NetworkTransport.UnresolvedRoutes)
                 table.clear(boundsCache)
                 resetAreaCatalog()
                 coinIndex:DisconnectFolder()
@@ -2565,11 +2604,7 @@ local petFarm = {
     FastPets = {},
     FastScheduled = false,
     FastToken = 0,
-    SignalCommits = {},
-    SignalCommitScheduled = false,
-    SignalCommitToken = 0,
     MembershipConfirms = 0,
-    WireRepairs = 0,
     ProgressLeases = {},
     ProgressLeaseScheduled = false,
     ProgressLeaseToken = 0,
@@ -2623,14 +2658,12 @@ local function acquirePetState(coinId, petId)
     state.AcceptedAt = nil
     state.MembershipConfirmed = false
     state.MembershipConfirmedAt = nil
-    state.SignalCommitAttempt = 0
     state.ProgressConfirmed = false
     state.ProgressConfirmedAt = nil
     state.ProgressConfirmSource = nil
     state.ProgressInitialHealth = nil
     state.ProgressObservedHealth = nil
     state.ProgressObservedAt = nil
-    state.ProgressRepairAttempts = 0
     state.ProgressDeadline = nil
     return state
 end
@@ -2639,9 +2672,6 @@ local function releasePetState(state, forceReusable)
     if type(state) ~= "table" then return end
     local reusable = forceReusable == true or state.Phase == "working"
     local petId = state.PetId
-    if petId and petFarm.SignalCommits[petId] == state then
-        petFarm.SignalCommits[petId] = nil
-    end
     if petId and petFarm.ProgressLeases[petId] == state then
         petFarm.ProgressLeases[petId] = nil
     end
@@ -2654,14 +2684,12 @@ local function releasePetState(state, forceReusable)
     state.AcceptedAt = nil
     state.MembershipConfirmed = nil
     state.MembershipConfirmedAt = nil
-    state.SignalCommitAttempt = nil
     state.ProgressConfirmed = nil
     state.ProgressConfirmedAt = nil
     state.ProgressConfirmSource = nil
     state.ProgressInitialHealth = nil
     state.ProgressObservedHealth = nil
     state.ProgressObservedAt = nil
-    state.ProgressRepairAttempts = nil
     state.ProgressDeadline = nil
     local pool = petFarm.StatePool
     -- A JOINING state can still be referenced by a yielding InvokeServer job.
@@ -2674,13 +2702,10 @@ releaseAssignmentsForCoin = function(rawId)
     if rawId == nil then
         farmGeneration = farmGeneration + 1
         petFarm.FastToken = petFarm.FastToken + 1
-        petFarm.SignalCommitToken = petFarm.SignalCommitToken + 1
         petFarm.ProgressLeaseToken = petFarm.ProgressLeaseToken + 1
-        petFarm.SignalCommitScheduled = false
         petFarm.ProgressLeaseScheduled = false
         petFarm.FastScheduled = false
         table.clear(petFarm.FastPets)
-        table.clear(petFarm.SignalCommits)
         table.clear(petFarm.ProgressLeases)
         table.clear(petFarm.NextTargetByPet)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
@@ -2767,10 +2792,13 @@ coinSync.NetworkTransport = {
     Controller = nil,
     LoadProblem = nil,
     RetryAt = 0,
+    ResolvedRoutes = {},
+    UnresolvedRoutes = {},
     Context = {
         Library = Library,
         ReplicatedStorage = ReplicatedStorage,
         Game = game,
+        Generation = tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0,
         FunctionUpvalueAt = functionUpvalueAt,
         RemoteSessionIndex = remoteSessionIndex,
     },
@@ -2800,9 +2828,11 @@ function coinSync.NetworkTransport:Ensure()
 end
 
 function coinSync.NetworkTransport:Resolve(cache, action, commandName, className)
+    local generation = tonumber(self.Context.Generation) or 0
     local cached = cache[commandName]
     local cachedRemote = type(cached) == "table" and cached.Remote or nil
     if type(cached) == "table" and cached.Command == commandName
+        and cached.Generation == generation
         and typeof(cachedRemote) == "Instance" and cachedRemote:IsA(className)
         and cachedRemote:IsDescendantOf(ReplicatedStorage) then
         return cached.Remote, cached.Source, cached.SessionIndex, nil
@@ -2811,24 +2841,32 @@ function coinSync.NetworkTransport:Resolve(cache, action, commandName, className
 
     local controller, loadProblem = self:Ensure()
     if not controller then
+        self.UnresolvedRoutes[action .. ":" .. commandName] = tostring(loadProblem)
         return nil, "Network4 adapter", nil, loadProblem
     end
     local ok, remote, sourceName, sessionIndex, resolveProblem = pcall(
         controller, action, self.Context, commandName)
     if not ok then
+        self.UnresolvedRoutes[action .. ":" .. commandName] = tostring(remote)
         return nil, "Network4 adapter", nil, tostring(remote)
     end
     if typeof(remote) ~= "Instance" or not remote:IsA(className)
         or not remote:IsDescendantOf(ReplicatedStorage) then
-        return nil, sourceName or "Network4 adapter", sessionIndex,
-            tostring(resolveProblem or commandName .. " did not resolve to a live " .. className)
+        local problem = tostring(resolveProblem
+            or commandName .. " did not resolve to a live " .. className)
+        self.UnresolvedRoutes[action .. ":" .. commandName] = problem
+        return nil, sourceName or "Network4 adapter", sessionIndex, problem
     end
 
+    local routeKey = action .. ":" .. commandName
+    self.UnresolvedRoutes[routeKey] = nil
+    self.ResolvedRoutes[routeKey] = tostring(sourceName or "Network4")
     cache[commandName] = {
         Command = commandName,
         Remote = remote,
         Source = sourceName,
         SessionIndex = sessionIndex,
+        Generation = generation,
     }
     return remote, sourceName, sessionIndex, nil
 end
@@ -2836,6 +2874,7 @@ end
 -- Logical command names stay stable inside the farm. Only this tiny table tracks
 -- game-side route renames; Network4 still resolves the per-session hashed remote.
 coinSync.NetworkTransport.RouteAliases = {
+    ["Get Coins"] = { "Get The Coins", "Get Coins" },
     ["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" },
     ["Join Coin"] = { "Join The Coin", "Join Coin" },
     ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
@@ -2847,12 +2886,44 @@ function coinSync.NetworkTransport:CommandRouteCandidates(commandName)
 end
 
 function coinSync.NetworkTransport:ClearRoute(cache, commandName, remote)
+    local kind = cache == coinSync.RemoteCaches.Command and 2 or 1
     for _, candidate in ipairs(self:CommandRouteCandidates(commandName)) do
         local cached = cache[candidate]
         if not remote or (type(cached) == "table" and cached.Remote == remote) then
             cache[candidate] = nil
         end
+        if self.Controller then
+            pcall(self.Controller, "invalidate", self.Context, kind, candidate, remote)
+        end
+        self.ResolvedRoutes[(kind == 2 and "resolveFunction:" or "resolveEvent:") .. candidate] = nil
     end
+end
+
+function coinSync.NetworkTransport:RouteStats()
+    local resolved, unresolved, names, sources = 0, 0, {}, {}
+    for key, source in pairs(self.ResolvedRoutes) do
+        resolved = resolved + 1
+        sources[#sources + 1] = key .. "=" .. tostring(source)
+    end
+    for key in pairs(self.UnresolvedRoutes) do
+        unresolved = unresolved + 1
+        names[#names + 1] = key
+    end
+    table.sort(names)
+    table.sort(sources)
+    local adapter = {}
+    if self.Controller then
+        local ok, value = pcall(self.Controller, "stats")
+        if ok and type(value) == "table" then adapter = value end
+    end
+    return {
+        Resolved = resolved,
+        Unresolved = unresolved,
+        Total = resolved + unresolved,
+        Names = table.concat(names, ","),
+        Sources = table.concat(sources, " | "),
+        Adapter = adapter,
+    }
 end
 
 function coinSync.NetworkTransport:ResolveCommandBridge(action, commandName, className)
@@ -2982,6 +3053,7 @@ local function invokeCommand(commandName, ...)
         requestDiagnostics.Complete(subsystem, diagnosticId, "TRANSPORT_FAILED", tostring(result[2]))
         return false, false, tostring(result[2]), sourceName, sessionIndex
     end
+    requestDiagnostics.CountCommand(subsystem, commandName, "invoke")
     if result[2] == true then
         requestDiagnostics.Complete(subsystem, diagnosticId, "SERVER_ACCEPTED", "server returned true")
     elseif result[2] == false or result[2] == nil then
@@ -3051,6 +3123,7 @@ local function fireCommand(commandName, ...)
         requestDiagnostics.Complete(subsystem, diagnosticId, "TRANSPORT_FAILED", tostring(problem))
         return false, tostring(problem), sourceName, sessionIndex
     end
+    requestDiagnostics.CountCommand(subsystem, commandName, "fire")
     -- A RemoteEvent has no response. Keep this explicitly unacknowledged until
     -- a subsystem observes its own existing game acknowledgement.
     requestDiagnostics.Transition(subsystem, diagnosticId, "FIRE_LOCAL_SENT_UNACKED", {
@@ -3173,50 +3246,6 @@ function petFarm:NormalizedPetUid(value)
     return value ~= nil and tostring(value) or nil
 end
 
-function petFarm:SendCommittedFarmSignals(petId, state)
-    petId = tostring(petId)
-    if petStates[petId] ~= state or state.Generation ~= farmGeneration then
-        return false
-    end
-    local record = coinRecords[tostring(state.CoinId)]
-    if not recordAlive(record) then return false end
-
-    local function fireFast(command, ...)
-        local remote = getFireRemote(command)
-        if remote then
-            local sent = pcall(remote.FireServer, remote, ...)
-            if sent then return true end
-            coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Fire, command, remote)
-        end
-        local bridge = coinSync.NetworkTransport:ResolveCommandBridge(
-            "resolveFireBridge", command, "BindableEvent")
-        if bridge then
-            local sent = pcall(bridge.Fire, bridge, ...)
-            if sent then return true end
-        end
-        local network = networkReady()
-        if not network or type(network.Fire) ~= "function" then return false end
-        for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(command)) do
-            local sent = pcall(network.Fire, candidate, ...)
-            if sent then return true end
-        end
-        return false
-    end
-
-    state.SignalCommitAttempt = (tonumber(state.SignalCommitAttempt) or 0) + 1
-    local coinId = tostring(state.CoinId)
-    local targetSent = fireFast("Change Pet Target", petId, "Coin", coinId)
-    local farmSent = fireFast("Farm Coin", coinId, petId)
-    if targetSent and farmSent then
-        -- A successful pair commits the local lock immediately. Real health or
-        -- membership progress extends its lease; bounded repairs eventually evict
-        -- a stale/contended target instead of retaining a false working state.
-        state.Phase = "working"
-        return true
-    end
-    return false
-end
-
 function petFarm:ConfirmStateProgress(state, source, now)
     if type(state) ~= "table" then return false end
     local petId = tostring(state.PetId or "")
@@ -3229,7 +3258,6 @@ function petFarm:ConfirmStateProgress(state, source, now)
     state.ProgressConfirmedAt = confirmedAt
     state.ProgressConfirmSource = tostring(source or "unknown")
     state.ProgressObservedAt = confirmedAt
-    state.ProgressRepairAttempts = 0
     local record = coinRecords[tostring(state.CoinId)]
     state.ProgressObservedHealth = record and tonumber(record.Health)
         or state.ProgressObservedHealth
@@ -3285,44 +3313,15 @@ function petFarm:RunProgressLeases(token)
             if health and observedHealth and health < observedHealth then
                 state.ProgressObservedHealth = health
                 state.ProgressObservedAt = now
-                state.ProgressRepairAttempts = 0
                 state.ProgressDeadline = now + self:ProgressLeaseSeconds()
             elseif now >= (tonumber(state.ProgressDeadline) or now) then
-                local attempts = tonumber(state.ProgressRepairAttempts) or 0
-                local maxRepairs = config.Mode == "Boss Chest Only" and 3 or 2
-                if attempts < maxRepairs then
-                    local sent = self:SendCommittedFarmSignals(petId, state)
-                    state.ProgressRepairAttempts = attempts + 1
-                    state.ProgressObservedAt = now
-                    state.ProgressObservedHealth = health
-                    state.ProgressDeadline = now + self:ProgressLeaseSeconds()
-                    self.ProgressLeaseRepairs = self.ProgressLeaseRepairs + 1
-                    if sent then
-                        driverStatus = "bounded same-target repair sent; awaiting real progress"
-                    else
-                        driverStatus = "same-target repair deferred; named farm route unavailable"
-                    end
-                else
-                    local coinId = tostring(state.CoinId)
-                    local stagger = (math.abs(tonumber(player.UserId) or 0) % 7) * 0.05
-                    local record = coinRecords[coinId]
-                    if config.Mode == "Boss Chest Only" and record and isBossChest(record)
-                        and coinSync.SignalConnections["New Coin"] then
-                        coinSync.BossRejected[coinId] = true
-                        rejectedUntil[coinId] = nil
-                    else
-                        rejectedUntil[coinId] = now + 0.75 + stagger
-                    end
-                    self.ProgressLeases[petId] = nil
-                    petStates[petId] = nil
-                    releasePetState(state, true)
-                    self.FastPets[petId] = true
-                    self.ProgressLeaseExpiries = self.ProgressLeaseExpiries + 1
-                    self.ProgressLeaseEvictions = self.ProgressLeaseEvictions + 1
-                    released = released + 1
-                    lastRecovery = "expired target reroute for " .. string.sub(petId, 1, 8)
-                    driverStatus = "unconfirmed target evicted; immediate fresh-target reroute"
-                end
+                -- Missing local health deltas are not transport failures. Keep a
+                -- live accepted target without replaying its transport pair.
+                -- Remove Coin or an authoritative Update Coin Pets absence
+                -- is the only event that releases this lock.
+                state.ProgressObservedAt = now
+                state.ProgressObservedHealth = health
+                state.ProgressDeadline = now + self:ProgressLeaseSeconds()
             end
         end
     end
@@ -3342,54 +3341,6 @@ function petFarm:ScheduleProgressLease(delaySeconds)
         if token ~= self.ProgressLeaseToken then return end
         self.ProgressLeaseScheduled = false
         self:RunProgressLeases(token)
-    end)
-end
-
-function petFarm:RunSignalCommits(token)
-    if token ~= self.SignalCommitToken or not running() or not config.PetFarm then return end
-    local now = os.clock()
-    local pending = false
-    for petId, state in pairs(self.SignalCommits) do
-        if petStates[petId] ~= state or state.Generation ~= farmGeneration
-            or not recordAlive(coinRecords[tostring(state.CoinId)]) then
-            self.SignalCommits[petId] = nil
-        else
-            local age = math.max(now - (tonumber(state.AcceptedAt) or now), 0)
-            local attempt = tonumber(state.SignalCommitAttempt) or 0
-            local due = state.MembershipConfirmed == true
-                or (attempt == 0 and age >= 0.22)
-                or (attempt == 1 and age >= 0.55)
-            if due then
-                local sent = self:SendCommittedFarmSignals(petId, state)
-                if sent then
-                    if state.MembershipConfirmed then
-                        self.MembershipConfirms = self.MembershipConfirms + 1
-                    else
-                        self.WireRepairs = self.WireRepairs + 1
-                    end
-                end
-                attempt = tonumber(state.SignalCommitAttempt) or attempt
-                if state.MembershipConfirmed or attempt >= 2 or age >= 0.9 then
-                    self.SignalCommits[petId] = nil
-                else
-                    pending = true
-                end
-            else
-                pending = true
-            end
-        end
-    end
-    if pending then self:ScheduleSignalCommit(0.04) end
-end
-
-function petFarm:ScheduleSignalCommit(delaySeconds)
-    if self.SignalCommitScheduled or not running() then return end
-    self.SignalCommitScheduled = true
-    local token = self.SignalCommitToken
-    task.delay(math.max(tonumber(delaySeconds) or 0.04, 0), function()
-        if token ~= self.SignalCommitToken then return end
-        self.SignalCommitScheduled = false
-        self:RunSignalCommits(token)
     end)
 end
 
@@ -3417,22 +3368,41 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
     end
 
     local now = os.clock()
+    local released = 0
+    self.ProgressAckMode = "available"
     for petId, state in pairs(petStates) do
-        if tostring(state.CoinId) == coinId and state.Generation == farmGeneration
-            and present[tostring(petId)] then
-            local firstMembership = state.MembershipConfirmed ~= true
-            state.MembershipConfirmed = true
-            state.MembershipConfirmedAt = now
-            self:ConfirmStateProgress(state, "membership", now)
-            if firstMembership and state.AcceptedAt ~= nil then
-                -- The dispatch engine already sent Change Pet Target and Farm
-                -- Coin before OnAccepted. Membership is an acknowledgement,
-                -- not a reason to duplicate both wire signals again.
-                self.MembershipConfirms = self.MembershipConfirms + 1
+        if tostring(state.CoinId) == coinId and state.Generation == farmGeneration then
+            if present[tostring(petId)] then
+                local firstMembership = state.MembershipConfirmed ~= true
+                state.MembershipConfirmed = true
+                state.MembershipConfirmedAt = now
+                self:ConfirmStateProgress(state, "membership", now)
+                if firstMembership and state.AcceptedAt ~= nil then
+                    self.MembershipConfirms = self.MembershipConfirms + 1
+                end
+            elseif state.AcceptedAt ~= nil
+                and now - (tonumber(state.AcceptedAt) or now) >= 0.05 then
+                -- Update Coin Pets is the authoritative complete membership
+                -- list. Explicit absence releases only this pet; no signal pair
+                -- is replayed and the next live target is dispatched immediately.
+                self.ProgressLeases[petId] = nil
+                petStates[petId] = nil
+                releasePetState(state, true)
+                self.FastPets[petId] = true
+                self.ProgressLeaseEvictions = self.ProgressLeaseEvictions + 1
+                released = released + 1
             end
         end
     end
     table.clear(present)
+    if released > 0 then
+        local phase = (math.abs(tonumber(player.UserId) or 0) % 7) * 0.01
+        rejectedUntil[coinId] = now + 0.20 + phase
+        self.FastReroutes = self.FastReroutes + released
+        lastRecovery = "membership absence reroute x" .. tostring(released)
+        driverStatus = "Update Coin Pets released stale locks; fast reroute queued"
+        self:QueueFastDispatch()
+    end
 end
 
 local function resetSupportCoordinator()
@@ -3582,6 +3552,8 @@ function petFarm:EnsureEngine()
         InspectorTransition = requestDiagnostics.Transition,
         InspectorComplete = requestDiagnostics.Complete,
         DispatchWidth = 16,
+        DispatchSpacing = 0.012,
+        DispatchPhaseOffset = (math.abs(tonumber(player.UserId) or 0) % 13) * 0.001,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
     self.Loading = false
@@ -3638,13 +3610,10 @@ end
 local function clearAssignments(sendBack, callback)
     farmGeneration = farmGeneration + 1
     petFarm.FastToken = petFarm.FastToken + 1
-    petFarm.SignalCommitToken = petFarm.SignalCommitToken + 1
     petFarm.ProgressLeaseToken = petFarm.ProgressLeaseToken + 1
-    petFarm.SignalCommitScheduled = false
     petFarm.ProgressLeaseScheduled = false
     petFarm.FastScheduled = false
     table.clear(petFarm.FastPets)
-    table.clear(petFarm.SignalCommits)
     table.clear(petFarm.ProgressLeases)
     table.clear(petFarm.NextTargetByPet)
     if petFarm.Engine then pcall(petFarm.Engine, "reset") end
@@ -4121,7 +4090,8 @@ local function getRewardServerTime()
     local ok, rawValue = pcall(function() return remote:InvokeServer() end)
     local value = ok and tonumber(rawValue) or nil
     if value == nil then
-        coinSync.RemoteCaches.Command["Get OSTime"] = nil
+        coinSync.NetworkTransport:ClearRoute(
+            coinSync.RemoteCaches.Command, "Get OSTime", remote)
         rewardClockRetryAt = os.clock() + 10
         rewardClockProblem = ok and "Get OSTime returned a non-number"
             or ("Get OSTime transport error: " .. tostring(rawValue))
@@ -4131,6 +4101,7 @@ local function getRewardServerTime()
     rewardServerTime = value
     rewardClockStarted = os.clock()
     rewardClockProblem = nil
+    requestDiagnostics.CountCommand("Rewards", "Get OSTime", "invoke")
     return value, nil
 end
 
@@ -6095,11 +6066,8 @@ local function finishShutdown()
     table.clear(petFarm.DispatchEntryPool)
     table.clear(petFarm.DispatchPayload)
     table.clear(petFarm.FastPets)
-    petFarm.SignalCommitToken = petFarm.SignalCommitToken + 1
     petFarm.ProgressLeaseToken = petFarm.ProgressLeaseToken + 1
-    petFarm.SignalCommitScheduled = false
     petFarm.ProgressLeaseScheduled = false
-    table.clear(petFarm.SignalCommits)
     table.clear(petFarm.ProgressLeases)
     table.clear(petFarm.NextTargetByPet)
     for _, scratch in pairs(petFarm.Scratch) do table.clear(scratch) end
@@ -6117,6 +6085,8 @@ local function finishShutdown()
         pcall(coinSync.NetworkTransport.Controller, "clear")
         coinSync.NetworkTransport.Controller = nil
     end
+    table.clear(coinSync.NetworkTransport.ResolvedRoutes)
+    table.clear(coinSync.NetworkTransport.UnresolvedRoutes)
 end
 
 local function shutdown(reason)
@@ -6243,6 +6213,9 @@ local function shutdown(reason)
     requestDiagnostics.Controller = nil
     table.clear(requestDiagnostics.GateState)
     table.clear(requestDiagnostics.UnresolvedRoutes)
+    table.clear(requestDiagnostics.CommandCounters)
+    table.clear(requestDiagnostics.TelemetryRates.Values)
+    requestDiagnostics.TelemetryRates.At = 0
     table.clear(requestDiagnostics.Startup.RequestTimes)
     requestDiagnostics.Startup.LoaderWaiters = 0
     requestDiagnostics.Loot.At = 0
@@ -6380,10 +6353,6 @@ function requestDiagnostics.UpdateTelemetry()
     for _, untilAt in pairs(rejectedUntil) do
         if (tonumber(untilAt) or 0) > now then cooldownCount = cooldownCount + 1 end
     end
-    local pendingSignalCommits = 0
-    for _ in pairs(petFarm.SignalCommits) do
-        pendingSignalCommits = pendingSignalCommits + 1
-    end
     local pendingProgressLeases = 0
     for _ in pairs(petFarm.ProgressLeases) do
         pendingProgressLeases = pendingProgressLeases + 1
@@ -6403,14 +6372,25 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "localTimeouts", tonumber(dispatchStats.LocalTimeouts) or 0)
     requestDiagnostics.Gauge("Farm", "targetSignals", tonumber(dispatchStats.TargetSignals) or 0)
     requestDiagnostics.Gauge("Farm", "farmSignals", tonumber(dispatchStats.FarmSignals) or 0)
-    requestDiagnostics.Gauge("Farm", "pendingSignalCommits", pendingSignalCommits)
+    requestDiagnostics.Gauge("Farm", "joinInvokes", tonumber(dispatchStats.JoinInvokes) or 0)
+    requestDiagnostics.Gauge("Farm", "joinInvokesPerSecond", requestDiagnostics.SampleRate(
+        "farm.join", dispatchStats.JoinInvokes, now))
+    requestDiagnostics.Gauge("Farm", "targetSignalsPerSecond", requestDiagnostics.SampleRate(
+        "farm.target", dispatchStats.TargetSignals, now))
+    requestDiagnostics.Gauge("Farm", "farmSignalsPerSecond", requestDiagnostics.SampleRate(
+        "farm.signal", dispatchStats.FarmSignals, now))
+    requestDiagnostics.Gauge("Farm", "transportSuppressed", tonumber(dispatchStats.TransportSuppressed) or 0)
+    requestDiagnostics.Gauge("Farm", "transportCoalesced", tonumber(dispatchStats.TransportCoalesced) or 0)
+    requestDiagnostics.Gauge("Farm", "transportFireCache", tonumber(dispatchStats.TransportFireCache) or 0)
+    requestDiagnostics.Gauge("Farm", "transportInvokeCache", tonumber(dispatchStats.TransportInvokeCache) or 0)
+    requestDiagnostics.Gauge("Farm", "transportInFlightCache", tonumber(dispatchStats.TransportInFlightCache) or 0)
+    requestDiagnostics.Gauge("Farm", "transportInvokeHistoryCache", tonumber(dispatchStats.TransportInvokeHistoryCache) or 0)
     requestDiagnostics.Gauge("Farm", "pendingProgressLeases", pendingProgressLeases)
     requestDiagnostics.Gauge("Farm", "membershipConfirms", petFarm.MembershipConfirms)
     requestDiagnostics.Gauge("Farm", "progressConfirms", petFarm.ProgressConfirms)
     requestDiagnostics.Gauge("Farm", "progressLeaseExpiries", petFarm.ProgressLeaseExpiries)
     requestDiagnostics.Gauge("Farm", "progressLeaseRepairs", petFarm.ProgressLeaseRepairs)
     requestDiagnostics.Gauge("Farm", "progressAckMode", petFarm.ProgressAckMode)
-    requestDiagnostics.Gauge("Farm", "wireRepairs", petFarm.WireRepairs)
     requestDiagnostics.Gauge("Farm", "lastRoute", tostring(dispatchStats.LastRoute or "none"))
     requestDiagnostics.Gauge("Farm", "lastAssignmentAge", (tonumber(dispatchStats.LastAssignmentAt) or 0) > 0
         and math.max(now - tonumber(dispatchStats.LastAssignmentAt), 0) or 0)
@@ -6602,6 +6582,20 @@ function requestDiagnostics.UpdateTelemetry()
 
     requestDiagnostics.Gauge("Background", "moduleLoaderBusy", moduleLoadState.Busy == true)
     requestDiagnostics.Gauge("Background", "moduleLoaderOwner", tostring(moduleLoadState.Owner or "idle"))
+    for _, subsystem in ipairs({ "Machines", "Boosts", "Rewards" }) do
+        requestDiagnostics.Gauge(subsystem, "invokesPerMinute", requestDiagnostics.SampleRate(
+            "commands." .. subsystem,
+            requestDiagnostics.CommandCounters[subsystem], now, 60))
+    end
+    local routeStats = coinSync.NetworkTransport:RouteStats()
+    requestDiagnostics.Gauge("Routes", "resolved", routeStats.Resolved)
+    requestDiagnostics.Gauge("Routes", "total", routeStats.Total)
+    requestDiagnostics.Gauge("Routes", "unresolvedNames", routeStats.Names)
+    requestDiagnostics.Gauge("Routes", "sources", routeStats.Sources)
+    requestDiagnostics.Gauge("Routes", "eventCache", routeStats.Adapter.EventRoutes or 0)
+    requestDiagnostics.Gauge("Routes", "functionCache", routeStats.Adapter.FunctionRoutes or 0)
+    requestDiagnostics.Gauge("Routes", "fireBridgeCache", routeStats.Adapter.FireBridges or 0)
+    requestDiagnostics.Gauge("Routes", "invokeBridgeCache", routeStats.Adapter.InvokeBridges or 0)
     local enabled = {}
     if config.PetFarm then enabled[#enabled + 1] = "Farm" end
     if config.AutoEgg then enabled[#enabled + 1] = "Egg" end
@@ -6618,13 +6612,14 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Startup", "enabledAutomation",
         #enabled > 0 and table.concat(enabled, ",") or "none")
     requestDiagnostics.Gauge("Routes", "unresolved", requestDiagnostics.UnresolvedRouteCount)
+    requestDiagnostics.TelemetryRates.At = now
 end
 
 local function updateRuntimeTelemetry()
     if not running() then return end
+    local nextDiagnosticsAt = 0
     local function tick()
         if not running() then return end
-        requestDiagnostics.UpdateTelemetry()
         local interfaceVisible = interfaceIsVisible()
         local monitorVisible = interfaceVisible and UI.MonitorTab
             and UI.MonitorTab.Selected == true
@@ -6632,6 +6627,20 @@ local function updateRuntimeTelemetry()
         local quickVisible = config.QuickHUD == true
             and type(quickHUD) == "table"
             and quickHUD.Gui ~= nil
+        local inspectorVisible = false
+        if type(requestDiagnostics.Controller) == "table"
+            and type(requestDiagnostics.Controller.IsVisible) == "function" then
+            local ok, visible = pcall(
+                requestDiagnostics.Controller.IsVisible,
+                requestDiagnostics.Controller
+            )
+            inspectorVisible = ok and visible == true
+        end
+        local now = os.clock()
+        if now >= nextDiagnosticsAt then
+            requestDiagnostics.UpdateTelemetry()
+            nextDiagnosticsAt = now + ((monitorVisible or quickVisible or inspectorVisible) and 0.5 or 5)
+        end
         local rateText = updateCurrencyMonitorStatus(
             monitorVisible or (quickVisible and config.QuickHUDFarmRate == true)
         )

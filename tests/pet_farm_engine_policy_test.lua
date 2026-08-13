@@ -106,6 +106,29 @@ assert(engine("dispatch", {
 }) == true)
 assert(groupedCalls == 1, "one target group must use one Join Coin request")
 
+-- Completed state-changing responses are never replayed from a TTL cache.
+local replayCalls = 0
+network.Invoke = function(_, coinId, requested)
+    assert(coinId == "same-coin" and requested[1] == "same-pet")
+    replayCalls = replayCalls + 1
+    return { ["same-pet"] = true }
+end
+assert(engine("start", context()) == true)
+for pass = 1, 2 do
+    local replayState = { Phase = "joining", Pass = pass }
+    states["same-pet"] = replayState
+    assert(engine("dispatch", {
+        CoinId = "same-coin",
+        Record = { Alive = true },
+        Entries = { { PetId = "same-pet", State = replayState } },
+    }) == true)
+end
+assert(replayCalls == 2, "completed Join Coin response was replayed instead of invoking again")
+local replayStats = engine("stats")
+assert(replayStats.TransportInvokeHistoryCache == 0
+    and replayStats.TransportInFlightCache == 0,
+    "completed Invoke state leaked into transport caches")
+
 -- A successful Join transport with a rejected response must never retry the
 -- same stale/contended coin, even when a caller would otherwise allow retry.
 local failedCount = 0

@@ -103,10 +103,10 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.6.4"',
+    'local MODULE_VERSION = "3.6.5"',
     "ORB_BATCH_SIZE = 512",
     "MAX_PENDING_ORBS = 8192",
-    "ORB_FLUSH_INTERVAL = 0.55",
+    "ORB_FLUSH_INTERVAL = 0.25",
     "CLIENT_STAGGER_SLOTS = 16",
     "CLIENT_STAGGER_STEP = 0.01",
     "BAG_LANES = 4",
@@ -150,9 +150,13 @@ for (const marker of [
 }
 assert(loot.includes("run.UnconfirmedOrbIds[orbId] = now")
     && loot.includes("run.OrbTransportCommitted = run.OrbTransportCommitted + 1")
-    && loot.includes("run.OrbAckObserved and attempts < MAX_ORB_DELIVERY_ATTEMPTS")
     && loot.includes("run.OrbExpiredUnverified = run.OrbExpiredUnverified + 1"),
-    "orb delivery is not retained and retried within a bounded ACK policy");
+    "orb delivery does not retain a bounded confirmation record");
+assert(!loot.includes("MAX_ORB_DELIVERY_ATTEMPTS")
+    && !loot.includes("OrbDeliveryAttempts")
+    && !loot.includes("OrbAckObserved")
+    && !loot.includes("OrbRetryArmed"),
+    "a RemoteEvent observation is still used to replay already committed orb IDs");
 assert(loot.includes("record.State = \"committed\"")
     && loot.includes("run.BagSentUnverifiable = run.BagSentUnverifiable + 1")
     && loot.includes('closeBag(record, false, "transport committed")')
@@ -168,16 +172,17 @@ assert(loot.includes("local earliest = (tonumber(run.OrbLastFlushAt) or 0) + int
     "orb callbacks can still create same-window microflushes");
 assert(loot.includes("run.OrbAckAvailable")
     && loot.includes('networkSignal("Orb Removed")')
-    && loot.includes("run.OrbAckObserved = true")
     && loot.includes("run.UnconfirmedOrbIds[id] = nil"),
-    "Orb Removed does not acknowledge retained local sends");
+    "Orb Removed does not clean bounded confirmation state");
 assert(loot.includes("local function currentRTT()")
     && loot.includes("local function orbFlushInterval()")
     && loot.includes("context.GetPingSeconds")
-    && loot.includes("if rtt >= 2.00 then return 1.50 end")
-    && loot.includes("if rtt >= 0.25 then return 0.65 end")
+    && loot.includes("return ORB_FLUSH_INTERVAL")
     && loot.includes("local function orbConfirmationDelay()"),
-    "orb pacing and bounded confirmation are not actual-ping aware");
+    "fixed native orb pacing and bounded confirmation retention are missing");
+assert(loot.includes("armOrbFlush(sent and 0 or orbFlushInterval(), sent == true)")
+    && loot.includes("immediateContinuation == true and 0"),
+    "orb batches above 512 IDs are not drained by an immediate continuation");
 assert(loot.includes('record.Object = typeof(sourceObject) == "Instance" and sourceObject or nil')
     && loot.includes("record.Position = objectPosition(liveObject) or record.Position"),
     "fallback lootbag retries do not refresh the live landed position");
