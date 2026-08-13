@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.3.4"
+local MODULE_VERSION = "1.3.5"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -332,6 +332,17 @@ local function finishInvoke(gateKey, entry, success, payload, route)
     end
 end
 
+local function preferredCommand(context, command)
+    if context and type(context.CommandRouteCandidates) == "function" then
+        local ok, candidates = pcall(context.CommandRouteCandidates, command)
+        if ok and type(candidates) == "table"
+            and type(candidates[1]) == "string" and candidates[1] ~= "" then
+            return candidates[1]
+        end
+    end
+    return command
+end
+
 local function transportInvokeCommand(command, ...)
     local gateKey = transportKey(command, ...)
     local ttl = tonumber(TRANSPORT_TTL[command]) or 0.15
@@ -388,13 +399,18 @@ local function transportInvokeCommand(command, ...)
         return false, "Library.Network.Invoke unavailable", "none"
     end
 
-    local invoked, payload = pcall(network.Invoke, command, ...)
+    -- Direct hashed resolution is preferred. If it is unavailable, call the
+    -- current game name first (for example Join The Coin), never the stale
+    -- logical alias that can leave Library.Network.Invoke yielding forever.
+    local routedCommand = preferredCommand(context, command)
+    local fallbackRoute = "Library.Network.Invoke [" .. tostring(routedCommand) .. "]"
+    local invoked, payload = pcall(network.Invoke, routedCommand, ...)
     if not invoked then
-        finishInvoke(gateKey, entry, false, payload, "Library.Network.Invoke")
-        return false, payload, "Library.Network.Invoke"
+        finishInvoke(gateKey, entry, false, payload, fallbackRoute)
+        return false, payload, fallbackRoute
     end
-    finishInvoke(gateKey, entry, true, payload, "Library.Network.Invoke")
-    return true, payload, "Library.Network.Invoke"
+    finishInvoke(gateKey, entry, true, payload, fallbackRoute)
+    return true, payload, fallbackRoute
 end
 
 local function transportFireCommand(command, ...)
@@ -443,9 +459,11 @@ local function transportFireCommand(command, ...)
     if not network or type(network.Fire) ~= "function" then
         return failed("Library.Network.Fire unavailable")
     end
-    local fired, problem = pcall(network.Fire, command, ...)
+    local routedCommand = preferredCommand(context, command)
+    local fallbackRoute = "Library.Network.Fire [" .. tostring(routedCommand) .. "]"
+    local fired, problem = pcall(network.Fire, routedCommand, ...)
     if not fired then return failed(tostring(problem)) end
-    return true, "Library.Network.Fire"
+    return true, fallbackRoute
 end
 
 local function callNamedInvoke(command, ...)

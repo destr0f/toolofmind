@@ -10,9 +10,9 @@ const loot = read("loot_reactor.lua");
 const transport = read("network4_transport_module.lua");
 const manifest = JSON.parse(read("runtime_manifest.json"));
 
-assert.strictEqual(manifest.suite.version, "1.4.1-dev.50-network4.1");
+assert.strictEqual(manifest.suite.version, "1.4.1-dev.50-network4.2");
 assert.strictEqual(manifest.modules.networkTransport.version, "1.2.0");
-assert.strictEqual(manifest.modules.petFarmEngine.version, "1.3.4");
+assert.strictEqual(manifest.modules.petFarmEngine.version, "1.3.5");
 assert.strictEqual(manifest.modules.lootReactor.version, "3.6.5");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
@@ -33,6 +33,9 @@ assert(engine.includes("local DEFAULT_DISPATCH_WIDTH = 16"));
 assert(engine.includes("local MAX_QUEUED_JOBS = 32"));
 assert(engine.includes("DispatchSpacing") && engine.includes("0.012"));
 assert(engine.includes("run.NextLaunchAt = due + spacing"));
+assert(engine.includes("local routedCommand = preferredCommand(context, command)"));
+assert(engine.includes('"Library.Network.Invoke [" .. tostring(routedCommand)'));
+assert(farm.includes("CommandRouteCandidates = function(commandName)"));
 assert(engine.includes("while not inflight.done")
     && engine.includes("transportGate.InFlight[gateKey] = nil"));
 assert(!engine.includes("transportGate.InvokeHistory[gateKey] ="));

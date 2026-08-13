@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.50-network4.1"
+local VERSION = "1.4.1-dev.50-network4.2"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3440,6 +3440,9 @@ function petFarm:EnsureEngine()
         Enabled = function() return config.PetFarm end,
         Resetting = function() return farmResetRunning end,
         NetworkReady = networkReady,
+        CommandRouteCandidates = function(commandName)
+            return coinSync.NetworkTransport:CommandRouteCandidates(commandName)
+        end,
         GetCommandRemote = getCommandRemote,
         GetFireRemote = getFireRemote,
         InvalidateCommand = function(commandName, remote)

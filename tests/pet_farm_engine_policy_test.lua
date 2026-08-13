@@ -31,13 +31,13 @@ local states = {}
 local fireCalls = 0
 local network = {
     Invoke = function(command, _, requested)
-        assert(command == "Join Coin")
+        assert(command == "Join The Coin")
         local accepted = {}
         for _, petId in ipairs(requested) do accepted[petId] = true end
         return accepted
     end,
     Fire = function(command)
-        assert(command == "Change Pet Target" or command == "Farm Coin")
+        assert(command == "Change Pet Target NOW" or command == "Farm The Coin")
         fireCalls = fireCalls + 1
     end,
 }
@@ -48,6 +48,15 @@ local function context(overrides)
         Enabled = function() return true end,
         Resetting = function() return false end,
         NetworkReady = function() return network end,
+        CommandRouteCandidates = function(command)
+            local aliases = {
+                ["Join Coin"] = { "Join The Coin", "Join Coin" },
+                ["Leave Coin"] = { "Leave The Coin", "Leave Coin" },
+                ["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" },
+                ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
+            }
+            return aliases[command] or { command }
+        end,
         RecordAlive = function(record) return record.Alive end,
         StateCurrent = function(petId, state) return states[petId] == state end,
         OnAccepted = function(petId, state)

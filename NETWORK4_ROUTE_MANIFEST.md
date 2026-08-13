@@ -1,6 +1,6 @@
 # Active Network4/Network5 Route Manifest
 
-Suite: `1.4.1-dev.50-network4.1`
+Suite: `1.4.1-dev.50-network4.2`
 
 Evidence used:
 
@@ -25,7 +25,7 @@ Evidence used:
 
    `kind=1` is `RemoteEvent`; `kind=2` is `RemoteFunction`.
 4. A resolved instance must have the expected class and be a descendant of `ReplicatedStorage`. Bindable bridges are accepted only when the live Network table actually exposes a matching live bridge.
-5. Route caches are scoped to the runtime generation. A transport failure invalidates only the exact `(kind, command, expected instance)` route. Named `Library.Network.Fire/Invoke` is the final compatibility fallback.
+5. Route caches are scoped to the runtime generation. A transport failure invalidates only the exact `(kind, command, expected instance)` route. Named `Library.Network.Fire/Invoke` is the final compatibility fallback and receives the first current live alias (`Join The Coin`, `Change Pet Target NOW`, `Farm The Coin`) rather than the project's legacy logical name.
 6. Local `FireServer` success is transport commitment, not server acknowledgement. `InvokeServer` results are returned to the caller but completed state-changing responses are never replayed.
 
 ## Outbound RemoteFunctions
@@ -88,4 +88,3 @@ Inbound events resolve as live `RemoteEvent` instances first and use `Library.Ne
 - `pet_farm_lite_engine.lua`: `InvokeHistory` is deliberately empty; only identical currently-in-flight invokes may coalesce. Fire marks expire automatically and every transport map is cleared by start/reset/stop.
 - `loot_reactor.lua`: pending orb IDs leave pending only after local send; successful IDs are never requeued because another ID received or missed `Orb Removed`.
 - Reload increments the runtime generation, disconnects old workers, clears main route caches and invokes the adapter's full clear. No physical remote hash or session child index survives into a new generation.
-
