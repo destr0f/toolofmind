@@ -161,6 +161,55 @@ local rejected = engine("stats")
 assert(rejected.Rejected == 1 and rejected.Retries == 0)
 assert(rejected.Queued == 0 and failedCount == 1 and states.failure == nil)
 
+-- A grouped boss rejection invalidates its generation only after every local
+-- JOINING reservation has been released. It must remain exactly one request.
+local bossRejectCalls = 0
+local bossFailed = 0
+local removedSource
+network.Invoke = function()
+    bossRejectCalls = bossRejectCalls + 1
+    return false
+end
+assert(engine("start", context({
+    OnBossSpawnReady = function() return true end,
+    OnBossRemoved = function(_, _, source) removedSource = source end,
+    OnFailed = function(petId, state)
+        assert(states[petId] == state)
+        states[petId] = nil
+        bossFailed = bossFailed + 1
+    end,
+})) == true)
+local bossReady, _, bossGeneration = engine("boss-spawn", {
+    CoinId = "rejected-boss",
+    Record = { Alive = true },
+    Direct = true,
+    ReceivedAt = os.clock(),
+    PayloadComplete = true,
+})
+assert(bossReady == true and bossGeneration ~= nil)
+local bossRejectEntries = {}
+for index = 1, 15 do
+    local petId = "boss-reject-" .. tostring(index)
+    local state = { Phase = "joining" }
+    states[petId] = state
+    bossRejectEntries[index] = { PetId = petId, State = state }
+end
+assert(engine("dispatch", {
+    CoinId = "rejected-boss",
+    Record = { Alive = true },
+    BossGeneration = bossGeneration,
+    Entries = bossRejectEntries,
+}) == true)
+local bossRejected = engine("stats")
+assert(bossRejectCalls == 1 and bossFailed == 15)
+assert(bossRejected.Rejected == 15 and bossRejected.Retries == 0)
+assert(bossRejected.Active == 0 and bossRejected.Queued == 0)
+assert(removedSource == "server reject")
+for index = 1, 15 do
+    assert(states["boss-reject-" .. tostring(index)] == nil,
+        "boss rejection leaked a JOINING state")
+end
+
 -- Transport failures never widen the fixed sixteen-lane writer.
 network.Invoke = function() error("transient transport failure") end
 local transportState = { Phase = "joining" }

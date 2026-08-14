@@ -42,7 +42,11 @@ const warp = block(
 assert(warp.includes('math.min(#petIds, 16)'), "warp is not bounded to the equipped batch");
 assert(warp.includes('pcall(workspace.BulkMoveTo, workspace, parts, cframes)'),
     "warp does not use one guarded BulkMoveTo batch");
-assert(warp.includes('state.networkTarget = pos'),
+assert(warp.includes('record.Position'),
+    "headless warp still requires the visual chest POS");
+assert(warp.includes('anchor.Name = "__PSX_BOSS_WARP_ANCHOR"'),
+    "headless warp has no bounded synthetic target anchor");
+assert(warp.includes('state.networkTarget = targetAnchor'),
     "native NetworkUpdate can duplicate Change Pet Target after warp");
 assert(warp.includes('state.arrived = true'),
     "native arrival state is not synchronized");
@@ -56,9 +60,18 @@ assert((warp.match(/BulkMoveTo/g) || []).length === 2,
     "warp should contain only the comment/name and one BulkMoveTo call");
 
 const dispatch = block("local function dispatchPlan", "function petFarm:DispatchBossRecord");
-assert(dispatch.includes('pcall(petFarm.WarpBossPetsOnce, petFarm, record, petIds)'),
-    "dispatch does not fail-open around the optional warp");
-assert(dispatch.indexOf("WarpBossPetsOnce") < dispatch.indexOf('pcall(petFarm.Engine, "dispatch", payload)'),
-    "local warp is not performed before the unchanged C54.1 transport dispatch");
+assert(!dispatch.includes('WarpBossPetsOnce'),
+    "warp still runs before Join Coin acceptance");
+const accepted = block("OnAccepted = function", "OnSignalsSent = function");
+assert(accepted.includes('pcall(self.WarpBossPetsOnce, self, record, self.LastEquippedIds or { petId })'),
+    "accepted Join Coin does not trigger the fail-open local warp");
+assert(accepted.indexOf('state.Phase = "working"') < accepted.indexOf("WarpBossPetsOnce"),
+    "warp must run only after the UID is committed as working");
+
+const finalize = block("function petFarm:FinalizeBossRemoval", "assignmentCount = function");
+assert(finalize.includes('tostring(source) == "server reject"'),
+    "server reject is not isolated from fallback polling");
+assert(finalize.includes('coinSync.BossRejected[tostring(rawId)] = true'),
+    "rejected generation is not quarantined until New Coin");
 
 console.log("boss_pet_warp_policy_test: ok");

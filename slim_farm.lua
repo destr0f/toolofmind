@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.2-boss-pet-warp"
+local VERSION = "1.4.1-candidate.54.3-join-clean-pos-warp"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2811,6 +2811,8 @@ local petFarm = {
         NativeScript = nil,
         ResolveRetryAt = 0,
         LastGenerationKey = nil,
+        LastAttemptGenerationKey = nil,
+        TargetAnchor = nil,
         Parts = {},
         CFrames = {},
         States = {},
@@ -2976,6 +2978,11 @@ function petFarm:ResetBossPetWarp(reason)
     warp.NativeScript = nil
     warp.ResolveRetryAt = 0
     warp.LastGenerationKey = nil
+    warp.LastAttemptGenerationKey = nil
+    if typeof(warp.TargetAnchor) == "Instance" then
+        pcall(warp.TargetAnchor.Destroy, warp.TargetAnchor)
+    end
+    warp.TargetAnchor = nil
     table.clear(warp.Parts)
     table.clear(warp.CFrames)
     table.clear(warp.States)
@@ -3063,13 +3070,14 @@ function petFarm:WarpBossPetsOnce(record, petIds)
         return false
     end
 
-    warp.Attempts = (tonumber(warp.Attempts) or 0) + 1
     local generationKey = tostring(record.Id) .. "@"
         .. tostring(record.BossSpawnGeneration or coinMutationSerial)
-    if warp.LastGenerationKey == generationKey then
+    if warp.LastAttemptGenerationKey == generationKey then
         warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
         return false
     end
+    warp.LastAttemptGenerationKey = generationKey
+    warp.Attempts = (tonumber(warp.Attempts) or 0) + 1
 
     local model = record.Model
     if not model or model.Parent == nil then
@@ -3077,12 +3085,37 @@ function petFarm:WarpBossPetsOnce(record, petIds)
         local coins = things and things:FindFirstChild("Coins")
         model = coins and coins:FindFirstChild(tostring(record.Id))
     end
-    local pos = model and model:FindFirstChild("POS")
-    if not pos or not pos:IsA("BasePart") then
-        warp.LastProblem = "boss POS unavailable; C54.1 path retained"
+    local visualPos = model and model:FindFirstChild("POS")
+    if visualPos and not visualPos:IsA("BasePart") then visualPos = nil end
+    local targetPosition = visualPos and visualPos.Position or record.Position
+    if typeof(targetPosition) ~= "Vector3" then
+        warp.LastProblem = "boss position unavailable; C54.1 path retained"
         warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
         return false
     end
+
+    local targetAnchor = visualPos
+    if not targetAnchor then
+        targetAnchor = warp.TargetAnchor
+        if typeof(targetAnchor) ~= "Instance" or not targetAnchor:IsA("BasePart")
+            or targetAnchor.Parent == nil then
+            local anchor = Instance.new("Part")
+            anchor.Name = "__PSX_BOSS_WARP_ANCHOR"
+            anchor.Size = Vector3.new(0.2, 0.2, 0.2)
+            anchor.Transparency = 1
+            anchor.Anchored = true
+            anchor.CanCollide = false
+            anchor.CanTouch = false
+            anchor.CanQuery = false
+            anchor.CastShadow = false
+            anchor.Archivable = false
+            anchor.Parent = workspace
+            warp.TargetAnchor = anchor
+            targetAnchor = anchor
+        end
+        targetAnchor.CFrame = CFrame.new(targetPosition)
+    end
+    local targetCFrame = visualPos and visualPos.CFrame or targetAnchor.CFrame
 
     local nativePets, problem = self:ResolveBossPetRuntime(petIds)
     if type(nativePets) ~= "table" then
@@ -3113,7 +3146,7 @@ function petFarm:WarpBossPetsOnce(record, petIds)
         if type(state) == "table" and typeof(physical) == "Instance"
             and physical:IsA("BasePart") and physical.Parent ~= nil then
             local angle = ((index - 1) / math.max(total, 1)) * math.pi * 2
-            local destination = pos.CFrame * CFrame.Angles(0, angle, 0)
+            local destination = targetCFrame * CFrame.Angles(0, angle, 0)
                 * CFrame.new(0, 0, radius)
             parts[#parts + 1] = physical
             cframes[#cframes + 1] = destination
@@ -3142,8 +3175,8 @@ function petFarm:WarpBossPetsOnce(record, petIds)
     local now = os.clock()
     for index, state in ipairs(states) do
         local destination = cframes[index]
-        state.target = pos
-        state.networkTarget = pos
+        state.target = targetAnchor
+        state.networkTarget = targetAnchor
         state.farming = true
         state.follower = nil
         state.randomRotation = math.deg(angles[index])
@@ -3878,8 +3911,8 @@ function petFarm:EnsureEngine()
             local record = type(info) == "table" and info.Record or nil
             return self:DispatchBossRecord(record, spawnGeneration)
         end,
-        OnBossRemoved = function(coinId, spawnGeneration)
-            self:FinalizeBossRemoval(coinId, spawnGeneration)
+        OnBossRemoved = function(coinId, spawnGeneration, source)
+            self:FinalizeBossRemoval(coinId, spawnGeneration, source)
         end,
         OnAccepted = function(petId, state, record, _, attempt, route)
             petId = tostring(petId)
@@ -3899,6 +3932,12 @@ function petFarm:EnsureEngine()
             self.ProgressProbeAccepted = self.ProgressProbeAccepted + 1
             self.ProgressLeases[petId] = state
             self:ScheduleProgressLease(0.5)
+            -- Warp only after Join Coin and the two farm signals succeeded.
+            -- LastAttemptGenerationKey makes this one bounded local batch for
+            -- the whole chest generation, even though OnAccepted is per UID.
+            if config.BossPetInstantArrival and config.Mode == "Boss Chest Only" then
+                pcall(self.WarpBossPetsOnce, self, record, self.LastEquippedIds or { petId })
+            end
             driverStatus = "Lite lock accepted; awaiting real progress via " .. tostring(route)
             return true
         end,
@@ -4179,13 +4218,6 @@ local function dispatchPlan(record, petIds)
     end
     if #entries == 0 then return end
 
-    -- Optional local-only boss acceleration. It performs one bounded
-    -- BulkMoveTo per server spawn and never adds a server request. Failure is
-    -- deliberately ignored so the proven C54.1 dispatch path remains intact.
-    if config.BossPetInstantArrival and config.Mode == "Boss Chest Only" then
-        pcall(petFarm.WarpBossPetsOnce, petFarm, record, petIds)
-    end
-
     local payload = petFarm.DispatchPayload
     payload.Record = record
     payload.CoinId = coinId
@@ -4335,11 +4367,17 @@ function petFarm:HandleBossRemoved(rawId, source)
     return ok and removed == true
 end
 
-function petFarm:FinalizeBossRemoval(rawId, generation)
+function petFarm:FinalizeBossRemoval(rawId, generation, source)
     coinSync.BossWatchdogToken = coinSync.BossWatchdogToken + 1
     coinSync.BossAbsentUntil = os.clock() + 3.2
     releaseAssignmentsForCoin(rawId, true)
-    self:ArmBossWatchdog(generation)
+    if tostring(source) == "server reject" then
+        -- Keep the rejected generation quarantined until its authoritative
+        -- New Coin event clears this ID. Do not retry, poll, or arm Get Coins.
+        coinSync.BossRejected[tostring(rawId)] = true
+    else
+        self:ArmBossWatchdog(generation)
+    end
     driverStatus = "boss chest absent; awaiting New Coin"
 end
 

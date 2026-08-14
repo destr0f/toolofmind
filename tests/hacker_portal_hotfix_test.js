@@ -5,7 +5,7 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "slim_farm.lua"), "utf8");
 
-assert(source.includes('local VERSION = "1.4.1-candidate.54.2-boss-pet-warp"'));
+assert(source.includes('local VERSION = "1.4.1-candidate.54.3-join-clean-pos-warp"'));
 assert(source.includes('["hacker portal chest"] = true'));
 assert(source.includes('["giant hacker portal chest"] = "Hacker Portal"'));
 assert(source.includes('["Hacker Portals"] = "Hacker Portal"'));
