@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.56-boss-ping-spread"
+local VERSION = "1.4.1-candidate.57-boss-signal-diet-log"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -284,6 +284,91 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local VirtualUser = game:GetService("VirtualUser")
 local player = Players.LocalPlayer
+
+-- One low-overhead JSONL journal per Roblox session. Hot paths only encode a
+-- bounded event into memory; disk I/O is coalesced every five seconds. This is
+-- deliberately independent from request dispatch so logging can never gate
+-- farm, eggs, loot, machines, boosts or rewards.
+env.PSX_OG_SESSION_LOG = {
+    Enabled = false,
+    Path = nil,
+    Buffer = {},
+    LastFlushAt = 0,
+    FlushInterval = 5,
+    Dropped = 0,
+}
+
+do
+    local sessionLog = env.PSX_OG_SESSION_LOG
+    sessionLog.Write = type(writefile) == "function" and writefile or nil
+    sessionLog.Append = type(appendfile) == "function" and appendfile or nil
+    sessionLog.MakeFolder = type(makefolder) == "function" and makefolder or nil
+    sessionLog.Http = game:GetService("HttpService")
+
+    function sessionLog.Push(kind, data)
+        if not sessionLog.Enabled then return false end
+        if #sessionLog.Buffer >= 120 then
+            sessionLog.Dropped = sessionLog.Dropped + 1
+            return false
+        end
+        local ok, encoded = pcall(sessionLog.Http.JSONEncode, sessionLog.Http, {
+            wall = os.time(),
+            clock = os.clock(),
+            generation = tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0,
+            version = VERSION,
+            kind = tostring(kind or "event"),
+            data = type(data) == "table" and data or { value = tostring(data) },
+        })
+        if ok and type(encoded) == "string" then
+            sessionLog.Buffer[#sessionLog.Buffer + 1] = encoded
+            return true
+        end
+        sessionLog.Dropped = sessionLog.Dropped + 1
+        return false
+    end
+
+    function sessionLog.Flush(force)
+        if not sessionLog.Enabled or #sessionLog.Buffer == 0 then return false end
+        local now = os.clock()
+        if force ~= true and now - sessionLog.LastFlushAt < sessionLog.FlushInterval then
+            return false
+        end
+        local payload = table.concat(sessionLog.Buffer, "\n") .. "\n"
+        local ok, problem = pcall(sessionLog.Append, sessionLog.Path, payload)
+        if not ok then
+            sessionLog.Enabled = false
+            warn("[PSX SLIM] session log disabled: " .. tostring(problem))
+            return false
+        end
+        table.clear(sessionLog.Buffer)
+        sessionLog.LastFlushAt = now
+        return true
+    end
+
+    if sessionLog.Write and sessionLog.Append then
+        local folder = "PSX_OG_SESSION_LOGS"
+        if sessionLog.MakeFolder then pcall(sessionLog.MakeFolder, folder) end
+        sessionLog.Path = string.format(
+            "%s/session_%s_%s_%s.jsonl",
+            folder,
+            tostring(game.PlaceId),
+            tostring(player and player.UserId or 0),
+            tostring(os.time()) .. "_g" .. tostring(env.PSX_OG_RUNTIME_GENERATION)
+        )
+        local created = pcall(sessionLog.Write, sessionLog.Path, "")
+        sessionLog.Enabled = created == true
+        if sessionLog.Enabled then
+            env.PSX_OG_SESSION_LOG_PATH = sessionLog.Path
+            sessionLog.Push("session_start", {
+                placeId = game.PlaceId,
+                userId = player and player.UserId or 0,
+                job = string.sub(tostring(game.JobId or "offline"), 1, 12),
+            })
+            sessionLog.Flush(true)
+            trace("session log", sessionLog.Path .. " | buffered 5s flush")
+        end
+    end
+end
 
 local token = {}
 token.InitialCamera = workspace.CurrentCamera
@@ -3664,9 +3749,10 @@ function petFarm:EnsureEngine()
             if petStates[petId] ~= state
                 or state.Generation ~= farmGeneration
                 or not recordAlive(record) then return false end
-            -- OnAccepted is reached only after the engine successfully sent both
-            -- named farm signals. Keep the target locked immediately; optional
-            -- game acknowledgements refine diagnostics and lease liveness.
+            -- OnAccepted is reached after authoritative Join Coin membership and
+            -- the required Farm Coin signal. Ordinary modes also send the native
+            -- target-change signal; boss mode intentionally suppresses that
+            -- duplicate fan-out.
             state.Phase = "working"
             state.RetryCount = math.max((tonumber(attempt) or 1) - 1, 0)
             state.AcceptedAt = os.clock()
@@ -3763,8 +3849,7 @@ function petFarm:EnsureEngine()
         DispatchSpacing = 0.012,
         DispatchPhaseOffset = (math.abs(tonumber(player.UserId) or 0) % 13) * 0.001,
         BossDispatchPhaseOffset = (math.abs(tonumber(player.UserId) or 0) % 12) * 0.008,
-        SignalBatchSize = 4,
-        SignalBatchDelay = 0.008,
+        BossJoinAuthoritative = true,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
     self.Loading = false
@@ -4034,7 +4119,15 @@ function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
             and (payload.a ~= nil or payload.Area ~= nil or record.Area ~= nil),
     }
     coinSync.BossAbsentUntil = 0
-    local ok, accepted = pcall(self.Engine, "boss-spawn", info)
+    local ok, accepted, spawnGeneration = pcall(self.Engine, "boss-spawn", info)
+    env.PSX_OG_SESSION_LOG.Push("boss_spawn", {
+        coin = info.CoinId,
+        source = info.Source,
+        direct = info.Direct,
+        forceNew = info.ForceNew,
+        accepted = ok and accepted == true,
+        generation = tonumber(spawnGeneration) or 0,
+    })
     return ok and accepted == true
 end
 
@@ -4102,7 +4195,12 @@ end
 function petFarm:FinalizeBossRemoval(rawId, generation)
     coinSync.BossWatchdogToken = coinSync.BossWatchdogToken + 1
     coinSync.BossAbsentUntil = os.clock() + 3.2
-    releaseAssignmentsForCoin(rawId, true)
+    local released = releaseAssignmentsForCoin(rawId, true)
+    env.PSX_OG_SESSION_LOG.Push("boss_remove", {
+        coin = tostring(rawId),
+        generation = tonumber(generation) or 0,
+        released = tonumber(released) or 0,
+    })
     self:ArmBossWatchdog(generation)
     driverStatus = "boss chest absent; awaiting New Coin"
 end
@@ -6591,6 +6689,11 @@ local function shutdown(reason)
     if shutdownStarted then return end
     shutdownStarted = true
     trace("stop requested", tostring(reason or "reload"))
+    env.PSX_OG_SESSION_LOG.Push("session_stop", {
+        reason = tostring(reason or "reload"),
+        bufferedDrops = tonumber(env.PSX_OG_SESSION_LOG.Dropped) or 0,
+    })
+    env.PSX_OG_SESSION_LOG.Flush(true)
     if env.PSX_OG_SLIM_TOKEN == token then env.PSX_OG_SLIM_TOKEN = nil end
     config.PetFarm = false
     config.AutoTechDiamondPack = false
@@ -6888,6 +6991,8 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "transportFailures", tonumber(dispatchStats.TransportFailures) or 0)
     requestDiagnostics.Gauge("Farm", "localTimeouts", tonumber(dispatchStats.LocalTimeouts) or 0)
     requestDiagnostics.Gauge("Farm", "targetSignals", tonumber(dispatchStats.TargetSignals) or 0)
+    requestDiagnostics.Gauge("Farm", "targetSignalsSkipped",
+        tonumber(dispatchStats.TargetSignalsSkipped) or 0)
     requestDiagnostics.Gauge("Farm", "farmSignals", tonumber(dispatchStats.FarmSignals) or 0)
     requestDiagnostics.Gauge("Farm", "joinInvokes", tonumber(dispatchStats.JoinInvokes) or 0)
     requestDiagnostics.Gauge("Farm", "joinInvokesPerSecond", requestDiagnostics.SampleRate(
@@ -7132,6 +7237,109 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.TelemetryRates.At = now
 end
 
+local function recordSessionSample()
+    local sessionLog = env.PSX_OG_SESSION_LOG
+    if not sessionLog.Enabled then return end
+
+    local inspectorState = {}
+    if type(requestDiagnostics.Controller) == "table"
+        and type(requestDiagnostics.Controller.State) == "function" then
+        local ok, state = pcall(
+            requestDiagnostics.Controller.State,
+            requestDiagnostics.Controller
+        )
+        if ok and type(state) == "table" then inspectorState = state end
+    end
+
+    local dispatchStats = petFarm:RefreshStats()
+    local bossStats = petFarm:BossStats() or {}
+    local working, joining = petFarm:PhaseCounts()
+    local lootStats = {}
+    if lootCollector.Controller then
+        local ok, stats = pcall(lootCollector.Controller, "stats")
+        if ok and type(stats) == "table" then lootStats = stats end
+    end
+
+    sessionLog.Push("sample", {
+        ping = tonumber(inspectorState.Ping) or 0,
+        pingP50 = tonumber(inspectorState.PingP50) or 0,
+        pingP95 = tonumber(inspectorState.PingP95) or 0,
+        pingMax = tonumber(inspectorState.PingMax) or 0,
+        fps = tonumber(inspectorState.FPS) or 0,
+        memoryMb = tonumber(inspectorState.MemoryMb) or 0,
+        health = tostring(inspectorState.Health or "unknown"),
+        incident = tostring(inspectorState.Incident or "none"),
+        config = {
+            farm = config.PetFarm == true,
+            mode = tostring(config.Mode),
+            world = tostring(getSelectedWorld() or "unknown"),
+            zone = tostring(getSelectedZone() or "unknown"),
+            eggs = config.AutoEgg == true,
+            orbs = config.Orbs == true,
+            lootbags = config.Lootbags == true,
+            gold = config.AutoGoldenGalaxyFox == true,
+            rainbow = config.AutoRainbowGalaxyFox == true,
+            darkMatter = config.AutoDarkMatterGalaxyFox == true,
+            claimDarkMatter = config.AutoClaimDarkMatter == true,
+            boosts = config.AutoTripleCoins == true or config.AutoTripleDamage == true
+                or config.AutoSuperLucky == true or config.AutoUltraLucky == true,
+            rewards = config.AutoVIPRewards == true or config.AutoRankRewards == true
+                or config.AutoFreeGifts == true,
+        },
+        farm = {
+            active = tonumber(dispatchStats.Active) or 0,
+            queued = tonumber(dispatchStats.Queued) or 0,
+            accepted = tonumber(dispatchStats.Accepted) or 0,
+            rejected = tonumber(dispatchStats.Rejected) or 0,
+            errors = tonumber(dispatchStats.Errors) or 0,
+            retries = tonumber(dispatchStats.Retries) or 0,
+            joins = tonumber(dispatchStats.JoinInvokes) or 0,
+            targetSignals = tonumber(dispatchStats.TargetSignals) or 0,
+            targetSignalsSkipped = tonumber(dispatchStats.TargetSignalsSkipped) or 0,
+            farmSignals = tonumber(dispatchStats.FarmSignals) or 0,
+            signalFailures = tonumber(dispatchStats.SignalFailures) or 0,
+            averageRtt = tonumber(dispatchStats.AverageRTT) or 0,
+            working = tonumber(working) or 0,
+            joining = tonumber(joining) or 0,
+            assignments = assignmentCount(),
+            targets = tonumber(petFarm.LastTargetCount) or 0,
+        },
+        boss = {
+            state = tostring(bossStats.State or "unknown"),
+            generation = tonumber(bossStats.SpawnGeneration) or 0,
+            spawns = tonumber(bossStats.SpawnsSeen) or 0,
+            direct = tonumber(bossStats.DirectSpawns) or 0,
+            fallback = tonumber(bossStats.FallbackSpawns) or 0,
+            duplicates = tonumber(bossStats.DuplicateSpawns) or 0,
+            joinsSent = tonumber(bossStats.JoinsSent) or 0,
+            joinsAccepted = tonumber(bossStats.JoinsAccepted) or 0,
+        },
+        loot = {
+            pendingOrbs = tonumber(lootStats.PendingOrbs) or 0,
+            unconfirmedOrbs = tonumber(lootStats.UnconfirmedOrbs) or 0,
+            orbEvents = tonumber(lootStats.OrbEvents) or 0,
+            orbIdsSent = tonumber(lootStats.OrbIdsSent) or 0,
+            orbAcked = tonumber(lootStats.OrbAcked) or 0,
+            orbRetried = tonumber(lootStats.OrbRetried) or 0,
+            orbErrors = tonumber(lootStats.OrbErrors) or 0,
+            waitingBags = tonumber(lootStats.WaitingBags) or 0,
+            bagEvents = tonumber(lootStats.BagEvents) or 0,
+            bagSent = tonumber(lootStats.BagSent) or 0,
+            bagAcked = tonumber(lootStats.BagAcked) or 0,
+            bagRetried = tonumber(lootStats.BagRetried) or 0,
+            bagErrors = tonumber(lootStats.BagErrors) or 0,
+        },
+        egg = requestDiagnostics.Egg,
+        commands = requestDiagnostics.CommandCounters,
+        unresolvedRoutes = tonumber(requestDiagnostics.UnresolvedRouteCount) or 0,
+        activeOperations = tonumber(inspectorState.ActiveOperations) or 0,
+        activeInvokes = tonumber(inspectorState.ActiveInvokes) or 0,
+        unackedFires = tonumber(inspectorState.UnackedFires) or 0,
+        logDrops = tonumber(sessionLog.Dropped) or 0,
+    })
+    sessionLog.Flush(false)
+end
+
 local function updateRuntimeTelemetry()
     if not running() then return end
     local nextDiagnosticsAt = 0
@@ -7246,6 +7454,7 @@ local function updateRuntimeTelemetry()
         elseif type(quickHUD) == "table" then
             quickHUD:ApplyVisibility()
         end
+        recordSessionSample()
         statusSetters.Flush()
         task.delay(1, tick)
     end

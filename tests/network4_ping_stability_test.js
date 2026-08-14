@@ -10,9 +10,9 @@ const loot = read("loot_reactor.lua");
 const transport = read("network4_transport_module.lua");
 const manifest = JSON.parse(read("runtime_manifest.json"));
 
-assert.strictEqual(manifest.suite.version, "1.4.1-candidate.56-boss-ping-spread");
+assert.strictEqual(manifest.suite.version, "1.4.1-candidate.57-boss-signal-diet-log");
 assert.strictEqual(manifest.modules.networkTransport.version, "1.3.0");
-assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.2");
+assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.3");
 assert.strictEqual(manifest.modules.lootReactor.version, "3.7.0");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
@@ -36,6 +36,10 @@ assert(engine.includes("run.NextLaunchAt = due + spacing"));
 assert(engine.includes("local routedCommand = preferredCommand(context, command)"));
 assert(engine.includes('"Library.Network.Invoke [" .. tostring(routedCommand)'));
 assert(farm.includes("CommandRouteCandidates = function(commandName)"));
+assert(engine.includes("bossJoinAuthoritative")
+    && engine.includes("run.TargetSignalsSkipped = run.TargetSignalsSkipped + 1")
+    && farm.includes("BossJoinAuthoritative = true"));
+assert(!engine.includes("SignalBatchSize") && !engine.includes("SignalBatchDelay"));
 assert(engine.includes("while not inflight.done")
     && engine.includes("transportGate.InFlight[gateKey] = nil"));
 assert(!engine.includes("transportGate.InvokeHistory[gateKey] ="));

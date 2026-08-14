@@ -15,6 +15,7 @@ local engine = require("../pet_farm_lite_engine")
 local states = {}
 local failed = 0
 local joins = 0
+local fires = {}
 local mutateRecordDuringJoin = false
 local network = {
     Invoke = function(_, _, requested)
@@ -24,7 +25,9 @@ local network = {
         for _, uid in ipairs(requested) do accepted[uid] = true end
         return accepted
     end,
-    Fire = function() end,
+    Fire = function(command)
+        fires[command] = (fires[command] or 0) + 1
+    end,
 }
 
 local function startEngine()
@@ -49,8 +52,7 @@ local function startEngine()
         DispatchWidth = 16,
         DispatchPhaseOffset = 0,
         BossDispatchPhaseOffset = 0,
-        SignalBatchSize = 4,
-        SignalBatchDelay = 0,
+        BossJoinAuthoritative = true,
     })
 end
 
@@ -75,11 +77,21 @@ assert(engine("dispatch", {
 }) == true)
 assert(joins == 1, "boss dispatch must begin before a deferred scheduler turn")
 assert(bossState.Phase == "working")
+assert((fires["Change Pet Target"] or 0) == 0,
+    "authoritative boss Join must suppress duplicate target replication")
+assert((fires["Farm Coin"] or 0) == 1,
+    "authoritative boss Join must retain the required farm signal")
+local bossDispatchStats = engine("stats")
+assert(bossDispatchStats.TargetSignalsSkipped == 1
+    and bossDispatchStats.TargetSignals == 0
+    and bossDispatchStats.FarmSignals == 1,
+    "boss signal-diet counters must match the actual wire calls")
 
 engine("stop")
 table.clear(states)
 table.clear(scheduled)
 failed, joins = 0, 0
+table.clear(fires)
 assert(startEngine() == true)
 local spawned2, _, generation2 = engine("boss-spawn", {
     CoinId = "boss-race",

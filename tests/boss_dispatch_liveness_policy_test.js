@@ -26,18 +26,27 @@ requirePattern(
 );
 requirePattern(
   engine,
-  /local batchSize = [^\n]*SignalBatchSize[\s\S]{0,250}?SignalBatchDelay/,
-  "accepted boss signals must read bounded micro-batch settings"
+  /local bossJoinAuthoritative = job\.BossGeneration ~= nil[\s\S]{0,120}?context\.BossJoinAuthoritative == true/,
+  "boss dispatch must explicitly gate the Join-authoritative signal diet"
 );
 requirePattern(
   engine,
-  /index % batchSize == 0[\s\S]{0,180}?scheduler\.wait\(batchDelay\)/,
-  "accepted boss signals must yield between bounded micro-batches"
+  /if bossJoinAuthoritative then[\s\S]{0,220}?TargetSignalsSkipped[\s\S]{0,280}?else[\s\S]{0,220}?"Change Pet Target"[\s\S]{0,450}?"Farm Coin"/,
+  "boss jobs must omit duplicate target replication while ordinary jobs retain it"
+);
+if (engine.includes("SignalBatchSize") || engine.includes("SignalBatchDelay")
+    || engine.includes("scheduler.wait(batchDelay)")) {
+  throw new Error("the old micro-batch scheduler must not fragment RemoteEvents across frames");
+}
+requirePattern(
+  farm,
+  /BossDispatchPhaseOffset = \(math\.abs\(tonumber\(player\.UserId\) or 0\) % 12\) \* 0\.008[\s\S]{0,120}?BossJoinAuthoritative = true/,
+  "farm context must spread clients and enable the captured Join-authoritative boss contract"
 );
 requirePattern(
   farm,
-  /BossDispatchPhaseOffset = \(math\.abs\(tonumber\(player\.UserId\) or 0\) % 12\) \* 0\.008[\s\S]{0,120}?SignalBatchSize = 4[\s\S]{0,80}?SignalBatchDelay = 0\.008/,
-  "farm context must spread clients and use four-pet signal batches"
+  /targetSignalsSkipped[\s\S]{0,120}?TargetSignalsSkipped/,
+  "telemetry must expose every intentionally suppressed boss target signal"
 );
 requirePattern(
   farm,

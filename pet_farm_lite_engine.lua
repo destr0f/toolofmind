@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.4.2"
+local MODULE_VERSION = "1.4.3"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -96,6 +96,7 @@ local run = {
     LastCompletionAt = 0,
     ActiveInvokes = {},
     TargetSignals = 0,
+    TargetSignalsSkipped = 0,
     FarmSignals = 0,
     SignalFailures = 0,
     TransportFailures = 0,
@@ -460,6 +461,7 @@ local function resetStats()
     run.LastRTT = 0
     run.LastProblem = "none"
     run.TargetSignals = 0
+    run.TargetSignalsSkipped = 0
     run.FarmSignals = 0
     run.SignalFailures = 0
     run.TransportFailures = 0
@@ -853,24 +855,34 @@ local function signalEntries(job, entries, route)
     local failed = job.SignalFailures
     table.clear(failed)
     local context = run.Context
-    local batchSize = math.clamp(math.floor(tonumber(context and context.SignalBatchSize) or 4), 1, 16)
-    local batchDelay = job.BossGeneration ~= nil
-        and math.clamp(tonumber(context and context.SignalBatchDelay) or 0.008, 0, 0.02)
-        or 0
-    for index, entry in ipairs(entries) do
+    -- Join Coin is a single authoritative RemoteFunction call containing every
+    -- accepted pet UID. In boss mode the server has already attached those
+    -- pets to this exact coin, so repeating Change Pet Target NOW once per UID
+    -- only doubles the RemoteEvent fan-out. Ordinary modes preserve the full
+    -- game-compatible target + farm sequence.
+    local bossJoinAuthoritative = job.BossGeneration ~= nil
+        and context and context.BossJoinAuthoritative == true
+    for _, entry in ipairs(entries) do
         if entryCurrent(entry) then
-            local targetSent, targetRoute = callNamedFire(
-                "Change Pet Target",
-                entry.PetId,
-                "Coin",
-                job.CoinId
-            )
+            local targetSent, targetRoute
+            if bossJoinAuthoritative then
+                targetSent = true
+                targetRoute = "Join Coin authoritative boss membership"
+                run.TargetSignalsSkipped = run.TargetSignalsSkipped + 1
+            else
+                targetSent, targetRoute = callNamedFire(
+                    "Change Pet Target",
+                    entry.PetId,
+                    "Coin",
+                    job.CoinId
+                )
+            end
             local farmSent, farmRoute = callNamedFire(
                 "Farm Coin",
                 job.CoinId,
                 entry.PetId
             )
-            if targetSent then
+            if targetSent and not bossJoinAuthoritative then
                 run.TargetSignals = run.TargetSignals + 1
                 run.LastTargetChangeAt = os.clock()
             end
@@ -910,13 +922,6 @@ local function signalEntries(job, entries, route)
             end
         else
             clearPendingEntry(entry)
-        end
-        -- A 16-pet boss assignment emits two state signals per UID. Spread the
-        -- burst over a few scheduler slices so several clients do not enqueue
-        -- all of those packets in the same frame.
-        if index < #entries and index % batchSize == 0 and batchDelay > 0
-            and type(scheduler.wait) == "function" then
-            scheduler.wait(batchDelay)
         end
     end
     return failed
@@ -1276,6 +1281,7 @@ local function stats()
         ActiveInvokeCount = activeInvokeCount,
         OldestInvokeAge = oldestInvokeAge,
         TargetSignals = run.TargetSignals,
+        TargetSignalsSkipped = run.TargetSignalsSkipped,
         FarmSignals = run.FarmSignals,
         SignalFailures = run.SignalFailures,
         TransportFailures = run.TransportFailures,
