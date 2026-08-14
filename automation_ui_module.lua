@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.5.1"
+local MODULE_VERSION = "1.5.2"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -225,8 +225,8 @@ local function build(context)
         ["diamonds"] = true, ["fantasy coins"] = true, ["rainbow coins"] = true,
         ["strength"] = true, ["tech coins"] = true,
     }
-    local rulePicker, listView, formulaView
-    local slotControls, draftSlots = {}, { emptySlot, emptySlot, emptySlot }
+    local rulePicker, enchantSelector, listView, formulaView
+    local draftSelections = {}
     local function trim(value)
         return string.match(tostring(value or ""), "^%s*(.-)%s*$") or ""
     end
@@ -273,7 +273,7 @@ local function build(context)
         return tonumber(string.match(tostring(label or ""), "^Variation (%d+)")) or 0
     end
     local function enchantChoices()
-        local values, seen = { emptySlot }, { [string.lower(emptySlot)] = true }
+        local values, seen = {}, {}
         local function add(value)
             local key = string.lower(trim(value))
             if key ~= "" and not seen[key] then
@@ -309,8 +309,8 @@ local function build(context)
     end
     local function draftRule()
         local conditions, seen = {}, {}
-        for index = 1, 3 do
-            local condition = choiceCondition(draftSlots[index])
+        for index = 1, math.min(#draftSelections, 3) do
+            local condition = choiceCondition(draftSelections[index])
             if condition then
                 local key = string.lower(condition.Enchant) .. ":" .. condition.Mode .. ":" .. tostring(condition.Level)
                 if not seen[key] then
@@ -323,16 +323,19 @@ local function build(context)
         return { Enabled = true, Conditions = conditions }
     end
     local function loadDraft()
-        draftSlots = { emptySlot, emptySlot, emptySlot }
+        draftSelections = {}
         local rule = profile().Rules[selectedRule]
         if type(rule) == "table" then
             for index, condition in ipairs(type(rule.Conditions) == "table" and rule.Conditions or {}) do
                 if index > 3 then break end
-                draftSlots[index] = conditionLabel(condition)
+                draftSelections[index] = conditionLabel(condition)
             end
         end
-        for index, control in ipairs(slotControls) do
-            pcall(function() control:Select(draftSlots[index]) end)
+        if enchantSelector then
+            pcall(function()
+                enchantSelector.Value = draftSelections
+                if type(enchantSelector.Display) == "function" then enchantSelector:Display() end
+            end)
         end
     end
     local function refreshSummary()
@@ -356,7 +359,8 @@ local function build(context)
             local values = pickerValues()
             pcall(function()
                 rulePicker:Refresh(values)
-                rulePicker:Select(selectedRule > 0 and values[selectedRule + 1] or values[1])
+                rulePicker.Value = selectedRule > 0 and values[selectedRule + 1] or values[1]
+                if type(rulePicker.Display) == "function" then rulePicker:Display() end
             end)
         end
         loadDraft()
@@ -401,21 +405,28 @@ local function build(context)
         end,
     })
     local choices = enchantChoices()
-    for index = 1, 3 do
-        local slotIndex = index
-        slotControls[slotIndex] = ruleBuilder:Dropdown({
-            Flag = "rule_enchant_slot_" .. tostring(slotIndex),
-            Title = "Required Enchant " .. tostring(slotIndex),
-            Desc = slotIndex == 1 and "At least one slot is required. Filled slots in one variation use AND."
-                or "Leave Empty when this variation needs fewer than three enchants.",
-            Values = choices,
-            Value = emptySlot,
-            Multi = false,
-            AllowNone = false,
-            SearchBarEnabled = true,
-            Callback = function(value) draftSlots[slotIndex] = tostring(value or emptySlot) end,
-        })
-    end
+    enchantSelector = ruleBuilder:Dropdown({
+        Flag = "rule_enchant_selection",
+        Title = "Required Enchants (Choose Up To 3)",
+        Desc = "Selected enchants use AND. Add another variation when you need an OR option.",
+        Values = choices,
+        Value = {},
+        Multi = true,
+        AllowNone = true,
+        SearchBarEnabled = true,
+        Callback = function(values)
+            local selected = {}
+            for _, value in ipairs(type(values) == "table" and values or {}) do
+                if tostring(value) ~= emptySlot and #selected < 3 then selected[#selected + 1] = tostring(value) end
+            end
+            draftSelections = selected
+            if type(values) == "table" and #values > 3 and enchantSelector then
+                enchantSelector.Value = selected
+                if type(enchantSelector.Display) == "function" then enchantSelector:Display() end
+                context.SetRouteStatus("A variation can contain no more than 3 required enchants.")
+            end
+        end,
+    })
     ruleBuilder:Button({
         Title = "ADD AS NEW VARIATION",
         Desc = "Adds these 1-3 enchants as another OR option.",

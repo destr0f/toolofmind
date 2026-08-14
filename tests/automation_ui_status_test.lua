@@ -7,6 +7,7 @@ local function newControl()
         Set = function(self, value) self.Value = tostring(value) end,
         Refresh = function() end,
         Select = function() end,
+        Display = function() end,
     }
 end
 
@@ -79,7 +80,7 @@ local accepted, controls = automationUI("build", {
     BoostEnabled = function() return false end,
     StartBoost = noOp,
     GetRuleEnchantCatalog = function()
-        return { "Rainbow Coins", "Royalty", "Charm" }
+        return { "Rainbow Coins", "Royalty", "Charm", "Super Teamwork" }
     end,
     GetRuleFormula = function() return "Has(Rainbow Coins AtLeast 5)" end,
     RulesChanged = noOp,
@@ -112,13 +113,11 @@ assert(#config.EnchantTargets == 2, "multi-enchant targets were not stored")
 assert(controlsByFlag.rule_index == nil, "legacy numeric rule index is still visible")
 assert(controlsByFlag.rule_condition_index == nil, "legacy numeric condition index is still visible")
 assert(type(controlsByFlag.rule_variation) == "table", "named variation selector is missing")
-for index = 1, 3 do
-    assert(type(controlsByFlag["rule_enchant_slot_" .. tostring(index)]) == "table",
-        "simple enchant slot " .. tostring(index) .. " is missing")
-end
-controlsByFlag.rule_enchant_slot_1.Definition.Callback("Royalty")
-controlsByFlag.rule_enchant_slot_2.Definition.Callback("Rainbow Coins V")
-controlsByFlag.rule_enchant_slot_3.Definition.Callback("Super Teamwork")
+assert(controlsByFlag.rule_enchant_slot_1 == nil, "expensive three-dropdown editor is still present")
+local simpleEnchantSelection = controlsByFlag.rule_enchant_selection
+assert(type(simpleEnchantSelection) == "table", "single multi-enchant selector is missing")
+assert(simpleEnchantSelection.Definition.Multi == true, "simple enchant selector is not multi-select")
+simpleEnchantSelection.Definition.Callback({ "Royalty", "Rainbow Coins V", "Super Teamwork" })
 controlsByTitle["ADD AS NEW VARIATION"].Definition.Callback()
 local goldRules = config.EnchantRuleProfiles.Gold.Rules
 assert(#goldRules == 1, "simple builder did not add one visible variation")
