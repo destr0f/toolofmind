@@ -353,32 +353,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "e15b04d94741c247c0fcf9c9d8da9f1dbebd0919",
+    "generatedFromCommit": "a11c3abb019367f2d710bd432d589f97aacfdd77",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7020,
-      "sha256": "22f19d7bc5df9b4d1c80d0135e4329e1b3ff9bdb34644850b00ab4197b9209c7",
-      "djb2": "c499cbb3"
+      "bytes": 7065,
+      "sha256": "ba82d246222e67de818ae234b928a398a9661474fb524243e4a8c4df17bf60d3",
+      "djb2": "fdec1a6f"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-candidate.54.2-boss-pet-warp",
-      "bytes": 301520,
-      "sha256": "bdf6b42ade36fcc8f2e9d3894f96bd0fa8b7cd2aa598dc3028ecaa3c044b6a2f",
-      "djb2": "9dfe1244"
+      "bytes": 311377,
+      "sha256": "aaadbe5fb2debaf619874c8e1aefe803492872e95917c7a3c9db6b683fa0f030",
+      "djb2": "a9c678b0"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 239081,
-        "sha256": "cb0b5ce8681cf4cd02fe22f55e3f56f1cede69f9c6aee2c83bc314d537dcae80",
-        "djb2": "5779ec2a"
+        "bytes": 246344,
+        "sha256": "4133f5edfb8969a59a60a6034db4f43ad21c43c42ee063fb3f312a10103fd945",
+        "djb2": "c7024d3d"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 239081,
-        "sha256": "cb0b5ce8681cf4cd02fe22f55e3f56f1cede69f9c6aee2c83bc314d537dcae80",
-        "djb2": "5779ec2a"
+        "bytes": 246344,
+        "sha256": "4133f5edfb8969a59a60a6034db4f43ad21c43c42ee063fb3f312a10103fd945",
+        "djb2": "c7024d3d"
       }
     }
   }
