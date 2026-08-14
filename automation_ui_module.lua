@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.5.2"
+local MODULE_VERSION = "1.5.3"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -677,45 +677,51 @@ local function build(context)
             end
         end,
     })
+    darkMatter:Paragraph({
+        Title = "PIXEL DEMON DM ONLY",
+        Desc = "Cleanup never targets another pet species. Exact Dark Matter Pixel Demon matching any enabled protection rule are kept; unmatched exact Dark Matter Pixel Demon become delete candidates.",
+    })
     darkMatter:Dropdown({
         Flag = "dm_cleanup_scope",
-        Title = "DM Cleanup Scope",
-        Desc = "Newly Claimed only is the safe default; All DM also examines older matching Dark Matter pets.",
-        Values = { "Newly Claimed", "All Dark Matter Pets" },
-        Value = config.DMCleanupScope == "All Dark Matter Pets" and "All Dark Matter Pets" or "Newly Claimed",
+        Title = "Pixel Demon Delete Scope",
+        Desc = "Choose only newly claimed Pixel Demon or include older Dark Matter Pixel Demon. No other species is scanned for deletion.",
+        Values = { "New Pixel Demon Only", "All Dark Matter Pixel Demon" },
+        Value = config.DMCleanupScope == "All Dark Matter Pets"
+            and "All Dark Matter Pixel Demon" or "New Pixel Demon Only",
         Multi = false,
         AllowNone = false,
         Callback = function(value)
-            config.DMCleanupScope = value == "All Dark Matter Pets" and "All Dark Matter Pets" or "Newly Claimed"
+            config.DMCleanupScope = value == "All Dark Matter Pixel Demon"
+                and "All Dark Matter Pets" or "Newly Claimed"
             config.DMCleanupConfirmed = false
         end,
     })
     darkMatter:Slider({
         Flag = "dm_cleanup_batch",
-        Title = "DM Delete Batch",
-        Desc = "Bounded destructive batch size.",
+        Title = "Pixel Demon Delete Batch",
+        Desc = "Maximum exact Dark Matter Pixel Demon UIDs in one Delete Several Pets request.",
         Step = 1,
         Value = { Min = 20, Max = 30, Default = tonumber(config.DMCleanupBatchSize) or 25 },
         Callback = function(value) config.DMCleanupBatchSize = math.clamp(math.floor(tonumber(value) or 25), 20, 30) end,
     })
     darkMatter:Toggle({
         Flag = "dm_cleanup_dry_run",
-        Title = "DM Cleanup Dry Run",
-        Desc = "Enabled by default. Plans DELETE/KEEP decisions without invoking Delete Several Pets.",
+        Title = "Preview Pixel Demon Deletions",
+        Desc = "Enabled by default. Shows KEEP/DELETE decisions but sends no deletion request.",
         Value = true,
         Callback = function(value) config.DMCleanupDryRun = value ~= false end,
     })
     darkMatter:Toggle({
         Flag = "dm_cleanup_confirmed",
-        Title = "Confirm Destructive DM Cleanup",
-        Desc = "Required in addition to Enable; changing scope clears this confirmation.",
+        Title = "Confirm Pixel Demon Deletion",
+        Desc = "Second safety switch. Changing the scope clears this confirmation.",
         Value = false,
         Callback = function(value) config.DMCleanupConfirmed = value == true end,
     })
     darkMatter:Toggle({
         Flag = "dm_cleanup_enabled",
-        Title = "Enable Destructive DM Cleanup",
-        Desc = "Empty protection rules, Dry Run, missing confirmation, equipped, locked or incomplete data always block deletion.",
+        Title = "Enable Pixel Demon DM Auto Delete",
+        Desc = "Only exact Dark Matter Pixel Demon can be deleted. Protection matches, equipped, locked and incomplete pets always stay safe.",
         Value = false,
         Callback = function(value)
             config.DMCleanupEnabled = value == true

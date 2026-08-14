@@ -1,6 +1,6 @@
 local transport = require("../network4_transport_module")
 
-assert(transport("version") == "1.2.0")
+assert(transport("version") == "1.3.0")
 assert(transport("sha256", "") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 assert(transport("sha256", "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 
@@ -101,4 +101,57 @@ local empty = transport("stats")
 assert(empty.EventRoutes == 0 and empty.FunctionRoutes == 0
     and empty.FireBridges == 0 and empty.InvokeBridges == 0)
 
-print("PASS Network4/5 hash, generation cache, exact invalidation and bridge resolution")
+-- Current Network5 layout: hasher, remote maps and bridge maps are direct
+-- method upvalues 1, 2 and 6 instead of nested accessor callbacks.
+local directHashMaps = { {}, {} }
+local directRemoteMaps = { {}, {} }
+local directBridgeMaps = { {}, {}, {}, {} }
+local function directHasher() return directHashMaps end
+local function directInvoke() return true end
+local directUpvalues = {
+    [directInvoke] = {
+        directHasher,
+        directRemoteMaps,
+        {},
+        { "RemoteEvent", "RemoteFunction" },
+        {},
+        directBridgeMaps,
+        { "BindableEvent", "BindableFunction" },
+    },
+    [directHasher] = { directHashMaps },
+}
+local directContext = {
+    Generation = 3,
+    Game = fakeGame,
+    Library = { Network = { Invoke = directInvoke } },
+    ReplicatedStorage = { FindFirstChild = function() return nil end },
+    FunctionUpvalueAt = function(callback, index)
+        local values = directUpvalues[callback]
+        return values and values[index] or nil
+    end,
+    IsRemote = context.IsRemote,
+    IsBridge = context.IsBridge,
+    RemoteSessionIndex = function() return 123 end,
+}
+local directCommand = "Get Golden Machine Info"
+local directHash = transport("routeHash", directContext, 2, directCommand)
+directHashMaps[2][directCommand] = directHash
+local directRemote = { ClassName = "RemoteFunction" }
+local directBridge = { ClassName = "BindableFunction" }
+directRemoteMaps[2][directHash] = directRemote
+directBridgeMaps[4][directHash] = directBridge
+
+local directResolved, directSource, directSession, directProblem = transport(
+    "resolveFunction", directContext, directCommand
+)
+assert(directResolved == directRemote, tostring(directProblem))
+assert(string.find(directSource, "accessor #2", 1, true))
+assert(directSession == 123)
+local directBridgeResolved, directBridgeSource, _, directBridgeProblem = transport(
+    "resolveInvokeBridge", directContext, directCommand
+)
+assert(directBridgeResolved == directBridge, tostring(directBridgeProblem))
+assert(string.find(directBridgeSource, "accessor #6", 1, true))
+
+transport("clear")
+print("PASS Network4/5 direct+nested maps, generation cache, invalidation and bridges")

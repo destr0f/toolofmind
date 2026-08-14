@@ -2,7 +2,7 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.5.0"
+local MODULE_VERSION = "1.5.1"
 local TARGET_PET_NAME = "Pixel Demon"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
@@ -340,8 +340,13 @@ local function cleanupPolicy(input)
     local uid = pet.uid ~= nil and tostring(pet.uid) or nil
     if not uid then return "DEFER", "UID unavailable" end
     if input.AlreadyHandled then return "SKIP", "already pending/deleted" end
-    if input.IsTarget ~= true or pet.dm ~= true then return "SKIP", "not target Dark Matter form" end
-    if input.Scope == "Newly Claimed" and input.IsNew ~= true then return "SKIP", "not newly claimed" end
+    if input.IsTarget ~= true or pet.dm ~= true then
+        return "SKIP", "not exact Pixel Demon Dark Matter form"
+    end
+    local newlyClaimedOnly = input.Scope == "Newly Claimed"
+        or input.Scope == "New Pixel Demon Only"
+        or input.Scope == "Newly Claimed Pixel Demon"
+    if newlyClaimedOnly and input.IsNew ~= true then return "SKIP", "not newly claimed" end
     if pet.e == true then return "KEEP", "equipped" end
     if pet.l == true or pet.locked == true then return "KEEP", "locked" end
     local decision, detail = input.MatchDecision, input.MatchDetail
@@ -422,10 +427,12 @@ local function runCleanup(state, context, snapshot)
     end
     local limit = math.clamp(math.floor(tonumber(context.DMCleanupBatchSize()) or 25), 20, 30)
     while #candidates > limit do table.remove(candidates) end
+    local scopeLabel = scope == "All Dark Matter Pets"
+        and "All Dark Matter Pixel Demon" or "New Pixel Demon Only"
     state.CleanupSummary = string.format(
         "DM cleanup %s | planned: %d | protected: %d | deferred: %d | scope: %s",
         context.DMCleanupDryRun() and "DRY RUN" or "armed",
-        #candidates, kept, deferred, scope
+        #candidates, kept, deferred, scopeLabel
     )
     if #candidates == 0 or context.DMCleanupDryRun() then return false end
     if not context.DMCleanupConfirmed() then

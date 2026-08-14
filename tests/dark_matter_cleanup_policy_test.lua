@@ -28,6 +28,9 @@ assert(decide(base, {
 assert(decide(base, {
     AlreadyHandled = true, MatchDecision = "NO_MATCH",
 }) == "SKIP")
+assert(decide(base, {
+    IsTarget = false, MatchDecision = "NO_MATCH",
+}) == "SKIP")
 assert(decide({ id = "404", dm = true }, { MatchDecision = "NO_MATCH" }) == "DEFER")
 
-print("PASS DM cleanup keeps protected/equipped/locked pets and deletes only fresh NO_MATCH candidates")
+print("PASS DM cleanup can delete only exact Pixel Demon DM; protected/equipped/locked stay safe")

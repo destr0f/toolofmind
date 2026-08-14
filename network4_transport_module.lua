@@ -2,7 +2,7 @@
 -- Reads the live network module's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.2.0"
+local MODULE_VERSION = "1.3.0"
 local UINT32 = 4294967296
 
 local SHA256_K = {
@@ -129,9 +129,37 @@ local function readUpvalue(context, callback, index)
     return value
 end
 
+local function validPairMaps(value)
+    return type(value) == "table"
+        and type(value[1]) == "table"
+        and type(value[2]) == "table"
+end
+
+local function validBridgeMaps(value)
+    return validPairMaps(value)
+        and type(value[3]) == "table"
+        and type(value[4]) == "table"
+end
+
 local function networkTables(context, method)
-    local remoteMaps, bridgeMaps, hashMaps
-    local remoteAccessorIndex, bridgeAccessorIndex
+    -- Current Network5 stores the command hasher, Remote maps and Bindable
+    -- bridge maps directly in Network.Fire/Invoke upvalues 1, 2 and 6.
+    -- Resolve this layout first; session hashes are still read from the live
+    -- tables and are never persisted or hard-coded.
+    local directHasher = readUpvalue(context, method, 1)
+    local directRemoteMaps = readUpvalue(context, method, 2)
+    local directBridgeMaps = readUpvalue(context, method, 6)
+    local directHashMaps = type(directHasher) == "function"
+        and readUpvalue(context, directHasher, 1) or nil
+
+    local remoteMaps = validPairMaps(directRemoteMaps) and directRemoteMaps or nil
+    local bridgeMaps = validBridgeMaps(directBridgeMaps) and directBridgeMaps or nil
+    local hashMaps = validPairMaps(directHashMaps) and directHashMaps or nil
+    local remoteAccessorIndex = remoteMaps and 2 or nil
+    local bridgeAccessorIndex = bridgeMaps and 6 or nil
+
+    -- Compatibility with the older nested accessor layout remains available
+    -- for servers that have not moved to the direct Network5 upvalue layout.
     for accessorIndex = 1, 8 do
         local accessor = readUpvalue(context, method, accessorIndex)
         if type(accessor) == "function" then
@@ -141,15 +169,11 @@ local function networkTables(context, method)
                 and readUpvalue(context, lookup, 1) or nil
             local candidateHashes = type(hasher) == "function"
                 and readUpvalue(context, hasher, 1) or nil
-            local validMaps = type(candidateMaps) == "table"
-                and type(candidateMaps[1]) == "table"
-                and type(candidateMaps[2]) == "table"
-            local validHashes = type(candidateHashes) == "table"
-                and type(candidateHashes[1]) == "table"
-                and type(candidateHashes[2]) == "table"
+            local validMaps = validPairMaps(candidateMaps)
+            local validHashes = validPairMaps(candidateHashes)
             if validMaps and validHashes then
                 hashMaps = hashMaps or candidateHashes
-                if type(candidateMaps[3]) == "table" and type(candidateMaps[4]) == "table" then
+                if validBridgeMaps(candidateMaps) then
                     bridgeMaps = bridgeMaps or candidateMaps
                     bridgeAccessorIndex = bridgeAccessorIndex or accessorIndex
                 else
