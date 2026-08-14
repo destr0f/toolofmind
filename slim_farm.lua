@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.1-boss-rearm"
+local VERSION = "1.4.1-candidate.54.2-boss-pet-warp"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -357,6 +357,7 @@ local config = {
     DMCleanupConfirmed = false,
     DMCleanupBatchSize = 25,
     BossFastPathDiagnostics = true,
+    BossPetInstantArrival = false,
     QuickHUD = true,
     QuickHUDPing = true,
     QuickHUDFarmRate = true,
@@ -2557,6 +2558,10 @@ local function connectCoinSignals(forceName)
                 coinIndex:DisconnectFolder()
                 coinIndex:Invalidate()
                 if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(nil) end
+                local farmController = coinSync.PetFarm
+                if farmController and type(farmController.ResetBossPetWarp) == "function" then
+                    farmController:ResetBossPetWarp("world changed")
+                end
                 currentZone = nil
                 currentZoneAnchor = nil
                 nextZoneCheck = 0
@@ -2801,6 +2806,23 @@ local petFarm = {
         AllocatorFree = {},
         AllocatorUsable = {},
     },
+    BossPetWarp = {
+        NativePets = nil,
+        NativeScript = nil,
+        ResolveRetryAt = 0,
+        LastGenerationKey = nil,
+        Parts = {},
+        CFrames = {},
+        States = {},
+        Angles = {},
+        CallbackScratch = {},
+        Attempts = 0,
+        Applied = 0,
+        PetsMoved = 0,
+        Skipped = 0,
+        Errors = 0,
+        LastProblem = "disabled",
+    },
 }
 coinSync.PetFarm = petFarm
 
@@ -2945,6 +2967,206 @@ local function functionUpvalueAt(callback, index)
         end
     end
     return nil, "upvalue #" .. tostring(index) .. " is unavailable"
+end
+
+function petFarm:ResetBossPetWarp(reason)
+    local warp = self.BossPetWarp
+    if type(warp) ~= "table" then return end
+    warp.NativePets = nil
+    warp.NativeScript = nil
+    warp.ResolveRetryAt = 0
+    warp.LastGenerationKey = nil
+    table.clear(warp.Parts)
+    table.clear(warp.CFrames)
+    table.clear(warp.States)
+    table.clear(warp.Angles)
+    table.clear(warp.CallbackScratch)
+    warp.LastProblem = tostring(reason or "reset")
+end
+
+function petFarm:ResolveBossPetRuntime(petIds)
+    local warp = self.BossPetWarp
+    if type(warp) ~= "table" then return nil, "warp state is unavailable" end
+    if type(warp.NativePets) == "table" and warp.NativeScript
+        and warp.NativeScript.Parent ~= nil then
+        return warp.NativePets
+    end
+
+    local now = os.clock()
+    if now < (tonumber(warp.ResolveRetryAt) or 0) then
+        return nil, warp.LastProblem
+    end
+    warp.ResolveRetryAt = now + 8
+
+    if type(getsenv) ~= "function" then
+        warp.LastProblem = "getsenv unavailable; C54.1 path retained"
+        return nil, warp.LastProblem
+    end
+
+    local playerScripts = player and (player:FindFirstChild("PlayerScripts")
+        or player:FindFirstChildOfClass("PlayerScripts"))
+    local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
+    local gameScripts = scripts and scripts:FindFirstChild("Game")
+    local petsScript = gameScripts and gameScripts:FindFirstChild("Pets")
+    if not petsScript then
+        warp.LastProblem = "Game.Pets LocalScript unavailable; C54.1 path retained"
+        return nil, warp.LastProblem
+    end
+
+    local envOk, scriptEnv = pcall(getsenv, petsScript)
+    if not envOk or type(scriptEnv) ~= "table" then
+        warp.LastProblem = "Game.Pets environment unavailable; C54.1 path retained"
+        return nil, warp.LastProblem
+    end
+
+    local callbacks = warp.CallbackScratch
+    table.clear(callbacks)
+    for _, name in ipairs({ "NetworkUpdate", "Tick", "ChangePetTargetCoin", "ChangePetTargetPlayer" }) do
+        if type(scriptEnv[name]) == "function" then callbacks[#callbacks + 1] = scriptEnv[name] end
+    end
+
+    for _, callback in ipairs(callbacks) do
+        for upvalueIndex = 1, 16 do
+            local candidate = functionUpvalueAt(callback, upvalueIndex)
+            if type(candidate) == "table" then
+                local matches = 0
+                for _, rawPetId in ipairs(petIds or {}) do
+                    local petId = tostring(rawPetId)
+                    local state = candidate[petId] or candidate[tonumber(petId)]
+                    local physical = type(state) == "table" and state.physical or nil
+                    if type(state) == "table" and tostring(state.uid) == petId
+                        and typeof(physical) == "Instance" and physical:IsA("BasePart") then
+                        matches = matches + 1
+                        if matches >= 1 then
+                            warp.NativePets = candidate
+                            warp.NativeScript = petsScript
+                            warp.ResolveRetryAt = 0
+                            warp.LastProblem = "native Game.Pets table ready"
+                            table.clear(callbacks)
+                            return candidate
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    table.clear(callbacks)
+    warp.LastProblem = "native Game.Pets table not resolved; C54.1 path retained"
+    return nil, warp.LastProblem
+end
+
+function petFarm:WarpBossPetsOnce(record, petIds)
+    local warp = self.BossPetWarp
+    if not config.BossPetInstantArrival or config.Mode ~= "Boss Chest Only"
+        or type(warp) ~= "table" or not recordAlive(record) or not isBossChest(record) then
+        return false
+    end
+
+    warp.Attempts = (tonumber(warp.Attempts) or 0) + 1
+    local generationKey = tostring(record.Id) .. "@"
+        .. tostring(record.BossSpawnGeneration or coinMutationSerial)
+    if warp.LastGenerationKey == generationKey then
+        warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
+        return false
+    end
+
+    local model = record.Model
+    if not model or model.Parent == nil then
+        local things = workspace:FindFirstChild("__THINGS")
+        local coins = things and things:FindFirstChild("Coins")
+        model = coins and coins:FindFirstChild(tostring(record.Id))
+    end
+    local pos = model and model:FindFirstChild("POS")
+    if not pos or not pos:IsA("BasePart") then
+        warp.LastProblem = "boss POS unavailable; C54.1 path retained"
+        warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
+        return false
+    end
+
+    local nativePets, problem = self:ResolveBossPetRuntime(petIds)
+    if type(nativePets) ~= "table" then
+        warp.LastProblem = tostring(problem)
+        warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
+        return false
+    end
+
+    local coinPart = model:FindFirstChild("Coin")
+    local radius = 5.7
+    if coinPart and coinPart:IsA("BasePart") then
+        radius = math.max(math.max(coinPart.Size.X, coinPart.Size.Z) / 2 * 1.1 + 3.5, 4.5)
+    end
+
+    local parts = warp.Parts
+    local cframes = warp.CFrames
+    local states = warp.States
+    local angles = warp.Angles
+    table.clear(parts)
+    table.clear(cframes)
+    table.clear(states)
+    table.clear(angles)
+    local total = math.min(#petIds, 16)
+    for index = 1, total do
+        local petId = tostring(petIds[index])
+        local state = nativePets[petId] or nativePets[tonumber(petId)]
+        local physical = type(state) == "table" and state.physical or nil
+        if type(state) == "table" and typeof(physical) == "Instance"
+            and physical:IsA("BasePart") and physical.Parent ~= nil then
+            local angle = ((index - 1) / math.max(total, 1)) * math.pi * 2
+            local destination = pos.CFrame * CFrame.Angles(0, angle, 0)
+                * CFrame.new(0, 0, radius)
+            parts[#parts + 1] = physical
+            cframes[#cframes + 1] = destination
+            states[#states + 1] = state
+            angles[#angles + 1] = angle
+        end
+    end
+
+    if #parts == 0 then
+        warp.LastProblem = "no equipped native pet parts matched; C54.1 path retained"
+        warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
+        return false
+    end
+
+    local moved, moveProblem = pcall(workspace.BulkMoveTo, workspace, parts, cframes)
+    if not moved then
+        warp.Errors = (tonumber(warp.Errors) or 0) + 1
+        warp.LastProblem = "BulkMoveTo failed: " .. tostring(moveProblem)
+        table.clear(parts)
+        table.clear(cframes)
+        table.clear(states)
+        table.clear(angles)
+        return false
+    end
+
+    local now = os.clock()
+    for index, state in ipairs(states) do
+        local destination = cframes[index]
+        state.target = pos
+        state.networkTarget = pos
+        state.farming = true
+        state.follower = nil
+        state.randomRotation = math.deg(angles[index])
+        state.distance = radius
+        state.arrived = true
+        state.moving = false
+        state.movingTick = nil
+        state.farmingTick = now
+        state.cachedRaycast = destination.Position
+        state.raycast = destination.Position
+        state.lastPositionLerp = CFrame.new(destination.X, 0, destination.Z)
+        state.lastRaycastLerp = CFrame.new(0, destination.Y, 0)
+    end
+
+    warp.LastGenerationKey = generationKey
+    warp.Applied = (tonumber(warp.Applied) or 0) + 1
+    warp.PetsMoved = (tonumber(warp.PetsMoved) or 0) + #parts
+    warp.LastProblem = "applied to " .. tostring(#parts) .. " pets"
+    table.clear(parts)
+    table.clear(cframes)
+    table.clear(states)
+    table.clear(angles)
+    return true
 end
 
 local function remoteSessionIndex(remote)
@@ -3956,6 +4178,13 @@ local function dispatchPlan(record, petIds)
         end
     end
     if #entries == 0 then return end
+
+    -- Optional local-only boss acceleration. It performs one bounded
+    -- BulkMoveTo per server spawn and never adds a server request. Failure is
+    -- deliberately ignored so the proven C54.1 dispatch path remains intact.
+    if config.BossPetInstantArrival and config.Mode == "Boss Chest Only" then
+        pcall(petFarm.WarpBossPetsOnce, petFarm, record, petIds)
+    end
 
     local payload = petFarm.DispatchPayload
     payload.Record = record
@@ -5860,6 +6089,7 @@ UI.FarmHero:Toggle({
                 if not ready then trace("pet engine load", tostring(problem)) end
             end)
         end
+        if not enabled then petFarm:ResetBossPetWarp("farm disabled") end
         requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
         restartFarmWatchers()
     end,
@@ -5884,6 +6114,16 @@ UI.FarmHero:Toggle({
     Desc = "Shows a bounded 64-cycle summary; it adds no scan, polling, or server request.",
     Value = true,
     Callback = function(value) config.BossFastPathDiagnostics = value ~= false end,
+})
+UI.FarmHero:Toggle({
+    Flag = "boss_pet_instant_arrival",
+    Title = "Boss Pet Instant Arrival (Experimental)",
+    Desc = "Locally moves the current equipped batch to each new boss once; adds no remotes or polling.",
+    Value = false,
+    Callback = function(value)
+        config.BossPetInstantArrival = value == true
+        petFarm:ResetBossPetWarp(config.BossPetInstantArrival and "armed for next boss" or "disabled")
+    end,
 })
 uiStageYield("farm controls")
 
@@ -6606,6 +6846,7 @@ local function finishShutdown()
     table.clear(petFarm.DispatchEntries)
     table.clear(petFarm.DispatchEntryPool)
     table.clear(petFarm.DispatchPayload)
+    petFarm:ResetBossPetWarp("shutdown")
     table.clear(petFarm.FastPets)
     petFarm.ProgressLeaseToken = petFarm.ProgressLeaseToken + 1
     petFarm.ProgressLeaseScheduled = false
@@ -7235,6 +7476,7 @@ local function updateRuntimeTelemetry()
             local networkState = networkReady() and "ready" or "waiting"
             local bossStats = petFarm:BossStats()
             local bossLine = ""
+            local warpLine = ""
             if config.Mode == "Boss Chest Only" and config.BossFastPathDiagnostics ~= false
                 and bossStats then
                 bossLine = string.format(
@@ -7248,6 +7490,17 @@ local function updateRuntimeTelemetry()
                     (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.P50) or 0) * 1000,
                     (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.P95) or 0) * 1000,
                     (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.Max) or 0) * 1000
+                )
+            end
+            if config.BossPetInstantArrival then
+                local warp = petFarm.BossPetWarp
+                warpLine = string.format(
+                    "\nWarp: applied/pets/skipped/errors %d/%d/%d/%d | %s",
+                    tonumber(warp.Applied) or 0,
+                    tonumber(warp.PetsMoved) or 0,
+                    tonumber(warp.Skipped) or 0,
+                    tonumber(warp.Errors) or 0,
+                    tostring(warp.LastProblem or "waiting")
                 )
             end
             statusSetters.Farm(string.format(
@@ -7266,7 +7519,7 @@ local function updateRuntimeTelemetry()
                 bossLine
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s",
+                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s%s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
@@ -7283,7 +7536,8 @@ local function updateRuntimeTelemetry()
                 tonumber(petFarm.ProgressLeaseEvictions) or 0,
                 idleRecoveryCount,
                 lastRecovery,
-                driverStatus
+                driverStatus,
+                warpLine
             ))
         end
         if quickVisible then
