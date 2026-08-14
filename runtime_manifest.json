@@ -311,6 +311,7 @@
         "tests/machine_404_enchant_policy_test.lua",
         "tests/axolotl_ocean_hotfix_test.js",
         "tests/boss_chest_presence_gate_test.js",
+        "tests/candidate54_passive_logger_test.js",
         "tests/hacker_portal_hotfix_test.js",
         "tests/farm_progress_lease_test.js",
         "tests/request_state_inspector_policy_test.js",
