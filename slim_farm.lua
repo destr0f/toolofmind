@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.55-farm-liveness"
+local VERSION = "1.4.1-candidate.56-boss-ping-spread"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3762,6 +3762,9 @@ function petFarm:EnsureEngine()
         DispatchWidth = 16,
         DispatchSpacing = 0.012,
         DispatchPhaseOffset = (math.abs(tonumber(player.UserId) or 0) % 13) * 0.001,
+        BossDispatchPhaseOffset = (math.abs(tonumber(player.UserId) or 0) % 12) * 0.008,
+        SignalBatchSize = 4,
+        SignalBatchDelay = 0.008,
     }
     local started, accepted, startProblem = pcall(controller, "start", context)
     self.Loading = false
@@ -4017,15 +4020,14 @@ end
 
 function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
     if not self.Engine or config.Mode ~= "Boss Chest Only" or not config.PetFarm then return false end
-    local noAssignments = type(assignmentCount) == "function" and assignmentCount() == 0
     local info = {
         CoinId = tostring(record.Id),
         Record = record,
         Source = tostring(source or "unknown"),
         Direct = direct == true,
-        -- If every equipped pet is locally free, a reused coin ID cannot be a
-        -- useful duplicate. Re-arm its generation from the live spawn event.
-        ForceNew = forceNew == true or noAssignments,
+        -- Only an authoritative lifecycle transition may re-arm a reused ID.
+        -- A temporarily idle allocator is not proof that another chest spawned.
+        ForceNew = forceNew == true,
         ReceivedAt = os.clock(),
         PayloadComplete = type(payload) == "table"
             and (payload.n ~= nil or payload.Name ~= nil or record.Name ~= nil)
@@ -4102,7 +4104,6 @@ function petFarm:FinalizeBossRemoval(rawId, generation)
     coinSync.BossAbsentUntil = os.clock() + 3.2
     releaseAssignmentsForCoin(rawId, true)
     self:ArmBossWatchdog(generation)
-    if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
     driverStatus = "boss chest absent; awaiting New Coin"
 end
 
@@ -5348,8 +5349,9 @@ allocatorPass = function()
             petFarm.TargetWindow = 0
             if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
                 driverStatus = "boss chest absent; waiting for New Coin"
+            elseif type(armFarmRecovery) == "function" then
+                armFarmRecovery(1.05)
             end
-            if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
             return
         end
 
@@ -5362,7 +5364,8 @@ allocatorPass = function()
         local plans, targetWindow = petFarm:BuildDispatchPlans(freePets, usable, config.Mode)
         petFarm.TargetWindow = targetWindow
         for _, plan in ipairs(plans) do dispatchPlan(plan.Record, plan.Pets) end
-        if assignmentCount() < #petIds and type(armFarmRecovery) == "function" then
+        if config.Mode ~= "Boss Chest Only" and assignmentCount() < #petIds
+            and type(armFarmRecovery) == "function" then
             armFarmRecovery(1.05)
         end
     end)
@@ -5452,10 +5455,10 @@ armFarmRecovery = function(delaySeconds)
         local expected = tonumber(petFarm.EquippedCount) or 0
         if expected > 0 and assignmentCount() < expected then
             requestAllocatorPulse(true)
-            -- One local-only safety turn remains armed until all equipped UIDs
-            -- are assigned. It never sends a remote or requests Get Coins by
-            -- itself; the event-driven allocator remains the primary path.
-            armFarmRecovery(1.05)
+            -- Boss mode is owned by New Coin + the bounded watchdog. Repeating
+            -- this local recovery while the chest is absent only makes every
+            -- client wake in lockstep; ordinary modes retain the safety loop.
+            if config.Mode ~= "Boss Chest Only" then armFarmRecovery(1.05) end
         end
     end)
 end

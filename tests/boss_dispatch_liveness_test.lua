@@ -48,6 +48,9 @@ local function startEngine()
         OnBossRemoved = function() end,
         DispatchWidth = 16,
         DispatchPhaseOffset = 0,
+        BossDispatchPhaseOffset = 0,
+        SignalBatchSize = 4,
+        SignalBatchDelay = 0,
     })
 end
 
@@ -103,4 +106,4 @@ assert(failed == 1 and states.racePet == nil,
     "a target that dies during Join Coin must release its caller reservation")
 
 engine("stop")
-print("PASS immediate boss dispatch and stale joining-state release")
+print("PASS immediate test path and stale joining-state release")

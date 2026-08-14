@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.4.1"
+local MODULE_VERSION = "1.4.2"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -12,6 +12,7 @@ local scheduler = task or {
     delay = function(_, callback)
         coroutine.wrap(callback)()
     end,
+    wait = function() end,
 }
 
 local transportGate = {
@@ -852,7 +853,11 @@ local function signalEntries(job, entries, route)
     local failed = job.SignalFailures
     table.clear(failed)
     local context = run.Context
-    for _, entry in ipairs(entries) do
+    local batchSize = math.clamp(math.floor(tonumber(context and context.SignalBatchSize) or 4), 1, 16)
+    local batchDelay = job.BossGeneration ~= nil
+        and math.clamp(tonumber(context and context.SignalBatchDelay) or 0.008, 0, 0.02)
+        or 0
+    for index, entry in ipairs(entries) do
         if entryCurrent(entry) then
             local targetSent, targetRoute = callNamedFire(
                 "Change Pet Target",
@@ -905,6 +910,13 @@ local function signalEntries(job, entries, route)
             end
         else
             clearPendingEntry(entry)
+        end
+        -- A 16-pet boss assignment emits two state signals per UID. Spread the
+        -- burst over a few scheduler slices so several clients do not enqueue
+        -- all of those packets in the same frame.
+        if index < #entries and index % batchSize == 0 and batchDelay > 0
+            and type(scheduler.wait) == "function" then
+            scheduler.wait(batchDelay)
         end
     end
     return failed
@@ -1094,10 +1106,22 @@ pump = function()
         if contextActive(job) then
             run.Active = run.Active + 1
             if job.BossGeneration ~= nil then
-                -- Boss chests are short-lived and can be destroyed by another
-                -- client before task.delay(0) receives a scheduler turn.
-                -- Resume the yielding transport coroutine immediately.
-                executeJob(job)
+                -- Keep the event-driven fast path, but deterministically spread
+                -- clients over a sub-100ms window. This avoids a synchronized
+                -- Join Coin burst without adding a polling loop or a full RTT.
+                local context = run.Context
+                local phase = math.clamp(
+                    tonumber(context and context.BossDispatchPhaseOffset) or 0,
+                    0,
+                    0.12
+                )
+                if phase > 0 then
+                    scheduler.delay(phase, function()
+                        executeJob(job)
+                    end)
+                else
+                    executeJob(job)
+                end
             else
                 local now = os.clock()
                 local context = run.Context

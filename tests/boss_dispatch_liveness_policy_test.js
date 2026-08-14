@@ -11,8 +11,8 @@ function requirePattern(source, pattern, message) {
 
 requirePattern(
   engine,
-  /if job\.BossGeneration ~= nil then[\s\S]{0,500}?executeJob\(job\)[\s\S]{0,200}?else[\s\S]{0,700}?scheduler\.delay/,
-  "boss jobs must execute immediately while ordinary jobs remain spaced"
+  /if job\.BossGeneration ~= nil then[\s\S]{0,700}?BossDispatchPhaseOffset[\s\S]{0,500}?scheduler\.delay\(phase[\s\S]{0,250}?executeJob\(job\)[\s\S]{0,250}?else[\s\S]{0,700}?DispatchSpacing/,
+  "boss jobs must use the deterministic client phase while ordinary jobs remain spaced"
 );
 requirePattern(
   engine,
@@ -25,14 +25,32 @@ requirePattern(
   "targets lost during Join Coin must release caller joining state"
 );
 requirePattern(
-  farm,
-  /local noAssignments = [^\n]*assignmentCount\(\) == 0[\s\S]{0,400}?ForceNew = forceNew == true or noAssignments/,
-  "an idle farm must accept a reused boss coin id as a new lifecycle"
+  engine,
+  /local batchSize = [^\n]*SignalBatchSize[\s\S]{0,250}?SignalBatchDelay/,
+  "accepted boss signals must read bounded micro-batch settings"
+);
+requirePattern(
+  engine,
+  /index % batchSize == 0[\s\S]{0,180}?scheduler\.wait\(batchDelay\)/,
+  "accepted boss signals must yield between bounded micro-batches"
 );
 requirePattern(
   farm,
-  /armFarmRecovery = function\(delaySeconds\)[\s\S]{0,1000}?armFarmRecovery\(1\.05\)/,
-  "underassigned farm recovery must rearm itself"
+  /BossDispatchPhaseOffset = \(math\.abs\(tonumber\(player\.UserId\) or 0\) % 12\) \* 0\.008[\s\S]{0,120}?SignalBatchSize = 4[\s\S]{0,80}?SignalBatchDelay = 0\.008/,
+  "farm context must spread clients and use four-pet signal batches"
+);
+requirePattern(
+  farm,
+  /ForceNew = forceNew == true,/,
+  "only an authoritative boss lifecycle transition may force a reused id"
+);
+if (farm.includes("ForceNew = forceNew == true or noAssignments")) {
+  throw new Error("idle allocator state must not manufacture a duplicate boss generation");
+}
+requirePattern(
+  farm,
+  /armFarmRecovery = function\(delaySeconds\)[\s\S]{0,1000}?if config\.Mode ~= "Boss Chest Only" then armFarmRecovery\(1\.05\) end/,
+  "boss recovery must stay one-shot while ordinary modes retain their safety loop"
 );
 
 console.log("PASS boss dispatch liveness policy");

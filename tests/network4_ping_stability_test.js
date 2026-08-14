@@ -10,9 +10,9 @@ const loot = read("loot_reactor.lua");
 const transport = read("network4_transport_module.lua");
 const manifest = JSON.parse(read("runtime_manifest.json"));
 
-assert.strictEqual(manifest.suite.version, "1.4.1-candidate.55-farm-liveness");
+assert.strictEqual(manifest.suite.version, "1.4.1-candidate.56-boss-ping-spread");
 assert.strictEqual(manifest.modules.networkTransport.version, "1.3.0");
-assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.1");
+assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.2");
 assert.strictEqual(manifest.modules.lootReactor.version, "3.7.0");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
