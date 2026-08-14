@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.53-rule-ui-stallfix",
+    "version": "1.4.1-candidate.54-network5-machines",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+    "compatibleSuite": "1.4.1-candidate.54-network5-machines",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -61,18 +61,18 @@
     "networkTransport": {
       "id": "networkTransport",
       "label": "Network4/Network5 transport adapter",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
       "path": "network4_transport_module.lua",
-      "commit": "bfec9ffe4de4cce7dccedd1a6e76cbb08045b77c",
-      "bytes": 13986,
-      "sha256": "b49f62125941c7d945e526f7f354fdb4798fe9b149c69ba482e422b48f1b3607",
-      "djb2": "4ed68bd2"
+      "commit": "b9a0e167d2cc509b8d3de49948ecf8ceda413312",
+      "bytes": 15018,
+      "sha256": "c3a148d80b0bc40c0d03dc929d5ce27904a3632a52cd012c9ea2038e7dbf95e3",
+      "djb2": "c3a9e6de"
     },
     "automationSupport": {
       "id": "automationSupport",
@@ -80,7 +80,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -93,18 +93,18 @@
     "automationUI": {
       "id": "automationUI",
       "label": "Automation UI",
-      "version": "1.5.2",
+      "version": "1.5.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
       "path": "automation_ui_module.lua",
-      "commit": "71ec0865f3fb7016e1fd6bfea5f5706858d6c668",
-      "bytes": 38919,
-      "sha256": "7c6bea9e1f1bfba651f06071743032cbfc57db355d47b2f2a49b9406161d4579",
-      "djb2": "f5a12dd3"
+      "commit": "b9a0e167d2cc509b8d3de49948ecf8ceda413312",
+      "bytes": 39363,
+      "sha256": "451a0beec915450a568a58ad937ce40b46ed97ef017010fe2e7d66136a4736bf",
+      "djb2": "35b50f63"
     },
     "petFarmEngine": {
       "id": "petFarmEngine",
@@ -112,7 +112,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.7.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.7.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -204,25 +204,25 @@
     "darkMatter": {
       "id": "darkMatter",
       "label": "Dark Matter machine",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
       "path": "dark_matter_module.lua",
-      "commit": "ea504be4ada0f0a4fd671d04b4ab126d0db04143",
-      "bytes": 42395,
-      "sha256": "e0d9a36258ed92fd4366c83cc7849b22559fe5b2a96a649b0452db5eea66dbd4",
-      "djb2": "b9366b8d"
+      "commit": "b9a0e167d2cc509b8d3de49948ecf8ceda413312",
+      "bytes": 42695,
+      "sha256": "2d74da9125834b4e14d63f879586faf7c95502852d26c632f6c9581cb4ccb3a3",
+      "djb2": "e4970239"
     },
     "boost": {
       "id": "boost",
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.53-rule-ui-stallfix",
+      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -351,32 +351,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "71ec0865f3fb7016e1fd6bfea5f5706858d6c668",
+    "generatedFromCommit": "b9a0e167d2cc509b8d3de49948ecf8ceda413312",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7080,
-      "sha256": "ce8a3010fcb7332d2aadfb47971403eab3f2716bd0dd4531f03142c97275b03a",
-      "djb2": "bf58272b"
+      "bytes": 7095,
+      "sha256": "ff57354ae47293899df5bf005934820cae4225a0ff64f747b334c07609bfdac5",
+      "djb2": "d07b251d"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.53-rule-ui-stallfix",
-      "bytes": 297817,
-      "sha256": "696b66a9fbe231b4aa0ff78174ab646a26305004b876edd70f4ada304e6d5746",
-      "djb2": "21e0a928"
+      "version": "1.4.1-candidate.54-network5-machines",
+      "bytes": 297818,
+      "sha256": "0e1a824865b61acadfe055e0cfbcc5f10347348cea4d23aba9bcc75e127db882",
+      "djb2": "02d3ea66"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 236901,
-        "sha256": "128498d32339033bab717da33b2b8ddf907a140e12ac76e29cdd90be64d1875b",
-        "djb2": "b1dd1692"
+        "bytes": 236917,
+        "sha256": "6708d29319895895ca45bb37d569ec36984233396d1d1f2e4d68503f9ab1233b",
+        "djb2": "898cd7f8"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 236901,
-        "sha256": "128498d32339033bab717da33b2b8ddf907a140e12ac76e29cdd90be64d1875b",
-        "djb2": "b1dd1692"
+        "bytes": 236917,
+        "sha256": "6708d29319895895ca45bb37d569ec36984233396d1d1f2e4d68503f9ab1233b",
+        "djb2": "898cd7f8"
       }
     }
   }
