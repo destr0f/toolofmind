@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54-network5-machines"
+local VERSION = "1.4.1-candidate.54.1-boss-rearm"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3983,7 +3983,12 @@ function petFarm:DispatchBossRecord(record, spawnGeneration)
         or not running() or not recordAlive(record) or not isBossChest(record) then
         return false
     end
-    if not self.Engine or allocatorBusy then return false end
+    -- Allocator bootstrap intentionally calls HandleBossSpawn from inside an
+    -- allocator pass. Refusing that callback while allocatorBusy leaves the
+    -- engine in SPAWN_SEEN with every pet idle and no future dispatch pulse.
+    -- This function does not yield before queueing the bounded engine job, so
+    -- it is safe to complete the hand-off inside the current allocator turn.
+    if not self.Engine then return false end
 
     local selectedWorld = getSelectedWorld()
     local selectedZone = getSelectedZone()
@@ -4027,8 +4032,17 @@ function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
             and (payload.a ~= nil or payload.Area ~= nil or record.Area ~= nil),
     }
     coinSync.BossAbsentUntil = 0
-    local ok, accepted = pcall(self.Engine, "boss-spawn", info)
-    return ok and accepted == true
+    local ok, accepted, problem = pcall(self.Engine, "boss-spawn", info)
+    if not (ok and accepted == true) and running() and config.PetFarm
+        and recordAlive(record) then
+        local expected = tonumber(self.EquippedCount) or 0
+        if expected == 0 or assignmentCount() < expected then
+            driverStatus = "boss spawn pending; local dispatch re-arm queued"
+            if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
+            if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
+        end
+    end
+    return ok and accepted == true, problem
 end
 
 function coinSync:PruneBossFallbackTimes(now)
@@ -5435,6 +5449,9 @@ local farmWatch = {
     RecoveryArmed = false,
     RecoveryToken = 0,
     ZoneToken = 0,
+    LivenessToken = 0,
+    LastRearmAt = 0,
+    StallRecoveries = 0,
 }
 
 armFarmRecovery = function(delaySeconds)
@@ -5453,11 +5470,50 @@ local function restartFarmWatchers()
     farmWatch.RecoveryToken = farmWatch.RecoveryToken + 1
     farmWatch.RecoveryArmed = false
     farmWatch.ZoneToken = farmWatch.ZoneToken + 1
+    farmWatch.LivenessToken = farmWatch.LivenessToken + 1
     local token = farmWatch.ZoneToken
+    local livenessToken = farmWatch.LivenessToken
     if not running() or not config.PetFarm then return end
     if assignmentCount() < (tonumber(petFarm.EquippedCount) or 0) then
         armFarmRecovery(1.05)
     end
+
+    -- Purely local boss liveness invariant. It neither scans the world nor
+    -- invokes Get Coins. A pulse is emitted only when a cached live target is
+    -- selectable, all equipped pets are idle, and the transport engine has no
+    -- queued/in-flight work. The UserId phase keeps ten clients from re-arming
+    -- on the same scheduler tick after a shared missed spawn edge.
+    local livenessDelay = 2.25 + (math.abs(tonumber(player.UserId) or 0) % 11) * 0.06
+    local function checkBossLiveness()
+        if livenessToken ~= farmWatch.LivenessToken or not running()
+            or not config.PetFarm then return end
+        if config.Mode == "Boss Chest Only" and not farmResetRunning and petFarm.Engine then
+            local expected = tonumber(petFarm.EquippedCount) or 0
+            local assigned = assignmentCount()
+            local stats = petFarm:RefreshStats()
+            local active = tonumber(stats.Active) or 0
+            local queued = tonumber(stats.Queued) or 0
+            local invokes = tonumber(stats.ActiveInvokeCount) or 0
+            local lastAssignment = tonumber(stats.LastAssignmentAt) or 0
+            local assignmentAge = lastAssignment > 0 and os.clock() - lastAssignment
+                or math.huge
+            local targetReady = (tonumber(petFarm.LastTargetCount) or 0) > 0
+                and (tonumber(petFarm.TargetWindow) or 0) > 0
+            local stalled = expected > 0 and assigned == 0 and targetReady
+                and active == 0 and queued == 0 and invokes == 0
+                and assignmentAge >= 3.5
+            local now = os.clock()
+            if stalled and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3 then
+                farmWatch.LastRearmAt = now
+                farmWatch.StallRecoveries = farmWatch.StallRecoveries + 1
+                driverStatus = "boss target stalled; one local dispatch re-arm queued"
+                requestAllocatorPulse(true)
+            end
+        end
+        task.delay(livenessDelay, checkBossLiveness)
+    end
+    task.delay(livenessDelay, checkBossLiveness)
+
     if config.Zone ~= "Player Zone" then return end
 
     local function checkZone()
@@ -6505,6 +6561,7 @@ local function finishShutdown()
     petLifecycle.BindToken = petLifecycle.BindToken + 1
     farmWatch.RecoveryToken = farmWatch.RecoveryToken + 1
     farmWatch.ZoneToken = farmWatch.ZoneToken + 1
+    farmWatch.LivenessToken = farmWatch.LivenessToken + 1
     farmWatch.RecoveryArmed = false
     allocatorRequested = false
     allocatorBusy = false
@@ -6905,6 +6962,14 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "trueIdle", math.max(equipped - assigned, 0))
     requestDiagnostics.Gauge("Farm", "targets", tonumber(petFarm.LastTargetCount) or 0)
     requestDiagnostics.Gauge("Farm", "targetWindow", tonumber(petFarm.TargetWindow) or 0)
+    requestDiagnostics.Gauge("Farm", "stallRecoveries", tonumber(farmWatch.StallRecoveries) or 0)
+    requestDiagnostics.Gauge("Farm", "liveness",
+        config.PetFarm and equipped > 0 and assigned == 0
+            and (tonumber(petFarm.LastTargetCount) or 0) > 0
+            and active == 0 and queued == 0
+            and ((tonumber(dispatchStats.LastAssignmentAt) or 0) == 0
+                or now - (tonumber(dispatchStats.LastAssignmentAt) or now) >= 3.5)
+            and "FARM_STALLED" or "healthy")
     requestDiagnostics.Gauge("Farm", "noCompletionAge",
         (active + queued > 0 and lastCompletion > 0) and math.max(now - lastCompletion, 0) or 0)
 
