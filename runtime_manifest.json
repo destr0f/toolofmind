@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54-network5-machines",
+    "version": "1.4.1-candidate.55-farm-liveness",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+    "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.5.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -109,18 +109,18 @@
     "petFarmEngine": {
       "id": "petFarmEngine",
       "label": "Pet farm engine",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "ea504be4ada0f0a4fd671d04b4ab126d0db04143",
-      "bytes": 44054,
-      "sha256": "70bed3a47d1c939773df07a753c22508e591a904fe4f0336d8e4858b11325cfb",
-      "djb2": "a6153886"
+      "commit": "964e53213f7d979aec3ed9b3d63c0f114c69a09a",
+      "bytes": 45561,
+      "sha256": "792984b55c45d880b72be9ea67d5994cfb3e05a1833270eb594e1f2988ec0fac",
+      "djb2": "b0c98588"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -128,7 +128,7 @@
       "version": "3.7.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.7.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54-network5-machines",
+      "compatibleSuite": "1.4.1-candidate.55-farm-liveness",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -321,6 +321,8 @@
         "tests/reward_clock_hotfix_test.js",
         "tests/pixel_vault_minimal_refresh_test.js",
         "tests/boss_fast_path_lifecycle_test.lua",
+        "tests/boss_dispatch_liveness_test.lua",
+        "tests/boss_dispatch_liveness_policy_test.js",
         "tests/dark_matter_cleanup_policy_test.lua",
         "tests/enchant_rule_matcher_test.lua"
       ]
@@ -351,32 +353,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "b9a0e167d2cc509b8d3de49948ecf8ceda413312",
+    "generatedFromCommit": "964e53213f7d979aec3ed9b3d63c0f114c69a09a",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7095,
-      "sha256": "ff57354ae47293899df5bf005934820cae4225a0ff64f747b334c07609bfdac5",
-      "djb2": "d07b251d"
+      "bytes": 7035,
+      "sha256": "dc0407f82bf26d032db2348e8d06bae26941320cceeaa57bf003931291272138",
+      "djb2": "b5cda04c"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54-network5-machines",
-      "bytes": 297818,
-      "sha256": "0e1a824865b61acadfe055e0cfbcc5f10347348cea4d23aba9bcc75e127db882",
-      "djb2": "02d3ea66"
+      "version": "1.4.1-candidate.55-farm-liveness",
+      "bytes": 298620,
+      "sha256": "e535dbbb955c593db7a92a7a52d3ef5bcac2a69e9fd33a3b13db6bc30bc310ca",
+      "djb2": "7e5be051"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 236917,
-        "sha256": "6708d29319895895ca45bb37d569ec36984233396d1d1f2e4d68503f9ab1233b",
-        "djb2": "898cd7f8"
+        "bytes": 237195,
+        "sha256": "f3fed98b60fd3b48309b2f5e858468777f90022686f12fd414ee319013a08233",
+        "djb2": "be9464a4"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 236917,
-        "sha256": "6708d29319895895ca45bb37d569ec36984233396d1d1f2e4d68503f9ab1233b",
-        "djb2": "898cd7f8"
+        "bytes": 237195,
+        "sha256": "f3fed98b60fd3b48309b2f5e858468777f90022686f12fd414ee319013a08233",
+        "djb2": "be9464a4"
       }
     }
   }
