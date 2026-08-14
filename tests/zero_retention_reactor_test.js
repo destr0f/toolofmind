@@ -103,10 +103,11 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.6.5"',
-    "ORB_BATCH_SIZE = 512",
+    'local MODULE_VERSION = "3.7.0"',
+    "ORB_MIN_BATCH = 8",
+    "ORB_BATCH_SIZE = 32",
     "MAX_PENDING_ORBS = 8192",
-    "ORB_FLUSH_INTERVAL = 0.25",
+    "ORB_FLUSH_INTERVAL = 0.65",
     "CLIENT_STAGGER_SLOTS = 16",
     "CLIENT_STAGGER_STEP = 0.01",
     "BAG_LANES = 4",
@@ -180,9 +181,9 @@ assert(loot.includes("local function currentRTT()")
     && loot.includes("return ORB_FLUSH_INTERVAL")
     && loot.includes("local function orbConfirmationDelay()"),
     "fixed native orb pacing and bounded confirmation retention are missing");
-assert(loot.includes("armOrbFlush(sent and 0 or orbFlushInterval(), sent == true)")
-    && loot.includes("immediateContinuation == true and 0"),
-    "orb batches above 512 IDs are not drained by an immediate continuation");
+assert(loot.includes("run.PendingOrbCount >= ORB_MIN_BATCH")
+    && loot.includes("armOrbFlush(continuationDelay, false)"),
+    "orb backlog is not drained through bounded 32-ID continuations");
 assert(loot.includes('record.Object = typeof(sourceObject) == "Instance" and sourceObject or nil')
     && loot.includes("record.Position = objectPosition(liveObject) or record.Position"),
     "fallback lootbag retries do not refresh the live landed position");
@@ -308,7 +309,8 @@ assert(boost.includes("IDLE_SAFETY_DELAY = 30")
     && boost.includes("state.NextWakeAt")
     && boost.includes("remaining - renewBefore"),
     "boost worker does not schedule the nearest renewal/retry");
-assert(farm.includes("MACHINE_PET_SNAPSHOT_TTL = 5")
+assert(farm.includes("MACHINE_PET_SNAPSHOT_TTL = 30")
+    && farm.includes("MACHINE_PET_RECONCILE_DELAY = 1.25")
     && farm.includes("GetPetSnapshot = getMachinePetSnapshot")
     && farm.includes("InvalidatePetSnapshot = invalidateMachinePetSnapshot"),
     "machine workers do not share an invalidation-aware pet snapshot");

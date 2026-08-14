@@ -114,7 +114,8 @@ assert(format(1_000_000_000) === "1.00B", "1B formatting is incorrect");
 
 for (const marker of [
     "CURRENCY_WINDOW_SECONDS = 60",
-    "CURRENCY_WINDOW_CAPACITY = 128",
+    "CURRENCY_WINDOW_CAPACITY = 1024",
+    "CURRENCY_RETENTION_SECONDS = 600",
     "sample.RollingEarned",
     "sample.TotalSpent",
     "buildCurrencyMap(save, currencyNames, self.WantedMap, self.MappedValues)",

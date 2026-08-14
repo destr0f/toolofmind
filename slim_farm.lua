@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-dev.50-network4.2"
+local VERSION = "1.4.1-candidate.51-boss-rules"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -287,6 +287,12 @@ local player = Players.LocalPlayer
 
 local token = {}
 token.InitialCamera = workspace.CurrentCamera
+-- Stable per-account phase for non-critical automation only. Farm and loot
+-- are excluded so boss dispatch and collection remain immediate.
+function token.AutomationStartupPhase(lane)
+    lane = math.max(math.floor(tonumber(lane) or 0), 0)
+    return (((tonumber(player and player.UserId) or 0) + lane * 7) % 17) * 0.035
+end
 local connections = {}
 local zoneCatalogDirty = true
 local eggCatalogDirty = true
@@ -325,6 +331,32 @@ local config = {
     EggName = nil,
     EggCount = 1,
     EggAnimation = "Headless (No Animation)",
+    EggDelayMode = "Adaptive",
+    EggManualDelay = 0,
+    EnchantRuleProfiles = {
+        Gold = { Enabled = true, DryRun = false, Revision = 1, Rules = {
+            { Enabled = true, Conditions = {
+                { Enchant = "Rainbow Coins", Mode = "AtLeast", Level = 5 },
+            } },
+        } },
+        Rainbow = { Enabled = true, DryRun = false, Revision = 1, Rules = {
+            { Enabled = true, Conditions = {
+                { Enchant = "Rainbow Coins", Mode = "AtLeast", Level = 5 },
+            } },
+        } },
+        DarkMatter = { Enabled = true, DryRun = false, Revision = 1, Rules = {
+            { Enabled = true, Conditions = {
+                { Enchant = "Rainbow Coins", Mode = "AtLeast", Level = 5 },
+            } },
+        } },
+        DMDelete = { Enabled = true, DryRun = true, Revision = 1, Rules = {} },
+    },
+    DMCleanupEnabled = false,
+    DMCleanupScope = "Newly Claimed",
+    DMCleanupDryRun = true,
+    DMCleanupConfirmed = false,
+    DMCleanupBatchSize = 25,
+    BossFastPathDiagnostics = true,
     QuickHUD = true,
     QuickHUDPing = true,
     QuickHUDFarmRate = true,
@@ -1640,13 +1672,14 @@ local currencyMonitor = {
     },
 }
 local CURRENCY_WINDOW_SECONDS = 60
-local CURRENCY_WINDOW_CAPACITY = 128
+local CURRENCY_RETENTION_SECONDS = 600
+local CURRENCY_WINDOW_CAPACITY = 1024
 
 local function pruneCurrencyWindow(sample, now)
     local count = sample.WindowCount or 0
     local head = sample.WindowHead or 1
     local total = sample.RollingEarned or 0
-    local cutoff = now - CURRENCY_WINDOW_SECONDS
+    local cutoff = now - CURRENCY_RETENTION_SECONDS
     while count > 0 do
         local timestamp = sample.WindowTimes[head]
         if type(timestamp) ~= "number" or timestamp >= cutoff then break end
@@ -1660,6 +1693,19 @@ local function pruneCurrencyWindow(sample, now)
     sample.WindowCount = count
     sample.RollingEarned = math.max(total, 0)
     sample.WindowEarned = sample.RollingEarned
+end
+
+local function currencyWindowGain(sample, now, seconds)
+    local total = 0
+    local count, head = sample.WindowCount or 0, sample.WindowHead or 1
+    local cutoff = now - seconds
+    for offset = 0, count - 1 do
+        local index = (head + offset - 1) % CURRENCY_WINDOW_CAPACITY + 1
+        if (sample.WindowTimes[index] or -math.huge) >= cutoff then
+            total = total + (sample.WindowAmounts[index] or 0)
+        end
+    end
+    return total
 end
 
 local function appendCurrencyGain(sample, now, delta)
@@ -1755,6 +1801,7 @@ function currencyMonitor:Update(currencyName, currentAmount, now, recordDelta)
         appendCurrencyGain(sample, now, delta)
         sample.LastGainAt = now
         sample.LastGain = delta
+        sample.MaxSingleDelta = math.max(tonumber(sample.MaxSingleDelta) or 0, delta)
     elseif recordDelta ~= false and delta < 0 then
         sample.TotalSpent = sample.TotalSpent - delta
         sample.LastSpendAt = now
@@ -1772,12 +1819,21 @@ end
 function currencyMonitor:RateLine(currencyName, sample, now)
     local inactiveFor = sample.LastGainAt and math.max(0, now - sample.LastGainAt) or nil
     local idleText = inactiveFor and (" | last gain " .. tostring(math.floor(inactiveFor + 0.5)) .. "s ago") or ""
+    local elapsed = math.max(0, now - (sample.StartedAt or now))
+    local sixty = currencyWindowGain(sample, now, 60)
+    local five = currencyWindowGain(sample, now, 300)
+    local ten = currencyWindowGain(sample, now, 600)
+    local minute = elapsed >= 60 and (formatRateNumber(sixty) .. "/min") or "warming up"
     return string.format(
-        "%s: %s/min session avg | last 60s +%s | total +%s | balance %s%s",
+        "%s: 60s %s | 5m %s/min | 10m %s/min | net %s | gross +%s | spent %s | max delta %s | balance %s%s",
         currencyName,
-        formatRateNumber(sample.PerMinute or 0),
-        formatRateNumber(sample.WindowEarned or 0),
+        minute,
+        formatRateNumber(elapsed > 0 and five * 60 / math.min(elapsed, 300) or 0),
+        formatRateNumber(elapsed > 0 and ten * 60 / math.min(elapsed, 600) or 0),
+        formatRateNumber((sample.TotalEarned or 0) - (sample.TotalSpent or 0)),
         formatRateNumber(sample.TotalEarned or 0),
+        formatRateNumber(sample.TotalSpent or 0),
+        formatRateNumber(sample.MaxSingleDelta or 0),
         formatRateNumber(sample.LastBalance or 0),
         idleText
     )
@@ -1829,9 +1885,15 @@ local coinSync = {
     SnapshotBackoff = { 0.15, 0.45, 1.0 },
     RemoteCaches = { Command = {}, Event = {}, Fire = {} },
     BossRejected = {},
+    BossTemplates = {},
     SignalsReady = false,
     SignalConnections = {},
+    SignalSources = {},
+    SignalHealth = {},
     WorldSignalReady = false,
+    BossFallbackTimes = {},
+    BossWatchdogToken = 0,
+    BossAbsentUntil = 0,
 }
 local coinGeneration = 0
 local coinMutationSerial = 0
@@ -1933,6 +1995,14 @@ local function applyCoinData(rawId, data, fromEvent)
     if created then coinSync.RecordCount = coinSync.RecordCount + 1 end
     local selectionChanged = created
     local previousHealth = tonumber(record.Health)
+    local template = coinSync.BossTemplates[id]
+    if type(template) == "table" then
+        record.Name = record.Name or template.Name
+        record.Area = record.Area or template.Area
+        record.World = record.World or template.World
+        record.Position = record.Position or template.Position
+        record.MaxHealth = record.MaxHealth or template.MaxHealth
+    end
 
     local health = tonumber(data.h or data.Health or data.health)
     local maxHealth = tonumber(data.mh or data.MaxHealth or data.maxHealth)
@@ -1978,13 +2048,26 @@ local function applyCoinData(rawId, data, fromEvent)
     end
     record.Removed = false
     record.FromServer = true
+    if BossChestNames[normalize(record.Name)] == true then
+        coinSync.BossTemplates[id] = {
+            Name = record.Name,
+            Area = record.Area,
+            World = record.World,
+            Position = record.Position,
+            MaxHealth = record.MaxHealth,
+        }
+    end
 
     if fromEvent then
         coinMutationSerial = coinMutationSerial + 1
         coinSync.EventConfirmed = true
     end
     if selectionChanged then coinIndex:MutateTarget(record, false) end
-    if fromEvent and type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+    local directBossFastPath = fromEvent and config.Mode == "Boss Chest Only"
+        and BossChestNames[normalize(record.Name)] == true
+    if fromEvent and not directBossFastPath and type(requestAllocatorPulse) == "function" then
+        requestAllocatorPulse()
+    end
     return record
 end
 
@@ -1993,6 +2076,15 @@ local function removeCoin(rawId, fromEvent)
     coinMutationSerial = coinMutationSerial + 1
     if fromEvent then coinSync.EventConfirmed = true end
     local record = coinRecords[id]
+    if record and BossChestNames[normalize(record.Name)] == true then
+        coinSync.BossTemplates[id] = {
+            Name = record.Name,
+            Area = record.Area,
+            World = record.World,
+            Position = record.Position,
+            MaxHealth = record.MaxHealth,
+        }
+    end
     if record then
         record.Health = 0
         record.Removed = true
@@ -2005,7 +2097,14 @@ local function removeCoin(rawId, fromEvent)
     if model then coinIndex.IdByModel[model] = nil end
     coinIndex.Models[id] = nil
     coinIndex:MutateTarget(record, true)
-    local released = type(releaseAssignmentsForCoin) == "function"
+    local bossHandled = false
+    local controller = coinSync.PetFarm
+    if record and BossChestNames[normalize(record.Name)] == true
+        and controller and type(controller.HandleBossRemoved) == "function" then
+        bossHandled = controller:HandleBossRemoved(id,
+            fromEvent and "server remove/health" or "local removal") == true
+    end
+    local released = not bossHandled and type(releaseAssignmentsForCoin) == "function"
         and releaseAssignmentsForCoin(id) or 0
     if released == 0 and type(requestAllocatorPulse) == "function" then
         requestAllocatorPulse()
@@ -2092,8 +2191,15 @@ function coinIndex:WatchFolder(folder)
 
     self.Connections[#self.Connections + 1] = folder.ChildAdded:Connect(function(model)
         if not running() or model.Parent ~= folder then return end
-        self:IndexModel(model, true)
-        if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
+        local _, record = self:IndexModel(model, true)
+        local controller = coinSync.PetFarm
+        if config.Mode == "Boss Chest Only" and record
+            and BossChestNames[normalize(record.Name)] == true
+            and controller and type(controller.HandleBossSpawn) == "function" then
+            controller:HandleBossSpawn(record, "Coins.ChildAdded", false, {})
+        elseif type(requestAllocatorPulse) == "function" then
+            requestAllocatorPulse()
+        end
     end)
     self.Connections[#self.Connections + 1] = folder.ChildRemoved:Connect(function(model)
         local id = self.IdByModel[model]
@@ -2169,6 +2275,8 @@ local function coinCatalogReady()
 end
 
 refreshCoinSnapshot = function()
+    if config.Mode == "Boss Chest Only"
+        and os.clock() < (tonumber(coinSync.BossAbsentUntil) or 0) then return end
     if coinSync.SnapshotBusy or coinSync.SnapshotPrimed or coinSync.SnapshotFailOpen
         or coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then return end
     coinSync.SnapshotAttempts = coinSync.SnapshotAttempts + 1
@@ -2280,8 +2388,16 @@ refreshCoinSnapshot = function()
     end
 end
 
-local function connectCoinSignals()
-    if coinSync.SignalsReady then return end
+local function connectCoinSignals(forceName)
+    if forceName ~= nil then
+        local existing = coinSync.SignalConnections[forceName]
+        if existing then disconnect(existing) end
+        coinSync.SignalConnections[forceName] = nil
+        coinSync.SignalSources[forceName] = nil
+        coinSync.SignalsReady = false
+    elseif coinSync.SignalsReady then
+        return
+    end
 
     local function connect(name, callback)
         if coinSync.SignalConnections[name] then return true end
@@ -2292,23 +2408,46 @@ local function connectCoinSignals()
             "RemoteEvent"
         )
         local signal = remote and remote.OnClientEvent or nil
+        local source = signal and "Network4 direct" or nil
         if not signal then
             local network = networkReady()
             if network and type(network.Fired) == "function" then
                 local ok, fallbackSignal = pcall(network.Fired, name)
-                if ok then signal = fallbackSignal end
+                if ok then
+                    signal = fallbackSignal
+                    source = "Library.Network.Fired fallback"
+                end
             end
         end
         local ok = signal ~= nil
         if ok and signal and type(signal.Connect) == "function" then
+            local bindingGeneration = coinGeneration
+            local runtimeGeneration = tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0
+            local health = coinSync.SignalHealth[name] or {
+                EventsSeen = 0,
+                RebindCount = 0,
+                DirectSpawnCount = 0,
+                FallbackSpawnCount = 0,
+                MissedSpawnCount = 0,
+            }
+            health.BoundAt = os.clock()
+            health.Source = source or "unknown"
+            coinSync.SignalHealth[name] = health
             local connected, connection = pcall(function()
                 return signal:Connect(function(...)
+                    if bindingGeneration ~= coinGeneration
+                        or runtimeGeneration ~= (tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0) then
+                        return
+                    end
+                    health.LastEventAt = os.clock()
+                    health.EventsSeen = (tonumber(health.EventsSeen) or 0) + 1
                     local handled, problem = pcall(callback, ...)
                     if not handled then warn("[PSX SLIM] " .. name .. ": " .. tostring(problem)) end
                 end)
             end)
             if connected and connection then
                 coinSync.SignalConnections[name] = track(connection)
+                coinSync.SignalSources[name] = source or "unknown"
                 return true
             end
         end
@@ -2323,17 +2462,23 @@ local function connectCoinSignals()
         local wasRejected = coinSync.BossRejected[coinId] == true
         coinSync.BossRejected[coinId] = nil
         local record = applyCoinData(id, data, true)
-        if record and BossChestNames[normalize(record.Name)] == true
-            and (wasRejected or not previousAlive) then
-            -- A respawning boss may reuse its coin ID without delivering a
-            -- matching Remove Coin first. Drop the stale lock synchronously;
-            -- requestAllocatorPulse schedules the replacement on this same
-            -- event turn instead of waiting for the recovery poll.
-            if type(releaseAssignmentsForCoin) == "function" then
-                releaseAssignmentsForCoin(coinId)
+        local controller = coinSync.PetFarm
+        if record and BossChestNames[normalize(record.Name)] == true then
+            local source = coinSync.SignalSources["New Coin"] or "unknown"
+            local health = coinSync.SignalHealth["New Coin"]
+            if health then
+                if source == "Network4 direct" then
+                    health.DirectSpawnCount = (tonumber(health.DirectSpawnCount) or 0) + 1
+                else
+                    health.FallbackSpawnCount = (tonumber(health.FallbackSpawnCount) or 0) + 1
+                end
             end
-            if type(requestAllocatorPulse) == "function" then
-                requestAllocatorPulse(true)
+            if controller and type(controller.HandleBossSpawn) == "function" then
+                controller:HandleBossSpawn(record, source, source == "Network4 direct", data,
+                    wasRejected or not previousAlive)
+            elseif wasRejected or not previousAlive then
+                if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(coinId) end
+                if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
             end
         end
     end)
@@ -2357,7 +2502,11 @@ local function connectCoinSignals()
         elseif (tonumber(health) or 0) > 0 then
             -- Absorb a missed creation event into the live registry. Repeating
             -- Get Coins here would turn an event race into a reconciliation loop.
-            applyCoinData(id, { Health = health }, true)
+            local record = applyCoinData(id, { Health = health }, true)
+            local controller = coinSync.PetFarm
+            if record and controller and type(controller.HandleBossSpawn) == "function" then
+                controller:HandleBossSpawn(record, "Update Coin Health", false, { Health = health })
+            end
         end
     end)
     -- This is the game's authoritative acknowledgement that Join Coin has
@@ -2384,8 +2533,13 @@ local function connectCoinSignals()
                 for name, namedConnection in pairs(coinSync.SignalConnections) do
                     disconnect(namedConnection)
                     coinSync.SignalConnections[name] = nil
+                    coinSync.SignalSources[name] = nil
                 end
                 coinSync.SignalsReady = false
+                coinSync.BossAbsentUntil = 0
+                table.clear(coinSync.BossTemplates)
+                table.clear(coinSync.SignalHealth)
+                table.clear(coinSync.BossFallbackTimes)
                 resetCoinSnapshot("world changed; awaiting fresh catalog")
                 table.clear(coinRecords)
                 table.clear(coinIndex.Models)
@@ -2426,6 +2580,15 @@ local function connectCoinSignals()
         coinSync.LastProblem = "named coin signals are not fully connected"
         scheduleCoinSnapshotRetry(0.75, coinSync.LastProblem)
     end
+end
+
+function coinSync:RebindNewCoinSignal()
+    local health = coinSync.SignalHealth["New Coin"] or {}
+    health.LastRebindAt = os.clock()
+    health.RebindCount = (tonumber(health.RebindCount) or 0) + 1
+    coinSync.SignalHealth["New Coin"] = health
+    connectCoinSignals("New Coin")
+    return coinSync.SignalConnections["New Coin"] ~= nil
 end
 
 local cachedPetIds = {}
@@ -2698,7 +2861,7 @@ local function releasePetState(state, forceReusable)
     if reusable and #pool < 32 then pool[#pool + 1] = state end
 end
 
-releaseAssignmentsForCoin = function(rawId)
+releaseAssignmentsForCoin = function(rawId, suppressFastDispatch)
     if rawId == nil then
         farmGeneration = farmGeneration + 1
         petFarm.FastToken = petFarm.FastToken + 1
@@ -2730,7 +2893,8 @@ releaseAssignmentsForCoin = function(rawId)
     end
     rejectedUntil[coinId] = nil
     coinSync.BossRejected[coinId] = nil
-    if released > 0 and type(petFarm.QueueFastDispatch) == "function" then
+    if released > 0 and not suppressFastDispatch
+        and type(petFarm.QueueFastDispatch) == "function" then
         petFarm:QueueFastDispatch()
     end
     return released
@@ -3237,6 +3401,32 @@ local function getMachinePetCatalog(force)
     return ids, names, summary
 end
 
+function supportContext:MatchEnchantProfile(profile, pet)
+    local controller, problem = ensureSupportModule()
+    if not controller then return "DEFER", "matcher unavailable: " .. tostring(problem) end
+    local called, decision, detail = pcall(controller, "match-enchant-profile", self, {
+        Profile = profile,
+        Pet = pet,
+    })
+    if not called then return "DEFER", "matcher error: " .. tostring(decision) end
+    return tostring(decision or "DEFER"), tostring(detail or "no detail")
+end
+
+function supportContext:EnchantCatalog()
+    local controller, problem = ensureSupportModule()
+    if not controller then return { "Rainbow Coins", "Royalty", "Glittering", "Charm", "Teamwork", "Super Teamwork" }, problem end
+    local called, values = pcall(controller, "enchant-catalog", self)
+    if called and type(values) == "table" and #values > 0 then return values end
+    return { "Rainbow Coins", "Royalty", "Glittering", "Charm", "Teamwork", "Super Teamwork" }, values
+end
+
+function supportContext:EnchantFormula(profile)
+    local controller, problem = ensureSupportModule()
+    if not controller then return "DEFER (" .. tostring(problem) .. ")" end
+    local called, formula = pcall(controller, "enchant-profile-formula", self, profile)
+    return called and tostring(formula) or ("DEFER (" .. tostring(formula) .. ")")
+end
+
 function petFarm:NormalizedPetUid(value)
     if value == nil then return nil end
     if type(value) == "table" then
@@ -3416,6 +3606,12 @@ function petFarm:RefreshStats()
     return self.StatsCache
 end
 
+function petFarm:BossStats()
+    if not self.Engine then return nil end
+    local ok, stats = pcall(self.Engine, "boss-stats")
+    return ok and type(stats) == "table" and stats or nil
+end
+
 function petFarm:EnsureEngine()
     if self.Engine then return true end
     if self.Loading then return false, "engine load already in progress" end
@@ -3455,6 +3651,13 @@ function petFarm:EnsureEngine()
         StateCurrent = function(petId, state)
             return petStates[tostring(petId)] == state
                 and state.Generation == farmGeneration
+        end,
+        OnBossSpawnReady = function(info, spawnGeneration)
+            local record = type(info) == "table" and info.Record or nil
+            return self:DispatchBossRecord(record, spawnGeneration)
+        end,
+        OnBossRemoved = function(coinId, spawnGeneration)
+            self:FinalizeBossRemoval(coinId, spawnGeneration)
         end,
         OnAccepted = function(petId, state, record, _, attempt, route)
             petId = tostring(petId)
@@ -3758,6 +3961,8 @@ local function dispatchPlan(record, petIds)
     payload.Record = record
     payload.CoinId = coinId
     payload.Entries = entries
+    payload.BossGeneration = record.BossSpawnGeneration
+    payload.SelectableAt = record.BossSelectableAt
     local profiled = beginProfile("PSX_FarmDispatch")
     local called, accepted, problem = pcall(petFarm.Engine, "dispatch", payload)
     endProfile(profiled)
@@ -3771,6 +3976,128 @@ local function dispatchPlan(record, petIds)
         driverStatus = "Lite dispatch queue error: " .. tostring(called and problem or accepted)
         if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     end
+end
+
+function petFarm:DispatchBossRecord(record, spawnGeneration)
+    if config.Mode ~= "Boss Chest Only" or not config.PetFarm or farmResetRunning
+        or not running() or not recordAlive(record) or not isBossChest(record) then
+        return false
+    end
+    if not self.Engine or allocatorBusy then return false end
+
+    local selectedWorld = getSelectedWorld()
+    local selectedZone = getSelectedZone()
+    local zoneAnchor = coinIndex.Cache.ZoneAnchor or findZoneAnchor(selectedZone)
+    if not targetRecordAllowed(record, "Boss Chest Only", selectedWorld, selectedZone, zoneAnchor) then
+        return false
+    end
+
+    local coinId = tostring(record.Id)
+    releaseAssignmentsForCoin(coinId, true)
+    coinSync.BossRejected[coinId] = nil
+    rejectedUntil[coinId] = nil
+    coinIndex:MutateTarget(record, false)
+    record.BossSpawnGeneration = tonumber(spawnGeneration)
+    record.BossSelectableAt = os.clock()
+
+    local petIds = getEquippedPetIds()
+    self.EquippedCount = #petIds
+    self.LastEquippedIds = petIds
+    self.LastTargetCount = 1
+    self.TargetWindow = #petIds > 0 and 1 or 0
+    self.LastWorld = selectedWorld or "unknown"
+    self.LastZone = selectedZone or "unknown"
+    if #petIds == 0 then return false end
+    pcall(self.Engine, "limit", math.min(#petIds, 16))
+    dispatchPlan(record, petIds)
+    return assignmentCount() > 0
+end
+
+function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
+    if not self.Engine or config.Mode ~= "Boss Chest Only" or not config.PetFarm then return false end
+    local info = {
+        CoinId = tostring(record.Id),
+        Record = record,
+        Source = tostring(source or "unknown"),
+        Direct = direct == true,
+        ForceNew = forceNew == true,
+        ReceivedAt = os.clock(),
+        PayloadComplete = type(payload) == "table"
+            and (payload.n ~= nil or payload.Name ~= nil or record.Name ~= nil)
+            and (payload.a ~= nil or payload.Area ~= nil or record.Area ~= nil),
+    }
+    coinSync.BossAbsentUntil = 0
+    local ok, accepted = pcall(self.Engine, "boss-spawn", info)
+    return ok and accepted == true
+end
+
+function coinSync:PruneBossFallbackTimes(now)
+    local times = coinSync.BossFallbackTimes
+    local write = 1
+    for read = 1, #times do
+        local value = tonumber(times[read]) or 0
+        if now - value < 60 then
+            times[write] = value
+            write = write + 1
+        end
+    end
+    for index = #times, write, -1 do times[index] = nil end
+    return #times
+end
+
+function petFarm:ArmBossWatchdog(removedGeneration)
+    coinSync.BossWatchdogToken = coinSync.BossWatchdogToken + 1
+    local token = coinSync.BossWatchdogToken
+    local runtimeGeneration = tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0
+    local phase = (math.abs(tonumber(player.UserId) or 0) % 9) * 0.02
+    task.delay(3.25 + phase, function()
+        if token ~= coinSync.BossWatchdogToken or runtimeGeneration ~= env.PSX_OG_RUNTIME_GENERATION
+            or not running() or not config.PetFarm or config.Mode ~= "Boss Chest Only"
+            or not self.Engine then return end
+        local currentOk, current = pcall(self.Engine, "boss-stats")
+        if currentOk and type(current) == "table"
+            and tonumber(current.SpawnGeneration) ~= tonumber(removedGeneration)
+            and current.State ~= "ABSENT" then return end
+
+        local world, zone = getSelectedWorld(), getSelectedZone()
+        local zoneAnchor = findZoneAnchor(zone)
+        for _, record in pairs(coinRecords) do
+            if targetRecordAllowed(record, "Boss Chest Only", world, zone, zoneAnchor) then
+                self:HandleBossSpawn(record, "local indexed fallback", false, {}, true)
+                return
+            end
+        end
+
+        local health = coinSync.SignalHealth["New Coin"] or {}
+        if (tonumber(health.LastEventAt) or 0) <= (tonumber(health.BoundAt) or 0)
+            and os.clock() - (tonumber(health.LastRebindAt) or 0) >= 3 then
+            coinSync:RebindNewCoinSignal()
+        end
+        local now = os.clock()
+        if coinSync:PruneBossFallbackTimes(now) >= 3 then return end
+        coinSync.BossFallbackTimes[#coinSync.BossFallbackTimes + 1] = now
+        health.MissedSpawnCount = (tonumber(health.MissedSpawnCount) or 0) + 1
+        coinSync.SignalHealth["New Coin"] = health
+        coinSync.SnapshotPrimed = false
+        coinSync.SnapshotFailOpen = false
+        coinSync.SnapshotAttempts = 0
+        coinSync.RetryArmed = false
+        task.defer(refreshCoinSnapshot)
+    end)
+end
+
+function petFarm:HandleBossRemoved(rawId, source)
+    if not self.Engine then return false end
+    local ok, removed = pcall(self.Engine, "boss-remove", tostring(rawId), source)
+    return ok and removed == true
+end
+
+function petFarm:FinalizeBossRemoval(rawId, generation)
+    coinSync.BossWatchdogToken = coinSync.BossWatchdogToken + 1
+    coinSync.BossAbsentUntil = os.clock() + 3.2
+    releaseAssignmentsForCoin(rawId, true)
+    self:ArmBossWatchdog(generation)
+    driverStatus = "boss chest absent; awaiting New Coin"
 end
 
 assignmentCount = function()
@@ -4268,6 +4595,7 @@ local function inspectEggThroughModule(eggId, count, animation)
     return autoEggController("inspect", {
         Library = Library,
         Player = player,
+        UserId = tonumber(player and player.UserId) or 0,
         Egg = eggId,
         Count = count,
         Animation = animation,
@@ -4288,6 +4616,7 @@ local function startAutoEggModule()
     local context = {
         Library = Library,
         Player = player,
+        UserId = tonumber(player and player.UserId) or 0,
         Running = running,
         Enabled = function() return config.AutoEgg end,
         GetOptions = function()
@@ -4295,6 +4624,8 @@ local function startAutoEggModule()
                 Egg = config.EggName,
                 Count = config.EggCount,
                 Animation = config.EggAnimation,
+                DelayMode = config.EggDelayMode,
+                ManualDelay = config.EggManualDelay,
             }
         end,
         PotatoEnabled = function() return config.PotatoMode == true end,
@@ -4335,29 +4666,39 @@ local machineModules = {
     },
     DarkMatter = {
         Module = "darkMatter",
-        ConfigKeys = { "AutoDarkMatterGalaxyFox", "AutoClaimDarkMatter" },
+        ConfigKeys = { "AutoDarkMatterGalaxyFox", "AutoClaimDarkMatter", "DMCleanupEnabled" },
         Label = "dark matter machine",
         SetStatus = statusSetters.DarkMatter,
     },
 }
 
-local MACHINE_PET_SNAPSHOT_TTL = 5
+local MACHINE_PET_SNAPSHOT_TTL = 30
+local MACHINE_PET_RECONCILE_DELAY = 1.25
 local machinePetSnapshot = {
     At = -math.huge,
     Save = nil,
     Pets = {},
     ByUID = {},
+    Dirty = true,
+    DirtyAt = 0,
+    Revision = 0,
 }
 
 invalidateMachinePetSnapshot = function()
-    machinePetSnapshot.At = -math.huge
+    machinePetSnapshot.Dirty = true
+    machinePetSnapshot.DirtyAt = os.clock()
 end
 
 local function getMachinePetSnapshot(force)
     local now = os.clock()
-    if not force and machinePetSnapshot.Save
-        and now - machinePetSnapshot.At < MACHINE_PET_SNAPSHOT_TTL then
-        return machinePetSnapshot
+    if not force and machinePetSnapshot.Save then
+        local age = now - machinePetSnapshot.At
+        if not machinePetSnapshot.Dirty and age < MACHINE_PET_SNAPSHOT_TTL then
+            return machinePetSnapshot
+        end
+        if machinePetSnapshot.Dirty and age < MACHINE_PET_RECONCILE_DELAY then
+            return machinePetSnapshot
+        end
     end
     local save = getRewardSave()
     local pets, byUID = {}, {}
@@ -4372,6 +4713,9 @@ local function getMachinePetSnapshot(force)
         Save = save,
         Pets = pets,
         ByUID = byUID,
+        Dirty = false,
+        DirtyAt = 0,
+        Revision = (tonumber(machinePetSnapshot.Revision) or 0) + 1,
     }
     return machinePetSnapshot
 end
@@ -4563,6 +4907,34 @@ function machineModules:Start(kind)
             local hours = tonumber(config.DarkMatterMaxWaitHours) or 0
             return hours > 0 and hours * 3600 or nil
         end,
+        MatchProtection = function(pet)
+            local profile = type(config.EnchantRuleProfiles) == "table"
+                and config.EnchantRuleProfiles[kind] or nil
+            return supportContext:MatchEnchantProfile(profile, pet)
+        end,
+        MatchCleanupProtection = function(pet)
+            local profile = type(config.EnchantRuleProfiles) == "table"
+                and config.EnchantRuleProfiles.DMDelete or nil
+            return supportContext:MatchEnchantProfile(profile, pet)
+        end,
+        ProtectionDryRun = function()
+            local profile = type(config.EnchantRuleProfiles) == "table"
+                and config.EnchantRuleProfiles[kind] or nil
+            return type(profile) == "table" and profile.DryRun == true
+        end,
+        StartupPhase = token.AutomationStartupPhase(kind == "Gold" and 1 or kind == "Rainbow" and 2 or 3),
+        DMCleanupEnabled = function() return config.DMCleanupEnabled == true end,
+        DMCleanupScope = function() return tostring(config.DMCleanupScope or "Newly Claimed") end,
+        DMCleanupDryRun = function() return config.DMCleanupDryRun ~= false end,
+        DMCleanupConfirmed = function() return config.DMCleanupConfirmed == true end,
+        DMCleanupBatchSize = function()
+            return math.clamp(math.floor(tonumber(config.DMCleanupBatchSize) or 25), 20, 30)
+        end,
+        ProtectionFormula = function()
+            local profile = type(config.EnchantRuleProfiles) == "table"
+                and config.EnchantRuleProfiles[kind] or nil
+            return supportContext:EnchantFormula(profile)
+        end,
         GetCommandRemote = getCommandRemote,
         InvalidateCommand = function(commandName)
             coinSync.NetworkTransport:ClearRoute(coinSync.RemoteCaches.Command, commandName)
@@ -4641,11 +5013,7 @@ local function startBoostModule()
         InvokeCommand = invokeCommand,
         FireCommand = fireCommand,
         RouteText = routeText,
-        AcquireOperation = acquireOperation,
-        ReleaseOperation = releaseOperation,
-        CancelOperation = cancelOperation,
-        OperationStatus = operationGateStatus,
-        OperationOwner = "Boosts",
+        StartupPhase = token.AutomationStartupPhase(4),
         SetStatus = statusSetters.Boost,
         Trace = trace,
     }
@@ -4802,7 +5170,7 @@ local function reconcileDiamondWorker()
     local generation = diamondWorker.Generation
     diamondPackNextCheck = 0
     if not running() or not config.AutoTechDiamondPack then return end
-    diamondWorker.Schedule(generation, 0)
+    diamondWorker.Schedule(generation, token.AutomationStartupPhase(5))
 end
 
 local rewardWorker = {
@@ -4871,7 +5239,7 @@ local function reconcileRewardWorker()
     local generation = rewardWorker.Generation
     if not running()
         or not (config.AutoVIPRewards or config.AutoRankRewards or config.AutoFreeGifts) then return end
-    rewardWorker.Schedule(generation, 0)
+    rewardWorker.Schedule(generation, token.AutomationStartupPhase(6))
 end
 
 local allocatorPass
@@ -4977,6 +5345,12 @@ allocatorPass = function()
             elseif type(armFarmRecovery) == "function" then
                 armFarmRecovery(1.05)
             end
+            return
+        end
+
+        if config.Mode == "Boss Chest Only" and usable[1]
+            and usable[1].BossSpawnGeneration == nil
+            and petFarm:HandleBossSpawn(usable[1], "allocator bootstrap", false, {}, true) then
             return
         end
 
@@ -5448,6 +5822,13 @@ UI.FarmHero:Dropdown({
         if config.PetFarm then requestFarmReset("assignment mode changed") end
     end,
 })
+UI.FarmHero:Toggle({
+    Flag = "boss_fast_path_diagnostics",
+    Title = "Boss Fast-Path Diagnostics",
+    Desc = "Shows a bounded 64-cycle summary; it adds no scan, polling, or server request.",
+    Value = true,
+    Callback = function(value) config.BossFastPathDiagnostics = value ~= false end,
+})
 uiStageYield("farm controls")
 
 UI.WorldValues = { "Current World" }
@@ -5661,6 +6042,86 @@ do
             SetGoldStatus = statusSetters.Gold,
             SetRainbowStatus = statusSetters.Rainbow,
             SetDarkMatterStatus = statusSetters.DarkMatter,
+            GetRuleEnchantCatalog = function()
+                local values = supportContext:EnchantCatalog()
+                return values
+            end,
+            GetRuleFormula = function(profileName)
+                local profile = type(config.EnchantRuleProfiles) == "table"
+                    and config.EnchantRuleProfiles[profileName] or nil
+                return supportContext:EnchantFormula(profile)
+            end,
+            ExportRuleProfiles = function()
+                local ok, encoded = pcall(function()
+                    return game:GetService("HttpService"):JSONEncode(config.EnchantRuleProfiles)
+                end)
+                return ok, ok and encoded or tostring(encoded)
+            end,
+            ImportRuleProfiles = function(raw)
+                raw = tostring(raw or "")
+                if raw == "" then return false, "JSON is empty" end
+                if #raw > 65536 then return false, "JSON exceeds 64 KiB" end
+                local decodedOk, decoded = pcall(function()
+                    return game:GetService("HttpService"):JSONDecode(raw)
+                end)
+                if not decodedOk or type(decoded) ~= "table" then
+                    return false, "invalid JSON: " .. tostring(decoded)
+                end
+                local sanitized = {}
+                local validModes = { Any = true, Exact = true, ["IV/V"] = true, AtLeast = true }
+                for _, profileName in ipairs({ "Gold", "Rainbow", "DarkMatter", "DMDelete" }) do
+                    local source = decoded[profileName]
+                    if type(source) ~= "table" or type(source.Rules) ~= "table" then
+                        return false, profileName .. " profile/rules missing"
+                    end
+                    if #source.Rules > 8 then return false, profileName .. " exceeds 8 rules" end
+                    local target = {
+                        Enabled = source.Enabled ~= false,
+                        DryRun = source.DryRun == true,
+                        Revision = math.max(tonumber(source.Revision) or 1, 1),
+                        Rules = {},
+                    }
+                    for ruleIndex, sourceRule in ipairs(source.Rules) do
+                        if type(sourceRule) ~= "table" or type(sourceRule.Conditions) ~= "table" then
+                            return false, profileName .. " rule " .. tostring(ruleIndex) .. " is incomplete"
+                        end
+                        if #sourceRule.Conditions == 0 or #sourceRule.Conditions > 8 then
+                            return false, profileName .. " rule " .. tostring(ruleIndex) .. " condition count is invalid"
+                        end
+                        local targetRule = { Enabled = sourceRule.Enabled ~= false, Conditions = {} }
+                        for conditionIndex, condition in ipairs(sourceRule.Conditions) do
+                            local enchant = type(condition) == "table" and tostring(condition.Enchant or "") or ""
+                            local mode = type(condition) == "table" and tostring(condition.Mode or "Any") or ""
+                            local level = type(condition) == "table" and tonumber(condition.Level) or nil
+                            if enchant == "" or #enchant > 80 or not validModes[mode] then
+                                return false, profileName .. " rule " .. tostring(ruleIndex)
+                                    .. " condition " .. tostring(conditionIndex) .. " is invalid"
+                            end
+                            if mode ~= "Any" and mode ~= "IV/V"
+                                and (level == nil or level < 1 or level > 5) then
+                                return false, profileName .. " rule " .. tostring(ruleIndex)
+                                    .. " condition " .. tostring(conditionIndex) .. " level is invalid"
+                            end
+                            targetRule.Conditions[#targetRule.Conditions + 1] = {
+                                Enchant = enchant,
+                                Mode = mode,
+                                Level = level and math.floor(level) or 1,
+                            }
+                        end
+                        target.Rules[#target.Rules + 1] = targetRule
+                    end
+                    sanitized[profileName] = target
+                end
+                config.EnchantRuleProfiles = sanitized
+                if supportController then pcall(supportController, "clear-enchant-cache", supportContext) end
+                invalidateMachinePetSnapshot()
+                return true, "imported"
+            end,
+            RulesChanged = function(profileName, reason)
+                if supportController then pcall(supportController, "clear-enchant-cache", supportContext) end
+                invalidateMachinePetSnapshot()
+                trace("enchant rule profile", tostring(profileName) .. " | " .. tostring(reason))
+            end,
             GetEnchantOptions = function() return enchantRuntime:Options() end,
             StartEnchant = function() enchantRuntime:Start() end,
             StopEnchant = function(text) enchantRuntime:Stop(text) end,
@@ -5876,6 +6337,20 @@ function UI.ReconcileProfile(label)
     local savedZone = UI.Profile:Get("selected_zone")
     local savedEgg = UI.Profile:Get("selected_egg_id")
     local savedEggScope = UI.Profile:Get("selected_egg_scope")
+    local savedRuleProfiles = UI.Profile:Get("enchant_rule_profiles")
+    if type(savedRuleProfiles) == "table" then
+        local migrated = {}
+        for _, profileName in ipairs({ "Gold", "Rainbow", "DarkMatter", "DMDelete" }) do
+            local candidate = savedRuleProfiles[profileName]
+            if type(candidate) == "table" and type(candidate.Rules) == "table" then
+                migrated[profileName] = candidate
+            else
+                migrated[profileName] = config.EnchantRuleProfiles[profileName]
+            end
+        end
+        config.EnchantRuleProfiles = migrated
+        if supportController then pcall(supportController, "clear-enchant-cache", supportContext) end
+    end
     if savedEggScope == "Nearby Eggs" or savedEggScope == "All Hatchable Eggs" then
         config.EggScope = savedEggScope
         pcall(function() UI.EggScopeDropdown:Select(savedEggScope) end)
@@ -5924,6 +6399,7 @@ function UI.SaveProfile()
     UI.Profile:Set("selected_zone", config.Zone)
     UI.Profile:Set("selected_egg_id", config.EggName or "")
     UI.Profile:Set("selected_egg_scope", config.EggScope)
+    UI.Profile:Set("enchant_rule_profiles", config.EnchantRuleProfiles)
     UI.Profile:Set("script_version", VERSION)
     UI.Profile:Set("nova_autoload", true)
     UI.Profile:SetAutoLoad(false)
@@ -6047,7 +6523,12 @@ local function finishShutdown()
     coinSync.RecordCount = 0
     coinSync.TargetsValidated = false
     coinSync.SignalsReady = false
+    coinSync.BossAbsentUntil = 0
     coinSync.WorldSignalReady = false
+    table.clear(coinSync.BossTemplates)
+    table.clear(coinSync.SignalSources)
+    table.clear(coinSync.SignalHealth)
+    table.clear(coinSync.BossFallbackTimes)
     table.clear(coinSync.SnapshotSeen)
     table.clear(coinSync.SnapshotStale)
     table.clear(coinSync.SignalConnections)
@@ -6171,6 +6652,9 @@ local function shutdown(reason)
         Save = nil,
         Pets = {},
         ByUID = {},
+        Dirty = true,
+        DirtyAt = 0,
+        Revision = 0,
     }
     config.PotatoMode = false
     stopGraphics()
@@ -6325,6 +6809,22 @@ local function updateCurrencyMonitorStatus(publish)
                         currencyMonitor.Samples[currencyName],
                         now
                     )
+                end
+                if config.Mode == "Boss Chest Only" then
+                    local bossStats = petFarm:BossStats()
+                    local cycles = bossStats and tonumber(bossStats.CyclesPerMinute) or 0
+                    local primary = currencyMonitor.Samples[active[1]]
+                    if cycles > 0 and primary then
+                        local sixtyGain = currencyWindowGain(primary, now, 60)
+                        local burst = (tonumber(primary.MaxSingleDelta) or 0)
+                            > math.max(sixtyGain * 0.35, 1)
+                        lines[#lines + 1] = string.format(
+                            "Boss estimate: %s/cycle | %.2f cycles/min | backlog/burst: %s",
+                            formatRateNumber(sixtyGain / cycles),
+                            cycles,
+                            burst and "suspected (large balance delta)" or "not observed"
+                        )
+                    end
                 end
                 if #active > limit then
                     lines[#lines + 1] = "+" .. tostring(#active - limit) .. " more active balance(s)"
@@ -6668,8 +7168,25 @@ local function updateRuntimeTelemetry()
 
         if monitorVisible then
             local networkState = networkReady() and "ready" or "waiting"
+            local bossStats = petFarm:BossStats()
+            local bossLine = ""
+            if config.Mode == "Boss Chest Only" and config.BossFastPathDiagnostics ~= false
+                and bossStats then
+                bossLine = string.format(
+                    "\nBoss: %s gen %d | cycles %.2f/min | direct/fallback/duplicate %d/%d/%d | New>Q p50/p95/max %.0f/%.0f/%.0fms",
+                    tostring(bossStats.State or "unknown"),
+                    tonumber(bossStats.SpawnGeneration) or 0,
+                    tonumber(bossStats.CyclesPerMinute) or 0,
+                    tonumber(bossStats.DirectSpawns) or 0,
+                    tonumber(bossStats.FallbackSpawns) or 0,
+                    tonumber(bossStats.DuplicateSpawns) or 0,
+                    (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.P50) or 0) * 1000,
+                    (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.P95) or 0) * 1000,
+                    (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.Max) or 0) * 1000
+                )
+            end
             statusSetters.Farm(string.format(
-                "%s  >  %s\nTargets: %d | locked: %d/%d | working: %d | joining: %d | true idle: %d\nCached target window: %d | coin catalog: %s",
+                "%s  >  %s\nTargets: %d | locked: %d/%d | working: %d | joining: %d | true idle: %d\nCached target window: %d | coin catalog: %s%s",
                 tostring(petFarm.LastWorld or "unknown"),
                 tostring(petFarm.LastZone or "unknown"),
                 tonumber(petFarm.LastTargetCount) or 0,
@@ -6680,7 +7197,8 @@ local function updateRuntimeTelemetry()
                 math.max(equippedCount - assignedCount, 0),
                 tonumber(petFarm.TargetWindow) or 0,
                 coinCatalogReady() and ("ready (" .. tostring(coinSync.RecordCount) .. ")")
-                    or ("fail-open: " .. tostring(coinSync.LastProblem))
+                    or ("fail-open: " .. tostring(coinSync.LastProblem)),
+                bossLine
             ))
             statusSetters.Health(string.format(
                 "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s",

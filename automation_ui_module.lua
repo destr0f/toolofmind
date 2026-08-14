@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.4.1"
+local MODULE_VERSION = "1.5.0"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -20,6 +20,8 @@ local function build(context)
         "StopMachine", "SetGoldStatus", "SetRainbowStatus", "SetDarkMatterStatus",
         "GetEnchantOptions", "StartEnchant", "StopEnchant", "RestartEnchant", "SetEnchantStatus",
         "ReconcileBoost", "BoostEnabled", "StartBoost",
+        "GetRuleEnchantCatalog", "GetRuleFormula", "RulesChanged",
+        "ExportRuleProfiles", "ImportRuleProfiles",
     })
     if not valid then return false, problem end
 
@@ -95,6 +97,28 @@ local function build(context)
         Multi = false,
         AllowNone = false,
         Callback = function(value) config.EggCount = value == "Triple (x3)" and 3 or 1 end,
+    })
+    eggAutomation:Dropdown({
+        Flag = "egg_delay_mode",
+        Title = "Purchase Timing",
+        Desc = "Adaptive learns from clean server acknowledgements; Manual waits after completion.",
+        Values = { "Adaptive", "Manual" },
+        Value = config.EggDelayMode == "Manual" and "Manual" or "Adaptive",
+        Multi = false,
+        AllowNone = false,
+        Callback = function(value)
+            config.EggDelayMode = value == "Manual" and "Manual" or "Adaptive"
+        end,
+    })
+    eggAutomation:Slider({
+        Flag = "egg_manual_delay",
+        Title = "Manual Purchase Delay",
+        Desc = "0.00-10.00 seconds after the previous hatch fully completes.",
+        Step = 0.05,
+        Value = { Min = 0, Max = 10, Default = tonumber(config.EggManualDelay) or 0 },
+        Callback = function(value)
+            config.EggManualDelay = math.clamp(tonumber(value) or 0, 0, 10)
+        end,
     })
     eggAutomation:Dropdown({
         Flag = "egg_animation_mode",
@@ -175,6 +199,306 @@ local function build(context)
         end,
     })
     yieldUI("machine controls")
+
+    local ruleBuilder = UI.MachinesTab:Section({ Title = "Enchant Protection Rule Builder", Box = true, Opened = true })
+    ruleBuilder:Paragraph({
+        Title = "AND INSIDE A RULE / OR BETWEEN RULES",
+        Desc = "Each machine and DM cleanup has an independent profile. Extra pet enchants never break a match.",
+    })
+    local selectedProfile, selectedRule, selectedCondition = "Gold", 1, 1
+    local copySourceProfile = "Gold"
+    local profiles = { "Gold", "Rainbow", "DarkMatter", "DMDelete" }
+    local modes = { "Any", "Exact", "IV/V", "AtLeast" }
+    local function profile()
+        config.EnchantRuleProfiles = type(config.EnchantRuleProfiles) == "table"
+            and config.EnchantRuleProfiles or {}
+        local value = config.EnchantRuleProfiles[selectedProfile]
+        if type(value) ~= "table" then
+            value = { Enabled = true, Revision = 1, Rules = {} }
+            config.EnchantRuleProfiles[selectedProfile] = value
+        end
+        value.Rules = type(value.Rules) == "table" and value.Rules or {}
+        return value
+    end
+    local function ensureRule()
+        local value = profile()
+        if #value.Rules == 0 then
+            value.Rules[1] = { Enabled = true, Conditions = {
+                { Enchant = "Rainbow Coins", Mode = "AtLeast", Level = 5 },
+            } }
+        end
+        selectedRule = math.clamp(selectedRule, 1, #value.Rules)
+        local rule = value.Rules[selectedRule]
+        rule.Conditions = type(rule.Conditions) == "table" and rule.Conditions or {}
+        if #rule.Conditions == 0 then
+            rule.Conditions[1] = { Enchant = "Rainbow Coins", Mode = "Any", Level = 1 }
+        end
+        selectedCondition = math.clamp(selectedCondition, 1, #rule.Conditions)
+        return value, rule, rule.Conditions[selectedCondition]
+    end
+    local formulaView
+    local function changed(reason)
+        local value = profile()
+        value.Revision = (tonumber(value.Revision) or 0) + 1
+        context.RulesChanged(selectedProfile, reason)
+        if formulaView then
+            pcall(function()
+                formulaView:SetDesc(context.GetRuleFormula(selectedProfile))
+            end)
+        end
+    end
+    ruleBuilder:Dropdown({
+        Flag = "rule_profile",
+        Title = "Protection Profile",
+        Desc = "Gold/Rainbow/DM protect matching pets from craft; DMDelete protects them from deletion.",
+        Values = profiles,
+        Value = selectedProfile,
+        Multi = false,
+        AllowNone = false,
+        Callback = function(value)
+            selectedProfile = table.find(profiles, value) and value or "Gold"
+            selectedRule, selectedCondition = 1, 1
+            if formulaView then pcall(function() formulaView:SetDesc(context.GetRuleFormula(selectedProfile)) end) end
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "ENABLE / DISABLE PROFILE",
+        Desc = "Machine profile off means no enchant protection. DMDelete off is safe-off and deletes nothing.",
+        Icon = "power",
+        Callback = function()
+            local value = profile(); value.Enabled = value.Enabled == false
+            changed(value.Enabled == false and "disable profile" or "enable profile")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "TOGGLE PROFILE DRY RUN",
+        Desc = "Gold/Rainbow/DarkMatter validate and report the next batch without sending it. DMDelete uses its dedicated Dry Run toggle below.",
+        Icon = "flask-conical",
+        Callback = function()
+            local value = profile(); value.DryRun = value.DryRun ~= true
+            changed(value.DryRun and "enable profile dry run" or "disable profile dry run")
+        end,
+    })
+    ruleBuilder:Slider({
+        Flag = "rule_index",
+        Title = "Rule Index",
+        Desc = "Select rule 1-8. Missing indices clamp to the last rule.",
+        Step = 1,
+        Value = { Min = 1, Max = 8, Default = 1 },
+        Callback = function(value) selectedRule = math.floor(tonumber(value) or 1); ensureRule() end,
+    })
+    ruleBuilder:Button({
+        Title = "ENABLE / DISABLE RULE",
+        Desc = "Disabled rules are ignored without deleting their conditions.",
+        Icon = "circle-power",
+        Callback = function()
+            local _, rule = ensureRule(); rule.Enabled = rule.Enabled == false
+            changed(rule.Enabled == false and "disable rule" or "enable rule")
+        end,
+    })
+    ruleBuilder:Slider({
+        Flag = "rule_condition_index",
+        Title = "Condition Index",
+        Desc = "Select condition 1-8 inside the active rule.",
+        Step = 1,
+        Value = { Min = 1, Max = 8, Default = 1 },
+        Callback = function(value) selectedCondition = math.floor(tonumber(value) or 1); ensureRule() end,
+    })
+    ruleBuilder:Dropdown({
+        Flag = "rule_enchant",
+        Title = "Condition Enchant",
+        Desc = "Dynamic Directory.Powers catalog plus compatibility names.",
+        Values = context.GetRuleEnchantCatalog(),
+        Value = "Rainbow Coins",
+        Multi = false,
+        AllowNone = false,
+        SearchBarEnabled = true,
+        Callback = function(value)
+            local _, _, condition = ensureRule(); condition.Enchant = tostring(value); changed("enchant")
+        end,
+    })
+    ruleBuilder:Dropdown({
+        Flag = "rule_level_mode",
+        Title = "Level Match",
+        Desc = "Any ignores tier; Exact, IV/V and AtLeast use the level below.",
+        Values = modes,
+        Value = "Any",
+        Multi = false,
+        AllowNone = false,
+        Callback = function(value)
+            local _, _, condition = ensureRule(); condition.Mode = table.find(modes, value) and value or "Any"; changed("mode")
+        end,
+    })
+    ruleBuilder:Slider({
+        Flag = "rule_level",
+        Title = "Condition Level",
+        Desc = "Used by Exact and AtLeast.",
+        Step = 1,
+        Value = { Min = 1, Max = 5, Default = 5 },
+        Callback = function(value)
+            local _, _, condition = ensureRule(); condition.Level = math.clamp(math.floor(tonumber(value) or 1), 1, 5); changed("level")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "ADD RULE",
+        Desc = "Creates another OR branch, up to 8.",
+        Icon = "plus",
+        Callback = function()
+            local value = profile(); if #value.Rules >= 8 then return end
+            value.Rules[#value.Rules + 1] = { Enabled = true, Conditions = {
+                { Enchant = "Rainbow Coins", Mode = "Any", Level = 1 },
+            } }
+            selectedRule, selectedCondition = #value.Rules, 1; changed("add rule")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "DUPLICATE RULE",
+        Desc = "Copies the selected AND branch as a new OR branch.",
+        Icon = "copy",
+        Callback = function()
+            local value, rule = ensureRule(); if #value.Rules >= 8 then return end
+            local clone = { Enabled = rule.Enabled ~= false, Conditions = {} }
+            for _, item in ipairs(rule.Conditions) do
+                clone.Conditions[#clone.Conditions + 1] = {
+                    Enchant = item.Enchant, Mode = item.Mode, Level = item.Level,
+                }
+            end
+            value.Rules[#value.Rules + 1] = clone
+            selectedRule, selectedCondition = #value.Rules, 1; changed("duplicate rule")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "DELETE RULE",
+        Desc = "Removes the selected branch. Empty machine profiles mean no enchant protection; empty DMDelete is safe-off.",
+        Icon = "trash-2",
+        Callback = function()
+            local value = profile(); if #value.Rules > 0 then table.remove(value.Rules, math.clamp(selectedRule, 1, #value.Rules)) end
+            selectedRule, selectedCondition = 1, 1; changed("delete rule")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "MOVE RULE UP",
+        Desc = "Moves the selected OR branch one position earlier.",
+        Icon = "arrow-up",
+        Callback = function()
+            local value = profile(); if #value.Rules == 0 then return end
+            selectedRule = math.clamp(selectedRule, 1, #value.Rules)
+            if selectedRule > 1 then
+                value.Rules[selectedRule - 1], value.Rules[selectedRule] =
+                    value.Rules[selectedRule], value.Rules[selectedRule - 1]
+                selectedRule = selectedRule - 1; changed("move rule up")
+            end
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "MOVE RULE DOWN",
+        Desc = "Moves the selected OR branch one position later.",
+        Icon = "arrow-down",
+        Callback = function()
+            local value = profile(); if #value.Rules == 0 then return end
+            selectedRule = math.clamp(selectedRule, 1, #value.Rules)
+            if selectedRule < #value.Rules then
+                value.Rules[selectedRule + 1], value.Rules[selectedRule] =
+                    value.Rules[selectedRule], value.Rules[selectedRule + 1]
+                selectedRule = selectedRule + 1; changed("move rule down")
+            end
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "ADD CONDITION",
+        Desc = "Adds another required AND condition to the selected rule, up to 8.",
+        Icon = "plus",
+        Callback = function()
+            local _, rule = ensureRule(); if #rule.Conditions >= 8 then return end
+            rule.Conditions[#rule.Conditions + 1] = { Enchant = "Charm", Mode = "Any", Level = 1 }
+            selectedCondition = #rule.Conditions; changed("add condition")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "DELETE CONDITION",
+        Desc = "Removes the selected AND condition.",
+        Icon = "minus",
+        Callback = function()
+            local _, rule = ensureRule(); table.remove(rule.Conditions, math.clamp(selectedCondition, 1, #rule.Conditions))
+            selectedCondition = 1; changed("delete condition")
+        end,
+    })
+    ruleBuilder:Dropdown({
+        Flag = "rule_copy_source",
+        Title = "Copy Rules From",
+        Desc = "Select a source profile, then copy it over the active profile.",
+        Values = profiles,
+        Value = copySourceProfile,
+        Multi = false,
+        AllowNone = false,
+        Callback = function(value)
+            copySourceProfile = table.find(profiles, value) and value or "Gold"
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "COPY SOURCE TO ACTIVE PROFILE",
+        Desc = "Deep-copies rules, enabled state and Dry Run; revisions remain independent.",
+        Icon = "copy-check",
+        Callback = function()
+            if copySourceProfile == selectedProfile then return end
+            local source = config.EnchantRuleProfiles and config.EnchantRuleProfiles[copySourceProfile]
+            if type(source) ~= "table" then return end
+            local copy = { Enabled = source.Enabled ~= false, DryRun = source.DryRun == true, Revision = 1, Rules = {} }
+            for _, sourceRule in ipairs(type(source.Rules) == "table" and source.Rules or {}) do
+                if #copy.Rules >= 8 then break end
+                local targetRule = { Enabled = sourceRule.Enabled ~= false, Conditions = {} }
+                for _, item in ipairs(type(sourceRule.Conditions) == "table" and sourceRule.Conditions or {}) do
+                    if #targetRule.Conditions >= 8 then break end
+                    targetRule.Conditions[#targetRule.Conditions + 1] = {
+                        Enchant = item.Enchant, Mode = item.Mode, Level = item.Level,
+                    }
+                end
+                copy.Rules[#copy.Rules + 1] = targetRule
+            end
+            config.EnchantRuleProfiles[selectedProfile] = copy
+            selectedRule, selectedCondition = 1, 1; changed("copy profile")
+        end,
+    })
+    local ruleJsonText = ""
+    local ruleJsonInput = ruleBuilder:Input({
+        Flag = "rule_profile_json",
+        Title = "Rules JSON",
+        Desc = "Export all four profiles or paste a previously exported JSON document and import it.",
+        Type = "Textarea",
+        Placeholder = "{\"Gold\":{...}}",
+        Value = "",
+        Callback = function(value) ruleJsonText = tostring(value or "") end,
+    })
+    ruleBuilder:Button({
+        Title = "EXPORT RULES JSON",
+        Desc = "Writes bounded profile JSON into this field and the clipboard when available.",
+        Icon = "download",
+        Callback = function()
+            local ok, value = context.ExportRuleProfiles()
+            if not ok then context.SetRouteStatus("Rule export failed: " .. tostring(value)); return end
+            ruleJsonText = tostring(value)
+            pcall(function() ruleJsonInput:Set(ruleJsonText) end)
+            if type(setclipboard) == "function" then pcall(setclipboard, ruleJsonText) end
+            context.SetRouteStatus("Enchant rules exported locally; no server request was sent.")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "IMPORT RULES JSON",
+        Desc = "Validates the bounded schema before replacing profiles. Invalid or incomplete JSON is rejected.",
+        Icon = "upload",
+        Callback = function()
+            local ok, value = context.ImportRuleProfiles(ruleJsonText)
+            if not ok then context.SetRouteStatus("Rule import rejected: " .. tostring(value)); return end
+            selectedRule, selectedCondition = 1, 1
+            changed("import profiles")
+            context.SetRouteStatus("Enchant rules imported locally; no server request was sent.")
+        end,
+    })
+    formulaView = ruleBuilder:Paragraph({
+        Title = "Active Formula",
+        Desc = context.GetRuleFormula(selectedProfile),
+    })
+    yieldUI("enchant rule builder")
 
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
@@ -266,6 +590,55 @@ local function build(context)
             else
                 context.StopMachine("DarkMatter")
                 context.SetDarkMatterStatus("Disabled. No Dark Matter requests will be sent.")
+            end
+        end,
+    })
+    darkMatter:Dropdown({
+        Flag = "dm_cleanup_scope",
+        Title = "DM Cleanup Scope",
+        Desc = "Newly Claimed only is the safe default; All DM also examines older matching Dark Matter pets.",
+        Values = { "Newly Claimed", "All Dark Matter Pets" },
+        Value = config.DMCleanupScope == "All Dark Matter Pets" and "All Dark Matter Pets" or "Newly Claimed",
+        Multi = false,
+        AllowNone = false,
+        Callback = function(value)
+            config.DMCleanupScope = value == "All Dark Matter Pets" and "All Dark Matter Pets" or "Newly Claimed"
+            config.DMCleanupConfirmed = false
+        end,
+    })
+    darkMatter:Slider({
+        Flag = "dm_cleanup_batch",
+        Title = "DM Delete Batch",
+        Desc = "Bounded destructive batch size.",
+        Step = 1,
+        Value = { Min = 20, Max = 30, Default = tonumber(config.DMCleanupBatchSize) or 25 },
+        Callback = function(value) config.DMCleanupBatchSize = math.clamp(math.floor(tonumber(value) or 25), 20, 30) end,
+    })
+    darkMatter:Toggle({
+        Flag = "dm_cleanup_dry_run",
+        Title = "DM Cleanup Dry Run",
+        Desc = "Enabled by default. Plans DELETE/KEEP decisions without invoking Delete Several Pets.",
+        Value = true,
+        Callback = function(value) config.DMCleanupDryRun = value ~= false end,
+    })
+    darkMatter:Toggle({
+        Flag = "dm_cleanup_confirmed",
+        Title = "Confirm Destructive DM Cleanup",
+        Desc = "Required in addition to Enable; changing scope clears this confirmation.",
+        Value = false,
+        Callback = function(value) config.DMCleanupConfirmed = value == true end,
+    })
+    darkMatter:Toggle({
+        Flag = "dm_cleanup_enabled",
+        Title = "Enable Destructive DM Cleanup",
+        Desc = "Empty protection rules, Dry Run, missing confirmation, equipped, locked or incomplete data always block deletion.",
+        Value = false,
+        Callback = function(value)
+            config.DMCleanupEnabled = value == true
+            if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter or config.DMCleanupEnabled then
+                task.spawn(function() context.StartMachine("DarkMatter") end)
+            else
+                context.StopMachine("DarkMatter")
             end
         end,
     })

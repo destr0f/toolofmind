@@ -1,13 +1,11 @@
 -- Shared low-frequency coordinator for PSX OG Nova develop.
 -- Nothing in this module invokes the server. Route checks only resolve named remotes locally.
 
-local MODULE_VERSION = "1.4.1"
+local MODULE_VERSION = "1.5.0"
 
 local gate = {
     Owner = nil,
     OwnerSince = 0,
-    Waiters = {},
-    Sequence = 0,
     OwnerGeneration = 0,
     LastAcquireReason = "none",
     LastAcquireAt = 0,
@@ -15,8 +13,6 @@ local gate = {
     LastReleaseAt = 0,
     LastOwnerExpiry = "none",
     LastOwnerExpiryAt = 0,
-    LastWaiterExpiryCount = 0,
-    LastWaiterExpiryAt = 0,
 }
 
 local catalogCache = {
@@ -25,6 +21,208 @@ local catalogCache = {
     Names = {},
     Summary = "not scanned",
 }
+
+local ROMAN_LEVELS = { I = 1, II = 2, III = 3, IV = 4, V = 5 }
+local matcherCache = { Values = {}, Order = {}, Limit = 2048 }
+
+local function normalizeEnchant(value)
+    value = string.lower(tostring(value or ""))
+    value = string.gsub(value, "[_%-]+", " ")
+    value = string.gsub(value, "%s+", " ")
+    return string.match(value, "^%s*(.-)%s*$") or value
+end
+
+local function readEnchant(power, key)
+    local name, rawLevel
+    if type(power) == "table" then
+        name = power[1] or power.name or power.Name or power.power or power.Power
+        rawLevel = power[2] or power.level or power.Level or power.tier or power.Tier
+    elseif type(key) == "string" and (type(power) == "number" or type(power) == "string") then
+        name, rawLevel = key, power
+    elseif type(power) == "string" then
+        local text = string.match(power, "^%s*(.-)%s*$") or power
+        local base, suffix = string.match(text, "^(.-)%s+([IVX]+)$")
+        if not base then base, suffix = string.match(text, "^(.-)%s+(%d+)$") end
+        name, rawLevel = base or text, suffix
+    end
+    if name == nil then return nil, nil end
+    local level = tonumber(rawLevel)
+    if level == nil and rawLevel ~= nil then
+        level = ROMAN_LEVELS[string.upper(tostring(rawLevel))]
+    end
+    return tostring(name), level
+end
+
+local function petEnchantMap(pet)
+    if type(pet) ~= "table" then return nil, "pet unavailable" end
+    local powers = pet.powers or pet.Powers
+    if type(powers) ~= "table" then return nil, "powers unavailable" end
+    local result, signature = {}, {}
+    local function add(power, key)
+        local name, level = readEnchant(power, key)
+        local normalized = normalizeEnchant(name)
+        if normalized == "" then return end
+        local previous = result[normalized]
+        if previous == nil or (level ~= nil and (previous.Level == nil or level > previous.Level)) then
+            result[normalized] = { Name = tostring(name), Level = level }
+        end
+    end
+    if powers.name or powers.Name or powers.power or powers.Power then add(powers) end
+    for key, power in pairs(powers) do add(power, key) end
+    for name, entry in pairs(result) do
+        signature[#signature + 1] = name .. ":" .. tostring(entry.Level or "any")
+    end
+    table.sort(signature)
+    return result, table.concat(signature, "|")
+end
+
+local function normalizedCondition(condition)
+    if type(condition) ~= "table" then return nil end
+    local enchant = tostring(condition.Enchant or condition.Name or "")
+    if normalizeEnchant(enchant) == "" then return nil end
+    local mode = tostring(condition.Mode or "Any")
+    if mode ~= "Any" and mode ~= "Exact" and mode ~= "IV/V" and mode ~= "AtLeast" then
+        mode = "Any"
+    end
+    return { Enchant = enchant, Mode = mode, Level = tonumber(condition.Level) }
+end
+
+local function normalizeProfile(profile)
+    if type(profile) ~= "table" or type(profile.Rules) ~= "table" then
+        return nil, "profile unavailable"
+    end
+    if profile.Enabled == false then return false, "profile disabled" end
+    local result = { Revision = tonumber(profile.Revision) or 0, Rules = {} }
+    for _, rule in ipairs(profile.Rules) do
+        if type(rule) == "table" and rule.Enabled ~= false then
+            local normalizedRule = { Enabled = true, Conditions = {} }
+            if type(rule.Conditions) ~= "table" then
+                return nil, "rule conditions unavailable"
+            end
+            for _, condition in ipairs(rule.Conditions) do
+                local normalized = normalizedCondition(condition)
+                if not normalized then return nil, "rule contains an incomplete condition" end
+                normalizedRule.Conditions[#normalizedRule.Conditions + 1] = normalized
+            end
+            if #normalizedRule.Conditions == 0 then return nil, "rule has no conditions" end
+            result.Rules[#result.Rules + 1] = normalizedRule
+        end
+    end
+    if #result.Rules == 0 then return false, "profile has no enabled rules" end
+    return result
+end
+
+local function conditionMatches(condition, powers)
+    local normalizedName = normalizeEnchant(condition.Enchant)
+    local found
+    if normalizedName == "teamwork or super teamwork"
+        or normalizedName == "teamwork/super teamwork"
+        or normalizedName == "teamwork or stw" then
+        found = powers["super teamwork"] or powers["teamwork"]
+    else
+        found = powers[normalizedName]
+    end
+    if not found then return false end
+    local mode = condition.Mode
+    if mode == "Any" then return true end
+    local level = tonumber(found.Level)
+    if level == nil then return false end
+    if mode == "IV/V" then return level == 4 or level == 5 end
+    local expected = tonumber(condition.Level)
+    if expected == nil then return false end
+    if mode == "Exact" then return level == expected end
+    return level >= expected
+end
+
+local function profileFormula(profile)
+    if type(profile) == "table" and profile.Enabled == false then
+        return "PROFILE DISABLED (no enchant protection)"
+    end
+    local normalizedProfile, problem = normalizeProfile(profile)
+    if normalizedProfile == false then return "NO RULES (no enchant protection)" end
+    if not normalizedProfile then return "DEFER (" .. tostring(problem) .. ")" end
+    local rules = {}
+    for _, rule in ipairs(normalizedProfile.Rules) do
+        local conditions = {}
+        for _, condition in ipairs(rule.Conditions) do
+            local suffix = condition.Mode == "Any" and ""
+                or condition.Mode == "IV/V" and " IV/V"
+                or (" " .. condition.Mode .. " " .. tostring(condition.Level or "?"))
+            conditions[#conditions + 1] = "Has(" .. condition.Enchant .. suffix .. ")"
+        end
+        rules[#rules + 1] = #conditions > 1 and ("(" .. table.concat(conditions, " AND ") .. ")")
+            or conditions[1]
+    end
+    local formula = table.concat(rules, " OR ")
+    return type(profile) == "table" and profile.DryRun == true
+        and ("DRY RUN: " .. formula) or formula
+end
+
+local function cacheStore(key, value)
+    if matcherCache.Values[key] == nil then
+        matcherCache.Order[#matcherCache.Order + 1] = key
+        if #matcherCache.Order > matcherCache.Limit then
+            local expired = table.remove(matcherCache.Order, 1)
+            matcherCache.Values[expired] = nil
+        end
+    end
+    matcherCache.Values[key] = value
+end
+
+local function matchProfile(profile, pet)
+    local normalizedProfile, profileProblem = normalizeProfile(profile)
+    if normalizedProfile == false then return "EMPTY", profileProblem end
+    if not normalizedProfile then return "DEFER", profileProblem end
+    local powers, signature = petEnchantMap(pet)
+    if not powers then return "DEFER", signature end
+    local uid = tostring(pet.uid or pet.UID or "anonymous")
+    local form = type(pet) == "table" and (pet.dm and "dm" or pet.r and "rainbow" or pet.g and "gold" or "normal")
+        or "unknown"
+    local cacheKey = tostring(profile) .. "@" .. uid .. "@" .. form .. "@" .. tostring(pet.e == true)
+        .. "@" .. tostring(pet.l == true or pet.locked == true)
+        .. "@" .. tostring(normalizedProfile.Revision) .. "@" .. signature
+    local cached = matcherCache.Values[cacheKey]
+    if cached then return cached[1], cached[2] end
+    for index, rule in ipairs(normalizedProfile.Rules) do
+        local matched = true
+        for _, condition in ipairs(rule.Conditions) do
+            if not conditionMatches(condition, powers) then matched = false; break end
+        end
+        if matched then
+            local value = { "MATCH", "rule " .. tostring(index) }
+            cacheStore(cacheKey, value)
+            return value[1], value[2]
+        end
+    end
+    local value = { "NO_MATCH", "no protection rule matched" }
+    cacheStore(cacheKey, value)
+    return value[1], value[2]
+end
+
+local function enchantCatalog(context)
+    local values, seen = {}, {}
+    local powers = type(context) == "table" and context.Library
+        and context.Library.Directory and context.Library.Directory.Powers or nil
+    if type(powers) == "table" then
+        for rawName, definition in pairs(powers) do
+            local name = type(definition) == "table"
+                and (definition.name or definition.Name or definition.title or definition.Title) or rawName
+            name = tostring(name or rawName or "")
+            local key = normalizeEnchant(name)
+            if key ~= "" and not seen[key] then seen[key] = true; values[#values + 1] = name end
+        end
+    end
+    for _, name in ipairs({
+        "Agility", "Chest Breaker", "Charm", "Coins", "Diamonds", "Glittering",
+        "Rainbow Coins", "Royalty", "Strength", "Teamwork", "Super Teamwork",
+        "Teamwork or Super Teamwork",
+    }) do
+        local key = normalizeEnchant(name)
+        if not seen[key] then seen[key] = true; values[#values + 1] = name end
+    end
+    table.sort(values)
+    return values
+end
 
 local MACHINE_PET_NAMES = {
     ["pixel demon"] = "Pixel Demon",
@@ -64,17 +262,6 @@ local function cleanGate(context, now)
         gate.OwnerSince = 0
         gate.OwnerGeneration = 0
     end
-    local expiredWaiters = 0
-    for owner, waiter in pairs(gate.Waiters) do
-        if now - (waiter.SeenAt or 0) > 2 then
-            gate.Waiters[owner] = nil
-            expiredWaiters = expiredWaiters + 1
-        end
-    end
-    if expiredWaiters > 0 then
-        gate.LastWaiterExpiryCount = expiredWaiters
-        gate.LastWaiterExpiryAt = now
-    end
 end
 
 local function acquire(context, rawOwner)
@@ -83,40 +270,17 @@ local function acquire(context, rawOwner)
     cleanGate(context, now)
     if gate.Owner == owner then return true, owner end
 
-    local waiter = gate.Waiters[owner]
-    if not waiter then
-        gate.Sequence = gate.Sequence + 1
-        waiter = {
-            Sequence = gate.Sequence,
-            SeenAt = now,
-            Generation = tonumber(type(context) == "table" and context.Generation or nil) or 0,
-        }
-        gate.Waiters[owner] = waiter
-    else
-        waiter.SeenAt = now
-    end
     if gate.Owner then return false, gate.Owner end
-
-    local nextOwner, nextSequence
-    for candidate, item in pairs(gate.Waiters) do
-        if nextSequence == nil or item.Sequence < nextSequence then
-            nextOwner, nextSequence = candidate, item.Sequence
-        end
-    end
-    if nextOwner ~= owner then return false, nextOwner end
-
-    gate.Waiters[owner] = nil
     gate.Owner = owner
     gate.OwnerSince = now
     gate.OwnerGeneration = tonumber(type(context) == "table" and context.Generation or nil) or 0
-    gate.LastAcquireReason = "fifo owner selected"
+    gate.LastAcquireReason = "coalesced mutex acquired"
     gate.LastAcquireAt = now
     return true, owner
 end
 
 local function release(context, rawOwner, reason)
     local owner = tostring(rawOwner or "unknown")
-    gate.Waiters[owner] = nil
     if gate.Owner == owner then
         gate.Owner = nil
         gate.OwnerSince = 0
@@ -129,32 +293,19 @@ end
 
 local function gateStatus(context)
     cleanGate(context)
-    local waiting = 0
-    for _ in pairs(gate.Waiters) do waiting = waiting + 1 end
-    return gate.Owner or "idle", waiting
+    return gate.Owner or "idle", 0
 end
 
 local function gateDiagnostics(context)
     local now = os.clock()
     cleanGate(context, now)
-    local waiting, oldestWaiterAge = 0, 0
-    local waiterAges = {}
-    for owner, waiter in pairs(gate.Waiters) do
-        waiting = waiting + 1
-        local age = math.max(now - (tonumber(waiter.SeenAt) or now), 0)
-        oldestWaiterAge = math.max(oldestWaiterAge, age)
-        if #waiterAges < 16 then
-            waiterAges[#waiterAges + 1] = tostring(owner) .. ":" .. string.format("%.2f", age)
-        end
-    end
-    table.sort(waiterAges)
     return {
         Owner = gate.Owner or "idle",
         OwnerAge = gate.Owner and math.max(now - gate.OwnerSince, 0) or 0,
         OwnerGeneration = gate.OwnerGeneration,
-        Waiters = waiting,
-        OldestWaiterAge = oldestWaiterAge,
-        WaiterAges = table.concat(waiterAges, ","),
+        Waiters = 0,
+        OldestWaiterAge = 0,
+        WaiterAges = "",
         OwnerExpirySeconds = 45,
         WaiterExpirySeconds = 2,
         LastAcquireReason = gate.LastAcquireReason,
@@ -163,9 +314,8 @@ local function gateDiagnostics(context)
         LastReleaseAge = gate.LastReleaseAt > 0 and math.max(now - gate.LastReleaseAt, 0) or 0,
         LastOwnerExpiry = gate.LastOwnerExpiry,
         LastOwnerExpiryAge = gate.LastOwnerExpiryAt > 0 and math.max(now - gate.LastOwnerExpiryAt, 0) or 0,
-        LastWaiterExpiryCount = gate.LastWaiterExpiryCount,
-        LastWaiterExpiryAge = gate.LastWaiterExpiryAt > 0
-            and math.max(now - gate.LastWaiterExpiryAt, 0) or 0,
+        LastWaiterExpiryCount = 0,
+        LastWaiterExpiryAge = 0,
     }
 end
 
@@ -309,13 +459,12 @@ local function reset()
     gate.LastReleaseAt = 0
     gate.LastOwnerExpiry = "none"
     gate.LastOwnerExpiryAt = 0
-    gate.LastWaiterExpiryCount = 0
-    gate.LastWaiterExpiryAt = 0
-    table.clear(gate.Waiters)
     catalogCache.ExpiresAt = 0
     catalogCache.Ids = {}
     catalogCache.Names = {}
     catalogCache.Summary = "not scanned"
+    table.clear(matcherCache.Values)
+    table.clear(matcherCache.Order)
     return true
 end
 
@@ -326,6 +475,15 @@ return function(action, context, value)
     if action == "status" then return gateStatus(context) end
     if action == "diagnostics" then return gateDiagnostics(context) end
     if action == "catalog" then return getCatalog(context, value == true) end
+    if action == "enchant-catalog" then return enchantCatalog(context) end
+    if action == "match-enchant-profile" then
+        value = type(value) == "table" and value or {}
+        return matchProfile(value.Profile, value.Pet)
+    end
+    if action == "enchant-profile-formula" then return profileFormula(value) end
+    if action == "clear-enchant-cache" then
+        table.clear(matcherCache.Values); table.clear(matcherCache.Order); return true
+    end
     if action == "route-health" then return routeHealth(context) end
     if action == "reset" then return reset() end
     if action == "version" then return MODULE_VERSION end

@@ -2,7 +2,7 @@
 -- Named Library.Network routes are resolved locally; no session index is hard-coded.
 
 local activeState
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0"
 
 local BUNDLE_COST = 270000
 local ROUTE_REFRESH_INTERVAL = 8
@@ -70,16 +70,15 @@ local function setStatus(state, context, text)
 end
 
 local function releaseOperation(state, context)
-    if not state.OperationOwned then return end
+    -- Boost inventory is independent from pet inventory. Keeping this lane out
+    -- of the shared pet-mutation gate prevents an activation timer from
+    -- blocking eggs or machine batches while preserving one in-flight boost
+    -- action through PendingActivation/PendingBundle below.
     state.OperationOwned = false
-    pcall(context.ReleaseOperation, context.OperationOwner)
 end
 
 local function acquireOperation(state, context)
     if state.OperationOwned then return true end
-    local ok, acquired, owner = pcall(context.AcquireOperation, context.OperationOwner)
-    if not ok then return false, tostring(acquired) end
-    if acquired ~= true then return false, tostring(owner or "another inventory worker") end
     state.OperationOwned = true
     return true
 end
@@ -128,11 +127,9 @@ local function statusText(state, context, save, action)
             enabled and "armed" or "disabled"
         )
     end
-    local owner, waiting = context.OperationStatus()
     lines[#lines + 1] = string.format(
-        "Bundle fallback: %s (270k Diamonds) | inventory gate: %s +%d waiting",
-        options.AutoBoostBundle and "enabled" or "disabled",
-        tostring(owner), tonumber(waiting) or 0
+        "Bundle fallback: %s (270k Diamonds) | independent boost lane",
+        options.AutoBoostBundle and "enabled" or "disabled"
     )
     lines[#lines + 1] = "Action: " .. tostring(action or "monitoring live Save data")
     return table.concat(lines, "\n")
@@ -422,7 +419,6 @@ local function stopState(state, context)
     state.PendingActivation = nil
     state.PendingBundle = nil
     releaseOperation(state, context)
-    pcall(context.CancelOperation, context.OperationOwner)
     table.clear(state.NextAttempt)
     local worker = state.WorkerThread
     state.WorkerThread = nil
@@ -447,8 +443,7 @@ return function(action, context)
     for _, key in ipairs({
         "Library", "Running", "Enabled", "GetOptions", "GetSave", "GetCurrency",
         "FormatNumber", "GetCommandRemote", "GetFireRemote", "InvokeCommand",
-        "FireCommand", "RouteText", "AcquireOperation", "ReleaseOperation",
-        "CancelOperation", "OperationStatus", "OperationOwner", "SetStatus", "Trace",
+        "FireCommand", "RouteText", "SetStatus", "Trace",
     }) do
         if context[key] == nil then return false, "module context is missing " .. key end
     end
@@ -462,14 +457,18 @@ return function(action, context)
         NextAttempt = {},
         NextBundleAttempt = 0,
         NextRouteRefresh = 0,
-        NextWakeAt = 0,
+        NextWakeAt = os.clock() + math.max(tonumber(context.StartupPhase) or 0, 0),
         WorkerThread = nil,
     }
     activeState = state
-    refreshRoutes(state, context, true)
+    if (tonumber(context.StartupPhase) or 0) <= 0 then
+        refreshRoutes(state, context, true)
+    end
     context.Trace("auto boost module", "v" .. MODULE_VERSION
-        .. " | dynamic Activate Boost + Buy Boost Bundle routes")
+        .. " | independent lane | dynamic Activate Boost + Buy Boost Bundle routes")
     state.WorkerThread = task.spawn(function()
+        local startupDelay = math.max((tonumber(state.NextWakeAt) or 0) - os.clock(), 0)
+        if startupDelay > 0 then task.wait(startupDelay) end
         while state.Running and activeState == state and context.Running() and context.Enabled() do
             local ok, problem = pcall(runCycle, state, context)
             if not ok then

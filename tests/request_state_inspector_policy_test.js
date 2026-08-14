@@ -137,21 +137,23 @@ for (const marker of [
     assert(engine.includes(marker), `farm hot policy changed: ${marker}`);
 }
 for (const marker of [
-    "local ORB_BATCH_SIZE = 512",
+    "local ORB_MIN_BATCH = 8",
+    "local ORB_BATCH_SIZE = 32",
     "local MAX_PENDING_ORBS = 8192",
     "local BAG_LANES = 4",
     "local MAX_PENDING_BAGS = 4096",
     "local BAG_TRANSPORT_RETRY_DELAY = 0.10",
     "local MAX_BAG_TRANSPORT_ATTEMPTS = 2",
-    "local ORB_FLUSH_INTERVAL = 0.25",
+    "local ORB_FLUSH_INTERVAL = 0.65",
 ]) {
     assert(loot.includes(marker), `loot hot policy changed: ${marker}`);
 }
 assert(support.includes("now - gate.OwnerSince > 45")
-    && support.includes("now - (waiter.SeenAt or 0) > 2")
     && support.includes("OwnerExpirySeconds = 45")
-    && support.includes("WaiterExpirySeconds = 2"),
-    "inventory gate behavior constants changed while adding diagnostics");
+    && support.includes('LastAcquireReason = "coalesced mutex acquired"')
+    && !support.includes("gate.Waiters")
+    && !support.includes("fifo owner selected"),
+    "inventory gate must remain a short coalesced mutex without a FIFO waiter queue");
 
 process.stdout.write(
     "Passive request inspector policy OK | network=0 | hooks=0"

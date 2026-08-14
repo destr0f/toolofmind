@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.3.5"
+local MODULE_VERSION = "1.4.0"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -107,6 +107,170 @@ local run = {
     LastTargetChangeAt = 0,
     NextLaunchAt = 0,
 }
+
+local boss = {
+    State = "ABSENT",
+    CoinId = nil,
+    SpawnGeneration = 0,
+    Current = nil,
+    LastRemovedAt = 0,
+    Ring = {},
+    RingHead = 1,
+    RingCount = 0,
+    SpawnsSeen = 0,
+    DirectSpawns = 0,
+    FallbackSpawns = 0,
+    DuplicateSpawns = 0,
+    JoinsSent = 0,
+    JoinsAccepted = 0,
+    MissedBeforeDispatch = 0,
+}
+
+local function bossGenerationCurrent(coinId, generation)
+    return boss.CoinId == tostring(coinId)
+        and boss.SpawnGeneration == tonumber(generation)
+        and boss.State ~= "DEAD" and boss.State ~= "ABSENT"
+end
+
+local function bossSample(current, removedAt, reason)
+    if type(current) ~= "table" then return end
+    current.RemovedAt = tonumber(removedAt) or os.clock()
+    current.Reason = tostring(reason or "removed")
+    current.Lifetime = math.max(current.RemovedAt - (tonumber(current.SpawnedAt) or current.RemovedAt), 0)
+    local slot = boss.RingHead
+    boss.Ring[slot] = current
+    boss.RingHead = slot % 64 + 1
+    boss.RingCount = math.min(boss.RingCount + 1, 64)
+end
+
+local function bossSpawn(info)
+    if type(info) ~= "table" or info.CoinId == nil then return false, "boss spawn info is invalid" end
+    local coinId = tostring(info.CoinId)
+    local now = tonumber(info.ReceivedAt) or os.clock()
+    if info.ForceNew ~= true and boss.CoinId == coinId
+        and boss.State ~= "ABSENT" and boss.State ~= "DEAD" then
+        boss.DuplicateSpawns = boss.DuplicateSpawns + 1
+        local current = boss.Current
+        if current then
+            current.PayloadComplete = current.PayloadComplete or info.PayloadComplete == true
+            current.LastDuplicateAt = now
+        end
+        return false, "duplicate", boss.SpawnGeneration
+    end
+
+    if info.ForceNew == true and boss.Current and boss.State ~= "ABSENT" and boss.State ~= "DEAD" then
+        bossSample(boss.Current, now, "implicit respawn")
+    end
+    boss.SpawnGeneration = boss.SpawnGeneration + 1
+    boss.CoinId = coinId
+    boss.State = "SPAWN_SEEN"
+    boss.SpawnsSeen = boss.SpawnsSeen + 1
+    local direct = info.Direct == true
+    if direct then boss.DirectSpawns = boss.DirectSpawns + 1
+    else boss.FallbackSpawns = boss.FallbackSpawns + 1 end
+    boss.Current = {
+        CoinId = coinId,
+        SpawnGeneration = boss.SpawnGeneration,
+        SpawnedAt = now,
+        SelectableAt = nil,
+        JoinQueuedAt = nil,
+        JoinSentAt = nil,
+        JoinAcceptedAt = nil,
+        RemovedAt = nil,
+        Source = tostring(info.Source or "unknown"),
+        Fallback = not direct,
+        PayloadComplete = info.PayloadComplete == true,
+        Dispatched = {},
+    }
+
+    local context = run.Context
+    if context and type(context.OnBossSpawnReady) == "function" then
+        local ok, accepted = pcall(context.OnBossSpawnReady, info, boss.SpawnGeneration)
+        if not ok or accepted == false then
+            boss.MissedBeforeDispatch = boss.MissedBeforeDispatch + 1
+            return false, ok and "spawn not selectable" or tostring(accepted), boss.SpawnGeneration
+        end
+    end
+    return true, nil, boss.SpawnGeneration
+end
+
+local function bossRemoved(rawCoinId, source)
+    local coinId = tostring(rawCoinId)
+    if boss.CoinId ~= coinId or boss.State == "ABSENT" or boss.State == "DEAD" then return false end
+    local now = os.clock()
+    boss.State = "DEAD"
+    boss.LastRemovedAt = now
+    bossSample(boss.Current, now, source)
+    local generation = boss.SpawnGeneration
+    local context = run.Context
+    if context and type(context.OnBossRemoved) == "function" then
+        pcall(context.OnBossRemoved, coinId, generation, source)
+    end
+    boss.State = "ABSENT"
+    return true, generation
+end
+
+local function percentile(values, ratio)
+    if #values == 0 then return 0 end
+    table.sort(values)
+    return values[math.max(1, math.min(#values, math.ceil(#values * ratio)))] or 0
+end
+
+local function bossStats()
+    local selectable, queued, ack, respawn, lifetime = {}, {}, {}, {}, {}
+    local previousRemovedAt
+    for offset = 0, boss.RingCount - 1 do
+        local index = ((boss.RingHead - boss.RingCount + offset - 1) % 64) + 1
+        local item = boss.Ring[index]
+        if item then
+            local spawned = tonumber(item.SpawnedAt) or 0
+            if item.SelectableAt then selectable[#selectable + 1] = math.max(item.SelectableAt - spawned, 0) end
+            if item.JoinQueuedAt then queued[#queued + 1] = math.max(item.JoinQueuedAt - spawned, 0) end
+            if item.JoinSentAt and item.JoinAcceptedAt then
+                ack[#ack + 1] = math.max(item.JoinAcceptedAt - item.JoinSentAt, 0)
+            end
+            if item.Lifetime then lifetime[#lifetime + 1] = item.Lifetime end
+            if previousRemovedAt and spawned >= previousRemovedAt then
+                respawn[#respawn + 1] = spawned - previousRemovedAt
+            end
+            previousRemovedAt = tonumber(item.RemovedAt) or previousRemovedAt
+        end
+    end
+    local first, last
+    for _, item in pairs(boss.Ring) do
+        if item and item.RemovedAt then
+            first = math.min(first or item.RemovedAt, item.RemovedAt)
+            last = math.max(last or item.RemovedAt, item.RemovedAt)
+        end
+    end
+    local minutes = first and last and math.max((last - first) / 60, 1 / 60) or 0
+    local function summary(values)
+        return {
+            P50 = percentile(table.clone(values), 0.50),
+            P95 = percentile(table.clone(values), 0.95),
+            Max = #values > 0 and math.max(table.unpack(values)) or 0,
+        }
+    end
+    return {
+        State = boss.State,
+        CoinId = boss.CoinId,
+        SpawnGeneration = boss.SpawnGeneration,
+        SpawnsSeen = boss.SpawnsSeen,
+        DirectSpawns = boss.DirectSpawns,
+        FallbackSpawns = boss.FallbackSpawns,
+        DuplicateSpawns = boss.DuplicateSpawns,
+        JoinsSent = boss.JoinsSent,
+        JoinsAccepted = boss.JoinsAccepted,
+        MissedBeforeDispatch = boss.MissedBeforeDispatch,
+        RingCount = boss.RingCount,
+        CyclesPerMinute = minutes > 0 and boss.RingCount / minutes or 0,
+        NewToSelectable = summary(selectable),
+        NewToQueued = summary(queued),
+        SendToAck = summary(ack),
+        RemoveToNew = summary(respawn),
+        Lifetime = summary(lifetime),
+    }
+end
 
 local pump
 
@@ -216,6 +380,7 @@ local function releaseJob(job)
     job.CoinId = nil
     job.Attempt = nil
     job.Joined = nil
+    job.BossGeneration = nil
     job.Due = nil
     job.DiagnosticId = nil
     job.QueuedAt = nil
@@ -234,6 +399,10 @@ end
 
 local function resetQueue()
     run.Epoch = run.Epoch + 1
+    boss.SpawnGeneration = boss.SpawnGeneration + 1
+    boss.State = "ABSENT"
+    boss.CoinId = nil
+    boss.Current = nil
     for index = run.Head, #run.Queue do
         local job = run.Queue[index]
         if job then
@@ -260,6 +429,23 @@ local function resetQueue()
     table.clear(run.ActiveInvokes)
     run.NextLaunchAt = 0
     clearTransportGate()
+end
+
+local function clearBossHistory()
+    boss.State = "ABSENT"
+    boss.CoinId = nil
+    boss.Current = nil
+    boss.LastRemovedAt = 0
+    boss.RingHead = 1
+    boss.RingCount = 0
+    boss.SpawnsSeen = 0
+    boss.DirectSpawns = 0
+    boss.FallbackSpawns = 0
+    boss.DuplicateSpawns = 0
+    boss.JoinsSent = 0
+    boss.JoinsAccepted = 0
+    boss.MissedBeforeDispatch = 0
+    table.clear(boss.Ring)
 end
 
 local function resetStats()
@@ -292,6 +478,10 @@ local function contextActive(job)
     if type(context.Enabled) == "function" and not context.Enabled() then return false end
     if type(context.Resetting) == "function" and context.Resetting() then return false end
     if type(context.RecordAlive) == "function" and not context.RecordAlive(job.Record) then
+        return false
+    end
+    if job.BossGeneration ~= nil
+        and not bossGenerationCurrent(job.CoinId, job.BossGeneration) then
         return false
     end
     return true
@@ -733,6 +923,11 @@ local function process(job)
     end
 
     local startedAt = os.clock()
+    if job.BossGeneration ~= nil and bossGenerationCurrent(job.CoinId, job.BossGeneration) then
+        boss.State = "JOINING"
+        boss.JoinsSent = boss.JoinsSent + 1
+        if boss.Current then boss.Current.JoinSentAt = startedAt end
+    end
     run.LastDispatchAt = startedAt
     local attemptId = tostring(job.DiagnosticId) .. ":attempt:" .. tostring(job.Attempt)
     inspectTransition(attemptId, "INVOKE_IN_FLIGHT", {
@@ -785,6 +980,16 @@ local function process(job)
     else
         inspectComplete(attemptId, "COMPLETED", "partial accepted=" .. tostring(#acceptedEntries)
             .. " rejected=" .. tostring(#rejectedEntries))
+    end
+
+    if #acceptedEntries > 0 and job.BossGeneration ~= nil
+        and bossGenerationCurrent(job.CoinId, job.BossGeneration) then
+        boss.State = "ACTIVE"
+        boss.JoinsAccepted = boss.JoinsAccepted + 1
+        if boss.Current then boss.Current.JoinAcceptedAt = os.clock() end
+    elseif #rejectedEntries > 0 and job.BossGeneration ~= nil
+        and bossGenerationCurrent(job.CoinId, job.BossGeneration) then
+        bossRemoved(job.CoinId, "server reject")
     end
 
     if not contextActive(job) then
@@ -874,14 +1079,17 @@ pump = function()
         if contextActive(job) then
             run.Active = run.Active + 1
             local now = os.clock()
-            local context = run.Context
-            local spacing = math.clamp(tonumber(context.DispatchSpacing) or 0.012, 0.01, 0.015)
-            if run.NextLaunchAt <= now then
-                local phase = math.clamp(tonumber(context.DispatchPhaseOffset) or 0, 0, 0.015)
-                run.NextLaunchAt = now + phase
+            local due = now
+            if job.BossGeneration == nil then
+                local context = run.Context
+                local spacing = math.clamp(tonumber(context.DispatchSpacing) or 0.012, 0.01, 0.015)
+                if run.NextLaunchAt <= now then
+                    local phase = math.clamp(tonumber(context.DispatchPhaseOffset) or 0, 0, 0.015)
+                    run.NextLaunchAt = now + phase
+                end
+                due = run.NextLaunchAt
+                run.NextLaunchAt = due + spacing
             end
-            local due = run.NextLaunchAt
-            run.NextLaunchAt = due + spacing
             scheduler.delay(math.max(due - now, 0), function()
                 executeJob(job)
             end)
@@ -914,6 +1122,11 @@ local function dispatch(payload)
     if not run.Context then return false, "engine is not started" end
     if type(payload) ~= "table" or type(payload.Entries) ~= "table" then
         return false, "dispatch payload is invalid"
+    end
+    local requestedBossGeneration = tonumber(payload.BossGeneration)
+    if requestedBossGeneration ~= nil
+        and not bossGenerationCurrent(payload.CoinId, requestedBossGeneration) then
+        return false, "stale boss generation"
     end
 
     local job = acquireJob()
@@ -959,9 +1172,20 @@ local function dispatch(payload)
     job.CoinId = tostring(payload.CoinId)
     job.Attempt = 1
     job.Joined = false
+    job.BossGeneration = requestedBossGeneration
     run.DiagnosticSequence = run.DiagnosticSequence + 1
     job.DiagnosticId = "join:" .. tostring(run.Epoch) .. ":" .. tostring(run.DiagnosticSequence)
     job.QueuedAt = os.clock()
+    if job.BossGeneration ~= nil and bossGenerationCurrent(job.CoinId, job.BossGeneration) then
+        boss.State = "JOINING"
+        if boss.Current then
+            boss.Current.SelectableAt = tonumber(payload.SelectableAt) or job.QueuedAt
+            boss.Current.JoinQueuedAt = job.QueuedAt
+            for _, entry in ipairs(entries) do
+                boss.Current.Dispatched[tostring(entry.PetId)] = true
+            end
+        end
+    end
     inspectTransition(job.DiagnosticId, "QUEUED", {
         command = "Join Coin",
         coin = job.CoinId,
@@ -1029,8 +1253,12 @@ return function(action, context, value)
     if action == "limit" then return setLimit(context) end
     if action == "pump" then pump(); return true end
     if action == "reset" then resetQueue(); return true end
-    if action == "stop" then resetQueue(); run.Context = nil; return true end
+    if action == "stop" then resetQueue(); clearBossHistory(); run.Context = nil; return true end
     if action == "stats" then return stats() end
+    if action == "boss-spawn" then return bossSpawn(context) end
+    if action == "boss-remove" then return bossRemoved(context, value) end
+    if action == "boss-current" then return bossGenerationCurrent(context, value) end
+    if action == "boss-stats" then return bossStats() end
     if action == "classify" then return classifyResponse(context, value) end
     if action == "retry-delay" then return RETRY_DELAY end
     if action == "version" then return MODULE_VERSION end

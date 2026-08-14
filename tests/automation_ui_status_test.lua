@@ -4,6 +4,7 @@ local function newControl()
     return {
         Desc = "",
         SetDesc = function(self, value) self.Desc = tostring(value) end,
+        Set = function(self, value) self.Value = tostring(value) end,
         Refresh = function() end,
         Select = function() end,
     }
@@ -11,7 +12,7 @@ end
 
 local controlsByFlag = {}
 local sectionMethods = {}
-for _, methodName in ipairs({ "Paragraph", "Dropdown", "Button", "Toggle", "Slider" }) do
+for _, methodName in ipairs({ "Paragraph", "Dropdown", "Button", "Toggle", "Slider", "Input" }) do
     sectionMethods[methodName] = function(_, definition)
         local control = newControl()
         control.Definition = definition
@@ -75,6 +76,13 @@ local accepted, controls = automationUI("build", {
     ReconcileBoost = noOp,
     BoostEnabled = function() return false end,
     StartBoost = noOp,
+    GetRuleEnchantCatalog = function()
+        return { "Rainbow Coins", "Royalty", "Charm" }
+    end,
+    GetRuleFormula = function() return "Has(Rainbow Coins AtLeast 5)" end,
+    RulesChanged = noOp,
+    ExportRuleProfiles = function() return true, "{}" end,
+    ImportRuleProfiles = function() return true, "imported" end,
     YieldUI = function() uiYieldCount = uiYieldCount + 1 end,
 })
 

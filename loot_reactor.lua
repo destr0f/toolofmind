@@ -4,10 +4,11 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.6.5"
-local ORB_BATCH_SIZE = 512
+local MODULE_VERSION = "3.7.0"
+local ORB_MIN_BATCH = 8
+local ORB_BATCH_SIZE = 32
 local MAX_PENDING_ORBS = 8192
-local ORB_FLUSH_INTERVAL = 0.25
+local ORB_FLUSH_INTERVAL = 0.65
 local ORB_CONFIRM_MIN_DELAY = 2.5
 local ORB_CONFIRM_MAX_DELAY = 8
 local CLIENT_STAGGER_SLOTS = 16
@@ -16,6 +17,7 @@ local BAG_LANES = 4
 local MAX_PENDING_BAGS = 4096
 local BAG_FIRST_ATTEMPT_DELAY = 0.05
 local BAG_TRANSPORT_RETRY_DELAY = 0.10
+local BAG_SAFE_DESTROY_DELAY = 0.15
 local MAX_BAG_TRANSPORT_ATTEMPTS = 2
 local MAX_BAG_POOL = 256
 local STATUS_INTERVAL = 1
@@ -509,7 +511,9 @@ local function flushOrbs()
     table.clear(ids)
     profileEnd(profiled)
     if run.PendingOrbCount > 0 then
-        armOrbFlush(sent and 0 or orbFlushInterval(), sent == true)
+        local continuationDelay = sent and run.PendingOrbCount >= ORB_MIN_BATCH and 0.02
+            or orbFlushInterval()
+        armOrbFlush(continuationDelay, false)
     end
     armStatus()
 end
@@ -774,7 +778,11 @@ local function collectBag(record, now)
         -- Remove Lootbag callbacks are not evidence of transport failure.
         closeBag(record, false, "transport committed")
         if typeof(liveObject) == "Instance" and liveObject.Parent then
-            pcall(liveObject.Destroy, liveObject)
+            local generation = run.Generation
+            task.delay(BAG_SAFE_DESTROY_DELAY, function()
+                if generation ~= run.Generation then return end
+                if liveObject.Parent then pcall(liveObject.Destroy, liveObject) end
+            end)
         end
     elseif record.Attempts < MAX_BAG_TRANSPORT_ATTEMPTS
         and (record.HadObject ~= true

@@ -10,10 +10,10 @@ const loot = read("loot_reactor.lua");
 const transport = read("network4_transport_module.lua");
 const manifest = JSON.parse(read("runtime_manifest.json"));
 
-assert.strictEqual(manifest.suite.version, "1.4.1-dev.50-network4.2");
+assert.strictEqual(manifest.suite.version, "1.4.1-candidate.51-boss-rules");
 assert.strictEqual(manifest.modules.networkTransport.version, "1.2.0");
-assert.strictEqual(manifest.modules.petFarmEngine.version, "1.3.5");
-assert.strictEqual(manifest.modules.lootReactor.version, "3.6.5");
+assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.0");
+assert.strictEqual(manifest.modules.lootReactor.version, "3.7.0");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
 // Current-session resolver: live maps first, current Network5 hash as fallback,
@@ -61,9 +61,10 @@ assert(farm.includes("self.ProgressLeaseEvictions = self.ProgressLeaseEvictions 
     && farm.includes("self:QueueFastDispatch()"));
 
 // Orb Removed never authorizes retries of unrelated committed IDs.
-assert(loot.includes("local ORB_FLUSH_INTERVAL = 0.25"));
-assert(loot.includes("local ORB_BATCH_SIZE = 512"));
-assert(loot.includes("armOrbFlush(sent and 0 or orbFlushInterval(), sent == true)"));
+assert(loot.includes("local ORB_MIN_BATCH = 8"));
+assert(loot.includes("local ORB_FLUSH_INTERVAL = 0.65"));
+assert(loot.includes("local ORB_BATCH_SIZE = 32"));
+assert(loot.includes("run.PendingOrbCount >= ORB_MIN_BATCH"));
 for (const forbidden of [
     "MAX_ORB_DELIVERY_ATTEMPTS", "OrbDeliveryAttempts", "OrbAckObserved", "OrbRetryArmed",
 ]) assert(!loot.includes(forbidden), `orb global retry state returned: ${forbidden}`);

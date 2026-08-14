@@ -1,6 +1,6 @@
 local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local machine = require(modulePath)
-    assert(machine("version") == "1.4.1")
+    assert(machine("version") == "1.5.0")
 
     local callback
     local calls = {}
@@ -31,6 +31,20 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         end,
         BatchSize = function() return 1 end,
         MaxWaitSeconds = function() return nil end,
+        MatchProtection = function() return "EMPTY", "test has no enchant protection" end,
+        MatchCleanupProtection = function() return "EMPTY", "cleanup safe-off" end,
+        ProtectionDryRun = function() return false end,
+        DMCleanupEnabled = function() return false end,
+        DMCleanupScope = function() return "Newly Claimed" end,
+        DMCleanupDryRun = function() return true end,
+        DMCleanupConfirmed = function() return false end,
+        DMCleanupBatchSize = function() return 25 end,
+        GetPetSnapshot = function()
+            local byUID = {}
+            for _, item in ipairs(save.Pets) do byUID[tostring(item.uid)] = item end
+            return { Save = save, Pets = save.Pets, ByUID = byUID }
+        end,
+        InvalidatePetSnapshot = function() end,
         GetCommandRemote = function(command)
             return {
                 InvokeServer = function()

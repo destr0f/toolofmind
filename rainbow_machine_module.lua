@@ -2,7 +2,7 @@
 -- Converts verified golden pets through a user-selected server tier.
 
 local activeState
-local MODULE_VERSION = "1.4.1"
+local MODULE_VERSION = "1.5.0"
 local TARGET_PET_NAME = "Pixel Demon"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
@@ -54,6 +54,19 @@ local function protectedRainbowCoins(pet)
         if protected then return true, level end
     end
     return false
+end
+
+local function protectionDecision(context, pet)
+    if type(context.MatchProtection) == "function" then
+        local ok, decision, detail = pcall(context.MatchProtection, pet)
+        if not ok then return true, "DEFER", tostring(decision) end
+        decision = tostring(decision or "DEFER")
+        return decision ~= "NO_MATCH" and decision ~= "EMPTY", decision,
+            tostring(detail or "no detail")
+    end
+    local protected, level = protectedRainbowCoins(pet)
+    return protected, protected and "MATCH" or "NO_MATCH",
+        protected and ("legacy Rainbow Coins " .. tostring(level)) or "legacy no match"
 end
 
 local function abbreviate(name)
@@ -157,7 +170,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Pixel Demon found: %d | golden: %d | eligible: %d | Rainbow Coins V protected: %d | equipped skipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
+        "Pixel Demon found: %d | golden: %d | eligible: %d | rule protected/deferred: %d | equipped skipped: %d | locked: %d | rainbow/DM: %d | normal: %d | pending: %d",
         stats.All, stats.Golden, stats.Eligible, stats.Protected, stats.Equipped,
         stats.Locked, stats.Upgraded, stats.Normal, stats.Pending
     )
@@ -185,7 +198,7 @@ local function collectCandidates(state, context, pets)
                     local uid = pet.uid ~= nil and tostring(pet.uid) or nil
                     local equipped = pet.e == true
                     local locked = pet.l == true or pet.locked == true
-                    local protected = protectedRainbowCoins(pet)
+                    local protected = protectionDecision(context, pet)
                     if protected then stats.Protected = stats.Protected + 1 end
                     if equipped then stats.Equipped = stats.Equipped + 1 end
                     if locked then stats.Locked = stats.Locked + 1 end
@@ -258,9 +271,10 @@ local function validateSelection(context, selectedCandidates)
         if not pet.g or pet.r or pet.dm then
             return false, nil, nil, shortUID(uid) .. " is no longer an eligible golden pet"
         end
-        local protected, level = protectedRainbowCoins(pet)
+        local protected, decision, detail = protectionDecision(context, pet)
         if protected then
-            return false, nil, nil, shortUID(uid) .. " has protected Rainbow Coins " .. tostring(level)
+            return false, nil, nil, shortUID(uid) .. " protection " .. tostring(decision)
+                .. ": " .. tostring(detail)
         end
         if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then return false, nil, nil, shortUID(uid) .. " is locked" end
@@ -379,6 +393,15 @@ local function runCheck(state, context)
 
     local auditText = table.concat(selectedAudit, " | ")
     context.Trace("rainbow machine validated pets", auditText)
+    if context.ProtectionDryRun() then
+        releaseOperation(state, context)
+        context.SetStatus("DRY RUN: validated " .. tostring(batchSize)
+            .. " Rainbow candidate(s); no machine request was sent.\nWould send: " .. auditText
+            .. "\n" .. statsText(stats))
+        context.Trace("rainbow machine dry run", auditText)
+        finish(IDLE_CHECK_DELAY)
+        return
+    end
     local transportOk, accepted, serverMessage, sourceName, sessionIndex, serverChance =
         context.InvokeCommand("Use Rainbow Machine", selectedUIDs)
     if not transportOk then
@@ -451,14 +474,15 @@ return function(action, context)
         "Library", "Running", "Enabled", "GetSave", "GetCurrency", "FormatNumber",
         "GetMachinePetCatalog", "BatchSize", "GetCommandRemote", "InvalidateCommand",
         "InvokeCommand", "RouteText", "AcquireOperation", "ReleaseOperation",
-        "CancelOperation", "OperationOwner", "SetStatus", "Trace",
+        "CancelOperation", "OperationOwner", "ProtectionDryRun", "SetStatus", "Trace",
     }
     for _, key in ipairs(required) do
         if context[key] == nil then return false, "module context is missing " .. key end
     end
     local state = {
         Context = context, Running = true, Busy = false, OperationOwned = false,
-        NextCheck = 0, Pending = {}, PendingAt = 0,
+        NextCheck = os.clock() + math.max(tonumber(context.StartupPhase) or 0, 0),
+        Pending = {}, PendingAt = 0,
         LastConfirmedAudit = "none", CompletedBatches = 0,
         WorkerThread = nil,
     }

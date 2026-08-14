@@ -2,12 +2,12 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.6.8"
+local MODULE_VERSION = "1.7.0"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
 local INITIAL_REQUEST_DELAY = 0.75
-local MIN_REQUEST_DELAY = 0.55
+local MIN_REQUEST_DELAY = 0
 local MAX_REQUEST_DELAY = 8
 local HEADLESS_EVENT_TIMEOUT = 8
 local HEADLESS_REPLICATION_TIMEOUT = 4
@@ -47,6 +47,39 @@ local physicalCache = {
     LastScanAt = -math.huge,
     Connections = {},
 }
+
+local responseHistory = { Limit = 64 }
+
+local function timingOptions(context)
+    local options = context.GetOptions()
+    options = type(options) == "table" and options or {}
+    options.DelayMode = options.DelayMode == "Manual" and "Manual" or "Adaptive"
+    options.ManualDelay = math.clamp(tonumber(options.ManualDelay) or 0, 0, 10)
+    return options
+end
+
+local function rememberResponse(state, pending)
+    local duration = math.max((tonumber(pending.ResponseAt) or os.clock())
+        - (tonumber(pending.StartedAt) or os.clock()), 0)
+    local samples = state.ResponseSamples
+    samples[#samples + 1] = duration
+    if #samples > responseHistory.Limit then table.remove(samples, 1) end
+    local sorted = table.clone(samples)
+    table.sort(sorted)
+    local function percentile(ratio)
+        if #sorted == 0 then return 0 end
+        return sorted[math.clamp(math.ceil(#sorted * ratio), 1, #sorted)]
+    end
+    state.ResponseP50 = percentile(0.5)
+    state.ResponseP95 = percentile(0.95)
+end
+
+local function learnedDelayStore()
+    local env = type(getgenv) == "function" and getgenv() or _G
+    env.PSX_OG_EGG_DELAY_BY_JOB = type(env.PSX_OG_EGG_DELAY_BY_JOB) == "table"
+        and env.PSX_OG_EGG_DELAY_BY_JOB or {}
+    return env.PSX_OG_EGG_DELAY_BY_JOB, tostring(game.JobId or "local")
+end
 
 local function profileBegin(label)
     local callback = debug and debug.profilebegin
@@ -1708,28 +1741,48 @@ local function finishSuccess(state, context, pending, note)
     releaseInventoryOperation(state, context)
     state.Pending = nil
     state.Successes = state.Successes + 1
+    rememberResponse(state, pending)
     if type(context.InventoryChanged) == "function" then
         pcall(context.InventoryChanged)
     end
     state.ConsecutiveFailures = 0
+    local options = timingOptions(context)
+    state.DelayMode = options.DelayMode
+    state.ManualDelay = options.ManualDelay
     state.CleanSuccesses = state.CleanSuccesses + 1
     resetNetworkRetry(state)
-    if state.CleanSuccesses >= 8 then
+    if state.DelayMode == "Manual" then
+        state.RequestDelay = state.ManualDelay
+        state.LastAdjustmentReason = "manual delay after completed hatch"
+    elseif state.CleanSuccesses >= 8 then
         state.CleanSuccesses = 0
         state.RequestDelay = math.max(MIN_REQUEST_DELAY, state.RequestDelay - 0.025)
+        state.LastAdjustmentReason = "clean streak reduced adaptive delay"
+        local store, jobId = learnedDelayStore()
+        store[jobId] = state.RequestDelay
     end
-    local pacingAnchor = math.max(
-        tonumber(pending.ResponseAt) or 0,
-        tonumber(pending.EventAt) or 0,
-        tonumber(pending.StartedAt) or 0
-    )
-    state.NextAction = math.max(os.clock(), pacingAnchor + state.RequestDelay)
+    local completedAt = os.clock()
+    if state.DelayMode == "Manual" then
+        -- Manual means an exact post-completion pause. Starting it at the
+        -- request/ACK timestamp silently shortens the configured delay when
+        -- native post-processing takes time.
+        state.NextAction = completedAt + state.RequestDelay
+    else
+        local pacingAnchor = math.max(
+            tonumber(pending.ResponseAt) or 0,
+            tonumber(pending.EventAt) or 0,
+            tonumber(pending.StartedAt) or 0
+        )
+        state.NextAction = math.max(completedAt, pacingAnchor + state.RequestDelay)
+    end
     setStatus(state, context, string.format(
-        "Hatched %s | completed: %d\n%s | adaptive delay: %.2fs | one request in flight",
+        "Hatched %s | completed: %d\n%s | %s delay: %.2fs | response p50/p95 %.2f/%.2fs | clean streak %d | %s",
         requestLabel(pending),
         state.Successes,
         tostring(note or pending.Route or "Open Egg event confirmed"),
-        state.RequestDelay
+        string.lower(state.DelayMode), state.RequestDelay,
+        state.ResponseP50, state.ResponseP95, state.CleanSuccesses,
+        state.LastAdjustmentReason
     ))
 end
 
@@ -1752,7 +1805,18 @@ local function finishRejection(state, context, pending)
     state.ConsecutiveFailures = state.ConsecutiveFailures + 1
     state.CleanSuccesses = 0
     resetNetworkRetry(state)
-    state.RequestDelay = math.min(MAX_REQUEST_DELAY, math.max(1, state.RequestDelay * 1.65))
+    local options = timingOptions(context)
+    state.DelayMode = options.DelayMode
+    state.ManualDelay = options.ManualDelay
+    if state.DelayMode == "Manual" then
+        state.RequestDelay = state.ManualDelay
+        state.LastAdjustmentReason = "server reject; manual delay retained"
+    else
+        state.RequestDelay = math.min(MAX_REQUEST_DELAY, math.max(0.25, state.RequestDelay * 1.65))
+        state.LastAdjustmentReason = "server reject increased adaptive delay"
+        local store, jobId = learnedDelayStore()
+        store[jobId] = state.RequestDelay
+    end
     local message = tostring(pending.Message or "server rejected the purchase")
     local suspicious = suspiciousReply(message)
     local pause = suspicious and SUSPICIOUS_PAUSE
@@ -2179,13 +2243,15 @@ local function runCycle(state, context)
     end
     state.SuspendedUntil = 0
 
-    local options = context.GetOptions()
+    local options = timingOptions(context)
     if type(options) ~= "table" or type(options.Egg) ~= "string" or options.Egg == "" then
         state.NextAction = now + LOCAL_RECHECK_DELAY
         setStatus(state, context, "Select a hatchable egg. No purchase request was sent.")
         return
     end
     options.Count = tonumber(options.Count) == 3 and 3 or 1
+    state.DelayMode = options.DelayMode
+    state.ManualDelay = options.ManualDelay
 
     local ready, inspection = context.InspectEgg(options.Egg, options.Count)
     if not ready then
@@ -2300,6 +2366,10 @@ return function(action, context)
         eventGateProblem = tostring(eventProblem or "inbound hatch signal unavailable")
     end
 
+    local learnedStore, jobId = learnedDelayStore()
+    local initialOptions = timingOptions(context)
+    local userId = tonumber(context.UserId) or 0
+    local startupPhase = (userId % 16) * 0.03
     local state = {
         Context = context,
         Running = true,
@@ -2307,8 +2377,15 @@ return function(action, context)
         GateOwned = false,
         OperationOwned = false,
         Pending = nil,
-        NextAction = os.clock() + ARM_DELAY,
-        RequestDelay = INITIAL_REQUEST_DELAY,
+        NextAction = os.clock() + ARM_DELAY + startupPhase,
+        RequestDelay = initialOptions.DelayMode == "Manual" and initialOptions.ManualDelay
+            or math.clamp(tonumber(learnedStore[jobId]) or INITIAL_REQUEST_DELAY,
+                MIN_REQUEST_DELAY, MAX_REQUEST_DELAY),
+        DelayMode = initialOptions.DelayMode,
+        ManualDelay = initialOptions.ManualDelay,
+        LastAdjustmentReason = learnedStore[jobId] and "restored for current JobId"
+            or "initial delay",
+        ResponseSamples = {}, ResponseP50 = 0, ResponseP95 = 0,
         SuspendedUntil = 0,
         AcknowledgedEvents = {},
         Requests = 0,

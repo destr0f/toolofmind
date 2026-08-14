@@ -2,12 +2,14 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.4.1"
+local MODULE_VERSION = "1.5.0"
 local TARGET_PET_NAME = "Pixel Demon"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 local IDLE_CHECK_DELAY = 5
 local READY_SAFETY_DELAY = 30
+local CLEANUP_RETRY_DELAY = 10
+local CLEANUP_AUDIT_LIMIT = 64
 
 local ABBREVIATIONS = {
     ["Agility"] = "AG", ["Chest"] = "CH", ["Chests"] = "CH",
@@ -59,6 +61,19 @@ local function protectedRainbowCoins(pet)
         end
     end
     return false
+end
+
+local function protectionDecision(context, pet)
+    if type(context.MatchProtection) == "function" then
+        local ok, decision, detail = pcall(context.MatchProtection, pet)
+        if not ok then return true, "DEFER", tostring(decision) end
+        decision = tostring(decision or "DEFER")
+        return decision ~= "NO_MATCH" and decision ~= "EMPTY", decision,
+            tostring(detail or "no detail")
+    end
+    local protected, level = protectedRainbowCoins(pet)
+    return protected, protected and "MATCH" or "NO_MATCH",
+        protected and ("legacy Rainbow Coins " .. tostring(level)) or "legacy no match"
 end
 
 local function abbreviate(name)
@@ -210,7 +225,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Pixel Demon found: %d | rainbow: %d | eligible: %d | Rainbow Coins V protected: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
+        "Pixel Demon found: %d | rainbow: %d | eligible: %d | rule protected/deferred: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
         stats.All, stats.Rainbow, stats.Eligible, stats.Protected,
         stats.Equipped, stats.Locked, stats.Other, stats.Pending
     )
@@ -272,6 +287,10 @@ local function refreshPendingClaims(state, context, queue)
         if queue[key] == nil then
             state.PendingClaims[key] = nil
             state.Claimed = state.Claimed + 1
+            state.ClaimInventoryDirty = true
+            if type(context.InvalidatePetSnapshot) == "function" then
+                context.InvalidatePetSnapshot()
+            end
             context.Trace("dark matter claim confirmed", "slot=" .. tostring(pending.Id))
             released = true
         elseif os.clock() - pending.At >= PENDING_TIMEOUT then
@@ -282,6 +301,175 @@ local function refreshPendingClaims(state, context, queue)
         end
     end
     if released and next(state.PendingClaims) == nil then releaseOperation(state, context) end
+end
+
+local function pushCleanupAudit(state, line)
+    local audit = state.CleanupAudit
+    audit[#audit + 1] = tostring(line)
+    if #audit > CLEANUP_AUDIT_LIMIT then table.remove(audit, 1) end
+end
+
+local function rememberDeleted(state, uid)
+    uid = tostring(uid)
+    if state.DeletedUIDs[uid] then return end
+    state.DeletedUIDs[uid] = true
+    state.DeletedOrder[#state.DeletedOrder + 1] = uid
+    if #state.DeletedOrder > 2048 then
+        local expired = table.remove(state.DeletedOrder, 1)
+        state.DeletedUIDs[expired] = nil
+    end
+end
+
+local function initializeDMCatalog(state, context, pets)
+    local targetIds = targetCatalog(context)
+    if state.KnownDMInitialized then return targetIds end
+    for _, pet in pairs(pets or {}) do
+        local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
+        if uid and targetIds[tostring(pet.id or "")] and pet.dm == true then
+            state.KnownDMUIDs[uid] = true
+        end
+    end
+    state.KnownDMInitialized = true
+    return targetIds
+end
+
+local function cleanupPolicy(input)
+    input = type(input) == "table" and input or {}
+    local pet = input.Pet
+    if type(pet) ~= "table" then return "DEFER", "pet data unavailable" end
+    local uid = pet.uid ~= nil and tostring(pet.uid) or nil
+    if not uid then return "DEFER", "UID unavailable" end
+    if input.AlreadyHandled then return "SKIP", "already pending/deleted" end
+    if input.IsTarget ~= true or pet.dm ~= true then return "SKIP", "not target Dark Matter form" end
+    if input.Scope == "Newly Claimed" and input.IsNew ~= true then return "SKIP", "not newly claimed" end
+    if pet.e == true then return "KEEP", "equipped" end
+    if pet.l == true or pet.locked == true then return "KEEP", "locked" end
+    local decision, detail = input.MatchDecision, input.MatchDetail
+    decision = tostring(decision or "DEFER")
+    if decision == "MATCH" then return "KEEP", tostring(detail or "protection matched") end
+    if decision == "EMPTY" then return "DISABLED", "DM cleanup profile has no enabled rules" end
+    if decision ~= "NO_MATCH" then return "DEFER", tostring(detail or "enchant data incomplete") end
+    return "DELETE", tostring(detail or "no protection rule matched")
+end
+
+local function cleanupDecision(state, context, pet, targetIds, scope)
+    local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
+    local decision, detail
+    if type(pet) == "table" and uid ~= nil then
+        decision, detail = context.MatchCleanupProtection(pet)
+    end
+    return cleanupPolicy({
+        Pet = pet,
+        AlreadyHandled = uid ~= nil and (state.DeletedUIDs[uid] or state.PendingDelete[uid]) or false,
+        IsTarget = type(pet) == "table" and targetIds[tostring(pet.id or "")] == true,
+        Scope = scope,
+        IsNew = uid ~= nil and state.NewDMUIDs[uid] == true,
+        MatchDecision = decision,
+        MatchDetail = detail,
+    })
+end
+
+local function discoverNewDMPets(state, context, pets)
+    local targetIds = initializeDMCatalog(state, context, pets)
+    local liveDM = {}
+    for _, pet in pairs(pets or {}) do
+        local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
+        if uid and targetIds[tostring(pet.id or "")] and pet.dm == true then
+            liveDM[uid] = true
+            if not state.KnownDMUIDs[uid] then
+                state.KnownDMUIDs[uid] = true
+                state.NewDMUIDs[uid] = true
+                pushCleanupAudit(state, "NEW " .. auditLabel(pet))
+            end
+        end
+    end
+    for uid in pairs(state.KnownDMUIDs) do
+        if not liveDM[uid] then
+            state.KnownDMUIDs[uid] = nil
+            state.NewDMUIDs[uid] = nil
+            state.PendingDelete[uid] = nil
+        end
+    end
+    state.ClaimInventoryDirty = false
+    return targetIds
+end
+
+local function runCleanup(state, context, snapshot)
+    if type(context.DMCleanupEnabled) ~= "function" or not context.DMCleanupEnabled() then
+        return false
+    end
+    local pets = snapshot and snapshot.Pets or {}
+    local targetIds = discoverNewDMPets(state, context, pets)
+    local scope = tostring(context.DMCleanupScope()) == "All Dark Matter Pets"
+        and "All Dark Matter Pets" or "Newly Claimed"
+    local probeDecision = context.MatchCleanupProtection({ uid = "__dm_profile_probe", powers = {} })
+    if probeDecision == "EMPTY" then
+        state.CleanupSummary = "DM cleanup disabled safely: protection profile has no enabled rules."
+        return false
+    end
+
+    local candidates, kept, deferred = {}, 0, 0
+    for _, pet in pairs(pets) do
+        local decision, detail = cleanupDecision(state, context, pet, targetIds, scope)
+        if decision == "DELETE" then
+            candidates[#candidates + 1] = tostring(pet.uid)
+            pushCleanupAudit(state, "DELETE " .. auditLabel(pet) .. " | " .. detail)
+        elseif decision == "KEEP" then
+            kept = kept + 1
+        elseif decision == "DEFER" then
+            deferred = deferred + 1
+        end
+    end
+    local limit = math.clamp(math.floor(tonumber(context.DMCleanupBatchSize()) or 25), 20, 30)
+    while #candidates > limit do table.remove(candidates) end
+    state.CleanupSummary = string.format(
+        "DM cleanup %s | planned: %d | protected: %d | deferred: %d | scope: %s",
+        context.DMCleanupDryRun() and "DRY RUN" or "armed",
+        #candidates, kept, deferred, scope
+    )
+    if #candidates == 0 or context.DMCleanupDryRun() then return false end
+    if not context.DMCleanupConfirmed() then
+        state.CleanupSummary = state.CleanupSummary .. " | blocked: confirmation required"
+        return false
+    end
+
+    local acquired, owner = acquireOperation(state, context)
+    if not acquired then
+        state.CleanupSummary = state.CleanupSummary .. " | waiting behind " .. tostring(owner)
+        return false
+    end
+    local fresh = context.GetPetSnapshot(true)
+    local freshTargets = targetCatalog(context)
+    local revalidated = {}
+    for _, uid in ipairs(candidates) do
+        local pet = fresh and fresh.ByUID and fresh.ByUID[uid]
+        local decision = pet and cleanupDecision(state, context, pet, freshTargets, scope) or "SKIP"
+        if decision == "DELETE" then revalidated[#revalidated + 1] = uid end
+    end
+    if #revalidated == 0 then
+        releaseOperation(state, context)
+        state.CleanupSummary = state.CleanupSummary .. " | fresh recheck kept every UID"
+        return false
+    end
+
+    local transportOk, accepted, message, sourceName, sessionIndex =
+        context.InvokeCommand("Delete Several Pets", revalidated)
+    releaseOperation(state, context)
+    if not transportOk or not accepted then
+        state.CleanupRetryAt = os.clock() + CLEANUP_RETRY_DELAY
+        state.CleanupSummary = "DM cleanup delete failed safely: " .. tostring(message or "server reject")
+        return false
+    end
+    for _, uid in ipairs(revalidated) do
+        state.PendingDelete[uid] = true
+        rememberDeleted(state, uid)
+        state.NewDMUIDs[uid] = nil
+    end
+    if type(context.InvalidatePetSnapshot) == "function" then context.InvalidatePetSnapshot() end
+    state.CleanupSummary = "DM cleanup accepted " .. tostring(#revalidated) .. " UID via "
+        .. context.RouteText(sourceName, sessionIndex)
+    context.Trace("dark matter cleanup", state.CleanupSummary)
+    return true
 end
 
 local function getServerTime(state, context)
@@ -353,7 +541,7 @@ local function collectCandidates(state, context, pets)
                 else
                     stats.Rainbow = stats.Rainbow + 1
                     local uid = pet.uid ~= nil and tostring(pet.uid) or nil
-                    local protected = protectedRainbowCoins(pet)
+                    local protected = protectionDecision(context, pet)
                     local equipped = pet.e == true
                     local locked = pet.l == true or pet.locked == true
                     if protected then stats.Protected = stats.Protected + 1 end
@@ -419,9 +607,10 @@ local function validateSelection(context, candidates)
         if not pet.r or pet.g or pet.dm then
             return false, nil, nil, shortUID(uid) .. " is no longer an eligible rainbow pet"
         end
-        local protected, level = protectedRainbowCoins(pet)
+        local protected, decision, detail = protectionDecision(context, pet)
         if protected then
-            return false, nil, nil, shortUID(uid) .. " has protected Rainbow Coins " .. tostring(level)
+            return false, nil, nil, shortUID(uid) .. " protection " .. tostring(decision)
+                .. ": " .. tostring(detail)
         end
         if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then
@@ -481,6 +670,7 @@ local function runCheck(state, context)
     local snapshot = type(context.GetPetSnapshot) == "function"
         and context.GetPetSnapshot(false) or nil
     local pets = snapshot and snapshot.Pets or save.Pets
+    initializeDMCatalog(state, context, pets)
     local pendingCreate = refreshPendingCreate(state, context, pets)
     local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, pets)
     local serverTime, clockProblem = getServerTime(state, context)
@@ -497,6 +687,16 @@ local function runCheck(state, context)
         setStatus(state, context, "Dark Matter claim accepted; waiting for DarkMatterQueue confirmation.\n"
             .. "Queue: " .. tostring(queueCount) .. "/" .. tostring(slots)
             .. " | claimed this session: " .. tostring(state.Claimed))
+        finish(0.5)
+        return
+    end
+
+    if state.ClaimInventoryDirty and type(context.GetPetSnapshot) == "function" then
+        snapshot = context.GetPetSnapshot(true)
+        pets = snapshot and snapshot.Pets or pets
+    end
+    if os.clock() >= state.CleanupRetryAt and runCleanup(state, context, snapshot) then
+        setStatus(state, context, state.CleanupSummary)
         finish(0.5)
         return
     end
@@ -547,7 +747,8 @@ local function runCheck(state, context)
         local clock = serverTime == nil and (" | clock: " .. tostring(clockProblem)) or ""
         setStatus(state, context, "Auto claim active | queue: " .. tostring(queueCount)
             .. "/" .. tostring(slots) .. timer .. clock
-            .. "\nClaimed this session: " .. tostring(state.Claimed))
+            .. "\nClaimed this session: " .. tostring(state.Claimed)
+            .. "\n" .. tostring(state.CleanupSummary or "DM cleanup idle"))
         finish(nearest and math.clamp(nearest - 0.5, 1, READY_SAFETY_DELAY)
             or IDLE_CHECK_DELAY)
         return
@@ -641,6 +842,15 @@ local function runCheck(state, context)
 
     local audit = table.concat(labels, " | ")
     context.Trace("dark matter validated pets", audit)
+    if context.ProtectionDryRun() then
+        releaseOperation(state, context)
+        setStatus(state, context, "DRY RUN: validated " .. tostring(batchSize)
+            .. " Dark Matter candidate(s); no queue request was sent.\nWould send: " .. audit
+            .. "\nPolicy: " .. policySummary)
+        context.Trace("dark matter create dry run", audit)
+        finish(IDLE_CHECK_DELAY)
+        return
+    end
     local transportOk, accepted, message, sourceName, sessionIndex =
         context.InvokeCommand("Convert To Dark Matter", selectedUIDs)
     if not transportOk then
@@ -713,6 +923,7 @@ return function(action, context)
         context = type(context) == "table" and context or {}
         return selectMachineTier(context.Info, context.BatchSize, context.MaxWaitSeconds)
     end
+    if action == "cleanup-policy" then return cleanupPolicy(context) end
     if action == "stop" then return stop() end
     if action ~= "start" then return false, "unknown action" end
     if activeState and activeState.Running then return true end
@@ -722,16 +933,22 @@ return function(action, context)
         "GetSave", "GetCurrency", "FormatNumber", "GetMachinePetCatalog", "BatchSize",
         "GetCommandRemote", "InvalidateCommand", "InvokeCommand", "RouteText",
         "AcquireOperation", "ReleaseOperation", "CancelOperation", "OperationOwner",
-        "SetStatus", "Trace",
+        "ProtectionDryRun",
+        "SetStatus", "Trace", "MatchCleanupProtection", "DMCleanupEnabled",
+        "DMCleanupScope", "DMCleanupDryRun", "DMCleanupConfirmed", "DMCleanupBatchSize",
     }
     for _, key in ipairs(required) do
         if context[key] == nil then return false, "module context is missing " .. key end
     end
     local state = {
-        Context = context, Running = true, Busy = false, OperationOwned = false, NextCheck = 0,
+        Context = context, Running = true, Busy = false, OperationOwned = false,
+        NextCheck = os.clock() + math.max(tonumber(context.StartupPhase) or 0, 0),
         PendingCreate = {}, PendingCreateAt = 0, PendingClaims = {},
         LastQueuedAudit = "none", QueuedBatches = 0, Claimed = 0,
         ServerRetryAt = 0,
+        KnownDMUIDs = {}, NewDMUIDs = {}, PendingDelete = {}, DeletedUIDs = {}, DeletedOrder = {},
+        KnownDMInitialized = false, ClaimInventoryDirty = false,
+        CleanupRetryAt = 0, CleanupAudit = {}, CleanupSummary = "DM cleanup idle",
         WorkerThread = nil,
     }
     activeState = state
