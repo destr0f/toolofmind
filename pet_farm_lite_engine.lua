@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.4.0"
+local MODULE_VERSION = "1.4.3"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -362,6 +362,7 @@ local function acquireJob()
             Accepted = {},
             Rejected = {},
             SignalFailures = {},
+            BatchPetIds = {},
             AcceptedMap = {},
             Wanted = {},
             Seen = {},
@@ -390,7 +391,7 @@ local function releaseJob(job)
     end
     for _, key in ipairs({
         "Entries", "CurrentEntries", "PetIds", "Accepted", "Rejected",
-        "SignalFailures", "AcceptedMap", "Wanted", "Seen", "StalePetIds",
+        "SignalFailures", "BatchPetIds", "AcceptedMap", "Wanted", "Seen", "StalePetIds",
     }) do
         table.clear(job[key])
     end
@@ -710,7 +711,10 @@ local function leaveStale(job, entries)
     if #entries == 0 then return end
     local petIds = job.StalePetIds
     table.clear(petIds)
-    for _, entry in ipairs(entries) do petIds[#petIds + 1] = entry.PetId end
+    for _, entry in ipairs(entries) do
+        if entryCurrent(entry) then petIds[#petIds + 1] = entry.PetId end
+    end
+    if #petIds == 0 then return end
     run.Stale = run.Stale + #petIds
     local context = run.Context
     if context and type(context.OnStaleAccepted) == "function" then
@@ -905,10 +909,30 @@ local function signalEntries(job, entries, route)
     return failed
 end
 
+local function notifyBatchAccepted(job, entries, route)
+    if job.BossGeneration == nil then return end
+    local context = run.Context
+    if not context or type(context.OnBatchAccepted) ~= "function" then return end
+    local petIds = job.BatchPetIds
+    table.clear(petIds)
+    for _, entry in ipairs(entries) do
+        if entryCurrent(entry) then petIds[#petIds + 1] = entry.PetId end
+    end
+    if #petIds > 0 then
+        pcall(
+            context.OnBatchAccepted,
+            job.Record,
+            petIds,
+            job.BossGeneration,
+            route
+        )
+    end
+end
+
 local function process(job)
     local entries, petIds = currentEntries(job)
     if #entries == 0 then
-        clearPending(job.Entries)
+        failEntries(job, job.Entries, "target stale before Join Coin")
         return false
     end
 
@@ -919,6 +943,7 @@ local function process(job)
             run.LastProblem = "post-join signal failure"
             return scheduleRetry(job, failures, run.LastProblem, true)
         end
+        notifyBatchAccepted(job, entries, "accepted join retry")
         return false
     end
 
@@ -982,6 +1007,14 @@ local function process(job)
             .. " rejected=" .. tostring(#rejectedEntries))
     end
 
+    if #rejectedEntries > 0 then
+        run.Rejected = run.Rejected + #rejectedEntries
+        run.LastProblem = "Join Coin rejected " .. tostring(#rejectedEntries) .. " pet(s)"
+        -- A server reject is terminal for this spawn generation. Release the
+        -- caller's JOINING states before bossRemoved invalidates the job.
+        failEntries(job, rejectedEntries, run.LastProblem)
+    end
+
     if #acceptedEntries > 0 and job.BossGeneration ~= nil
         and bossGenerationCurrent(job.CoinId, job.BossGeneration) then
         boss.State = "ACTIVE"
@@ -993,8 +1026,11 @@ local function process(job)
     end
 
     if not contextActive(job) then
-        leaveStale(job, acceptedEntries)
-        clearPending(entries)
+        local context = run.Context
+        local recordStillAlive = context and type(context.RecordAlive) == "function"
+            and context.RecordAlive(job.Record)
+        if recordStillAlive then leaveStale(job, acceptedEntries) end
+        failEntries(job, acceptedEntries, "target stale after Join Coin")
         return false
     end
 
@@ -1003,25 +1039,23 @@ local function process(job)
         run.Errors = run.Errors + #signalFailures
         run.LastProblem = "post-join signal failure"
     end
-    if #rejectedEntries > 0 then
-        run.Rejected = run.Rejected + #rejectedEntries
-        run.LastProblem = "Join Coin rejected " .. tostring(#rejectedEntries) .. " pet(s)"
-        -- A successful InvokeServer transport followed by a rejected UID means
-        -- the coin is stale or contended. Retrying the same coin only burns one
-        -- more RTT and lets the pet drift back toward the player.
-        failEntries(job, rejectedEntries, run.LastProblem)
-    elseif #signalFailures == 0 then
+    if #rejectedEntries == 0 and #signalFailures == 0 then
         run.LastProblem = "none"
     end
     if #signalFailures > 0 then
         return scheduleRetry(job, signalFailures, run.LastProblem, true)
     end
+    notifyBatchAccepted(job, acceptedEntries, route)
     return false
 end
 
 local function executeJob(job)
     if not contextActive(job) then
-        clearPending(job and job.Entries)
+        failEntries(job, job.Entries, "target stale before dispatch")
+        if job.DiagnosticId then
+            inspectComplete(job.DiagnosticId, "LOCAL_CANCELLED_REMOTE_UNKNOWN",
+                "target stale before dispatch; pet reservations released")
+        end
         releaseJob(job)
         run.Active = math.max(run.Active - 1, 0)
         pump()
@@ -1094,7 +1128,11 @@ pump = function()
                 executeJob(job)
             end)
         else
-            clearPending(job and job.Entries)
+            failEntries(job, job.Entries, "target stale in dispatch queue")
+            if job.DiagnosticId then
+                inspectComplete(job.DiagnosticId, "LOCAL_CANCELLED_REMOTE_UNKNOWN",
+                    "target stale in dispatch queue; pet reservations released")
+            end
             releaseJob(job)
         end
     end

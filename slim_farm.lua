@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.1-boss-rearm"
+local VERSION = "1.4.1-candidate.54.4-core-rescue"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -357,6 +357,7 @@ local config = {
     DMCleanupConfirmed = false,
     DMCleanupBatchSize = 25,
     BossFastPathDiagnostics = true,
+    BossPetInstantArrival = false,
     QuickHUD = true,
     QuickHUDPing = true,
     QuickHUDFarmRate = true,
@@ -1894,6 +1895,7 @@ local coinSync = {
     BossFallbackTimes = {},
     BossWatchdogToken = 0,
     BossAbsentUntil = 0,
+    BossBootstrapDone = false,
 }
 local coinGeneration = 0
 local coinMutationSerial = 0
@@ -2195,6 +2197,7 @@ function coinIndex:WatchFolder(folder)
         local controller = coinSync.PetFarm
         if config.Mode == "Boss Chest Only" and record
             and BossChestNames[normalize(record.Name)] == true
+            and not coinSync.SignalConnections["New Coin"]
             and controller and type(controller.HandleBossSpawn) == "function" then
             controller:HandleBossSpawn(record, "Coins.ChildAdded", false, {})
         elseif type(requestAllocatorPulse) == "function" then
@@ -2464,6 +2467,11 @@ local function connectCoinSignals(forceName)
         local record = applyCoinData(id, data, true)
         local controller = coinSync.PetFarm
         if record and BossChestNames[normalize(record.Name)] == true then
+            local selectedWorld, selectedZone = getSelectedWorld(), getSelectedZone()
+            local selectedBoss = config.Mode == "Boss Chest Only"
+                and targetRecordAllowed(record, "Boss Chest Only",
+                    selectedWorld, selectedZone, nil)
+            if selectedBoss then coinSync.BossBootstrapDone = true end
             local source = coinSync.SignalSources["New Coin"] or "unknown"
             local health = coinSync.SignalHealth["New Coin"]
             if health then
@@ -2473,10 +2481,11 @@ local function connectCoinSignals(forceName)
                     health.FallbackSpawnCount = (tonumber(health.FallbackSpawnCount) or 0) + 1
                 end
             end
-            if controller and type(controller.HandleBossSpawn) == "function" then
+            if selectedBoss and controller
+                and type(controller.HandleBossSpawn) == "function" then
                 controller:HandleBossSpawn(record, source, source == "Network4 direct", data,
                     wasRejected or not previousAlive)
-            elseif wasRejected or not previousAlive then
+            elseif selectedBoss and (wasRejected or not previousAlive) then
                 if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(coinId) end
                 if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
             end
@@ -2504,7 +2513,8 @@ local function connectCoinSignals(forceName)
             -- Get Coins here would turn an event race into a reconciliation loop.
             local record = applyCoinData(id, { Health = health }, true)
             local controller = coinSync.PetFarm
-            if record and controller and type(controller.HandleBossSpawn) == "function" then
+            if record and not coinSync.SignalConnections["New Coin"]
+                and controller and type(controller.HandleBossSpawn) == "function" then
                 controller:HandleBossSpawn(record, "Update Coin Health", false, { Health = health })
             end
         end
@@ -2557,6 +2567,10 @@ local function connectCoinSignals(forceName)
                 coinIndex:DisconnectFolder()
                 coinIndex:Invalidate()
                 if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(nil) end
+                local farmController = coinSync.PetFarm
+                if farmController and type(farmController.ResetBossPetWarp) == "function" then
+                    farmController:ResetBossPetWarp("world changed")
+                end
                 currentZone = nil
                 currentZoneAnchor = nil
                 nextZoneCheck = 0
@@ -2801,6 +2815,24 @@ local petFarm = {
         AllocatorFree = {},
         AllocatorUsable = {},
     },
+    BossPetWarp = {
+        NativePets = nil,
+        NativeScript = nil,
+        PetSignature = nil,
+        ResolveRetryAt = 0,
+        LastGenerationKey = nil,
+        Parts = {},
+        CFrames = {},
+        States = {},
+        PetIds = {},
+        CallbackScratch = {},
+        Attempts = 0,
+        Applied = 0,
+        PetsMoved = 0,
+        Skipped = 0,
+        Errors = 0,
+        LastProblem = "disabled",
+    },
 }
 coinSync.PetFarm = petFarm
 
@@ -2878,6 +2910,7 @@ releaseAssignmentsForCoin = function(rawId, suppressFastDispatch)
         table.clear(petStates)
         table.clear(rejectedUntil)
         table.clear(coinSync.BossRejected)
+        coinSync.BossBootstrapDone = false
         return 0
     end
 
@@ -2945,6 +2978,219 @@ local function functionUpvalueAt(callback, index)
         end
     end
     return nil, "upvalue #" .. tostring(index) .. " is unavailable"
+end
+
+function petFarm:ResetBossPetWarp(reason)
+    local warp = self.BossPetWarp
+    if type(warp) ~= "table" then return end
+    warp.NativePets = nil
+    warp.NativeScript = nil
+    warp.PetSignature = nil
+    warp.ResolveRetryAt = 0
+    warp.LastGenerationKey = nil
+    table.clear(warp.Parts)
+    table.clear(warp.CFrames)
+    table.clear(warp.States)
+    table.clear(warp.PetIds)
+    table.clear(warp.CallbackScratch)
+    warp.LastProblem = tostring(reason or "reset")
+end
+
+function petFarm:ResolveBossPetRuntime(rawPetIds)
+    local warp = self.BossPetWarp
+    if type(warp) ~= "table" then return nil, "warp state is unavailable" end
+
+    local petIds = warp.PetIds
+    table.clear(petIds)
+    for index = 1, math.min(#(rawPetIds or {}), 16) do
+        petIds[index] = tostring(rawPetIds[index])
+    end
+    local signature = table.concat(petIds, "\0")
+    if warp.PetSignature ~= signature then
+        warp.NativePets = nil
+        warp.NativeScript = nil
+        warp.PetSignature = signature
+        warp.ResolveRetryAt = 0
+    end
+
+    if type(warp.NativePets) == "table" and warp.NativeScript
+        and warp.NativeScript.Parent ~= nil then
+        for _, petId in ipairs(petIds) do
+            local state = warp.NativePets[petId] or warp.NativePets[tonumber(petId)]
+            local physical = type(state) == "table" and state.physical or nil
+            if typeof(physical) == "Instance" and physical:IsA("BasePart")
+                and physical.Parent ~= nil then
+                return warp.NativePets, petIds
+            end
+        end
+        warp.NativePets = nil
+        warp.NativeScript = nil
+    end
+
+    local now = os.clock()
+    if now < (tonumber(warp.ResolveRetryAt) or 0) then
+        return nil, warp.LastProblem
+    end
+    warp.ResolveRetryAt = now + 2
+    if type(getsenv) ~= "function" then
+        warp.LastProblem = "getsenv unavailable; normal C54 path retained"
+        return nil, warp.LastProblem
+    end
+
+    local playerScripts = player and (player:FindFirstChild("PlayerScripts")
+        or player:FindFirstChildOfClass("PlayerScripts"))
+    local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
+    local gameScripts = scripts and scripts:FindFirstChild("Game")
+    local petsScript = gameScripts and gameScripts:FindFirstChild("Pets")
+    if not petsScript then
+        warp.LastProblem = "Game.Pets LocalScript unavailable; normal C54 path retained"
+        return nil, warp.LastProblem
+    end
+
+    local envOk, scriptEnv = pcall(getsenv, petsScript)
+    if not envOk or type(scriptEnv) ~= "table" then
+        warp.LastProblem = "Game.Pets environment unavailable; normal C54 path retained"
+        return nil, warp.LastProblem
+    end
+
+    local callbacks = warp.CallbackScratch
+    table.clear(callbacks)
+    for _, name in ipairs({ "Tick", "NetworkUpdate", "ChangePetTargetCoin", "ChangePetTargetPlayer" }) do
+        if type(scriptEnv[name]) == "function" then callbacks[#callbacks + 1] = scriptEnv[name] end
+    end
+    for _, callback in ipairs(callbacks) do
+        for upvalueIndex = 1, 16 do
+            local candidate = functionUpvalueAt(callback, upvalueIndex)
+            if type(candidate) == "table" then
+                for _, petId in ipairs(petIds) do
+                    local state = candidate[petId] or candidate[tonumber(petId)]
+                    local physical = type(state) == "table" and state.physical or nil
+                    if typeof(physical) == "Instance" and physical:IsA("BasePart") then
+                        warp.NativePets = candidate
+                        warp.NativeScript = petsScript
+                        warp.ResolveRetryAt = 0
+                        warp.LastProblem = "native Game.Pets table ready"
+                        table.clear(callbacks)
+                        return candidate, petIds
+                    end
+                end
+            end
+        end
+    end
+    table.clear(callbacks)
+    warp.LastProblem = "native Game.Pets table not resolved; normal C54 path retained"
+    return nil, warp.LastProblem
+end
+
+function petFarm:WarpBossPetsOnce(record, rawPetIds, bossGeneration)
+    local warp = self.BossPetWarp
+    if not config.BossPetInstantArrival or config.Mode ~= "Boss Chest Only"
+        or type(warp) ~= "table" or not recordAlive(record) or not isBossChest(record) then
+        return false
+    end
+
+    warp.Attempts = (tonumber(warp.Attempts) or 0) + 1
+    local generationKey = tostring(record.Id) .. "@"
+        .. tostring(bossGeneration or record.BossSpawnGeneration or coinMutationSerial)
+    if warp.LastGenerationKey == generationKey then
+        warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
+        return false
+    end
+
+    local model = record.Model
+    if not model or model.Parent == nil then
+        local things = workspace:FindFirstChild("__THINGS")
+        local coins = things and things:FindFirstChild("Coins")
+        model = coins and coins:FindFirstChild(tostring(record.Id))
+    end
+    local primary = model and model:IsA("Model") and model.PrimaryPart
+        or (model and model:IsA("BasePart") and model or nil)
+    local visualTarget = model and (model:FindFirstChild("POS", true)
+        or primary or model:FindFirstChild("Coin", true))
+    if visualTarget and not visualTarget:IsA("BasePart") then visualTarget = nil end
+
+    local baseCFrame
+    if typeof(record.Position) == "Vector3" then
+        baseCFrame = CFrame.new(record.Position)
+    elseif typeof(record.Position) == "CFrame" then
+        baseCFrame = record.Position
+    elseif visualTarget then
+        baseCFrame = visualTarget.CFrame
+    end
+    if not baseCFrame then
+        warp.LastProblem = "boss position unavailable; normal C54 path retained"
+        warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
+        return false
+    end
+
+    local nativePets, petIdsOrProblem = self:ResolveBossPetRuntime(rawPetIds)
+    if type(nativePets) ~= "table" then
+        warp.LastProblem = tostring(petIdsOrProblem)
+        warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
+        return false
+    end
+    local petIds = petIdsOrProblem
+    local radius = visualTarget and math.max(
+        math.max(visualTarget.Size.X, visualTarget.Size.Z) * 0.55 + 3.5,
+        4.5
+    ) or 5.7
+    local parts, cframes, states = warp.Parts, warp.CFrames, warp.States
+    table.clear(parts)
+    table.clear(cframes)
+    table.clear(states)
+    local total = math.min(#petIds, 16)
+    for index = 1, total do
+        local petId = petIds[index]
+        local state = nativePets[petId] or nativePets[tonumber(petId)]
+        local physical = type(state) == "table" and state.physical or nil
+        if typeof(physical) == "Instance" and physical:IsA("BasePart")
+            and physical.Parent ~= nil then
+            local angle = ((index - 1) / math.max(total, 1)) * math.pi * 2
+            parts[#parts + 1] = physical
+            cframes[#cframes + 1] = baseCFrame * CFrame.Angles(0, angle, 0)
+                * CFrame.new(0, 0, radius)
+            states[#states + 1] = state
+        end
+    end
+    if #parts == 0 then
+        warp.NativePets = nil
+        warp.NativeScript = nil
+        warp.LastProblem = "equipped pet parts unavailable; normal C54 path retained"
+        warp.Skipped = (tonumber(warp.Skipped) or 0) + 1
+        return false
+    end
+
+    local moved, moveProblem = pcall(workspace.BulkMoveTo, workspace, parts, cframes)
+    if not moved then
+        warp.Errors = (tonumber(warp.Errors) or 0) + 1
+        warp.LastProblem = "BulkMoveTo failed: " .. tostring(moveProblem)
+        table.clear(parts)
+        table.clear(cframes)
+        table.clear(states)
+        return false
+    end
+    local now = os.clock()
+    for _, state in ipairs(states) do
+        if visualTarget then
+            state.target = visualTarget
+            state.networkTarget = visualTarget
+        end
+        state.farming = true
+        state.follower = nil
+        state.distance = radius
+        state.arrived = true
+        state.moving = false
+        state.movingTick = nil
+        state.farmingTick = now
+    end
+    warp.LastGenerationKey = generationKey
+    warp.Applied = (tonumber(warp.Applied) or 0) + 1
+    warp.PetsMoved = (tonumber(warp.PetsMoved) or 0) + #parts
+    warp.LastProblem = "post-Join batch moved " .. tostring(#parts) .. " pet(s)"
+    table.clear(parts)
+    table.clear(cframes)
+    table.clear(states)
+    return true
 end
 
 local function remoteSessionIndex(remote)
@@ -3656,8 +3902,8 @@ function petFarm:EnsureEngine()
             local record = type(info) == "table" and info.Record or nil
             return self:DispatchBossRecord(record, spawnGeneration)
         end,
-        OnBossRemoved = function(coinId, spawnGeneration)
-            self:FinalizeBossRemoval(coinId, spawnGeneration)
+        OnBossRemoved = function(coinId, spawnGeneration, source)
+            self:FinalizeBossRemoval(coinId, spawnGeneration, source)
         end,
         OnAccepted = function(petId, state, record, _, attempt, route)
             petId = tostring(petId)
@@ -3679,6 +3925,11 @@ function petFarm:EnsureEngine()
             self:ScheduleProgressLease(0.5)
             driverStatus = "Lite lock accepted; awaiting real progress via " .. tostring(route)
             return true
+        end,
+        OnBatchAccepted = function(record, petIds, spawnGeneration)
+            if config.BossPetInstantArrival and config.Mode == "Boss Chest Only" then
+                pcall(self.WarpBossPetsOnce, self, record, petIds, spawnGeneration)
+            end
         end,
         OnSignalsSent = function(petId, state, record, targetSent, farmSent, targetRoute, farmRoute)
             if type(state) ~= "table" then return end
@@ -3708,10 +3959,11 @@ function petFarm:EnsureEngine()
             petStates[petId] = nil
             releasePetState(state, true)
             local rejected = string.find(tostring(reason), "Join Coin rejected", 1, true) ~= nil
+            local authoritativeBoss = config.Mode == "Boss Chest Only" and record
+                and isBossChest(record) and coinSync.SignalConnections["New Coin"] ~= nil
             if rejected and record then
                 local coinId = tostring(record.Id)
-                if config.Mode == "Boss Chest Only" and isBossChest(record)
-                    and coinSync.SignalConnections["New Coin"] then
+                if authoritativeBoss then
                     -- A rejected boss ID is absent/stale. Do not hammer it
                     -- again; only the authoritative spawn event can re-arm it.
                     coinSync.BossRejected[coinId] = true
@@ -3719,6 +3971,13 @@ function petFarm:EnsureEngine()
                 else
                     rejectedUntil[coinId] = now + 0.75
                 end
+            end
+            if authoritativeBoss then
+                lastRecovery = rejected and "boss generation rejected" or "boss transport exhausted"
+                driverStatus = rejected
+                    and "boss generation stale; waiting for authoritative New Coin"
+                    or "boss transport failed; waiting for next authoritative New Coin"
+                return
             end
             self.FastPets[petId] = true
             if rejected then
@@ -3830,6 +4089,7 @@ local function clearAssignments(sendBack, callback)
     table.clear(petStates)
     table.clear(rejectedUntil)
     table.clear(coinSync.BossRejected)
+    coinSync.BossBootstrapDone = false
 
     if not sendBack or (not changeTargetRemote and not leaveCoinRemote) then
         if type(callback) == "function" then
@@ -4035,6 +4295,12 @@ function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
     local ok, accepted, problem = pcall(self.Engine, "boss-spawn", info)
     if not (ok and accepted == true) and running() and config.PetFarm
         and recordAlive(record) then
+        if coinSync.SignalConnections["New Coin"] then
+            driverStatus = accepted == false and problem == "duplicate"
+                and "duplicate boss event ignored"
+                or "authoritative boss event was not selectable; waiting for next New Coin"
+            return false, problem
+        end
         local expected = tonumber(self.EquippedCount) or 0
         if expected == 0 or assignmentCount() < expected then
             driverStatus = "boss spawn pending; local dispatch re-arm queued"
@@ -4106,11 +4372,15 @@ function petFarm:HandleBossRemoved(rawId, source)
     return ok and removed == true
 end
 
-function petFarm:FinalizeBossRemoval(rawId, generation)
+function petFarm:FinalizeBossRemoval(rawId, generation, source)
     coinSync.BossWatchdogToken = coinSync.BossWatchdogToken + 1
     coinSync.BossAbsentUntil = os.clock() + 3.2
     releaseAssignmentsForCoin(rawId, true)
-    self:ArmBossWatchdog(generation)
+    if tostring(source) == "server reject" then
+        coinSync.BossRejected[tostring(rawId)] = true
+    elseif not coinSync.SignalConnections["New Coin"] then
+        self:ArmBossWatchdog(generation)
+    end
     driverStatus = "boss chest absent; awaiting New Coin"
 end
 
@@ -4250,6 +4520,10 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
 end
 
 function petFarm:QueueFastDispatch(petId)
+    if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
+        table.clear(self.FastPets)
+        return
+    end
     if petId ~= nil then self.FastPets[tostring(petId)] = true end
     if self.FastScheduled or not running() then return end
     self.FastScheduled = true
@@ -5278,8 +5552,12 @@ allocatorPass = function()
     allocatorRequested = false
     local ok, problem = pcall(function()
         connectCoinSignals()
-        refreshWorkspaceCoins()
-        if not coinSync.SnapshotPrimed and not coinSync.SnapshotBusy
+        local bossEventDriven = config.Mode == "Boss Chest Only"
+            and coinSync.SignalConnections["New Coin"] ~= nil
+        if not bossEventDriven or not coinSync.BossBootstrapDone then
+            refreshWorkspaceCoins()
+        end
+        if not bossEventDriven and not coinSync.SnapshotPrimed and not coinSync.SnapshotBusy
             and not coinSync.SnapshotFailOpen and coinSync.SnapshotAttempts == 0
             and not coinSync.RetryArmed then
             task.defer(refreshCoinSnapshot)
@@ -5337,6 +5615,12 @@ allocatorPass = function()
             return
         end
 
+        if bossEventDriven and coinSync.BossBootstrapDone then
+            petFarm.TargetWindow = 0
+            driverStatus = "boss pets idle; waiting for authoritative New Coin"
+            return
+        end
+
         local targets, selectedWorld, selectedZone = orderedTargets(config.Mode)
         petFarm.LastTargetCount = #targets
         petFarm.LastWorld = selectedWorld or "unknown"
@@ -5354,7 +5638,8 @@ allocatorPass = function()
         end
         if #usable == 0 then
             petFarm.TargetWindow = 0
-            if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
+            if bossEventDriven then
+                coinSync.BossBootstrapDone = true
                 driverStatus = "boss chest absent; waiting for New Coin"
             elseif type(armFarmRecovery) == "function" then
                 armFarmRecovery(1.05)
@@ -5362,7 +5647,13 @@ allocatorPass = function()
             return
         end
 
-        if config.Mode == "Boss Chest Only" and usable[1]
+        if bossEventDriven then
+            coinSync.BossBootstrapDone = true
+            if usable[1] and usable[1].BossSpawnGeneration == nil then
+                petFarm:HandleBossSpawn(usable[1], "allocator bootstrap", false, {}, true)
+            end
+            return
+        elseif config.Mode == "Boss Chest Only" and usable[1]
             and usable[1].BossSpawnGeneration == nil
             and petFarm:HandleBossSpawn(usable[1], "allocator bootstrap", false, {}, true) then
             return
@@ -5487,6 +5778,10 @@ local function restartFarmWatchers()
     local function checkBossLiveness()
         if livenessToken ~= farmWatch.LivenessToken or not running()
             or not config.PetFarm then return end
+        if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
+            task.delay(livenessDelay, checkBossLiveness)
+            return
+        end
         if config.Mode == "Boss Chest Only" and not farmResetRunning and petFarm.Engine then
             local expected = tonumber(petFarm.EquippedCount) or 0
             local assigned = assignmentCount()
@@ -5860,6 +6155,7 @@ UI.FarmHero:Toggle({
                 if not ready then trace("pet engine load", tostring(problem)) end
             end)
         end
+        if not enabled then petFarm:ResetBossPetWarp("farm disabled") end
         requestFarmReset(config.PetFarm and "farm enabled" or "farm disabled")
         restartFarmWatchers()
     end,
@@ -5875,6 +6171,7 @@ UI.FarmHero:Dropdown({
     Callback = function(value)
         if config.Mode == value then return end
         config.Mode = value
+        petFarm:ResetBossPetWarp("assignment mode changed")
         if config.PetFarm then requestFarmReset("assignment mode changed") end
     end,
 })
@@ -5884,6 +6181,17 @@ UI.FarmHero:Toggle({
     Desc = "Shows a bounded 64-cycle summary; it adds no scan, polling, or server request.",
     Value = true,
     Callback = function(value) config.BossFastPathDiagnostics = value ~= false end,
+})
+UI.FarmHero:Toggle({
+    Flag = "boss_pet_instant_arrival",
+    Title = "Boss Pet Instant Arrival",
+    Desc = "After one accepted grouped Join, locally moves the equipped batch to the chest position. No extra remote or polling.",
+    Value = false,
+    Callback = function(value)
+        config.BossPetInstantArrival = value == true
+        petFarm:ResetBossPetWarp(config.BossPetInstantArrival
+            and "armed for next accepted boss" or "disabled")
+    end,
 })
 uiStageYield("farm controls")
 
@@ -6606,6 +6914,7 @@ local function finishShutdown()
     table.clear(petFarm.DispatchEntries)
     table.clear(petFarm.DispatchEntryPool)
     table.clear(petFarm.DispatchPayload)
+    petFarm:ResetBossPetWarp("shutdown")
     table.clear(petFarm.FastPets)
     petFarm.ProgressLeaseToken = petFarm.ProgressLeaseToken + 1
     petFarm.ProgressLeaseScheduled = false
@@ -7235,6 +7544,7 @@ local function updateRuntimeTelemetry()
             local networkState = networkReady() and "ready" or "waiting"
             local bossStats = petFarm:BossStats()
             local bossLine = ""
+            local warpLine = ""
             if config.Mode == "Boss Chest Only" and config.BossFastPathDiagnostics ~= false
                 and bossStats then
                 bossLine = string.format(
@@ -7248,6 +7558,17 @@ local function updateRuntimeTelemetry()
                     (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.P50) or 0) * 1000,
                     (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.P95) or 0) * 1000,
                     (tonumber(bossStats.NewToQueued and bossStats.NewToQueued.Max) or 0) * 1000
+                )
+            end
+            if config.BossPetInstantArrival then
+                local warp = petFarm.BossPetWarp
+                warpLine = string.format(
+                    "\nWarp post-Join: batches/pets/skipped/errors %d/%d/%d/%d | %s",
+                    tonumber(warp.Applied) or 0,
+                    tonumber(warp.PetsMoved) or 0,
+                    tonumber(warp.Skipped) or 0,
+                    tonumber(warp.Errors) or 0,
+                    tostring(warp.LastProblem or "waiting")
                 )
             end
             statusSetters.Farm(string.format(
@@ -7266,7 +7587,7 @@ local function updateRuntimeTelemetry()
                 bossLine
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s",
+                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s%s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
@@ -7283,7 +7604,8 @@ local function updateRuntimeTelemetry()
                 tonumber(petFarm.ProgressLeaseEvictions) or 0,
                 idleRecoveryCount,
                 lastRecovery,
-                driverStatus
+                driverStatus,
+                warpLine
             ))
         end
         if quickVisible then
