@@ -11,12 +11,14 @@ local function newControl()
 end
 
 local controlsByFlag = {}
+local controlsByTitle = {}
 local sectionMethods = {}
 for _, methodName in ipairs({ "Paragraph", "Dropdown", "Button", "Toggle", "Slider", "Input" }) do
     sectionMethods[methodName] = function(_, definition)
         local control = newControl()
         control.Definition = definition
         if definition and definition.Flag then controlsByFlag[definition.Flag] = control end
+        if definition and definition.Title then controlsByTitle[definition.Title] = control end
         return control
     end
 end
@@ -106,6 +108,28 @@ assert(enchantTargets.Definition.Multi == true, "enchant dropdown is not multi-s
 assert(type(enchantToggle) == "table", "auto-enchant toggle is missing")
 enchantTargets.Definition.Callback({ "Royalty", "Tech Coins V" })
 assert(#config.EnchantTargets == 2, "multi-enchant targets were not stored")
+
+assert(controlsByFlag.rule_index == nil, "legacy numeric rule index is still visible")
+assert(controlsByFlag.rule_condition_index == nil, "legacy numeric condition index is still visible")
+assert(type(controlsByFlag.rule_variation) == "table", "named variation selector is missing")
+for index = 1, 3 do
+    assert(type(controlsByFlag["rule_enchant_slot_" .. tostring(index)]) == "table",
+        "simple enchant slot " .. tostring(index) .. " is missing")
+end
+controlsByFlag.rule_enchant_slot_1.Definition.Callback("Royalty")
+controlsByFlag.rule_enchant_slot_2.Definition.Callback("Rainbow Coins V")
+controlsByFlag.rule_enchant_slot_3.Definition.Callback("Super Teamwork")
+controlsByTitle["ADD AS NEW VARIATION"].Definition.Callback()
+local goldRules = config.EnchantRuleProfiles.Gold.Rules
+assert(#goldRules == 1, "simple builder did not add one visible variation")
+assert(#goldRules[1].Conditions == 3, "simple builder did not save all three enchant slots")
+assert(goldRules[1].Conditions[1].Enchant == "Royalty" and goldRules[1].Conditions[1].Mode == "Any",
+    "unlevelled enchant slot was not saved as Any")
+assert(goldRules[1].Conditions[2].Enchant == "Rainbow Coins"
+    and goldRules[1].Conditions[2].Mode == "Exact" and goldRules[1].Conditions[2].Level == 5,
+    "Rainbow Coins V was not decoded into an exact tier condition")
+assert(string.find(controlsByTitle["Configured Variations"].Desc, "Royalty + Rainbow Coins V + Super Teamwork", 1, true),
+    "active variation list does not show the complete saved combination")
 
 for key, setter in pairs(statusSetters) do
     assert(type(setter) == "function", key .. " setter was overwritten")

@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.5.0"
+local MODULE_VERSION = "1.5.1"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -200,15 +200,36 @@ local function build(context)
     })
     yieldUI("machine controls")
 
-    local ruleBuilder = UI.MachinesTab:Section({ Title = "Enchant Protection Rule Builder", Box = true, Opened = true })
+    local ruleBuilder = UI.MachinesTab:Section({ Title = "Simple Enchant Protection", Box = true, Opened = true })
     ruleBuilder:Paragraph({
-        Title = "AND INSIDE A RULE / OR BETWEEN RULES",
-        Desc = "Each machine and DM cleanup has an independent profile. Extra pet enchants never break a match.",
+        Title = "ONE VARIATION = UP TO 3 REQUIRED ENCHANTS",
+        Desc = "Example: Royalty + Rainbow Coins V + Super Teamwork. A pet is protected when it matches any enabled variation.",
     })
-    local selectedProfile, selectedRule, selectedCondition = "Gold", 1, 1
+    local selectedProfile, selectedRule = "Gold", 0
     local copySourceProfile = "Gold"
     local profiles = { "Gold", "Rainbow", "DarkMatter", "DMDelete" }
-    local modes = { "Any", "Exact", "IV/V", "AtLeast" }
+    local profileChoices = { "Gold Machine", "Rainbow Machine", "Dark Matter Machine", "Dark Matter Auto Delete" }
+    local profileKeys = {
+        ["Gold Machine"] = "Gold", ["Rainbow Machine"] = "Rainbow",
+        ["Dark Matter Machine"] = "DarkMatter", ["Dark Matter Auto Delete"] = "DMDelete",
+    }
+    local profileTitles = {
+        Gold = "Gold Machine", Rainbow = "Rainbow Machine",
+        DarkMatter = "Dark Matter Machine", DMDelete = "Dark Matter Auto Delete",
+    }
+    local emptySlot = "-- Empty --"
+    local romanLevels = { I = 1, II = 2, III = 3, IV = 4, V = 5 }
+    local levelRomans = { "I", "II", "III", "IV", "V" }
+    local levelled = {
+        ["agility"] = true, ["chest breaker"] = true, ["coins"] = true,
+        ["diamonds"] = true, ["fantasy coins"] = true, ["rainbow coins"] = true,
+        ["strength"] = true, ["tech coins"] = true,
+    }
+    local rulePicker, listView, formulaView
+    local slotControls, draftSlots = {}, { emptySlot, emptySlot, emptySlot }
+    local function trim(value)
+        return string.match(tostring(value or ""), "^%s*(.-)%s*$") or ""
+    end
     local function profile()
         config.EnchantRuleProfiles = type(config.EnchantRuleProfiles) == "table"
             and config.EnchantRuleProfiles or {}
@@ -220,50 +241,244 @@ local function build(context)
         value.Rules = type(value.Rules) == "table" and value.Rules or {}
         return value
     end
-    local function ensureRule()
-        local value = profile()
-        if #value.Rules == 0 then
-            value.Rules[1] = { Enabled = true, Conditions = {
-                { Enchant = "Rainbow Coins", Mode = "AtLeast", Level = 5 },
-            } }
+    local function conditionLabel(condition)
+        if type(condition) ~= "table" then return "?" end
+        local name = trim(condition.Enchant)
+        local level = math.clamp(math.floor(tonumber(condition.Level) or 1), 1, 5)
+        if condition.Mode == "Exact" then return name .. " " .. levelRomans[level] end
+        if condition.Mode == "IV/V" then return name .. " IV/V" end
+        if condition.Mode == "AtLeast" then
+            return name .. " " .. levelRomans[level] .. (level < 5 and "+" or "")
         end
-        selectedRule = math.clamp(selectedRule, 1, #value.Rules)
-        local rule = value.Rules[selectedRule]
-        rule.Conditions = type(rule.Conditions) == "table" and rule.Conditions or {}
-        if #rule.Conditions == 0 then
-            rule.Conditions[1] = { Enchant = "Rainbow Coins", Mode = "Any", Level = 1 }
-        end
-        selectedCondition = math.clamp(selectedCondition, 1, #rule.Conditions)
-        return value, rule, rule.Conditions[selectedCondition]
+        return name
     end
-    local formulaView
+    local function ruleLabel(index, rule)
+        local conditions = {}
+        for _, condition in ipairs(type(rule) == "table" and type(rule.Conditions) == "table"
+            and rule.Conditions or {}) do
+            conditions[#conditions + 1] = conditionLabel(condition)
+        end
+        local text = #conditions > 0 and table.concat(conditions, " + ") or "empty"
+        return string.format("Variation %d [%s] %s", index,
+            type(rule) == "table" and rule.Enabled == false and "OFF" or "ON", text)
+    end
+    local function pickerValues()
+        local values = { "+ New variation" }
+        for index, rule in ipairs(profile().Rules) do
+            values[#values + 1] = ruleLabel(index, rule)
+        end
+        return values
+    end
+    local function parseRuleIndex(label)
+        return tonumber(string.match(tostring(label or ""), "^Variation (%d+)")) or 0
+    end
+    local function enchantChoices()
+        local values, seen = { emptySlot }, { [string.lower(emptySlot)] = true }
+        local function add(value)
+            local key = string.lower(trim(value))
+            if key ~= "" and not seen[key] then
+                seen[key] = true
+                values[#values + 1] = value
+            end
+        end
+        for _, rawName in ipairs(context.GetRuleEnchantCatalog()) do
+            local name = trim(rawName)
+            add(name)
+            if levelled[string.lower(name)] then
+                for _, roman in ipairs(levelRomans) do add(name .. " " .. roman) end
+                add(name .. " IV/V")
+                for _, roman in ipairs(levelRomans) do add(name .. " " .. roman .. "+") end
+            end
+        end
+        return values
+    end
+    local function choiceCondition(choice)
+        choice = trim(choice)
+        if choice == "" or choice == emptySlot then return nil end
+        local unionName = string.match(choice, "^(.-) IV/V$")
+        if unionName then return { Enchant = trim(unionName), Mode = "IV/V", Level = 4 } end
+        local minimumName, minimumRoman = string.match(choice, "^(.-) ([IV]+)%+$")
+        local minimumLevel = minimumRoman and romanLevels[minimumRoman]
+        if minimumName and minimumLevel then
+            return { Enchant = trim(minimumName), Mode = "AtLeast", Level = minimumLevel }
+        end
+        local name, roman = string.match(choice, "^(.-) ([IV]+)$")
+        local level = roman and romanLevels[roman]
+        if name and level then return { Enchant = trim(name), Mode = "Exact", Level = level } end
+        return { Enchant = choice, Mode = "Any", Level = 1 }
+    end
+    local function draftRule()
+        local conditions, seen = {}, {}
+        for index = 1, 3 do
+            local condition = choiceCondition(draftSlots[index])
+            if condition then
+                local key = string.lower(condition.Enchant) .. ":" .. condition.Mode .. ":" .. tostring(condition.Level)
+                if not seen[key] then
+                    seen[key] = true
+                    conditions[#conditions + 1] = condition
+                end
+            end
+        end
+        if #conditions == 0 then return nil end
+        return { Enabled = true, Conditions = conditions }
+    end
+    local function loadDraft()
+        draftSlots = { emptySlot, emptySlot, emptySlot }
+        local rule = profile().Rules[selectedRule]
+        if type(rule) == "table" then
+            for index, condition in ipairs(type(rule.Conditions) == "table" and rule.Conditions or {}) do
+                if index > 3 then break end
+                draftSlots[index] = conditionLabel(condition)
+            end
+        end
+        for index, control in ipairs(slotControls) do
+            pcall(function() control:Select(draftSlots[index]) end)
+        end
+    end
+    local function refreshSummary()
+        local value = profile()
+        local lines = {
+            string.format("Profile: %s | %s | Dry Run: %s", profileTitles[selectedProfile] or selectedProfile,
+                value.Enabled == false and "DISABLED" or "ENABLED", value.DryRun == true and "ON" or "OFF"),
+        }
+        if #value.Rules == 0 then
+            lines[#lines + 1] = "No variations configured."
+        else
+            for index, rule in ipairs(value.Rules) do lines[#lines + 1] = ruleLabel(index, rule) end
+        end
+        if listView then pcall(function() listView:SetDesc(table.concat(lines, "\n")) end) end
+        if formulaView then pcall(function() formulaView:SetDesc(context.GetRuleFormula(selectedProfile)) end) end
+    end
+    local function refreshEditor(resetSelection)
+        local rules = profile().Rules
+        if resetSelection or selectedRule > #rules then selectedRule = 0 end
+        if rulePicker then
+            local values = pickerValues()
+            pcall(function()
+                rulePicker:Refresh(values)
+                rulePicker:Select(selectedRule > 0 and values[selectedRule + 1] or values[1])
+            end)
+        end
+        loadDraft()
+        refreshSummary()
+    end
     local function changed(reason)
         local value = profile()
         value.Revision = (tonumber(value.Revision) or 0) + 1
         context.RulesChanged(selectedProfile, reason)
-        if formulaView then
-            pcall(function()
-                formulaView:SetDesc(context.GetRuleFormula(selectedProfile))
-            end)
-        end
+        refreshEditor(false)
     end
     ruleBuilder:Dropdown({
         Flag = "rule_profile",
-        Title = "Protection Profile",
-        Desc = "Gold/Rainbow/DM protect matching pets from craft; DMDelete protects them from deletion.",
-        Values = profiles,
-        Value = selectedProfile,
+        Title = "Where These Rules Apply",
+        Desc = "Each machine and DM auto-delete keeps its own independent list.",
+        Values = profileChoices,
+        Value = profileTitles[selectedProfile],
         Multi = false,
         AllowNone = false,
         Callback = function(value)
-            selectedProfile = table.find(profiles, value) and value or "Gold"
-            selectedRule, selectedCondition = 1, 1
-            if formulaView then pcall(function() formulaView:SetDesc(context.GetRuleFormula(selectedProfile)) end) end
+            selectedProfile = profileKeys[value] or "Gold"
+            selectedRule = 0
+            refreshEditor(true)
+        end,
+    })
+    listView = ruleBuilder:Paragraph({
+        Title = "Configured Variations",
+        Desc = "Loading profile...",
+    })
+    rulePicker = ruleBuilder:Dropdown({
+        Flag = "rule_variation",
+        Title = "Variation To Edit",
+        Desc = "The full enchant combination is shown here; no numeric indices.",
+        Values = pickerValues(),
+        Value = "+ New variation",
+        Multi = false,
+        AllowNone = false,
+        Callback = function(value)
+            selectedRule = parseRuleIndex(value)
+            loadDraft()
+            refreshSummary()
+        end,
+    })
+    local choices = enchantChoices()
+    for index = 1, 3 do
+        local slotIndex = index
+        slotControls[slotIndex] = ruleBuilder:Dropdown({
+            Flag = "rule_enchant_slot_" .. tostring(slotIndex),
+            Title = "Required Enchant " .. tostring(slotIndex),
+            Desc = slotIndex == 1 and "At least one slot is required. Filled slots in one variation use AND."
+                or "Leave Empty when this variation needs fewer than three enchants.",
+            Values = choices,
+            Value = emptySlot,
+            Multi = false,
+            AllowNone = false,
+            SearchBarEnabled = true,
+            Callback = function(value) draftSlots[slotIndex] = tostring(value or emptySlot) end,
+        })
+    end
+    ruleBuilder:Button({
+        Title = "ADD AS NEW VARIATION",
+        Desc = "Adds these 1-3 enchants as another OR option.",
+        Icon = "plus",
+        Callback = function()
+            local value, rule = profile(), draftRule()
+            if not rule then context.SetRouteStatus("Choose at least one enchant first."); return end
+            if #value.Rules >= 8 then context.SetRouteStatus("Maximum 8 variations per profile."); return end
+            value.Rules[#value.Rules + 1] = rule
+            selectedRule = #value.Rules
+            changed("add variation")
         end,
     })
     ruleBuilder:Button({
-        Title = "ENABLE / DISABLE PROFILE",
-        Desc = "Machine profile off means no enchant protection. DMDelete off is safe-off and deletes nothing.",
+        Title = "SAVE SELECTED VARIATION",
+        Desc = "Replaces the selected variation with the three slots above.",
+        Icon = "save",
+        Callback = function()
+            local value, replacement = profile(), draftRule()
+            if not replacement then context.SetRouteStatus("Choose at least one enchant first."); return end
+            local current = value.Rules[selectedRule]
+            if type(current) ~= "table" then context.SetRouteStatus("Select an existing variation or add a new one."); return end
+            replacement.Enabled = current.Enabled ~= false
+            value.Rules[selectedRule] = replacement
+            changed("save variation")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "ENABLE / DISABLE SELECTED VARIATION",
+        Desc = "Temporarily ignores this variation without deleting it.",
+        Icon = "circle-power",
+        Callback = function()
+            local rule = profile().Rules[selectedRule]
+            if type(rule) ~= "table" then context.SetRouteStatus("Select a variation first."); return end
+            rule.Enabled = rule.Enabled == false
+            changed(rule.Enabled == false and "disable variation" or "enable variation")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "DELETE SELECTED VARIATION",
+        Desc = "Deletes only the visibly selected variation.",
+        Icon = "trash-2",
+        Callback = function()
+            local value = profile()
+            if type(value.Rules[selectedRule]) ~= "table" then context.SetRouteStatus("Select a variation first."); return end
+            table.remove(value.Rules, selectedRule)
+            selectedRule = 0
+            changed("delete variation")
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "CLEAR ENCHANT SLOTS",
+        Desc = "Clears only the editor; saved variations stay unchanged.",
+        Icon = "eraser",
+        Callback = function()
+            selectedRule = 0
+            loadDraft()
+            refreshSummary()
+        end,
+    })
+    ruleBuilder:Button({
+        Title = "ENABLE / DISABLE WHOLE PROFILE",
+        Desc = "Machine profile off means no enchant protection. DMDelete off deletes nothing.",
         Icon = "power",
         Callback = function()
             local value = profile(); value.Enabled = value.Enabled == false
@@ -272,167 +487,23 @@ local function build(context)
     })
     ruleBuilder:Button({
         Title = "TOGGLE PROFILE DRY RUN",
-        Desc = "Gold/Rainbow/DarkMatter validate and report the next batch without sending it. DMDelete uses its dedicated Dry Run toggle below.",
+        Desc = "Previews decisions without sending a craft/delete request.",
         Icon = "flask-conical",
         Callback = function()
             local value = profile(); value.DryRun = value.DryRun ~= true
             changed(value.DryRun and "enable profile dry run" or "disable profile dry run")
         end,
     })
-    ruleBuilder:Slider({
-        Flag = "rule_index",
-        Title = "Rule Index",
-        Desc = "Select rule 1-8. Missing indices clamp to the last rule.",
-        Step = 1,
-        Value = { Min = 1, Max = 8, Default = 1 },
-        Callback = function(value) selectedRule = math.floor(tonumber(value) or 1); ensureRule() end,
-    })
-    ruleBuilder:Button({
-        Title = "ENABLE / DISABLE RULE",
-        Desc = "Disabled rules are ignored without deleting their conditions.",
-        Icon = "circle-power",
-        Callback = function()
-            local _, rule = ensureRule(); rule.Enabled = rule.Enabled == false
-            changed(rule.Enabled == false and "disable rule" or "enable rule")
-        end,
-    })
-    ruleBuilder:Slider({
-        Flag = "rule_condition_index",
-        Title = "Condition Index",
-        Desc = "Select condition 1-8 inside the active rule.",
-        Step = 1,
-        Value = { Min = 1, Max = 8, Default = 1 },
-        Callback = function(value) selectedCondition = math.floor(tonumber(value) or 1); ensureRule() end,
-    })
-    ruleBuilder:Dropdown({
-        Flag = "rule_enchant",
-        Title = "Condition Enchant",
-        Desc = "Dynamic Directory.Powers catalog plus compatibility names.",
-        Values = context.GetRuleEnchantCatalog(),
-        Value = "Rainbow Coins",
-        Multi = false,
-        AllowNone = false,
-        SearchBarEnabled = true,
-        Callback = function(value)
-            local _, _, condition = ensureRule(); condition.Enchant = tostring(value); changed("enchant")
-        end,
-    })
-    ruleBuilder:Dropdown({
-        Flag = "rule_level_mode",
-        Title = "Level Match",
-        Desc = "Any ignores tier; Exact, IV/V and AtLeast use the level below.",
-        Values = modes,
-        Value = "Any",
-        Multi = false,
-        AllowNone = false,
-        Callback = function(value)
-            local _, _, condition = ensureRule(); condition.Mode = table.find(modes, value) and value or "Any"; changed("mode")
-        end,
-    })
-    ruleBuilder:Slider({
-        Flag = "rule_level",
-        Title = "Condition Level",
-        Desc = "Used by Exact and AtLeast.",
-        Step = 1,
-        Value = { Min = 1, Max = 5, Default = 5 },
-        Callback = function(value)
-            local _, _, condition = ensureRule(); condition.Level = math.clamp(math.floor(tonumber(value) or 1), 1, 5); changed("level")
-        end,
-    })
-    ruleBuilder:Button({
-        Title = "ADD RULE",
-        Desc = "Creates another OR branch, up to 8.",
-        Icon = "plus",
-        Callback = function()
-            local value = profile(); if #value.Rules >= 8 then return end
-            value.Rules[#value.Rules + 1] = { Enabled = true, Conditions = {
-                { Enchant = "Rainbow Coins", Mode = "Any", Level = 1 },
-            } }
-            selectedRule, selectedCondition = #value.Rules, 1; changed("add rule")
-        end,
-    })
-    ruleBuilder:Button({
-        Title = "DUPLICATE RULE",
-        Desc = "Copies the selected AND branch as a new OR branch.",
-        Icon = "copy",
-        Callback = function()
-            local value, rule = ensureRule(); if #value.Rules >= 8 then return end
-            local clone = { Enabled = rule.Enabled ~= false, Conditions = {} }
-            for _, item in ipairs(rule.Conditions) do
-                clone.Conditions[#clone.Conditions + 1] = {
-                    Enchant = item.Enchant, Mode = item.Mode, Level = item.Level,
-                }
-            end
-            value.Rules[#value.Rules + 1] = clone
-            selectedRule, selectedCondition = #value.Rules, 1; changed("duplicate rule")
-        end,
-    })
-    ruleBuilder:Button({
-        Title = "DELETE RULE",
-        Desc = "Removes the selected branch. Empty machine profiles mean no enchant protection; empty DMDelete is safe-off.",
-        Icon = "trash-2",
-        Callback = function()
-            local value = profile(); if #value.Rules > 0 then table.remove(value.Rules, math.clamp(selectedRule, 1, #value.Rules)) end
-            selectedRule, selectedCondition = 1, 1; changed("delete rule")
-        end,
-    })
-    ruleBuilder:Button({
-        Title = "MOVE RULE UP",
-        Desc = "Moves the selected OR branch one position earlier.",
-        Icon = "arrow-up",
-        Callback = function()
-            local value = profile(); if #value.Rules == 0 then return end
-            selectedRule = math.clamp(selectedRule, 1, #value.Rules)
-            if selectedRule > 1 then
-                value.Rules[selectedRule - 1], value.Rules[selectedRule] =
-                    value.Rules[selectedRule], value.Rules[selectedRule - 1]
-                selectedRule = selectedRule - 1; changed("move rule up")
-            end
-        end,
-    })
-    ruleBuilder:Button({
-        Title = "MOVE RULE DOWN",
-        Desc = "Moves the selected OR branch one position later.",
-        Icon = "arrow-down",
-        Callback = function()
-            local value = profile(); if #value.Rules == 0 then return end
-            selectedRule = math.clamp(selectedRule, 1, #value.Rules)
-            if selectedRule < #value.Rules then
-                value.Rules[selectedRule + 1], value.Rules[selectedRule] =
-                    value.Rules[selectedRule], value.Rules[selectedRule + 1]
-                selectedRule = selectedRule + 1; changed("move rule down")
-            end
-        end,
-    })
-    ruleBuilder:Button({
-        Title = "ADD CONDITION",
-        Desc = "Adds another required AND condition to the selected rule, up to 8.",
-        Icon = "plus",
-        Callback = function()
-            local _, rule = ensureRule(); if #rule.Conditions >= 8 then return end
-            rule.Conditions[#rule.Conditions + 1] = { Enchant = "Charm", Mode = "Any", Level = 1 }
-            selectedCondition = #rule.Conditions; changed("add condition")
-        end,
-    })
-    ruleBuilder:Button({
-        Title = "DELETE CONDITION",
-        Desc = "Removes the selected AND condition.",
-        Icon = "minus",
-        Callback = function()
-            local _, rule = ensureRule(); table.remove(rule.Conditions, math.clamp(selectedCondition, 1, #rule.Conditions))
-            selectedCondition = 1; changed("delete condition")
-        end,
-    })
     ruleBuilder:Dropdown({
         Flag = "rule_copy_source",
         Title = "Copy Rules From",
         Desc = "Select a source profile, then copy it over the active profile.",
-        Values = profiles,
-        Value = copySourceProfile,
+        Values = profileChoices,
+        Value = profileTitles[copySourceProfile],
         Multi = false,
         AllowNone = false,
         Callback = function(value)
-            copySourceProfile = table.find(profiles, value) and value or "Gold"
+            copySourceProfile = profileKeys[value] or "Gold"
         end,
     })
     ruleBuilder:Button({
@@ -456,7 +527,8 @@ local function build(context)
                 copy.Rules[#copy.Rules + 1] = targetRule
             end
             config.EnchantRuleProfiles[selectedProfile] = copy
-            selectedRule, selectedCondition = 1, 1; changed("copy profile")
+            selectedRule = 0
+            changed("copy profile")
         end,
     })
     local ruleJsonText = ""
@@ -489,22 +561,23 @@ local function build(context)
         Callback = function()
             local ok, value = context.ImportRuleProfiles(ruleJsonText)
             if not ok then context.SetRouteStatus("Rule import rejected: " .. tostring(value)); return end
-            selectedRule, selectedCondition = 1, 1
+            selectedRule = 0
             changed("import profiles")
             context.SetRouteStatus("Enchant rules imported locally; no server request was sent.")
         end,
     })
     formulaView = ruleBuilder:Paragraph({
-        Title = "Active Formula",
+        Title = "Matcher Formula (Advanced)",
         Desc = context.GetRuleFormula(selectedProfile),
     })
+    refreshEditor(true)
     yieldUI("enchant rule builder")
 
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
         Flag = "auto_golden_galaxy_fox",
         Title = "Auto Golden Pixel Demon",
-        Desc = "Only normal Pixel Demon; protects Rainbow Coins V, equipped and locked pets.",
+        Desc = "Crafts unprotected normal Pixel Demon. Uses the independent Gold Machine variation list above.",
         Value = false,
         Callback = function(value)
             config.AutoGoldenGalaxyFox = value == true
@@ -527,7 +600,7 @@ local function build(context)
     rainbow:Toggle({
         Flag = "auto_rainbow_galaxy_fox",
         Title = "Auto Rainbow Pixel Demon",
-        Desc = "Only golden Pixel Demon; protects Rainbow Coins V, equipped and locked pets.",
+        Desc = "Crafts unprotected golden Pixel Demon. Uses the independent Rainbow Machine variation list above.",
         Value = false,
         Callback = function(value)
             config.AutoRainbowGalaxyFox = value == true
