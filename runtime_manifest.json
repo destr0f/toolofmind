@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.1-boss-rearm",
+    "version": "1.4.1-candidate.54.4-core-rescue",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+    "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.3.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.5.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -109,18 +109,18 @@
     "petFarmEngine": {
       "id": "petFarmEngine",
       "label": "Pet farm engine",
-      "version": "1.4.0",
+      "version": "1.4.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "ea504be4ada0f0a4fd671d04b4ab126d0db04143",
-      "bytes": 44054,
-      "sha256": "70bed3a47d1c939773df07a753c22508e591a904fe4f0336d8e4858b11325cfb",
-      "djb2": "a6153886"
+      "commit": "04f05d8338e9aa2c6c39168972ca9c50b489586e",
+      "bytes": 45600,
+      "sha256": "0ef0e7de45a3ae60f35256c7fc8e488197bd73d6476e832e1ce5ea47f5ba228c",
+      "djb2": "e876a453"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -128,7 +128,7 @@
       "version": "3.7.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.7.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.1-boss-rearm",
+      "compatibleSuite": "1.4.1-candidate.54.4-core-rescue",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -352,32 +352,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "e15b04d94741c247c0fcf9c9d8da9f1dbebd0919",
+    "generatedFromCommit": "04f05d8338e9aa2c6c39168972ca9c50b489586e",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7020,
-      "sha256": "22f19d7bc5df9b4d1c80d0135e4329e1b3ff9bdb34644850b00ab4197b9209c7",
-      "djb2": "c499cbb3"
+      "bytes": 7035,
+      "sha256": "9005b3d44750d8823d4ae3407bc7db5a04af84a2fd6b3285e29a1d1eca6bd6c5",
+      "djb2": "b18d833f"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.1-boss-rearm",
-      "bytes": 301520,
-      "sha256": "bdf6b42ade36fcc8f2e9d3894f96bd0fa8b7cd2aa598dc3028ecaa3c044b6a2f",
-      "djb2": "9dfe1244"
+      "version": "1.4.1-candidate.54.4-core-rescue",
+      "bytes": 314741,
+      "sha256": "6bbca933729972c246a369fc69042b858d672595d13fc66197bc9481fb5ed24e",
+      "djb2": "2b11283b"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 239081,
-        "sha256": "cb0b5ce8681cf4cd02fe22f55e3f56f1cede69f9c6aee2c83bc314d537dcae80",
-        "djb2": "5779ec2a"
+        "bytes": 249085,
+        "sha256": "59acae42937d28ff1fe7ffdb44f50ac7f710544f623d4e43559a2905ee53c2e3",
+        "djb2": "97d80275"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 239081,
-        "sha256": "cb0b5ce8681cf4cd02fe22f55e3f56f1cede69f9c6aee2c83bc314d537dcae80",
-        "djb2": "5779ec2a"
+        "bytes": 249085,
+        "sha256": "59acae42937d28ff1fe7ffdb44f50ac7f710544f623d4e43559a2905ee53c2e3",
+        "djb2": "97d80275"
       }
     }
   }
