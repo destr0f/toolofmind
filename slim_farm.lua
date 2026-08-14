@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54-network5-machines"
+local VERSION = "1.4.1-candidate.55-farm-liveness"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3708,6 +3708,7 @@ function petFarm:EnsureEngine()
             petStates[petId] = nil
             releasePetState(state, true)
             local rejected = string.find(tostring(reason), "Join Coin rejected", 1, true) ~= nil
+            local staleTarget = string.find(tostring(reason), "target stale", 1, true) ~= nil
             if rejected and record then
                 local coinId = tostring(record.Id)
                 if config.Mode == "Boss Chest Only" and isBossChest(record)
@@ -3721,7 +3722,7 @@ function petFarm:EnsureEngine()
                 end
             end
             self.FastPets[petId] = true
-            if rejected then
+            if rejected or staleTarget then
                 self.FastReroutes = self.FastReroutes + 1
             else
                 idleRecoveryCount = idleRecoveryCount + 1
@@ -3729,6 +3730,7 @@ function petFarm:EnsureEngine()
             lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
             driverStatus = rejected
                 and "stale/contended target skipped; fast reroute queued"
+                or staleTarget and "expired boss dispatch released; replacement queued"
                 or "transport failed after bounded retry; fast reroute queued"
             self.SuppressedFailures = self.SuppressedFailures + 1
             if now >= self.NextFailureTraceAt then
@@ -4015,12 +4017,15 @@ end
 
 function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
     if not self.Engine or config.Mode ~= "Boss Chest Only" or not config.PetFarm then return false end
+    local noAssignments = type(assignmentCount) == "function" and assignmentCount() == 0
     local info = {
         CoinId = tostring(record.Id),
         Record = record,
         Source = tostring(source or "unknown"),
         Direct = direct == true,
-        ForceNew = forceNew == true,
+        -- If every equipped pet is locally free, a reused coin ID cannot be a
+        -- useful duplicate. Re-arm its generation from the live spawn event.
+        ForceNew = forceNew == true or noAssignments,
         ReceivedAt = os.clock(),
         PayloadComplete = type(payload) == "table"
             and (payload.n ~= nil or payload.Name ~= nil or record.Name ~= nil)
@@ -4097,6 +4102,7 @@ function petFarm:FinalizeBossRemoval(rawId, generation)
     coinSync.BossAbsentUntil = os.clock() + 3.2
     releaseAssignmentsForCoin(rawId, true)
     self:ArmBossWatchdog(generation)
+    if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
     driverStatus = "boss chest absent; awaiting New Coin"
 end
 
@@ -5342,9 +5348,8 @@ allocatorPass = function()
             petFarm.TargetWindow = 0
             if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
                 driverStatus = "boss chest absent; waiting for New Coin"
-            elseif type(armFarmRecovery) == "function" then
-                armFarmRecovery(1.05)
             end
+            if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
             return
         end
 
@@ -5445,7 +5450,13 @@ armFarmRecovery = function(delaySeconds)
         farmWatch.RecoveryArmed = false
         if token ~= farmWatch.RecoveryToken or not running() or not config.PetFarm then return end
         local expected = tonumber(petFarm.EquippedCount) or 0
-        if expected > 0 and assignmentCount() < expected then requestAllocatorPulse(true) end
+        if expected > 0 and assignmentCount() < expected then
+            requestAllocatorPulse(true)
+            -- One local-only safety turn remains armed until all equipped UIDs
+            -- are assigned. It never sends a remote or requests Get Coins by
+            -- itself; the event-driven allocator remains the primary path.
+            armFarmRecovery(1.05)
+        end
     end)
 end
 

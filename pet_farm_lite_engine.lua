@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.4.0"
+local MODULE_VERSION = "1.4.1"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -710,7 +710,12 @@ local function leaveStale(job, entries)
     if #entries == 0 then return end
     local petIds = job.StalePetIds
     table.clear(petIds)
-    for _, entry in ipairs(entries) do petIds[#petIds + 1] = entry.PetId end
+    for _, entry in ipairs(entries) do
+        -- A reused boss coin ID may already have a fresh state for this UID.
+        -- Never let an old completion detach that newer assignment.
+        if entryCurrent(entry) then petIds[#petIds + 1] = entry.PetId end
+    end
+    if #petIds == 0 then return end
     run.Stale = run.Stale + #petIds
     local context = run.Context
     if context and type(context.OnStaleAccepted) == "function" then
@@ -908,7 +913,10 @@ end
 local function process(job)
     local entries, petIds = currentEntries(job)
     if #entries == 0 then
-        clearPending(job.Entries)
+        -- The target can disappear while a zero-delay launch is waiting for a
+        -- scheduler turn. Clear both the engine reservation and the caller's
+        -- joining state so the UID can be routed to the replacement chest.
+        failEntries(job, job.Entries, "target stale before Join Coin")
         return false
     end
 
@@ -993,8 +1001,11 @@ local function process(job)
     end
 
     if not contextActive(job) then
-        leaveStale(job, acceptedEntries)
-        clearPending(entries)
+        local context = run.Context
+        local recordStillAlive = context and type(context.RecordAlive) == "function"
+            and context.RecordAlive(job.Record)
+        if recordStillAlive then leaveStale(job, acceptedEntries) end
+        failEntries(job, entries, "target stale after Join Coin")
         return false
     end
 
@@ -1021,7 +1032,11 @@ end
 
 local function executeJob(job)
     if not contextActive(job) then
-        clearPending(job and job.Entries)
+        failEntries(job, job and job.Entries, "target stale before dispatch")
+        if job and job.DiagnosticId then
+            inspectComplete(job.DiagnosticId, "LOCAL_CANCELLED_REMOTE_UNKNOWN",
+                "target stale before dispatch; pet reservations released")
+        end
         releaseJob(job)
         run.Active = math.max(run.Active - 1, 0)
         pump()
@@ -1078,23 +1093,31 @@ pump = function()
         run.Head = run.Head + 1
         if contextActive(job) then
             run.Active = run.Active + 1
-            local now = os.clock()
-            local due = now
-            if job.BossGeneration == nil then
+            if job.BossGeneration ~= nil then
+                -- Boss chests are short-lived and can be destroyed by another
+                -- client before task.delay(0) receives a scheduler turn.
+                -- Resume the yielding transport coroutine immediately.
+                executeJob(job)
+            else
+                local now = os.clock()
                 local context = run.Context
                 local spacing = math.clamp(tonumber(context.DispatchSpacing) or 0.012, 0.01, 0.015)
                 if run.NextLaunchAt <= now then
                     local phase = math.clamp(tonumber(context.DispatchPhaseOffset) or 0, 0, 0.015)
                     run.NextLaunchAt = now + phase
                 end
-                due = run.NextLaunchAt
+                local due = run.NextLaunchAt
                 run.NextLaunchAt = due + spacing
+                scheduler.delay(math.max(due - now, 0), function()
+                    executeJob(job)
+                end)
             end
-            scheduler.delay(math.max(due - now, 0), function()
-                executeJob(job)
-            end)
         else
-            clearPending(job and job.Entries)
+            failEntries(job, job and job.Entries, "target stale in dispatch queue")
+            if job and job.DiagnosticId then
+                inspectComplete(job.DiagnosticId, "LOCAL_CANCELLED_REMOTE_UNKNOWN",
+                    "target stale in dispatch queue; pet reservations released")
+            end
             releaseJob(job)
         end
     end
