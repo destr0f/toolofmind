@@ -6,6 +6,8 @@ Evidence used:
 
 - active source graph in `runtime_manifest.json`;
 - Cobalt archive session `20260813_170240` and its 45 route snapshots;
+- Cobalt archive session `20260815_192259`: 36,382 calls, 67 unique
+  signatures and 401 full snapshots from the current Network layout;
 - `PSX_COBALT_NETWORK_CONSPECT_20260813.md`;
 - command call sites in `slim_farm.lua`, `pet_farm_lite_engine.lua`, `loot_reactor.lua`, `auto_egg_module.lua`, machine, boost, enchant and reward workers.
 
@@ -15,7 +17,11 @@ Evidence used:
 
 1. The primary identity is `(kind, logical command name)`, never `GetChildren()[index]` and never a physical hash copied from another session.
 2. The active resolver reads the live command-to-hash and hash-to-instance maps from `ReplicatedStorage.Framework.Modules.Client.2 - Network` without executing its RobloxScript-bound accessor.
-3. If the live command map is not populated yet, the current fallback is:
+3. The current 2026-08-15 network hashes a logical command with unsigned DJB2
+   (`value=5381; value=(value*33+byte)%2^32`) and stores the decimal result as
+   the physical remote name. If the live command map is cold, the resolver
+   computes this name locally and reads the matching ReplicatedStorage child.
+4. The previous Network5 fallback remains compatibility-only:
 
    ```text
    sha256("mmmmmmevilfanta54125612512416124/Network5/"
@@ -24,9 +30,9 @@ Evidence used:
    ```
 
    `kind=1` is `RemoteEvent`; `kind=2` is `RemoteFunction`.
-4. A resolved instance must have the expected class and be a descendant of `ReplicatedStorage`. Bindable bridges are accepted only when the live Network table actually exposes a matching live bridge.
-5. Route caches are scoped to the runtime generation. A transport failure invalidates only the exact `(kind, command, expected instance)` route. Named `Library.Network.Fire/Invoke` is the final compatibility fallback and receives the first current live alias (`Join The Coin`, `Change Pet Target NOW`, `Farm The Coin`) rather than the project's legacy logical name.
-6. Local `FireServer` success is transport commitment, not server acknowledgement. `InvokeServer` results are returned to the caller but completed state-changing responses are never replayed.
+5. A resolved instance must have the expected class and be a descendant of `ReplicatedStorage`. Bindable bridges are accepted only when the live Network table actually exposes a matching live bridge.
+6. Route caches are scoped to the runtime generation. A transport failure invalidates only the exact `(kind, command, expected instance)` route. Named `Library.Network.Fire/Invoke` is the final compatibility fallback and receives the first current live alias (`Join The Coin`, `Change Pet Target NOW`, `Farm The Coin`) rather than the project's legacy logical name.
+7. Local `FireServer` success is transport commitment, not server acknowledgement. `InvokeServer` results are returned to the caller but completed state-changing responses are never replayed.
 
 ## Outbound RemoteFunctions
 

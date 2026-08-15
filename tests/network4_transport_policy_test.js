@@ -16,14 +16,16 @@ assert.strictEqual(manifest.modules.networkTransport.path, "network4_transport_m
 assert.strictEqual(manifest.modules.networkTransport.load, "lazy");
 
 assert(transport.includes('"mmmmmmevilfanta54125612512416124/Network5/"'));
+assert(transport.includes("local function djb2Hash(message)"));
+assert(transport.includes('add(djb2Hash(commandName), "current DJB2")'));
 assert(!transport.includes('"duskissexyyyyy123iloveudUsk/Network4/"'));
 assert(transport.includes('return resolve(context, 1, commandName)'));
 assert(transport.includes('return resolve(context, 2, commandName)'));
 assert(transport.includes('return resolveBridge(context, 1, commandName)'));
 assert(transport.includes('return resolveBridge(context, 2, commandName)'));
 assert(transport.includes("rawget(hashMaps[kind], commandName)"));
-assert(transport.includes("rawget(remoteMaps[kind], hash)"));
-assert(transport.includes("rawget(bridgeMaps[bridgeKind], hash)"));
+assert(transport.includes("rawget(remoteMaps[kind], candidate.Value)"));
+assert(transport.includes("rawget(bridgeMaps[bridgeKind], candidate.Value)"));
 assert(transport.includes('if action == "invalidate" then'));
 assert(transport.includes('if action == "stats" then return stats() end'));
 assert(transport.includes("cached.Generation == generation"));

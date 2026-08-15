@@ -11,14 +11,16 @@ const transport = read("network4_transport_module.lua");
 const manifest = JSON.parse(read("runtime_manifest.json"));
 
 assert(manifest.suite.version.startsWith("1.4.1-candidate.54"));
-assert.strictEqual(manifest.modules.networkTransport.version, "1.3.0");
+assert.strictEqual(manifest.modules.networkTransport.version, "1.4.0");
 assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.3");
 assert.strictEqual(manifest.modules.lootReactor.version, "3.7.0");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
-// Current-session resolver: live maps first, current Network5 hash as fallback,
-// exact invalidation, generation-scoped cache and no physical child index.
+// Current-session resolver: live maps first, current DJB2 hash, legacy
+// Network5 fallback, exact invalidation and no physical child index.
 for (const marker of [
+    "local function djb2Hash(message)",
+    'add(djb2Hash(commandName), "current DJB2")',
     '"mmmmmmevilfanta54125612512416124/Network5/"',
     "cached.Generation == generation",
     "local function invalidate(context, kind, commandName, expected)",

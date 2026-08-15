@@ -2,7 +2,7 @@
 -- Reads the live network module's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.3.0"
+local MODULE_VERSION = "1.4.0"
 local UINT32 = 4294967296
 
 local SHA256_K = {
@@ -96,6 +96,19 @@ local function sha256(message)
     return string.format("%08x%08x%08x%08x%08x%08x%08x%08x", h0, h1, h2, h3, h4, h5, h6, h7)
 end
 
+-- Current PSX OG Network hashes the logical command with a plain unsigned
+-- DJB2 pass. Unlike the previous Network5 SHA route, this hash is independent
+-- from the place, job and remote kind. Keep it computed at runtime instead of
+-- persisting a physical remote name or a ReplicatedStorage child index.
+local function djb2Hash(message)
+    message = tostring(message or "")
+    local value = 5381
+    for index = 1, #message do
+        value = (value * 33 + string.byte(message, index)) % UINT32
+    end
+    return tostring(value)
+end
+
 local function routeHash(context, kind, commandName)
     local gameObject = context.Game or game
     local jobId = tostring(gameObject.JobId or "")
@@ -109,6 +122,19 @@ local function routeHash(context, kind, commandName)
         .. tostring(gameObject.PlaceVersion) .. "/"
         .. jobId .. "/" .. tostring(kind) .. "/" .. tostring(commandName)
     return string.sub(sha256(source), 5, 36)
+end
+
+local function routeHashes(context, kind, commandName, liveHash)
+    local candidates, seen = {}, {}
+    local function add(value, source)
+        if type(value) ~= "string" or value == "" or seen[value] then return end
+        seen[value] = true
+        candidates[#candidates + 1] = { Value = value, Source = source }
+    end
+    add(liveHash, "live command map")
+    add(djb2Hash(commandName), "current DJB2")
+    add(routeHash(context, kind, commandName), "legacy Network5")
+    return candidates
 end
 
 local function liveRemote(context, remote, className)
@@ -197,7 +223,6 @@ local function routeState(context, kind, commandName)
         networkTables(context, method)
     local hash = type(hashMaps) == "table" and type(hashMaps[kind]) == "table"
         and rawget(hashMaps[kind], commandName) or nil
-    if type(hash) ~= "string" or hash == "" then hash = routeHash(context, kind, commandName) end
     return remoteMaps, bridgeMaps, hash, remoteIndex, bridgeIndex, nil
 end
 
@@ -217,15 +242,23 @@ local function resolve(context, kind, commandName)
     end
     routeCache[kind][commandName] = nil
 
-    local remoteMaps, _, hash, accessorIndex, _, stateProblem =
+    local remoteMaps, _, liveHash, accessorIndex, _, stateProblem =
         routeState(context, kind, commandName)
     if stateProblem then return nil, "Network4", nil, stateProblem end
 
-    local remote = type(remoteMaps) == "table" and type(remoteMaps[kind]) == "table"
-        and rawget(remoteMaps[kind], hash) or nil
-    if not liveRemote(context, remote, className) then
-        local storage = context.ReplicatedStorage
-        remote = storage and storage:FindFirstChild(hash) or nil
+    local remote, hashSource
+    for _, candidate in ipairs(routeHashes(context, kind, commandName, liveHash)) do
+        local found = type(remoteMaps) == "table" and type(remoteMaps[kind]) == "table"
+            and rawget(remoteMaps[kind], candidate.Value) or nil
+        if not liveRemote(context, found, className) then
+            local storage = context.ReplicatedStorage
+            found = storage and storage:FindFirstChild(candidate.Value) or nil
+        end
+        if liveRemote(context, found, className) then
+            remote = found
+            hashSource = candidate.Source
+            break
+        end
     end
     if not liveRemote(context, remote, className) then
         local detail = remoteMaps and "hashed route is not present in the live Network4 map"
@@ -233,7 +266,8 @@ local function resolve(context, kind, commandName)
         return nil, "Network4 hashed " .. className, nil, detail
     end
 
-    local source = "Network4 hashed " .. className .. " cache"
+    local source = "Network4 hashed " .. className .. " cache ["
+        .. tostring(hashSource or "unknown hash") .. "]"
         .. (accessorIndex and (" via accessor #" .. tostring(accessorIndex)) or "")
     local sessionIndex = type(context.RemoteSessionIndex) == "function"
         and context.RemoteSessionIndex(remote) or nil
@@ -262,19 +296,28 @@ local function resolveBridge(context, kind, commandName)
     end
     bridgeCache[kind][commandName] = nil
 
-    local _, bridgeMaps, hash, _, accessorIndex, stateProblem =
+    local _, bridgeMaps, liveHash, _, accessorIndex, stateProblem =
         routeState(context, kind, commandName)
     if stateProblem then return nil, "Network4", nil, stateProblem end
     local bridgeKind = kind + 2
-    local bridge = type(bridgeMaps) == "table" and type(bridgeMaps[bridgeKind]) == "table"
-        and rawget(bridgeMaps[bridgeKind], hash) or nil
+    local bridge, hashSource
+    for _, candidate in ipairs(routeHashes(context, kind, commandName, liveHash)) do
+        local found = type(bridgeMaps) == "table" and type(bridgeMaps[bridgeKind]) == "table"
+            and rawget(bridgeMaps[bridgeKind], candidate.Value) or nil
+        if liveBridge(context, found, className) then
+            bridge = found
+            hashSource = candidate.Source
+            break
+        end
+    end
     if not liveBridge(context, bridge, className) then
         return nil, "Network4 native " .. className, nil,
             bridgeMaps and "native command bridge is absent"
                 or "Network4 bridge tables are unavailable"
     end
 
-    local source = "Network4 native " .. className .. " bridge"
+    local source = "Network4 native " .. className .. " bridge ["
+        .. tostring(hashSource or "unknown hash") .. "]"
         .. (accessorIndex and (" via accessor #" .. tostring(accessorIndex)) or "")
     bridgeCache[kind][commandName] = {
         Bridge = bridge,
@@ -315,6 +358,7 @@ end
 return function(action, ...)
     if action == "version" then return MODULE_VERSION end
     if action == "sha256" then return sha256(...) end
+    if action == "djb2Hash" then return djb2Hash(...) end
     if action == "routeHash" then return routeHash(...) end
     if action == "resolveEvent" then
         local context, commandName = ...

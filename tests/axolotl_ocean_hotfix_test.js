@@ -18,8 +18,9 @@ for (const marker of [
     assert(farm.includes(marker), `missing Axolotl Ocean marker: ${marker}`);
 }
 
-const inferredAreaMarker = "local inferredArea = BossChestZones[normalize(record.Name)]";
-assert(farm.split(inferredAreaMarker).length - 1 === 2,
+const workspaceInference = "local inferredArea = BossChestZones[normalize(record.Name)]";
+const serverInference = "local inferredArea = BossChestZones[normalizedRecordName]";
+assert(farm.includes(workspaceInference) && farm.includes(serverInference),
     "server and Workspace coin paths must both infer the canonical boss zone");
 assert(farm.includes("if record.Area == nil then")
     && farm.includes("record.Area = inferredArea")

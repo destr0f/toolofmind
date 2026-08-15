@@ -1,8 +1,10 @@
 local transport = require("../network4_transport_module")
 
-assert(transport("version") == "1.3.0")
+assert(transport("version") == "1.4.0")
 assert(transport("sha256", "") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 assert(transport("sha256", "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+assert(transport("djb2Hash", "Get The Coins") == "2442970594")
+assert(transport("djb2Hash", "Use Golden Machine") == "1951370400")
 
 local remoteMaps = { {}, {} }
 local bridgeMaps = { {}, {}, {}, {} }
@@ -153,5 +155,33 @@ local directBridgeResolved, directBridgeSource, _, directBridgeProblem = transpo
 assert(directBridgeResolved == directBridge, tostring(directBridgeProblem))
 assert(string.find(directBridgeSource, "accessor #6", 1, true))
 
+-- Current 2026-08-15 layout can expose a command before its native command
+-- map is warm. The resolver must find the current DJB2-named remote directly
+-- in ReplicatedStorage without calling the protected Network accessor.
 transport("clear")
-print("PASS Network4/5 direct+nested maps, generation cache, invalidation and bridges")
+local coldCommand = "Get Dark Matter Machine Info"
+local coldHash = transport("djb2Hash", coldCommand)
+local coldRemote = { ClassName = "RemoteFunction" }
+local coldContext = {
+    Generation = 4,
+    Game = fakeGame,
+    Library = { Network = { Invoke = invoke } },
+    ReplicatedStorage = {
+        FindFirstChild = function(_, name)
+            return name == coldHash and coldRemote or nil
+        end,
+    },
+    FunctionUpvalueAt = context.FunctionUpvalueAt,
+    IsRemote = context.IsRemote,
+    IsBridge = context.IsBridge,
+    RemoteSessionIndex = function() return "RemoteFunction" end,
+}
+local coldResolved, coldSource, coldSession, coldProblem = transport(
+    "resolveFunction", coldContext, coldCommand
+)
+assert(coldResolved == coldRemote, tostring(coldProblem))
+assert(string.find(coldSource, "current DJB2", 1, true))
+assert(coldSession == "RemoteFunction")
+
+transport("clear")
+print("PASS current DJB2 + Network5 direct/nested maps, generation cache, invalidation and bridges")
