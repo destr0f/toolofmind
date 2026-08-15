@@ -12,8 +12,12 @@ assert(source.includes('local wasRejected = coinSync.BossRejected[coinId] == tru
 assert(source.includes('coinSync.BossRejected[coinId] = nil'));
 assert(source.includes('controller:HandleBossSpawn(record, source'));
 assert(source.includes('releaseAssignmentsForCoin(rawId, true)'));
-assert(source.includes('elseif not coinSync.SignalConnections["New Coin"] then\n        self:ArmBossWatchdog(generation)'),
-    "authoritative New Coin mode must not arm the legacy watchdog");
+assert(source.includes('else\n        -- An attached RBXScriptConnection proves only that a listener exists;'),
+    "boss removal must arm a bounded missed-edge watchdog even when the signal is attached");
+assert(source.includes('self:ArmBossWatchdog(generation)'),
+    "boss removal does not arm missed-edge recovery");
+assert(source.includes('(tonumber(health.LastEventAt) or 0) <= armedAt'),
+    "watchdog rebind is not scoped to the current removal edge");
 assert(source.includes('coinSync.BossAbsentUntil = os.clock() + 3.2'));
 assert(source.includes('if coinSync:PruneBossFallbackTimes(now) >= 3 then return end'));
 assert(source.includes('and coinSync.SignalConnections["New Coin"] then'));

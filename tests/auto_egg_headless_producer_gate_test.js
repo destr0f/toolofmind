@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.7.0"',
+requireText('local MODULE_VERSION = "1.7.1"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -42,6 +42,10 @@ requireText('callConnectionMethod(state.EventGateConnection, "Disable")',
     "direct headless route does not pause the native visual dispatcher");
 requireText('callConnectionMethod(state.EventGateConnection, "Enable")',
     "direct headless route cannot restore the native visual dispatcher");
+requireText('The inbound command gate is stronger than replacing an exported',
+    "the exact inbound producer gate is not preferred over the weak getsenv export");
+requireText('Headless refuses to send a purchase that would create a visible animation',
+    "Headless can still fail open into a visible native animation");
 requireText('state.Running and state.GateOwned and pending and pending.Headless',
     "producer wrapper is not scoped to an owned headless request");
 requireText('profileBegin("PSX_EggOpenGate")',
@@ -66,12 +70,8 @@ requireText('Game/Eggs visual gate assignment was not retained',
     "world egg gate does not fail open after assignment readback failure");
 requireText('Headless refuses to fall back to visible animation',
     "unsupported executors do not fail closed");
-requireText('local HEADLESS_INVENTORY_FALLBACK = "exact inventory-delta compatibility fallback"',
-    "missing OpenEgg exports do not have a bounded compatibility route");
-requireText('Open Eggs.OpenEgg is not exported as a callable function',
-    "missing OpenEgg exports are not diagnosed");
-requireText('return true, state.OpenEggGateRoute',
-    "a missing OpenEgg export still blocks the exact inventory-delta fallback");
+requireText('Open Eggs.OpenEgg is not exported and the exact event producer gate is unavailable',
+    "missing producer gates are not diagnosed before purchase");
 requireText('ProducerGateRoute = headless and state.OpenEggGateRoute or nil',
     "the selected headless acknowledgement route is not retained per request");
 requireText('pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK',

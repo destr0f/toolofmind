@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.0"
+local MODULE_VERSION = "1.7.1"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -833,22 +833,26 @@ local function ensureHeadlessProducerGate(state, context)
     if not openEggScript then
         return false, "PlayerScripts/Scripts/Game/Open Eggs is unavailable"
     end
+
+    -- The inbound command gate is stronger than replacing an exported
+    -- getsenv function: newer Open Eggs builds keep the real renderer in a
+    -- closed-over local and leave environment.OpenEgg as a compatibility
+    -- export. Pausing the exact command dispatcher prevents that renderer
+    -- before DepthOfField, models and GUI are allocated while this module's
+    -- listener (connected after the captured dispatcher) still receives the
+    -- authoritative payload.
+    if state.EventGateConnection then
+        restoreHeadlessProducerGate(state)
+        state.OpenEggScript = openEggScript
+        state.OpenEggGateRoute = HEADLESS_EVENT_GATE
+        return true, state.OpenEggGateRoute
+    end
     if type(getsenv) ~= "function" then
-        if state.EventGateConnection then
-            state.OpenEggScript = openEggScript
-            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
-            return true, state.OpenEggGateRoute
-        end
         return false, "getsenv is unavailable; Headless refuses to fall back to visible animation"
     end
 
     local environmentOk, scriptEnvironment = pcall(getsenv, openEggScript)
     if not environmentOk or type(scriptEnvironment) ~= "table" then
-        if state.EventGateConnection then
-            state.OpenEggScript = openEggScript
-            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
-            return true, state.OpenEggGateRoute
-        end
         return false, "Open Eggs environment is unavailable: " .. tostring(scriptEnvironment)
     end
     if state.OpenEggScript == openEggScript
@@ -861,19 +865,8 @@ local function ensureHeadlessProducerGate(state, context)
     restoreHeadlessProducerGate(state)
     local original = scriptEnvironment.OpenEgg
     if type(original) ~= "function" then
-        if state.EventGateConnection then
-            state.OpenEggScript = openEggScript
-            state.OpenEggGateRoute = HEADLESS_EVENT_GATE
-            context.Trace("auto egg headless gate",
-                "Open Eggs.OpenEgg is not exported; using the exact command-specific RemoteEvent dispatcher gate")
-            return true, state.OpenEggGateRoute
-        end
-        state.OpenEggScript = openEggScript
-        state.OpenEggGateRoute = HEADLESS_INVENTORY_FALLBACK
-        context.Trace("auto egg headless gate",
-            "Open Eggs.OpenEgg is not exported as a callable function; "
-                .. "continuing without overlapping requests and confirming through the exact inventory delta")
-        return true, state.OpenEggGateRoute
+        return false, "Open Eggs.OpenEgg is not exported and the exact event producer gate is unavailable; "
+            .. "Headless refuses to send a purchase that would create a visible animation"
     end
 
     local wrapper

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.4-core-rescue"
+local VERSION = "1.4.1-candidate.54.5-egg-boss-rescue"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -4356,6 +4356,7 @@ function petFarm:ArmBossWatchdog(removedGeneration)
     coinSync.BossWatchdogToken = coinSync.BossWatchdogToken + 1
     local token = coinSync.BossWatchdogToken
     local runtimeGeneration = tonumber(env.PSX_OG_RUNTIME_GENERATION) or 0
+    local armedAt = os.clock()
     local phase = (math.abs(tonumber(player.UserId) or 0) % 9) * 0.02
     task.delay(3.25 + phase, function()
         if token ~= coinSync.BossWatchdogToken or runtimeGeneration ~= env.PSX_OG_RUNTIME_GENERATION
@@ -4363,8 +4364,8 @@ function petFarm:ArmBossWatchdog(removedGeneration)
             or not self.Engine then return end
         local currentOk, current = pcall(self.Engine, "boss-stats")
         if currentOk and type(current) == "table"
-            and tonumber(current.SpawnGeneration) ~= tonumber(removedGeneration)
-            and current.State ~= "ABSENT" then return end
+            and (tonumber(current.SpawnGeneration) ~= tonumber(removedGeneration)
+                or current.State ~= "ABSENT") then return end
 
         local world, zone = getSelectedWorld(), getSelectedZone()
         local zoneAnchor = findZoneAnchor(zone)
@@ -4376,7 +4377,7 @@ function petFarm:ArmBossWatchdog(removedGeneration)
         end
 
         local health = coinSync.SignalHealth["New Coin"] or {}
-        if (tonumber(health.LastEventAt) or 0) <= (tonumber(health.BoundAt) or 0)
+        if (tonumber(health.LastEventAt) or 0) <= armedAt
             and os.clock() - (tonumber(health.LastRebindAt) or 0) >= 3 then
             coinSync:RebindNewCoinSignal()
         end
@@ -4405,7 +4406,12 @@ function petFarm:FinalizeBossRemoval(rawId, generation, source)
     releaseAssignmentsForCoin(rawId, true)
     if tostring(source) == "server reject" then
         coinSync.BossRejected[tostring(rawId)] = true
-    elseif not coinSync.SignalConnections["New Coin"] then
+    else
+        -- An attached RBXScriptConnection proves only that a listener exists;
+        -- it does not prove that the latest authoritative edge reached it.
+        -- Arm one local, generation-cancelled check per removal. A normal New
+        -- Coin event changes the boss generation and makes this a no-op. Only
+        -- a genuinely missed edge reaches the bounded (<=3/min) snapshot path.
         self:ArmBossWatchdog(generation)
     end
     driverStatus = "boss chest absent; awaiting New Coin"
