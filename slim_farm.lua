@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.6-egg-farm-rescue"
+local VERSION = "1.4.1-candidate.54.7-c54-native-restore"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -1900,7 +1900,6 @@ local coinSync = {
     BossFallbackTimes = {},
     BossWatchdogToken = 0,
     BossAbsentUntil = 0,
-    BossBootstrapDone = false,
 }
 local coinGeneration = 0
 local coinMutationSerial = 0
@@ -2484,7 +2483,6 @@ local function connectCoinSignals(forceName)
             local selectedBoss = config.Mode == "Boss Chest Only"
                 and targetRecordAllowed(record, "Boss Chest Only",
                     selectedWorld, selectedZone, nil)
-            if selectedBoss then coinSync.BossBootstrapDone = true end
             local source = coinSync.SignalSources["New Coin"] or "unknown"
             local health = coinSync.SignalHealth["New Coin"]
             if health then
@@ -2928,7 +2926,6 @@ releaseAssignmentsForCoin = function(rawId, suppressFastDispatch)
         table.clear(petStates)
         table.clear(rejectedUntil)
         table.clear(coinSync.BossRejected)
-        coinSync.BossBootstrapDone = false
         return 0
     end
 
@@ -4107,7 +4104,6 @@ local function clearAssignments(sendBack, callback)
     table.clear(petStates)
     table.clear(rejectedUntil)
     table.clear(coinSync.BossRejected)
-    coinSync.BossBootstrapDone = false
 
     if not sendBack or (not changeTargetRemote and not leaveCoinRemote) then
         if type(callback) == "function" then
@@ -4306,7 +4302,6 @@ end
 
 function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
     if not self.Engine or config.Mode ~= "Boss Chest Only" or not config.PetFarm then return false end
-    record.BossEventAt = os.clock()
     local info = {
         CoinId = tostring(record.Id),
         Record = record,
@@ -4320,17 +4315,8 @@ function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
     }
     coinSync.BossAbsentUntil = 0
     local ok, accepted, problem = pcall(self.Engine, "boss-spawn", info)
-    if ok and accepted == true and source ~= "active boss liveness rescue" then
-        record.BossLivenessRescueUsed = false
-    end
     if not (ok and accepted == true) and running() and config.PetFarm
         and recordAlive(record) then
-        if coinSync.SignalConnections["New Coin"] then
-            driverStatus = accepted == false and problem == "duplicate"
-                and "duplicate boss event ignored"
-                or "authoritative boss event was not selectable; waiting for next New Coin"
-            return false, problem
-        end
         local expected = tonumber(self.EquippedCount) or 0
         if expected == 0 or assignmentCount() < expected then
             driverStatus = "boss spawn pending; local dispatch re-arm queued"
@@ -4556,10 +4542,6 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
 end
 
 function petFarm:QueueFastDispatch(petId)
-    if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
-        table.clear(self.FastPets)
-        return
-    end
     if petId ~= nil then self.FastPets[tostring(petId)] = true end
     if self.FastScheduled or not running() then return end
     self.FastScheduled = true
@@ -5588,12 +5570,8 @@ allocatorPass = function()
     allocatorRequested = false
     local ok, problem = pcall(function()
         connectCoinSignals()
-        local bossEventDriven = config.Mode == "Boss Chest Only"
-            and coinSync.SignalConnections["New Coin"] ~= nil
-        if not bossEventDriven or not coinSync.BossBootstrapDone then
-            refreshWorkspaceCoins()
-        end
-        if not bossEventDriven and not coinSync.SnapshotPrimed and not coinSync.SnapshotBusy
+        refreshWorkspaceCoins()
+        if not coinSync.SnapshotPrimed and not coinSync.SnapshotBusy
             and not coinSync.SnapshotFailOpen and coinSync.SnapshotAttempts == 0
             and not coinSync.RetryArmed then
             task.defer(refreshCoinSnapshot)
@@ -5651,12 +5629,6 @@ allocatorPass = function()
             return
         end
 
-        if bossEventDriven and coinSync.BossBootstrapDone then
-            petFarm.TargetWindow = 0
-            driverStatus = "boss pets idle; waiting for authoritative New Coin"
-            return
-        end
-
         local targets, selectedWorld, selectedZone = orderedTargets(config.Mode)
         petFarm.LastTargetCount = #targets
         petFarm.LastWorld = selectedWorld or "unknown"
@@ -5674,8 +5646,7 @@ allocatorPass = function()
         end
         if #usable == 0 then
             petFarm.TargetWindow = 0
-            if bossEventDriven then
-                coinSync.BossBootstrapDone = true
+            if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
                 driverStatus = "boss chest absent; waiting for New Coin"
             elseif type(armFarmRecovery) == "function" then
                 armFarmRecovery(1.05)
@@ -5683,13 +5654,7 @@ allocatorPass = function()
             return
         end
 
-        if bossEventDriven then
-            coinSync.BossBootstrapDone = true
-            if usable[1] and usable[1].BossSpawnGeneration == nil then
-                petFarm:HandleBossSpawn(usable[1], "allocator bootstrap", false, {}, true)
-            end
-            return
-        elseif config.Mode == "Boss Chest Only" and usable[1]
+        if config.Mode == "Boss Chest Only" and usable[1]
             and usable[1].BossSpawnGeneration == nil
             and petFarm:HandleBossSpawn(usable[1], "allocator bootstrap", false, {}, true) then
             return
@@ -5805,11 +5770,9 @@ local function restartFarmWatchers()
         armFarmRecovery(1.05)
     end
 
-    -- Purely local boss liveness invariant. It neither scans the world nor
-    -- invokes Get Coins. When an authoritative generation is still ACTIVE but
-    -- every accepted local assignment vanished, issue exactly one grouped
-    -- C54-style re-arm for that record. The per-record latch prevents a broken
-    -- target from turning this recovery into a periodic Join/Farm replay.
+    -- C54.1 local liveness invariant. It does not send a network request: it
+    -- only re-runs the allocator against the already indexed live boss when a
+    -- completed generation left every equipped pet idle.
     local livenessDelay = 2.25 + (math.abs(tonumber(player.UserId) or 0) % 11) * 0.06
     local function checkBossLiveness()
         if livenessToken ~= farmWatch.LivenessToken or not running()
@@ -5824,27 +5787,17 @@ local function restartFarmWatchers()
             local lastAssignment = tonumber(stats.LastAssignmentAt) or 0
             local assignmentAge = lastAssignment > 0 and os.clock() - lastAssignment
                 or math.huge
-            local bossStats = petFarm:BossStats() or {}
-            local bossState = tostring(bossStats.State or "ABSENT")
-            local bossCoinId = tostring(bossStats.CoinId or "")
-            local bossRecord = coinRecords[bossCoinId]
-            local targetReady = recordAlive(bossRecord) and isBossChest(bossRecord)
+            local targetReady = (tonumber(petFarm.LastTargetCount) or 0) > 0
+                and (tonumber(petFarm.TargetWindow) or 0) > 0
             local stalled = expected > 0 and assigned == 0 and targetReady
                 and active == 0 and queued == 0 and invokes == 0
-                and bossState ~= "ABSENT" and bossState ~= "DEAD"
                 and assignmentAge >= 3.5
             local now = os.clock()
-            if stalled and bossRecord.BossLivenessRescueUsed ~= true
-                and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3 then
-                bossRecord.BossLivenessRescueUsed = true
+            if stalled and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3 then
                 farmWatch.LastRearmAt = now
                 farmWatch.StallRecoveries = farmWatch.StallRecoveries + 1
-                local rescued, problem = petFarm:HandleBossSpawn(
-                    bossRecord, "active boss liveness rescue", false, {}, true)
-                driverStatus = rescued
-                    and "boss target stalled; one grouped C54 dispatch re-armed"
-                    or "boss target stalled; local rescue declined (" .. tostring(problem)
-                        .. "); waiting for authoritative New Coin"
+                driverStatus = "boss target stalled; C54.1 allocator re-arm queued"
+                requestAllocatorPulse(true)
             end
         end
         task.delay(livenessDelay, checkBossLiveness)

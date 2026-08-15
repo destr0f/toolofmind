@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.7.2"',
+requireText('local MODULE_VERSION = "1.7.3"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -82,6 +82,12 @@ requireText('or state.OpenEggGateRoute == HEADLESS_INVENTORY_FALLBACK)',
     "headless fallback does not snapshot the game skip callback before purchase");
 requireText('if not headless or pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK then',
     "headless fallback never arms the local animation skip");
+requireText('mouse and touch and buttonX',
+    "Wave-hidden Open Eggs skip callbacks are not recognized from their native input constants");
+requireText('pending.EventSkipQueued = true',
+    "the exact hatch event does not kick the native skip listener immediately");
+requireText('sendNativeSkipOnce(',
+    "native animation skip is not deduplicated per purchase");
 requireText('local exactMatch = pending and not pending.EventReceived',
     "a duplicate/manual event can still replace an owned pending payload");
 requireText('pending.ProducerGateRoute == HEADLESS_EVENT_GATE',

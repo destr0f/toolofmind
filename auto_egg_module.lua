@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.2"
+local MODULE_VERSION = "1.7.3"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1180,31 +1180,50 @@ local function invokeNewEggSkipConnection(context, pending)
     local ok, connections = pcall(getconnections, signal)
     if not ok or type(connections) ~= "table" then return false end
 
-    local newCallbacks, eggCallbacks = {}, {}
+    local newConnections, eggConnections = {}, {}
     for _, connection in ipairs(connections) do
         local read, callback = pcall(function() return connection.Function end)
         if read and type(callback) == "function" and not before[callback] then
-            newCallbacks[#newCallbacks + 1] = callback
-            local source = ""
-            if debug and type(debug.info) == "function" then
-                local sourceOk, value = pcall(debug.info, callback, "s")
-                if sourceOk then source = lower(value) end
-            end
+            newConnections[#newConnections + 1] = connection
+            local source = connectionSource(connection)
             if string.find(source, "open eggs", 1, true)
                 or string.find(source, "openegg", 1, true) then
-                eggCallbacks[#eggCallbacks + 1] = callback
+                eggConnections[#eggConnections + 1] = connection
+            elseif type(getconstants) == "function" then
+                -- Wave may hide debug.info for a RobloxScript closure. The
+                -- native skip listener is still uniquely recognizable by the
+                -- MouseButton1/Touch/ButtonX constants from Open Eggs.
+                local constantsOk, constants = pcall(getconstants, callback)
+                local mouse, touch, buttonX = false, false, false
+                if constantsOk and type(constants) == "table" then
+                    for _, value in ipairs(constants) do
+                        local text = tostring(value)
+                        mouse = mouse or text == "MouseButton1"
+                        touch = touch or text == "Touch"
+                        buttonX = buttonX or text == "ButtonX"
+                    end
+                end
+                if mouse and touch and buttonX then
+                    eggConnections[#eggConnections + 1] = connection
+                end
             end
         end
     end
 
-    local callback = #eggCallbacks == 1 and eggCallbacks[1]
-        or (#eggCallbacks == 0 and #newCallbacks == 1 and newCallbacks[1] or nil)
-    if not callback then return false end
-    local called = pcall(callback, {
-        UserInputType = Enum.UserInputType.MouseButton1,
-        KeyCode = Enum.KeyCode.Unknown,
-    }, false)
-    return called
+    local selected = #eggConnections > 0 and eggConnections
+        or (#newConnections == 1 and newConnections or nil)
+    if not selected then return false end
+    for _, connection in ipairs(selected) do
+        local read, callback = pcall(function() return connection.Function end)
+        if read and type(callback) == "function" then
+            local called = pcall(callback, {
+                UserInputType = Enum.UserInputType.MouseButton1,
+                KeyCode = Enum.KeyCode.Unknown,
+            }, false)
+            if called then return true end
+        end
+    end
+    return false
 end
 
 local function emitLocalSkipInput(context, pending)
@@ -1224,9 +1243,12 @@ local function emitLocalSkipInput(context, pending)
         if sent then return true, "local ButtonX input" end
 
         sent = pcall(function()
-            inputManager:SendMouseButtonEvent(-128, -128, 0, true, game, 0)
+            local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+                or Vector2.new(800, 600)
+            local x, y = math.floor(viewport.X * 0.5), math.floor(viewport.Y * 0.5)
+            inputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
             task.wait()
-            inputManager:SendMouseButtonEvent(-128, -128, 0, false, game, 0)
+            inputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
         end)
         if sent then return true, "local off-screen click" end
     end
@@ -1239,7 +1261,8 @@ local function emitLocalSkipInput(context, pending)
             virtualUser:CaptureController()
             local camera = workspace.CurrentCamera
             local cameraFrame = camera and camera.CFrame or CFrame.new()
-            local position = Vector2.new(-128, -128)
+            local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+            local position = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
             virtualUser:Button1Down(position, cameraFrame)
             task.wait()
             virtualUser:Button1Up(position, cameraFrame)
@@ -1247,6 +1270,20 @@ local function emitLocalSkipInput(context, pending)
         if sent then return true, "local VirtualUser click" end
     end
     return false, "no supported local input injector"
+end
+
+local function sendNativeSkipOnce(state, context, pending, policy)
+    if pending.SkipSent then return true, "already sent" end
+    local sent, method = emitLocalSkipInput(context, pending)
+    if sent then
+        pending.SkipSent = true
+        state.NativeSkips = state.NativeSkips + 1
+        pending.SkipResult = tostring(policy) .. " | sent via " .. tostring(method)
+        context.Trace("auto egg native skip", pending.SkipResult)
+        return true, method
+    end
+    pending.SkipResult = tostring(policy) .. " | local skip failed: " .. tostring(method)
+    return false, method
 end
 
 local function armNativeSkip(state, context, pending)
@@ -1296,16 +1333,17 @@ local function armNativeSkip(state, context, pending)
                 or not openingFlag(context) or os.clock() >= connectionDeadline
         end
 
-        if not sent and state.Running and state.Pending == pending and openingFlag(context) then
-            sent, method = emitLocalSkipInput(context, pending)
-        end
         if sent then
+            pending.SkipSent = true
             state.NativeSkips = state.NativeSkips + 1
             pending.SkipResult = policy .. " | sent via " .. tostring(method)
             context.Trace("auto egg native skip", pending.SkipResult)
-        else
-            pending.SkipResult = policy .. " | local skip failed: " .. tostring(method)
-            context.Trace("auto egg native skip", pending.SkipResult)
+        elseif state.Running and state.Pending == pending and openingFlag(context) then
+            local forced, forcedMethod = sendNativeSkipOnce(state, context, pending, policy)
+            if not forced then
+                context.Trace("auto egg native skip", pending.SkipResult
+                    .. " | " .. tostring(forcedMethod))
+            end
         end
     end)
 end
@@ -2175,6 +2213,7 @@ local function beginRequest(state, context, options, inspection)
         PostProcessDone = not headless,
         PostProcessFailure = nil,
         SkipScheduled = false,
+        SkipSent = false,
         NativeOpeningSeen = false,
         OpenEventsSeen = 0,
         PetSnapshot = headlessSnapshot,
@@ -2524,6 +2563,29 @@ return function(action, context)
             end
 
             if matching then
+                if pending.Headless
+                    and pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK
+                    and not pending.SkipSent and not pending.EventSkipQueued then
+                    -- The server event can arrive before the worker observes
+                    -- Variables.OpeningEgg. Kick the freshly-created native
+                    -- InputEnded listener from this exact event edge instead
+                    -- of waiting through the visible animation.
+                    pending.EventSkipQueued = true
+                    task.defer(function()
+                        local deadline = os.clock() + NATIVE_SKIP_CONNECTION_WINDOW
+                        repeat
+                            if not state.Running or state.Pending ~= pending
+                                or pending.SkipSent then return end
+                            if openingFlag(context) then
+                                local sent = sendNativeSkipOnce(
+                                    state, context, pending,
+                                    tostring(pending.SkipPolicy or "Headless event skip"))
+                                if sent then return end
+                            end
+                            task.wait(0.01)
+                        until os.clock() >= deadline
+                    end)
+                end
                 pending.EventReceived = true
                 pending.EventAt = os.clock()
                 pending.Pets = pets

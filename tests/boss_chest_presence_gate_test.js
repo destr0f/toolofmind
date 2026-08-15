@@ -28,10 +28,10 @@ assert(source.includes('driverStatus = "boss chest absent; awaiting New Coin"'),
     "an absent boss must wait for its authoritative appearance event");
 assert(source.includes('and not coinSync.SignalConnections["New Coin"]\n            and controller'),
     "Coins.ChildAdded must not race the authoritative New Coin source");
-assert(source.includes('if bossEventDriven and coinSync.BossBootstrapDone then'),
-    "boss allocator must sleep after its one startup bootstrap");
-assert(source.includes('function petFarm:QueueFastDispatch(petId)\n    if config.Mode == "Boss Chest Only"'),
-    "legacy fast reroutes remain active in authoritative boss mode");
+assert(!source.includes('if bossEventDriven and coinSync.BossBootstrapDone then'),
+    "one-shot bootstrap sleep can strand a live C54.1 boss generation");
+assert(!source.includes('function petFarm:QueueFastDispatch(petId)\n    if config.Mode == "Boss Chest Only"'),
+    "authoritative boss mode still discards C54.1 free-pet reroutes");
 
 const pumpStart = engine.indexOf("pump = function()");
 const pumpEnd = engine.indexOf("local function start(context)", pumpStart);
@@ -41,10 +41,6 @@ assert(pump.includes("scheduler.delay(math.max(due - now, 0)"),
 assert(!pump.includes("if job.BossGeneration ~= nil then\n                executeJob(job)"),
     "boss Join is still invoked synchronously inside the New Coin callback");
 
-assert(engine.includes("notifyBatchAccepted(job, acceptedEntries, route)"),
-    "post-Join batch notification is missing");
-assert(source.includes("OnBatchAccepted = function(record, petIds, spawnGeneration)"),
-    "pet warp is not attached to the post-Join batch boundary");
 const dispatchStart = source.indexOf("local function dispatchPlan(record, petIds)");
 const dispatchEnd = source.indexOf("function petFarm:DispatchBossRecord", dispatchStart);
 assert(!source.slice(dispatchStart, dispatchEnd).includes("WarpBossPetsOnce"),
@@ -54,7 +50,7 @@ const warpEnd = source.indexOf("local function remoteSessionIndex", warpStart);
 const warp = source.slice(warpStart, warpEnd);
 assert(warp.includes('typeof(record.Position) == "Vector3"'));
 assert(warp.includes("workspace.BulkMoveTo"));
-assert(!warp.includes("Instance.new"), "warp creates a retained synthetic target instance");
+assert(!warp.includes("Instance.new"), "optional warp creates a retained synthetic target instance");
 assert(source.includes("table.clear(coinSync.BossRejected)"),
     "reload/stop must clear the boss presence latch");
 

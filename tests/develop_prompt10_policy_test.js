@@ -48,7 +48,7 @@ assert(farm.includes("cached.Command == commandName")
     "direct remote cache does not bind identity to the requested command");
 
 const rejectionStart = engine.indexOf("if #rejectedEntries > 0 then");
-const rejectionEnd = engine.indexOf("if #acceptedEntries > 0 and job.BossGeneration", rejectionStart);
+const rejectionEnd = engine.indexOf("elseif #signalFailures == 0", rejectionStart);
 assert(rejectionStart >= 0 && rejectionEnd > rejectionStart,
     "Join rejection branch was not found");
 const rejectionBranch = engine.slice(rejectionStart, rejectionEnd);

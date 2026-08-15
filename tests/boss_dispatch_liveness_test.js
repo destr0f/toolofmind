@@ -26,6 +26,17 @@ const spawn = body(
 assert(spawn.includes("boss spawn pending; local dispatch re-arm queued"));
 assert(spawn.includes("requestAllocatorPulse(true)"));
 assert(spawn.includes("armFarmRecovery(1.05)"));
+assert(!spawn.includes('coinSync.SignalConnections["New Coin"]'),
+    "a locally live boss is still rejected merely because an authoritative listener exists");
+
+const allocator = body("allocatorPass = function()", "requestAllocatorPulse = function");
+assert(allocator.includes("refreshWorkspaceCoins()"));
+assert(!allocator.includes("BossBootstrapDone"),
+    "one-shot bootstrap state can still strand all pets after a missed lifecycle edge");
+
+const fastDispatch = body("function petFarm:QueueFastDispatch", "function petFarm:PhaseCounts");
+assert(!fastDispatch.includes("table.clear(self.FastPets)"),
+    "boss mode still discards the C54.1 free-pet fast path");
 
 const watchers = body(
     "local farmWatch =",
@@ -37,11 +48,12 @@ assert(watchers.includes('config.Mode == "Boss Chest Only"'));
 assert(watchers.includes("assigned == 0 and targetReady"));
 assert(watchers.includes("active == 0 and queued == 0 and invokes == 0"));
 assert(watchers.includes("assignmentAge >= 3.5"));
-assert(watchers.includes("petFarm:BossStats()"));
-assert(watchers.includes("bossRecord.BossLivenessRescueUsed ~= true"));
-assert(watchers.includes('bossRecord, "active boss liveness rescue", false, {}, true'));
-assert(!watchers.includes('config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then'),
-    "authoritative New Coin still disables the local ACTIVE+idle rescue");
+assert(watchers.includes('driverStatus = "boss target stalled; C54.1 allocator re-arm queued"'));
+assert(watchers.includes("requestAllocatorPulse(true)"));
+assert(!watchers.includes("BossLivenessRescueUsed"),
+    "one-shot record latch can still leave a live C54.1 target permanently idle");
+assert(!watchers.includes('"active boss liveness rescue"'),
+    "liveness recovery still creates a synthetic boss generation");
 for (const forbidden of ["refreshCoinSnapshot", "refreshWorkspaceCoins", "getgc", "getconnections"]) {
     assert(!watchers.includes(forbidden), `liveness watcher gained forbidden work: ${forbidden}`);
 }
