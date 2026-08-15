@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.6-egg-farm-rescue",
+    "version": "1.4.1-candidate.54.7-c54-native-restore",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+    "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.5.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -109,18 +109,18 @@
     "petFarmEngine": {
       "id": "petFarmEngine",
       "label": "Pet farm engine",
-      "version": "1.4.3",
+      "version": "1.4.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "04f05d8338e9aa2c6c39168972ca9c50b489586e",
-      "bytes": 45600,
-      "sha256": "0ef0e7de45a3ae60f35256c7fc8e488197bd73d6476e832e1ce5ea47f5ba228c",
-      "djb2": "e876a453"
+      "commit": "4edbe3afba57509c57cc05d7961a0e7ca61f0954",
+      "bytes": 43826,
+      "sha256": "10bdfe67640bb2736c6fe005c1072e46d5d6587b693559786206f87437d74d49",
+      "djb2": "d31816ec"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -128,7 +128,7 @@
       "version": "3.7.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -141,17 +141,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.7.2",
+      "version": "1.7.3",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "1b3f171570661b9a8af60cba24ebd804de4d1c29",
-      "bytes": 110097,
-      "sha256": "80aafb168effb787f11701c443f452022927c75c852ebbf8cfee7b69063ce067",
-      "djb2": "d697a7bf"
+      "commit": "4edbe3afba57509c57cc05d7961a0e7ca61f0954",
+      "bytes": 113493,
+      "sha256": "9c85dc9464b0b13b20f672ac620a606bcade5c8503f3d5f73717b9a058b41f16",
+      "djb2": "b079b35f"
     },
     "enchant": {
       "id": "enchant",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.6-egg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -354,32 +354,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "1b3f171570661b9a8af60cba24ebd804de4d1c29",
+    "generatedFromCommit": "4edbe3afba57509c57cc05d7961a0e7ca61f0954",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7095,
-      "sha256": "105fd5e3ae2d0f855f377ae0c1745f40802e57de6adec21fc5cfaef086c21e8c",
-      "djb2": "efd3703f"
+      "bytes": 7140,
+      "sha256": "abfd51d9678aec391bd4c54f5cefe42807883f4298405d49ff67859c2c258aaa",
+      "djb2": "89b46b0c"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.6-egg-farm-rescue",
-      "bytes": 316839,
-      "sha256": "cb28e4e920faf9621c4eaa8bb3ee66bbb4d069599cbbf12ec7b4eca74f244e27",
-      "djb2": "2de2d436"
+      "version": "1.4.1-candidate.54.7-c54-native-restore",
+      "bytes": 314469,
+      "sha256": "727e575013d1290e94ab075c9b356affa07114c184a38bdd93449d78fdfdeb59",
+      "djb2": "12df2bbe"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 250262,
-        "sha256": "d661c662d5582fdf917c96c4962ba93b46d6d8ede87849d837358923d73cc29c",
-        "djb2": "0729b072"
+        "bytes": 248689,
+        "sha256": "edd887d54375c2161a977df540af5cc0e8d3279cb79855b430c50446905b0c09",
+        "djb2": "77ed1421"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 250262,
-        "sha256": "d661c662d5582fdf917c96c4962ba93b46d6d8ede87849d837358923d73cc29c",
-        "djb2": "0729b072"
+        "bytes": 248689,
+        "sha256": "edd887d54375c2161a977df540af5cc0e8d3279cb79855b430c50446905b0c09",
+        "djb2": "77ed1421"
       }
     }
   }
