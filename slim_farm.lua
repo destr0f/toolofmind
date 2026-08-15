@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.5-egg-boss-rescue"
+local VERSION = "1.4.1-candidate.54.6-egg-farm-rescue"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -4320,6 +4320,9 @@ function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
     }
     coinSync.BossAbsentUntil = 0
     local ok, accepted, problem = pcall(self.Engine, "boss-spawn", info)
+    if ok and accepted == true and source ~= "active boss liveness rescue" then
+        record.BossLivenessRescueUsed = false
+    end
     if not (ok and accepted == true) and running() and config.PetFarm
         and recordAlive(record) then
         if coinSync.SignalConnections["New Coin"] then
@@ -5803,18 +5806,14 @@ local function restartFarmWatchers()
     end
 
     -- Purely local boss liveness invariant. It neither scans the world nor
-    -- invokes Get Coins. A pulse is emitted only when a cached live target is
-    -- selectable, all equipped pets are idle, and the transport engine has no
-    -- queued/in-flight work. The UserId phase keeps ten clients from re-arming
-    -- on the same scheduler tick after a shared missed spawn edge.
+    -- invokes Get Coins. When an authoritative generation is still ACTIVE but
+    -- every accepted local assignment vanished, issue exactly one grouped
+    -- C54-style re-arm for that record. The per-record latch prevents a broken
+    -- target from turning this recovery into a periodic Join/Farm replay.
     local livenessDelay = 2.25 + (math.abs(tonumber(player.UserId) or 0) % 11) * 0.06
     local function checkBossLiveness()
         if livenessToken ~= farmWatch.LivenessToken or not running()
             or not config.PetFarm then return end
-        if config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then
-            task.delay(livenessDelay, checkBossLiveness)
-            return
-        end
         if config.Mode == "Boss Chest Only" and not farmResetRunning and petFarm.Engine then
             local expected = tonumber(petFarm.EquippedCount) or 0
             local assigned = assignmentCount()
@@ -5825,17 +5824,27 @@ local function restartFarmWatchers()
             local lastAssignment = tonumber(stats.LastAssignmentAt) or 0
             local assignmentAge = lastAssignment > 0 and os.clock() - lastAssignment
                 or math.huge
-            local targetReady = (tonumber(petFarm.LastTargetCount) or 0) > 0
-                and (tonumber(petFarm.TargetWindow) or 0) > 0
+            local bossStats = petFarm:BossStats() or {}
+            local bossState = tostring(bossStats.State or "ABSENT")
+            local bossCoinId = tostring(bossStats.CoinId or "")
+            local bossRecord = coinRecords[bossCoinId]
+            local targetReady = recordAlive(bossRecord) and isBossChest(bossRecord)
             local stalled = expected > 0 and assigned == 0 and targetReady
                 and active == 0 and queued == 0 and invokes == 0
+                and bossState ~= "ABSENT" and bossState ~= "DEAD"
                 and assignmentAge >= 3.5
             local now = os.clock()
-            if stalled and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3 then
+            if stalled and bossRecord.BossLivenessRescueUsed ~= true
+                and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3 then
+                bossRecord.BossLivenessRescueUsed = true
                 farmWatch.LastRearmAt = now
                 farmWatch.StallRecoveries = farmWatch.StallRecoveries + 1
-                driverStatus = "boss target stalled; one local dispatch re-arm queued"
-                requestAllocatorPulse(true)
+                local rescued, problem = petFarm:HandleBossSpawn(
+                    bossRecord, "active boss liveness rescue", false, {}, true)
+                driverStatus = rescued
+                    and "boss target stalled; one grouped C54 dispatch re-armed"
+                    or "boss target stalled; local rescue declined (" .. tostring(problem)
+                        .. "); waiting for authoritative New Coin"
             end
         end
         task.delay(livenessDelay, checkBossLiveness)

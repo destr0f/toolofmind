@@ -37,7 +37,11 @@ assert(watchers.includes('config.Mode == "Boss Chest Only"'));
 assert(watchers.includes("assigned == 0 and targetReady"));
 assert(watchers.includes("active == 0 and queued == 0 and invokes == 0"));
 assert(watchers.includes("assignmentAge >= 3.5"));
-assert(watchers.includes("requestAllocatorPulse(true)"));
+assert(watchers.includes("petFarm:BossStats()"));
+assert(watchers.includes("bossRecord.BossLivenessRescueUsed ~= true"));
+assert(watchers.includes('bossRecord, "active boss liveness rescue", false, {}, true'));
+assert(!watchers.includes('config.Mode == "Boss Chest Only" and coinSync.SignalConnections["New Coin"] then'),
+    "authoritative New Coin still disables the local ACTIVE+idle rescue");
 for (const forbidden of ["refreshCoinSnapshot", "refreshWorkspaceCoins", "getgc", "getconnections"]) {
     assert(!watchers.includes(forbidden), `liveness watcher gained forbidden work: ${forbidden}`);
 }

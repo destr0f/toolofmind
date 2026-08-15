@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.1"
+local MODULE_VERSION = "1.7.2"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -721,22 +721,23 @@ local function captureHeadlessEventGate(signal, eventRoute)
     -- its callback is attached directly to OnClientEvent. Prefer that exact
     -- visual producer. Older sessions may route through Network's bridge, in
     -- which case disabling the unique bridge still leaves our direct listener.
-    local selected = #openEggCandidates == 1 and openEggCandidates[1]
-        or (#openEggCandidates == 0 and #networkCandidates == 1 and networkCandidates[1]
-            or (#openEggCandidates == 0 and #networkCandidates == 0
-                and #candidates == 1 and candidates[1] or nil))
-    if not selected then
+    local selected = #openEggCandidates > 0 and openEggCandidates
+        or (#networkCandidates > 0 and networkCandidates or candidates)
+    if #selected == 0 then
         return nil, string.format(
             "Open Egg native dispatcher is ambiguous (%d compatible, %d Open Eggs, %d network-labelled)",
             #candidates, #openEggCandidates, #networkCandidates
         )
     end
 
-    -- Verify that the executor can restore the exact dispatcher before the
-    -- first purchase. Enable on an already-enabled connection is a safe no-op.
-    local restorable, restoreProblem = callConnectionMethod(selected, "Enable")
-    if not restorable then
-        return nil, "Open Egg native dispatcher cannot be restored: " .. tostring(restoreProblem)
+    -- Verify every command-scoped native callback before the first purchase.
+    -- The snapshot is taken before our listener is connected, so pausing this
+    -- bounded list cannot pause our acknowledgement path.
+    for _, connection in ipairs(selected) do
+        local restorable, restoreProblem = callConnectionMethod(connection, "Enable")
+        if not restorable then
+            return nil, "Open Egg native dispatcher cannot be restored: " .. tostring(restoreProblem)
+        end
     end
     return selected
 end
@@ -798,17 +799,33 @@ end
 
 local function restoreHeadlessEventGate(state)
     if not state or not state.EventGateDisabled then return true end
-    local restored, problem = callConnectionMethod(state.EventGateConnection, "Enable")
+    local restored, problems = true, {}
+    for _, connection in ipairs(state.EventGateConnections or {}) do
+        local ok, problem = callConnectionMethod(connection, "Enable")
+        if not ok then
+            restored = false
+            problems[#problems + 1] = tostring(problem)
+        end
+    end
     if restored then state.EventGateDisabled = false end
-    return restored, problem
+    return restored, #problems > 0 and table.concat(problems, " | ") or nil
 end
 
 local function disableHeadlessEventGate(state)
     if not state or state.OpenEggGateRoute ~= HEADLESS_EVENT_GATE then return true end
     if state.EventGateDisabled then return true end
-    local disabled, problem = callConnectionMethod(state.EventGateConnection, "Disable")
-    if disabled then state.EventGateDisabled = true end
-    return disabled, problem
+    local disabled = {}
+    for _, connection in ipairs(state.EventGateConnections or {}) do
+        local ok, problem = callConnectionMethod(connection, "Disable")
+        if not ok then
+            for _, previous in ipairs(disabled) do callConnectionMethod(previous, "Enable") end
+            return false, problem
+        end
+        disabled[#disabled + 1] = connection
+    end
+    if #disabled == 0 then return false, "no command-scoped native dispatcher was captured" end
+    state.EventGateDisabled = true
+    return true
 end
 
 local function restoreHeadlessProducerGate(state)
@@ -828,6 +845,15 @@ local function restoreHeadlessProducerGate(state)
     state.OpenEggGateRoute = nil
 end
 
+local function useHeadlessInventoryFallback(state, context, openEggScript, reason)
+    restoreHeadlessProducerGate(state)
+    state.OpenEggScript = openEggScript
+    state.OpenEggGateRoute = HEADLESS_INVENTORY_FALLBACK
+    context.Trace("auto egg headless gate", tostring(reason)
+        .. "; continuing with one in-flight purchase, exact inventory-delta acknowledgement and local skip")
+    return true, state.OpenEggGateRoute
+end
+
 local function ensureHeadlessProducerGate(state, context)
     local openEggScript = openEggScriptFor(context)
     if not openEggScript then
@@ -841,19 +867,21 @@ local function ensureHeadlessProducerGate(state, context)
     -- before DepthOfField, models and GUI are allocated while this module's
     -- listener (connected after the captured dispatcher) still receives the
     -- authoritative payload.
-    if state.EventGateConnection then
+    if type(state.EventGateConnections) == "table" and #state.EventGateConnections > 0 then
         restoreHeadlessProducerGate(state)
         state.OpenEggScript = openEggScript
         state.OpenEggGateRoute = HEADLESS_EVENT_GATE
         return true, state.OpenEggGateRoute
     end
     if type(getsenv) ~= "function" then
-        return false, "getsenv is unavailable; Headless refuses to fall back to visible animation"
+        return useHeadlessInventoryFallback(state, context, openEggScript,
+            "getsenv is unavailable and the exact event producer gate was not captured")
     end
 
     local environmentOk, scriptEnvironment = pcall(getsenv, openEggScript)
     if not environmentOk or type(scriptEnvironment) ~= "table" then
-        return false, "Open Eggs environment is unavailable: " .. tostring(scriptEnvironment)
+        return useHeadlessInventoryFallback(state, context, openEggScript,
+            "Open Eggs environment is unavailable: " .. tostring(scriptEnvironment))
     end
     if state.OpenEggScript == openEggScript
         and state.OpenEggEnvironment == scriptEnvironment
@@ -865,8 +893,8 @@ local function ensureHeadlessProducerGate(state, context)
     restoreHeadlessProducerGate(state)
     local original = scriptEnvironment.OpenEgg
     if type(original) ~= "function" then
-        return false, "Open Eggs.OpenEgg is not exported and the exact event producer gate is unavailable; "
-            .. "Headless refuses to send a purchase that would create a visible animation"
+        return useHeadlessInventoryFallback(state, context, openEggScript,
+            "Open Eggs.OpenEgg is not exported and the exact event producer gate is unavailable")
     end
 
     local wrapper
@@ -2407,7 +2435,8 @@ return function(action, context)
         OpenEggOriginal = nil,
         OpenEggWrapper = nil,
         OpenEggGateRoute = nil,
-        EventGateConnection = eventGateConnection,
+        EventGateConnections = eventGateConnection,
+        EventGateConnection = type(eventGateConnection) == "table" and eventGateConnection[1] or nil,
         EventGateProblem = eventGateProblem,
         EventGateDisabled = false,
         OpeningEggAckRemote = nil,

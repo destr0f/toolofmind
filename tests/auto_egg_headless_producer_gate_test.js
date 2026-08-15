@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.7.1"',
+requireText('local MODULE_VERSION = "1.7.2"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -36,16 +36,18 @@ requireText('local direct, sourceName, sessionIndex = directSignal(commandName)'
     "Network4's lazy Fired binding is not followed by a direct RemoteEvent retry");
 requireText('after Library.Network.Fired binding',
     "the direct post-bind route is not exposed in diagnostics");
-requireText('#openEggCandidates == 1 and openEggCandidates[1]',
-    "the exact Open Eggs visual callback is not preferred over Network's bridge");
-requireText('callConnectionMethod(state.EventGateConnection, "Disable")',
-    "direct headless route does not pause the native visual dispatcher");
-requireText('callConnectionMethod(state.EventGateConnection, "Enable")',
-    "direct headless route cannot restore the native visual dispatcher");
+requireText('local selected = #openEggCandidates > 0 and openEggCandidates',
+    "all exact Open Eggs visual callbacks are not preferred over Network's bridge");
+requireText('for _, connection in ipairs(state.EventGateConnections or {}) do',
+    "direct headless route does not manage every captured native dispatcher");
+requireText('callConnectionMethod(connection, "Disable")',
+    "direct headless route does not pause captured native visual dispatchers");
+requireText('callConnectionMethod(connection, "Enable")',
+    "direct headless route cannot restore captured native visual dispatchers");
 requireText('The inbound command gate is stronger than replacing an exported',
     "the exact inbound producer gate is not preferred over the weak getsenv export");
-requireText('Headless refuses to send a purchase that would create a visible animation',
-    "Headless can still fail open into a visible native animation");
+requireText('useHeadlessInventoryFallback(state, context, openEggScript',
+    "missing producer exports still block the bounded inventory-delta hatch path");
 requireText('state.Running and state.GateOwned and pending and pending.Headless',
     "producer wrapper is not scoped to an owned headless request");
 requireText('profileBegin("PSX_EggOpenGate")',
@@ -68,10 +70,8 @@ requireText('profileBegin("PSX_EggWorldGate")',
     "world egg gate is missing its MicroProfiler marker");
 requireText('Game/Eggs visual gate assignment was not retained',
     "world egg gate does not fail open after assignment readback failure");
-requireText('Headless refuses to fall back to visible animation',
-    "unsupported executors do not fail closed");
 requireText('Open Eggs.OpenEgg is not exported and the exact event producer gate is unavailable',
-    "missing producer gates are not diagnosed before purchase");
+    "missing producer gates are not diagnosed before bounded fallback");
 requireText('ProducerGateRoute = headless and state.OpenEggGateRoute or nil',
     "the selected headless acknowledgement route is not retained per request");
 requireText('pending.ProducerGateRoute == HEADLESS_INVENTORY_FALLBACK',
