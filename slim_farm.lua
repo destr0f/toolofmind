@@ -1498,7 +1498,11 @@ local function getPlayerZone()
     if root and BossChestZones then
         local nearestZone, nearestAnchor, nearestDistance = nil, nil, math.huge
         for _, record in pairs(coinRecords) do
-            local bossZone = BossChestZones[normalize(record.Name)]
+            local bossZone = record.BossZone
+            if bossZone == nil then
+                bossZone = BossChestZones[normalize(record.Name)] or false
+                record.BossZone = bossZone
+            end
             if bossZone and typeof(record.Position) == "Vector3" then
                 local distance = (record.Position - root.Position).Magnitude
                 if distance < nearestDistance then
@@ -1887,6 +1891,7 @@ local coinSync = {
     RemoteCaches = { Command = {}, Event = {}, Fire = {} },
     BossRejected = {},
     BossTemplates = {},
+    BossTemplateCount = 0,
     SignalsReady = false,
     SignalConnections = {},
     SignalSources = {},
@@ -1988,6 +1993,24 @@ function coinIndex:MutateTarget(record, removed)
     endProfile(profiled)
 end
 
+function coinSync.StoreBossTemplate(self, id, record)
+    local templates = self.BossTemplates
+    if templates[id] == nil then
+        if (self.BossTemplateCount or 0) >= 32 then
+            table.clear(templates)
+            self.BossTemplateCount = 0
+        end
+        self.BossTemplateCount = (self.BossTemplateCount or 0) + 1
+    end
+    templates[id] = {
+        Name = record.Name,
+        Area = record.Area,
+        World = record.World,
+        Position = record.Position,
+        MaxHealth = record.MaxHealth,
+    }
+end
+
 local function applyCoinData(rawId, data, fromEvent)
     if rawId == nil or type(data) ~= "table" then return nil end
     local id = tostring(rawId)
@@ -2023,8 +2046,9 @@ local function applyCoinData(rawId, data, fromEvent)
     -- Giant world chests can respawn from a compact New Coin payload without
     -- an explicit area. The canonical name-to-zone map keeps the replacement
     -- target selectable without a Workspace model or a geometry scan.
+    local normalizedRecordName = normalize(record.Name)
     if record.Area == nil then
-        local inferredArea = BossChestZones[normalize(record.Name)]
+        local inferredArea = BossChestZones[normalizedRecordName]
         if inferredArea then
             record.Area = inferredArea
             selectionChanged = true
@@ -2050,14 +2074,9 @@ local function applyCoinData(rawId, data, fromEvent)
     end
     record.Removed = false
     record.FromServer = true
-    if BossChestNames[normalize(record.Name)] == true then
-        coinSync.BossTemplates[id] = {
-            Name = record.Name,
-            Area = record.Area,
-            World = record.World,
-            Position = record.Position,
-            MaxHealth = record.MaxHealth,
-        }
+    record.BossZone = BossChestZones[normalizedRecordName] or false
+    if BossChestNames[normalizedRecordName] == true then
+        coinSync:StoreBossTemplate(id, record)
     end
 
     if fromEvent then
@@ -2079,13 +2098,7 @@ local function removeCoin(rawId, fromEvent)
     if fromEvent then coinSync.EventConfirmed = true end
     local record = coinRecords[id]
     if record and BossChestNames[normalize(record.Name)] == true then
-        coinSync.BossTemplates[id] = {
-            Name = record.Name,
-            Area = record.Area,
-            World = record.World,
-            Position = record.Position,
-            MaxHealth = record.MaxHealth,
-        }
+        coinSync:StoreBossTemplate(id, record)
     end
     if record then
         record.Health = 0
@@ -2548,6 +2561,7 @@ local function connectCoinSignals(forceName)
                 coinSync.SignalsReady = false
                 coinSync.BossAbsentUntil = 0
                 table.clear(coinSync.BossTemplates)
+                coinSync.BossTemplateCount = 0
                 table.clear(coinSync.SignalHealth)
                 table.clear(coinSync.BossFallbackTimes)
                 resetCoinSnapshot("world changed; awaiting fresh catalog")
@@ -2642,7 +2656,11 @@ end
 local function findZoneAnchor(zone)
     if currentZoneAnchor and namesMatch(zone, currentZone) then return currentZoneAnchor end
     for _, record in pairs(coinRecords) do
-        local bossZone = BossChestZones[normalize(record.Name)]
+        local bossZone = record.BossZone
+        if bossZone == nil then
+            bossZone = BossChestZones[normalize(record.Name)] or false
+            record.BossZone = bossZone
+        end
         if bossZone and namesMatch(bossZone, zone) and typeof(record.Position) == "Vector3" then
             return record.Position
         end
@@ -4226,6 +4244,14 @@ local function dispatchPlan(record, petIds)
     local profiled = beginProfile("PSX_FarmDispatch")
     local called, accepted, problem = pcall(petFarm.Engine, "dispatch", payload)
     endProfile(profiled)
+    if called and accepted == true and record.BossEventAt ~= nil then
+        -- Latency probe: authoritative New Coin event -> Join dispatch handed to
+        -- the engine. This is the number that shows whether the boss hot path
+        -- itself is slow, independent of network RTT.
+        requestDiagnostics.Gauge("Farm", "bossEventToDispatchMs",
+            (os.clock() - record.BossEventAt) * 1000)
+        record.BossEventAt = nil
+    end
     if not called or accepted ~= true then
         for _, entry in ipairs(entries) do
             if petStates[entry.PetId] == entry.State then
@@ -4280,6 +4306,7 @@ end
 
 function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
     if not self.Engine or config.Mode ~= "Boss Chest Only" or not config.PetFarm then return false end
+    record.BossEventAt = os.clock()
     local info = {
         CoinId = tostring(record.Id),
         Record = record,
@@ -6891,6 +6918,7 @@ local function finishShutdown()
     coinSync.BossAbsentUntil = 0
     coinSync.WorldSignalReady = false
     table.clear(coinSync.BossTemplates)
+    coinSync.BossTemplateCount = 0
     table.clear(coinSync.SignalSources)
     table.clear(coinSync.SignalHealth)
     table.clear(coinSync.BossFallbackTimes)
