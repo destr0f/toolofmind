@@ -3213,7 +3213,7 @@ end
 
 local function remoteSessionIndex(remote)
     if typeof(remote) ~= "Instance" then return nil end
-    return table.find(ReplicatedStorage:GetChildren(), remote)
+    return tostring(remote.Name)
 end
 
 coinSync.NetworkTransport = {
@@ -3399,7 +3399,7 @@ local function getCommandRemote(commandName)
 end
 
 local function getEventRemote(commandName)
-    return coinSync.NetworkTransport:Resolve(
+    return resolveCommandRoute(
         coinSync.RemoteCaches.Event, "resolveEvent", commandName, "RemoteEvent")
 end
 
