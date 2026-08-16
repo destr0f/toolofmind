@@ -13,7 +13,7 @@ const manifest = JSON.parse(read("runtime_manifest.json"));
 assert(manifest.suite.version.startsWith("1.4.1-candidate.54"));
 assert.strictEqual(manifest.modules.networkTransport.version, "1.5.2");
 assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.6");
-assert.strictEqual(manifest.modules.lootReactor.version, "3.7.1");
+assert.strictEqual(manifest.modules.lootReactor.version, "3.7.2");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
 // Current-session resolver: live maps first, current DJB2 hash, legacy
@@ -64,7 +64,7 @@ assert(farm.includes("self.ProgressLeaseEvictions = self.ProgressLeaseEvictions 
 
 // Orb Removed never authorizes retries of unrelated committed IDs.
 assert(loot.includes("local ORB_MIN_BATCH = 8"));
-assert(loot.includes("local ORB_FLUSH_INTERVAL = 1.2"));
+assert(loot.includes("local ORB_FLUSH_INTERVAL = 0.65"));
 assert(loot.includes("local ORB_BATCH_SIZE = 32"));
 assert(loot.includes("run.PendingOrbCount >= ORB_MIN_BATCH"));
 for (const forbidden of [
