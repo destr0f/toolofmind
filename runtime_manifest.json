@@ -125,7 +125,7 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.7.0",
+      "version": "3.7.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-candidate.54.17-buy-egg-ok",
@@ -133,10 +133,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "ea504be4ada0f0a4fd671d04b4ab126d0db04143",
-      "bytes": 64483,
-      "sha256": "50d62fee704debd8b13ab5aa70485cd05a9bc73c8338d15574069138daa912c1",
-      "djb2": "41cac577"
+      "commit": "c7553f4eafe38b4b34805aae5f60546df33eba00",
+      "bytes": 64639,
+      "sha256": "4013f888e997df472f5a829fe4d2ec0d302d72c6b76bcb59323beeb27945a2ee",
+      "djb2": "5f7d44c7"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -354,12 +354,12 @@
     }
   },
   "build": {
-    "generatedFromCommit": "4f21e1d9ccd3c06d32e6c45fee5fc33d13b317f9",
+    "generatedFromCommit": "c7553f4eafe38b4b34805aae5f60546df33eba00",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7035,
-      "sha256": "5c0d3f9ca53f2e966a317abad13c940cb5b84f880c77ad3e3ff67fc9eabc1be0",
-      "djb2": "8d45969d"
+      "sha256": "4fa6a8d20efbfc9e0fc6d3238fb3d5348363020afff841cbaec39bd16e1f3430",
+      "djb2": "d88498fd"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -372,14 +372,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 251805,
-        "sha256": "4562bfe9c8c02e445c2b85f5c714ee42fd8bd6934fdd94617997aea741dae00c",
-        "djb2": "7bf2cb3c"
+        "sha256": "42f5183fee7011a76202551ac6daff9f46e58a6be044216f8f24242058ac1e70",
+        "djb2": "fd70ee62"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 251805,
-        "sha256": "4562bfe9c8c02e445c2b85f5c714ee42fd8bd6934fdd94617997aea741dae00c",
-        "djb2": "7bf2cb3c"
+        "sha256": "42f5183fee7011a76202551ac6daff9f46e58a6be044216f8f24242058ac1e70",
+        "djb2": "fd70ee62"
       }
     }
   }
