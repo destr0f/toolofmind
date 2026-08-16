@@ -61,7 +61,7 @@
     "networkTransport": {
       "id": "networkTransport",
       "label": "Network4/Network5 transport adapter",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-candidate.54.14-inbound-feed-rescue",
@@ -69,10 +69,10 @@
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
       "path": "network4_transport_module.lua",
-      "commit": "1a13b83197d266fe4b5e8867143133e8b83ed686",
-      "bytes": 20318,
-      "sha256": "e5d35ef2056442deb3e975a735c4a9b492390a50738d3d8d0040c45173fb1be6",
-      "djb2": "381d0584"
+      "commit": "5530809543f916b448ef037b7d8660320c5a40ba",
+      "bytes": 22343,
+      "sha256": "8ec046ab08da1cee63ff33ad17e72c48777a8c329fe47b8c00705bb01f1c3c27",
+      "djb2": "f91f477b"
     },
     "automationSupport": {
       "id": "automationSupport",
@@ -354,12 +354,12 @@
     }
   },
   "build": {
-    "generatedFromCommit": "be8611546f25603d0b181141806efddfc7b14746",
+    "generatedFromCommit": "5530809543f916b448ef037b7d8660320c5a40ba",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7170,
-      "sha256": "fc4bbe645775a5cca47712ff2d138ed91e93ebed5a7c40749590f9746ce61d20",
-      "djb2": "be0c28fe"
+      "sha256": "6b079602403360987fe531819b41ec48e5c80c04ece4018e0ccf3e85609223df",
+      "djb2": "a80aac2e"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -372,14 +372,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 253059,
-        "sha256": "c81883bd4228ea52148373a1df0e835d8ae97d22736c5397c446896a842dd160",
-        "djb2": "7717a7ed"
+        "sha256": "16451e744e8aaa7ced3659eb22074510c7f58168898241d314f04bebbd6c96f8",
+        "djb2": "39ae1581"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 253059,
-        "sha256": "c81883bd4228ea52148373a1df0e835d8ae97d22736c5397c446896a842dd160",
-        "djb2": "7717a7ed"
+        "sha256": "16451e744e8aaa7ced3659eb22074510c7f58168898241d314f04bebbd6c96f8",
+        "djb2": "39ae1581"
       }
     }
   }
