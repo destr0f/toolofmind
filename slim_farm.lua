@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.7-c54-native-restore"
+local VERSION = "1.4.1-candidate.54.8-openeggg-farm-rescue"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2209,7 +2209,6 @@ function coinIndex:WatchFolder(folder)
         local controller = coinSync.PetFarm
         if config.Mode == "Boss Chest Only" and record
             and BossChestNames[normalize(record.Name)] == true
-            and not coinSync.SignalConnections["New Coin"]
             and controller and type(controller.HandleBossSpawn) == "function" then
             controller:HandleBossSpawn(record, "Coins.ChildAdded", false, {})
         elseif type(requestAllocatorPulse) == "function" then
@@ -2414,18 +2413,85 @@ local function connectCoinSignals(forceName)
         return
     end
 
+    local function network5StandinSignal(network, commandName)
+        if type(network) ~= "table" or type(network.Fired) ~= "function"
+            or type(getfenv) ~= "function" then return nil end
+
+        local environmentOk, environment = pcall(getfenv, network.Fired)
+        local networkScript
+        if environmentOk and type(environment) == "table" then
+            local scriptOk, scriptValue = pcall(function()
+                return environment.script
+            end)
+            if scriptOk then networkScript = scriptValue end
+        end
+        if typeof(networkScript) ~= "Instance" or not networkScript:IsA("ModuleScript") then
+            return nil
+        end
+
+        local values
+        local getter = type(getupvalues) == "function" and getupvalues
+            or (debug and type(debug.getupvalues) == "function" and debug.getupvalues or nil)
+        if getter then
+            local ok, result = pcall(getter, network.Fired)
+            if ok and type(result) == "table" then values = result end
+        end
+        if not values and debug and type(debug.getupvalue) == "function" then
+            values = {}
+            for index = 1, 24 do
+                local ok, key, value = pcall(debug.getupvalue, network.Fired, index)
+                if not ok or key == nil then break end
+                values[key ~= "" and key or index] = value
+            end
+        end
+
+        local hashFunction
+        for key, value in pairs(values or {}) do
+            if type(value) == "function" then
+                if string.find(normalize(key), "hash", 1, true) then
+                    hashFunction = value
+                    break
+                end
+                local constantsGetter = type(getconstants) == "function" and getconstants
+                    or (debug and type(debug.getconstants) == "function" and debug.getconstants or nil)
+                if constantsGetter then
+                    local ok, constants = pcall(constantsGetter, value)
+                    if ok and type(constants) == "table" then
+                        for _, constant in pairs(constants) do
+                            if constant == "Network name must be a non-empty string" then
+                                hashFunction = value
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            if hashFunction then break end
+        end
+        if not hashFunction then return nil end
+
+        local hashedOk, hashedName = pcall(hashFunction, 1, commandName)
+        if not hashedOk or type(hashedName) ~= "string" then return nil end
+        local standin = networkScript:FindFirstChild(hashedName)
+        return standin and standin:IsA("BindableEvent") and standin.Event or nil
+    end
+
     local function connect(name, callback)
         if coinSync.SignalConnections[name] then return true end
-        local remote = coinSync.NetworkTransport:Resolve(
-            coinSync.RemoteCaches.Event,
-            "resolveEvent",
-            name,
-            "RemoteEvent"
-        )
-        local signal = remote and remote.OnClientEvent or nil
-        local source = signal and "Network4 direct" or nil
+        local network = networkReady()
+        local signal = network5StandinSignal(network, name)
+        local source = signal and "Network5 BindableEvent stand-in" or nil
         if not signal then
-            local network = networkReady()
+            local remote = coinSync.NetworkTransport:Resolve(
+                coinSync.RemoteCaches.Event,
+                "resolveEvent",
+                name,
+                "RemoteEvent"
+            )
+            signal = remote and remote.OnClientEvent or nil
+            source = signal and "Network4 direct" or nil
+        end
+        if not signal then
             if network and type(network.Fired) == "function" then
                 local ok, fallbackSignal = pcall(network.Fired, name)
                 if ok then

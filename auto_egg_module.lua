@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.3"
+local MODULE_VERSION = "1.7.4"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -36,6 +36,7 @@ local MAX_POST_PROCESS_WAIT_SLICES = 12
 local HEADLESS_EVENT_SETTLE_DELAY = 0.35
 local HEADLESS_INVENTORY_FALLBACK = "exact inventory-delta compatibility fallback"
 local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer gate"
+local HEADLESS_NATIVE_HOOK = "native openegggg OpenEgg closure gate"
 -- The August Network4 build renamed the inbound hatch event while keeping the
 -- purchase command unchanged. Resolve the live name first, then retain the old
 -- name as a compatibility alias for older servers.
@@ -685,34 +686,135 @@ local function connectionSource(connection)
     return sourceOk and lower(source) or ""
 end
 
-local function captureHeadlessEventGate(signal, eventRoute)
+local function connectionCallback(connection)
+    local ok, callback = pcall(function() return connection.Function end)
+    return ok and type(callback) == "function" and callback or nil
+end
+
+local function functionScript(callback)
+    if type(callback) ~= "function" or type(getfenv) ~= "function" then return nil end
+    local ok, environment = pcall(getfenv, callback)
+    if not ok or type(environment) ~= "table" then return nil end
+    local scriptObject = rawget(environment, "script")
+    if scriptObject == nil then
+        local readOk, inherited = pcall(function() return environment.script end)
+        if readOk then scriptObject = inherited end
+    end
+    return typeof(scriptObject) == "Instance" and scriptObject or nil
+end
+
+local function functionConstants(callback)
+    local getter = type(getconstants) == "function" and getconstants
+        or (debug and type(debug.getconstants) == "function" and debug.getconstants or nil)
+    if not getter or type(callback) ~= "function" then return nil end
+    local ok, constants = pcall(getter, callback)
+    return ok and type(constants) == "table" and constants or nil
+end
+
+local function findNativeOpenEgg(callback, openEggScript)
+    if type(callback) ~= "function" then return nil end
+    local getter = type(getupvalues) == "function" and getupvalues
+        or (debug and type(debug.getupvalues) == "function" and debug.getupvalues or nil)
+    local values
+    if getter then
+        local ok, result = pcall(getter, callback)
+        if ok and type(result) == "table" then values = result end
+    end
+    if not values and debug and type(debug.getupvalue) == "function" then
+        values = {}
+        for index = 1, 32 do
+            local ok, name, value = pcall(debug.getupvalue, callback, index)
+            if not ok or name == nil then break end
+            values[name ~= "" and name or index] = value
+        end
+    end
+    for name, value in pairs(values or {}) do
+        if type(value) == "function" and functionScript(value) == openEggScript then
+            local named = string.find(lower(name), "openegg", 1, true) ~= nil
+            local renderer = false
+            for _, constant in pairs(functionConstants(value) or {}) do
+                if constant == "Done Opening Egg" then
+                    renderer = true
+                    break
+                end
+            end
+            if named or renderer then return value end
+        end
+    end
+    return nil
+end
+
+local function networkScriptFor(context)
+    local network = context.Library and context.Library.Network
+    if type(network) ~= "table" then return nil end
+    for _, name in ipairs({ "Fired", "Fire", "Invoke" }) do
+        local scriptObject = functionScript(network[name])
+        if scriptObject and scriptObject:IsA("ModuleScript") then return scriptObject end
+    end
+    return nil
+end
+
+local function captureHeadlessEventGate(signal, eventRoute, context, openEggScript)
     if typeof(signal) ~= "RBXScriptSignal" then
-        return nil, "Open Egg command signal is not an RBXScriptSignal: " .. tostring(eventRoute)
+        return nil, nil, nil,
+            "Open Egg command signal is not an RBXScriptSignal: " .. tostring(eventRoute)
     end
     if type(getconnections) ~= "function" then
-        return nil, "getconnections is unavailable"
+        return nil, nil, nil, "getconnections is unavailable"
     end
 
     -- Library.Network.Fired(name) returns either the hashed RemoteEvent signal
     -- or that command's private BindableEvent signal. Both are already scoped
     -- to openegggg/Open Egg, so either can safely gate only the native visual
     -- callback while our listener remains connected.
-    local ok, connections = pcall(getconnections, signal)
-    if not ok or type(connections) ~= "table" then
-        return nil, "Open Egg command signal connections are unavailable: " .. tostring(connections)
+    local signals, signalLabels, seenSignals = {}, {}, {}
+    local function addSignal(candidate, label)
+        if typeof(candidate) ~= "RBXScriptSignal" or seenSignals[candidate] then return end
+        seenSignals[candidate] = true
+        signals[#signals + 1] = candidate
+        signalLabels[candidate] = label
+    end
+    addSignal(signal, eventRoute)
+
+    -- Network5 may have returned a RemoteEvent after the game Open Eggs script
+    -- had already subscribed to the command's private BindableEvent stand-in.
+    -- Inspect only the bounded children of the already-loaded Network module;
+    -- this finds the original openegggg subscriber without getgc or polling.
+    local network = context.Library and context.Library.Network
+    if network and type(network.Fired) == "function" then
+        for _, commandName in ipairs(OPEN_EGG_EVENT_NAMES) do
+            local ok, candidate = pcall(network.Fired, commandName)
+            if ok then addSignal(candidate, "Library.Network.Fired(" .. commandName .. ")") end
+        end
+    end
+    local networkScript = networkScriptFor(context)
+    if networkScript then
+        for _, child in ipairs(networkScript:GetChildren()) do
+            if child:IsA("BindableEvent") then
+                addSignal(child.Event, "Network5 BindableEvent stand-in")
+            end
+        end
     end
 
     local candidates, openEggCandidates, networkCandidates = {}, {}, {}
-    for _, connection in pairs(connections) do
-        if connectionMethod(connection, "Disable") and connectionMethod(connection, "Enable") then
-            candidates[#candidates + 1] = connection
-            local source = connectionSource(connection)
-            if string.find(source, "open eggs", 1, true)
-                or string.find(source, "openegg", 1, true) then
-                openEggCandidates[#openEggCandidates + 1] = connection
-            elseif string.find(source, "network", 1, true)
-                or string.find(source, "framework", 1, true) then
-                networkCandidates[#networkCandidates + 1] = connection
+    local exactSignal, nativeOpenEgg
+    for _, candidateSignal in ipairs(signals) do
+        local ok, connections = pcall(getconnections, candidateSignal)
+        if ok and type(connections) == "table" then
+            for _, connection in pairs(connections) do
+                if connectionMethod(connection, "Disable") and connectionMethod(connection, "Enable") then
+                    local callback = connectionCallback(connection)
+                    local source = connectionSource(connection)
+                    candidates[#candidates + 1] = connection
+                    if callback and functionScript(callback) == openEggScript then
+                        openEggCandidates[#openEggCandidates + 1] = connection
+                        exactSignal = exactSignal or candidateSignal
+                        nativeOpenEgg = nativeOpenEgg or findNativeOpenEgg(callback, openEggScript)
+                    elseif string.find(source, "network", 1, true)
+                        or string.find(source, "framework", 1, true) then
+                        networkCandidates[#networkCandidates + 1] = connection
+                    end
+                end
             end
         end
     end
@@ -721,11 +823,10 @@ local function captureHeadlessEventGate(signal, eventRoute)
     -- its callback is attached directly to OnClientEvent. Prefer that exact
     -- visual producer. Older sessions may route through Network's bridge, in
     -- which case disabling the unique bridge still leaves our direct listener.
-    local selected = #openEggCandidates > 0 and openEggCandidates
-        or (#networkCandidates > 0 and networkCandidates or candidates)
+    local selected = #openEggCandidates > 0 and openEggCandidates or {}
     if #selected == 0 then
-        return nil, string.format(
-            "Open Egg native dispatcher is ambiguous (%d compatible, %d Open Eggs, %d network-labelled)",
+        return nil, nil, nil, string.format(
+            "Open Egg native dispatcher was not found (%d compatible, %d Open Eggs, %d network-labelled)",
             #candidates, #openEggCandidates, #networkCandidates
         )
     end
@@ -736,10 +837,46 @@ local function captureHeadlessEventGate(signal, eventRoute)
     for _, connection in ipairs(selected) do
         local restorable, restoreProblem = callConnectionMethod(connection, "Enable")
         if not restorable then
-            return nil, "Open Egg native dispatcher cannot be restored: " .. tostring(restoreProblem)
+            return nil, nil, nil,
+                "Open Egg native dispatcher cannot be restored: " .. tostring(restoreProblem)
         end
     end
-    return selected
+    return selected, exactSignal, nativeOpenEgg,
+        tostring(signalLabels[exactSignal] or "openegggg native signal")
+end
+
+local function installNativeOpenEggHook(state, context)
+    local target = state.NativeOpenEggTarget
+    if type(target) ~= "function" then return false, "native OpenEgg closure was not found" end
+    if type(hookfunction) ~= "function" then return false, "hookfunction is unavailable" end
+
+    local original
+    local wrapper = function(eggName, pets)
+        local pending = state.Pending
+        if state.Running and state.GateOwned and pending and pending.Headless then
+            local profiled = profileBegin("PSX_EggOpenGate")
+            pending.VisualSuppressed = true
+            pending.VisualSuppressedAt = os.clock()
+            pending.NativeOpenEggSeen = true
+            pending.ActualEgg = pending.ActualEgg or tostring(eggName)
+            state.HeadlessVisualsSuppressed = state.HeadlessVisualsSuppressed + 1
+            profileEnd(profiled)
+            return nil
+        end
+        return original(eggName, pets)
+    end
+    local ok, previous = pcall(hookfunction, target, wrapper)
+    if not ok or type(previous) ~= "function" then
+        return false, "native OpenEgg hook was rejected: " .. tostring(previous)
+    end
+    original = previous
+    state.NativeOpenEggOriginal = original
+    state.NativeOpenEggWrapper = wrapper
+    state.NativeOpenEggHooked = true
+    state.OpenEggGateRoute = HEADLESS_NATIVE_HOOK
+    context.Trace("auto egg headless gate",
+        "captured the original openegggg stand-in and gated OpenEgg before visual allocation")
+    return true
 end
 
 local function resolveOpenEggSignal(context)
@@ -831,6 +968,14 @@ end
 local function restoreHeadlessProducerGate(state)
     if not state then return end
     restoreHeadlessEventGate(state)
+    if state.NativeOpenEggHooked and type(hookfunction) == "function"
+        and type(state.NativeOpenEggTarget) == "function"
+        and type(state.NativeOpenEggOriginal) == "function" then
+        pcall(hookfunction, state.NativeOpenEggTarget, state.NativeOpenEggOriginal)
+    end
+    state.NativeOpenEggHooked = false
+    state.NativeOpenEggOriginal = nil
+    state.NativeOpenEggWrapper = nil
     local scriptEnvironment = state.OpenEggEnvironment
     local wrapper = state.OpenEggWrapper
     local original = state.OpenEggOriginal
@@ -867,6 +1012,11 @@ local function ensureHeadlessProducerGate(state, context)
     -- before DepthOfField, models and GUI are allocated while this module's
     -- listener (connected after the captured dispatcher) still receives the
     -- authoritative payload.
+    if state.NativeOpenEggHooked then
+        state.OpenEggScript = openEggScript
+        state.OpenEggGateRoute = HEADLESS_NATIVE_HOOK
+        return true, state.OpenEggGateRoute
+    end
     if type(state.EventGateConnections) == "table" and #state.EventGateConnections > 0 then
         restoreHeadlessProducerGate(state)
         state.OpenEggScript = openEggScript
@@ -2419,9 +2569,15 @@ return function(action, context)
     -- Capture the game's exact dispatcher before this module adds its own
     -- listener. When OpenEgg is not exported by getsenv, this lets Headless
     -- pause only the native visual producer for the duration of one purchase.
-    local eventGateConnection, eventGateProblem
+    local eventGateConnection, eventGateSignal, nativeOpenEggTarget, eventGateProblem
     if signal then
-        eventGateConnection, eventGateProblem = captureHeadlessEventGate(signal, eventRoute)
+        eventGateConnection, eventGateSignal, nativeOpenEggTarget, eventGateProblem =
+            captureHeadlessEventGate(signal, eventRoute, context, openEggScriptFor(context))
+        if eventGateSignal then
+            signal = eventGateSignal
+            eventRoute = tostring(eventGateProblem or eventRoute)
+            eventProblem = nil
+        end
     else
         eventGateProblem = tostring(eventProblem or "inbound hatch signal unavailable")
     end
@@ -2478,6 +2634,10 @@ return function(action, context)
         EventGateConnection = type(eventGateConnection) == "table" and eventGateConnection[1] or nil,
         EventGateProblem = eventGateProblem,
         EventGateDisabled = false,
+        NativeOpenEggTarget = nativeOpenEggTarget,
+        NativeOpenEggOriginal = nil,
+        NativeOpenEggWrapper = nil,
+        NativeOpenEggHooked = false,
         OpeningEggAckRemote = nil,
         OpeningEggAckRoute = nil,
         OpeningEggAckProblem = nil,
@@ -2496,6 +2656,20 @@ return function(action, context)
         NextEggWorldGateTrace = 0,
     }
     activeState = state
+
+    if type(nativeOpenEggTarget) == "function" then
+        local hooked, hookProblem = installNativeOpenEggHook(state, context)
+        if hooked then
+            -- Keep the game's command callback enabled: it still owns the
+            -- exact Opening Egg acknowledgement. Only its closed-over visual
+            -- renderer is gated, and our listener shares the same stand-in.
+            state.EventGateConnections = {}
+            state.EventGateConnection = nil
+            state.EventGateProblem = nil
+        else
+            state.EventGateProblem = tostring(hookProblem)
+        end
+    end
 
     local connected, connection = true, nil
     if signal then

@@ -75,8 +75,11 @@ assert(source.includes('local sent = pcall(remote.InvokeServer, remote, tostring
 assert(!source.includes('pcall(network.Invoke, "Leave Coin"'));
 assert(!source.includes('pcall(network.Fire, "Change Pet Target"'));
 
-const directEggEvent = autoEgg.indexOf('pcall(context.GetEventRemote, commandName)');
-const fallbackEggEvent = autoEgg.indexOf('pcall(network.Fired, commandName)');
+const eggResolverStart = autoEgg.indexOf('local function resolveOpenEggSignal(context)');
+const eggResolverEnd = autoEgg.indexOf('local function restoreHeadlessEventGate', eggResolverStart);
+const eggResolver = autoEgg.slice(eggResolverStart, eggResolverEnd);
+const directEggEvent = eggResolver.indexOf('pcall(context.GetEventRemote, commandName)');
+const fallbackEggEvent = eggResolver.indexOf('pcall(network.Fired, commandName)');
 assert(directEggEvent >= 0 && fallbackEggEvent > directEggEvent);
 assert(autoEgg.includes('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }'));
 assert(autoEgg.includes('acknowledgeOpeningEgg(state, context, pending.Egg, pets)'));

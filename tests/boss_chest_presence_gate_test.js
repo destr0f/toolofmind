@@ -26,8 +26,14 @@ assert(source.includes('if not coinSync.BossRejected[coinId]'),
     "rejected boss IDs must be absent from dispatch candidates");
 assert(source.includes('driverStatus = "boss chest absent; awaiting New Coin"'),
     "an absent boss must wait for its authoritative appearance event");
-assert(source.includes('and not coinSync.SignalConnections["New Coin"]\n            and controller'),
-    "Coins.ChildAdded must not race the authoritative New Coin source");
+assert(source.includes('and controller and type(controller.HandleBossSpawn) == "function" then'),
+    "Coins.ChildAdded must retain the zero-request local boss wake edge");
+assert(!source.includes('and not coinSync.SignalConnections["New Coin"]\n            and controller'),
+    "a stale Network5 New Coin listener can still suppress the local boss wake edge");
+assert(source.includes('local function network5StandinSignal(network, commandName)'),
+    "farm lifecycle does not resolve Network5's private command stand-in");
+assert(source.includes('source = signal and "Network5 BindableEvent stand-in" or nil'),
+    "farm lifecycle does not prefer the exact Network5 stand-in used by game scripts");
 assert(!source.includes('if bossEventDriven and coinSync.BossBootstrapDone then'),
     "one-shot bootstrap sleep can strand a live C54.1 boss generation");
 assert(!source.includes('function petFarm:QueueFastDispatch(petId)\n    if config.Mode == "Boss Chest Only"'),

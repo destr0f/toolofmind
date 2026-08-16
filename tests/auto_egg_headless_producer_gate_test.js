@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.7.3"',
+requireText('local MODULE_VERSION = "1.7.4"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -28,8 +28,20 @@ requireText('scriptEnvironment.OpenEgg = wrapper',
     "native OpenEgg producer is not replaced");
 requireText('local HEADLESS_EVENT_GATE = "direct Open Egg RemoteEvent producer gate"',
     "missing OpenEgg exports do not have a direct RemoteEvent producer gate");
-requireText('captureHeadlessEventGate(signal, eventRoute)',
+requireText('captureHeadlessEventGate(signal, eventRoute, context, openEggScript)',
     "native Open Egg dispatcher is not captured before the module listener");
+requireText('local HEADLESS_NATIVE_HOOK = "native openegggg OpenEgg closure gate"',
+    "headless does not identify the native OpenEgg closure gate");
+requireText('addSignal(child.Event, "Network5 BindableEvent stand-in")',
+    "headless does not inspect Network5's private openegggg stand-in");
+requireText('local function findNativeOpenEgg(callback, openEggScript)',
+    "headless cannot recover the closed-over native OpenEgg renderer");
+requireText('local function installNativeOpenEggHook(state, context)',
+    "headless does not install the scoped native OpenEgg renderer gate");
+requireText('local ok, previous = pcall(hookfunction, target, wrapper)',
+    "headless does not stop native allocation at the closed-over OpenEgg function");
+requireText('state.EventGateConnections = {}',
+    "native openegggg acknowledgement callback is still disabled after a successful renderer hook");
 requireText('or that command\'s private BindableEvent signal',
     "Library.Network.Fired fallback is not accepted as a command-specific producer gate");
 requireText('local direct, sourceName, sessionIndex = directSignal(commandName)',
@@ -116,7 +128,7 @@ if (beginRequest < 0 || producerPreflight < beginRequest || invoke < 0 || produc
     throw new Error("headless producer gate is not installed before Buy Egg Yay");
 }
 
-for (const forbidden of ["hookmetamethod(", "hookfunction("]) {
+for (const forbidden of ["hookmetamethod("]) {
     if (source.includes(forbidden)) {
         throw new Error(`headless producer gate must not install global ${forbidden}`);
     }
