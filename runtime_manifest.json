@@ -125,7 +125,7 @@
     "lootReactor": {
       "id": "lootReactor",
       "label": "Native loot reactor",
-      "version": "3.7.1",
+      "version": "3.7.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-candidate.54.18-feed-selfheal",
@@ -133,10 +133,10 @@
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
       "path": "loot_reactor.lua",
-      "commit": "12e3a9f96c8509088266b45c50a5d1d81bbae729",
-      "bytes": 64639,
-      "sha256": "4013f888e997df472f5a829fe4d2ec0d302d72c6b76bcb59323beeb27945a2ee",
-      "djb2": "5f7d44c7"
+      "commit": "7e08c3ae705f64f1548391d278a8af4342fbddd2",
+      "bytes": 64636,
+      "sha256": "7e1012ebc63d242df22ca32d1f109013964768571a8c79cea586d324aff214b8",
+      "djb2": "dc5a3f73"
     },
     "autoEgg": {
       "id": "autoEgg",
@@ -354,12 +354,12 @@
     }
   },
   "build": {
-    "generatedFromCommit": "02a19a818d9045ab589e0e553b163bc139f00068",
+    "generatedFromCommit": "7e08c3ae705f64f1548391d278a8af4342fbddd2",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7080,
-      "sha256": "ab7882b1277eb9bef4d2df6278c21c27ef54fbf8dd564ab772d43abe3fcbf249",
-      "djb2": "e1088e6a"
+      "sha256": "53a79db066f4d46ea86a9bb9bf96970648a06c6dc170f3e7b27154c2a339ec78",
+      "djb2": "760ad002"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -372,14 +372,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 253104,
-        "sha256": "946290ff3158855d5a2ae0ae7ad7388590d00c11722f97f649693b70b7c0b920",
-        "djb2": "7810acaf"
+        "sha256": "cf8919269bcad276acc393d40a437df8915a9acd1da059c9f5057b9ab3524fac",
+        "djb2": "0c70a602"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 253104,
-        "sha256": "946290ff3158855d5a2ae0ae7ad7388590d00c11722f97f649693b70b7c0b920",
-        "djb2": "7810acaf"
+        "sha256": "cf8919269bcad276acc393d40a437df8915a9acd1da059c9f5057b9ab3524fac",
+        "djb2": "0c70a602"
       }
     }
   }
