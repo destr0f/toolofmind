@@ -117,10 +117,10 @@
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "4f21e1d9ccd3c06d32e6c45fee5fc33d13b317f9",
-      "bytes": 44948,
-      "sha256": "110a562af369fabe8d46f58f0b4a3f4d7dda025f7326c1d031edab41ca41c053",
-      "djb2": "4e4ce701"
+      "commit": "925f312a87499355be991fb57321a16c6a6cc5a2",
+      "bytes": 44411,
+      "sha256": "0c185039ec37fcd00ee8f6ca77d3b00aa27ffd86b958a6ec639cd0a3dd34db4e",
+      "djb2": "e33a89af"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -354,32 +354,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "eac46559a68e376f70798737abdedf96c8bfe785",
+    "generatedFromCommit": "925f312a87499355be991fb57321a16c6a6cc5a2",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7035,
-      "sha256": "7752302be5b61b13c9d3a10ecf45edca3ea45981b24d57a643c6866c4ca71e55",
-      "djb2": "92644514"
+      "sha256": "d623d2309e1a8ffecd66882038e634dbfa9bc91459a30ee4647762dc493e7f71",
+      "djb2": "d05e56ba"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-candidate.54.17-buy-egg-ok",
-      "bytes": 322802,
-      "sha256": "43dbbe09f57c0cd24bc13faff8b306025208564efb2840e457d0413df347876d",
-      "djb2": "fb1aed1d"
+      "bytes": 322860,
+      "sha256": "46b1ff461e1bd0eb37eb7b8b4ac43845098479656f6bfb53d2f4613fdcfea9f1",
+      "djb2": "d2d09559"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 251805,
-        "sha256": "c4fe44a45b0a4d4338c99ebca1f91243fe887ddb5b13e000e91921369e88e0d9",
-        "djb2": "c2f236cb"
+        "bytes": 252435,
+        "sha256": "dafe4631bfefbaf4c7596a0ca725f4b3255e70db7e7bf61231971234c9a9e2d1",
+        "djb2": "f22561b8"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 251805,
-        "sha256": "c4fe44a45b0a4d4338c99ebca1f91243fe887ddb5b13e000e91921369e88e0d9",
-        "djb2": "c2f236cb"
+        "bytes": 252435,
+        "sha256": "dafe4631bfefbaf4c7596a0ca725f4b3255e70db7e7bf61231971234c9a9e2d1",
+        "djb2": "f22561b8"
       }
     }
   }
