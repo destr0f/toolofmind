@@ -33,12 +33,13 @@ assert(transport.includes("cached.Generation == generation"));
 // the game's own u14/u18-style closures perform FindFirstChild + rename + wire
 // locally and send no traffic. Blind per-request accessor calls stay banned.
 assert(transport.includes("local function nativeBind(context, kind, commandName)"));
-assert(transport.includes("for index = 1, 8 do"));
+assert(transport.includes("readUpvalue(context, method, 2)"),
+    "lazy bind must call only the direct remote accessor; the other upvalues create unwired stand-ins");
 assert(transport.includes('hashSource = "native lazy bind #" .. tostring(bindIndex)'));
+assert(!transport.includes("bridge:Invoke("), "unwired BindableFunction bridges must never be invoked");
 
 assert(source.includes("coinSync.NetworkTransport"));
 assert(source.includes('loadRemoteController("networkTransport", "Network4 transport adapter")'));
-assert(source.includes('"resolveInvokeBridge", commandName, "BindableFunction"'));
 assert(source.includes('"resolveFireBridge", commandName, "BindableEvent"'));
 assert(!source.includes('sourceName = "Library.Network.Invoke named fallback"'),
     "the u11-blocked named invoke fallback must not fake server rejections");

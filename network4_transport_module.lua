@@ -2,7 +2,7 @@
 -- Reads the live network module's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.5.1"
+local MODULE_VERSION = "1.5.2"
 local UINT32 = 4294967296
 
 local SHA256_K = {
@@ -239,13 +239,14 @@ local function nativeBind(context, kind, commandName)
         return nil
     end
     local className = kind == 1 and "RemoteEvent" or "RemoteFunction"
-    for index = 1, 8 do
-        local accessor = readUpvalue(context, method, index)
-        if type(accessor) == "function" then
-            local ok, value = pcall(accessor, commandName)
-            if ok and liveRemote(context, value, className) then
-                return value, index
-            end
+    -- Only the direct remote accessor (u14/u18; upvalue #2 in the current
+    -- layout) is safe to call. The neighbours create unwired Bindable
+    -- stand-ins as a side effect, and invoking such a stand-in yields forever.
+    local accessor = readUpvalue(context, method, 2)
+    if type(accessor) == "function" then
+        local ok, value = pcall(accessor, commandName)
+        if ok and liveRemote(context, value, className) then
+            return value, 2
         end
     end
     return nil

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.14-inbound-feed-rescue"
+local VERSION = "1.4.1-candidate.54.15-egg-invoke-hang-fix"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3472,34 +3472,14 @@ local function invokeCommand(commandName, ...)
     end
     if not remote or not result[1] then
         local directProblem = remote and tostring(result[2]) or tostring(resolveProblem)
-        local bridge, bridgeSource, _, bridgeProblem, bridgeCommand =
-            coinSync.NetworkTransport:ResolveCommandBridge(
-                "resolveInvokeBridge", commandName, "BindableFunction")
-        if bridge then
-            sourceName = bridgeSource
-            routedCommand = bridgeCommand
-            requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
-                command = commandName,
-                route = sourceName,
-                fallback = directProblem,
-            })
-            result = table.pack(pcall(function()
-                return bridge:Invoke(table.unpack(arguments, 1, arguments.n))
-            end))
-            if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
-        end
-        if not bridge or not result[1] then
-            local bridgeFailure = bridge and tostring(result[2]) or tostring(bridgeProblem)
-            -- Never fall back to Library.Network.Invoke: the game's anti-tamper
-            -- silently drops injected calls and the nil return was surfacing as
-            -- fake server rejections (eggs/gifts). An honest transport failure
-            -- lets the caller's bounded retry wait for the route instead.
-            local stage = coinSync.NetworkTransport.Controller == nil
-                and "Network4 transport module is still loading"
-                or "command route is unresolved in the live Network4 map"
-            result = table.pack(false, directProblem .. "; bridge=" .. bridgeFailure
-                .. "; " .. stage)
-        end
+        -- A BindableFunction stand-in whose remote never materialised yields
+        -- forever on Invoke (the game wires OnInvoke only when the real
+        -- RemoteFunction is found). Invoking it hung Buy Egg Yay purchases, so
+        -- the invoke path reports an honest transport failure instead.
+        local stage = coinSync.NetworkTransport.Controller == nil
+            and "Network4 transport module is still loading"
+            or "command route is unresolved in the live Network4 map"
+        result = table.pack(false, directProblem .. "; " .. stage)
     end
     if not result[1] then
         requestDiagnostics.Route("invoke", commandName, false, tostring(result[2]))
