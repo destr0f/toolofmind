@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.16-transport-load-gate"
+local VERSION = "1.4.1-candidate.54.17-buy-egg-ok"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3344,6 +3344,7 @@ coinSync.NetworkTransport.RouteAliases = {
     ["Join Coin"] = { "Join The Coin", "Join Coin" },
     ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
     ["Leave Coin"] = { "Leave The Coin", "Leave Coin" },
+    ["Buy Egg Yay"] = { "Buy Egg Ok", "Buy Egg Yay" },
 }
 
 function coinSync.NetworkTransport:CommandRouteCandidates(commandName)
