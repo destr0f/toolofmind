@@ -3490,28 +3490,15 @@ local function invokeCommand(commandName, ...)
         end
         if not bridge or not result[1] then
             local bridgeFailure = bridge and tostring(result[2]) or tostring(bridgeProblem)
-            local network = networkReady()
-            if network and type(network.Invoke) == "function" then
-                sourceName = "Library.Network.Invoke named fallback"
-                sessionIndex = nil
-                requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
-                    command = commandName,
-                    route = sourceName,
-                    fallback = directProblem .. "; bridge=" .. bridgeFailure,
-                })
-                result = table.pack(false, directProblem)
-                for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
-                    routedCommand = candidate
-                    result = table.pack(pcall(function()
-                        return network.Invoke(candidate, table.unpack(arguments, 1, arguments.n))
-                    end))
-                    if result[1] then break end
-                end
-                if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
-            else
-                result = table.pack(false, directProblem .. "; bridge=" .. bridgeFailure
-                    .. "; Library.Network.Invoke is unavailable")
-            end
+            -- Never fall back to Library.Network.Invoke: the game's anti-tamper
+            -- silently drops injected calls and the nil return was surfacing as
+            -- fake server rejections (eggs/gifts). An honest transport failure
+            -- lets the caller's bounded retry wait for the route instead.
+            local stage = coinSync.NetworkTransport.Controller == nil
+                and "Network4 transport module is still loading"
+                or "command route is unresolved in the live Network4 map"
+            result = table.pack(false, directProblem .. "; bridge=" .. bridgeFailure
+                .. "; " .. stage)
         end
     end
     if not result[1] then
@@ -3565,23 +3552,13 @@ local function fireCommand(commandName, ...)
         end
         if not bridge or not ok then
             local bridgeFailure = bridge and tostring(problem) or tostring(bridgeProblem)
-            local network = networkReady()
-            if network and type(network.Fire) == "function" then
-                sourceName = "Library.Network.Fire named fallback"
-                sessionIndex = nil
-                ok, problem = false, directProblem
-                for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
-                    routedCommand = candidate
-                    ok, problem = pcall(function()
-                        network.Fire(candidate, table.unpack(arguments, 1, arguments.n))
-                    end)
-                    if ok then break end
-                end
-                if ok then requestDiagnostics.Route("fire", commandName, true) end
-            else
-                ok, problem = false, directProblem .. "; bridge=" .. bridgeFailure
-                    .. "; Library.Network.Fire is unavailable"
-            end
+            -- Library.Network.Fire is silently dropped by the game's anti-tamper
+            -- from injected threads; report an honest transport failure instead.
+            local stage = coinSync.NetworkTransport.Controller == nil
+                and "Network4 transport module is still loading"
+                or "command route is unresolved in the live Network4 map"
+            ok, problem = false, directProblem .. "; bridge=" .. bridgeFailure
+                .. "; " .. stage
         end
     end
     if not ok then
@@ -3938,6 +3915,10 @@ function petFarm:EnsureEngine()
         Enabled = function() return config.PetFarm end,
         Resetting = function() return farmResetRunning end,
         NetworkReady = networkReady,
+        -- The named Library.Network fallback is silently dropped by the game's
+        -- anti-tamper from injected threads; a transport error with a bounded
+        -- retry is strictly better than a fake rejection.
+        NoNamedFallback = true,
         CommandRouteCandidates = function(commandName)
             return coinSync.NetworkTransport:CommandRouteCandidates(commandName)
         end,
@@ -4981,6 +4962,9 @@ local function startAutoEggModule()
         FireCommand = fireCommand,
         GetEventRemote = getEventRemote,
         GetFireRemote = getFireRemote,
+        GetInboundSignal = function(commandName)
+            return coinSync.NetworkTransport:ResolveInbound(commandName)
+        end,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
         ReleaseOperation = releaseOperation,
@@ -5711,7 +5695,15 @@ allocatorPass = function()
     if not ok then driverStatus = "allocator error: " .. tostring(problem) end
 
     allocatorBusy = false
-    if allocatorRequested then petFarm:ScheduleAllocatorPass() end
+    if allocatorRequested then
+        allocatorRequested = false
+        -- A same-cycle task.defer chain overflows the executor re-entrancy
+        -- limit when coin events request another pass every frame. The timer
+        -- queue breaks the chain; the allocator still coalesces bursts.
+        task.delay(0.05, function()
+            if running() then petFarm:ScheduleAllocatorPass() end
+        end)
+    end
 end
 
 requestAllocatorPulse = function(force)

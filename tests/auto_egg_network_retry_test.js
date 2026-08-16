@@ -18,8 +18,8 @@ function functionBody(name, nextName) {
 
 assert(source.includes("local MAX_NETWORK_ATTEMPTS = 12"),
     "poor-connection retry budget must remain 12 attempts");
-assert(source.includes('local MODULE_VERSION = "1.7.4"'),
-    "the native-openegggg acknowledgement build must expose Auto Egg v1.7.4");
+assert(source.includes('local MODULE_VERSION = "1.7.5"'),
+    "the native-openegggg acknowledgement build must expose Auto Egg v1.7.5");
 assert(source.includes("local NETWORK_RETRY_WINDOW = 600"),
     "poor-connection retry window must remain bounded at 600 seconds");
 assert(source.includes("local RESPONSE_WAIT_SLICE = 54"),

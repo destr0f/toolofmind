@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.4"
+local MODULE_VERSION = "1.7.5"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -904,31 +904,23 @@ local function resolveOpenEggSignal(context)
         problems[#problems + 1] = commandName .. ": " .. tostring(problem)
     end
 
-    local network = context.Library and context.Library.Network
-    if network and type(network.Fired) == "function" then
+    -- The exact t4/t2[1] inbound route owns the live hatch event. The protected
+    -- Library.Network.Fired accessor is never called from this injected thread:
+    -- its anti-tamper returns an orphaned bindable whose silence masquerades as
+    -- a connected feed and previously starved every purchase confirmation.
+    if type(context.GetInboundSignal) == "function" then
         for _, commandName in ipairs(OPEN_EGG_EVENT_NAMES) do
-            local signalOk, fallbackSignal = pcall(network.Fired, commandName)
-            if signalOk and fallbackSignal and type(fallbackSignal.Connect) == "function" then
-                -- Network4 binds a per-session hashed RemoteEvent lazily inside
-                -- Fired(). Retry the read-only resolver after that local bind;
-                -- this performs no FireServer/InvokeServer call and lets us
-                -- gate the visual producer before the first purchase.
-                local direct, sourceName, sessionIndex = directSignal(commandName)
-                if direct then
-                    return direct,
-                        tostring(sourceName) .. " after Library.Network.Fired binding",
-                        sessionIndex,
-                        commandName
-                end
-                return fallbackSignal,
-                    "Library.Network.Fired fallback",
+            local signalOk, signal, sourceName = pcall(context.GetInboundSignal, commandName)
+            if signalOk and signal and type(signal.Connect) == "function" then
+                return signal,
+                    tostring(sourceName or "Network4 inbound"),
                     nil,
                     commandName
             end
-            problems[#problems + 1] = commandName .. " fallback: " .. tostring(fallbackSignal)
+            problems[#problems + 1] = commandName .. " inbound: " .. tostring(signalOk and sourceName or signal)
         end
     else
-        problems[#problems + 1] = "Library.Network.Fired unavailable"
+        problems[#problems + 1] = "GetInboundSignal is unavailable"
     end
 
     return nil, nil, nil, nil, table.concat(problems, " | ")
