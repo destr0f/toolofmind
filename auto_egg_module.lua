@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.6"
+local MODULE_VERSION = "1.7.7"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -745,6 +745,14 @@ local function findNativeOpenEgg(callback, openEggScript)
 end
 
 local function networkScriptFor(context)
+    -- The direct path is deterministic: Network's per-command BindableEvent
+    -- stand-ins are parented to this ModuleScript, and the headless gate must
+    -- enumerate them even when executor env inspection fails.
+    local framework = game:GetService("ReplicatedStorage"):FindFirstChild("Framework")
+    local modules = framework and framework:FindFirstChild("Modules")
+    local client = modules and modules:FindFirstChild("Client")
+    local direct = client and client:FindFirstChild("2 - Network")
+    if direct and direct:IsA("ModuleScript") then return direct end
     local network = context.Library and context.Library.Network
     if type(network) ~= "table" then return nil end
     for _, name in ipairs({ "Fired", "Fire", "Invoke" }) do
@@ -1014,6 +1022,31 @@ local function ensureHeadlessProducerGate(state, context)
         state.OpenEggScript = openEggScript
         state.OpenEggGateRoute = HEADLESS_EVENT_GATE
         return true, state.OpenEggGateRoute
+    end
+    -- Late re-capture: at module start the native dispatcher may sit on the
+    -- not-yet-bound stand-in or the environment lookup may fail transiently.
+    -- Retry the exact capture occasionally instead of sticking to the visible
+    -- fallback until the user retoggles the feature.
+    if state.OpenEggGateRoute == HEADLESS_INVENTORY_FALLBACK
+        and state.EventSignal and os.clock() >= (tonumber(state.NextEventGateRecapture) or 0) then
+        state.NextEventGateRecapture = os.clock() + 10
+        local connections, exactSignal, nativeTarget =
+            captureHeadlessEventGate(state.EventSignal, state.EventRoute, context, openEggScript)
+        if type(connections) == "table" and #connections > 0 then
+            state.EventGateConnections = connections
+            if exactSignal then state.EventSignal = exactSignal end
+            if type(nativeTarget) == "function" and not state.NativeOpenEggHooked then
+                state.NativeOpenEggTarget = state.NativeOpenEggTarget or nativeTarget
+                installNativeOpenEggHook(state, context)
+            end
+            if not state.NativeOpenEggHooked then
+                state.OpenEggScript = openEggScript
+                state.OpenEggGateRoute = HEADLESS_EVENT_GATE
+                context.Trace("auto egg headless gate",
+                    "late re-capture found the native dispatcher; leaving the compatibility fallback")
+                return true, state.OpenEggGateRoute
+            end
+        end
     end
     if type(getsenv) ~= "function" then
         return useHeadlessInventoryFallback(state, context, openEggScript,
@@ -2616,6 +2649,8 @@ return function(action, context)
         EventRoute = eventRoute,
         EventCommand = eventCommand,
         EventIndex = eventIndex,
+        EventSignal = signal,
+        NextEventGateRecapture = 0,
         WorkerThread = nil,
         OpenEggScript = nil,
         OpenEggEnvironment = nil,
