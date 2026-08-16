@@ -4,12 +4,10 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.7.2"
+local MODULE_VERSION = "3.7.0"
 local ORB_MIN_BATCH = 8
 local ORB_BATCH_SIZE = 32
 local MAX_PENDING_ORBS = 8192
--- Matches the proven fast build's cadence; full 32-id batches flush early,
--- sparse ones coalesce inside one 0.65s window instead of spamming per orb.
 local ORB_FLUSH_INTERVAL = 0.65
 local ORB_CONFIRM_MIN_DELAY = 2.5
 local ORB_CONFIRM_MAX_DELAY = 8

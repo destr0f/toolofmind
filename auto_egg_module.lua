@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.8"
+local MODULE_VERSION = "1.7.4"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -745,14 +745,6 @@ local function findNativeOpenEgg(callback, openEggScript)
 end
 
 local function networkScriptFor(context)
-    -- The direct path is deterministic: Network's per-command BindableEvent
-    -- stand-ins are parented to this ModuleScript, and the headless gate must
-    -- enumerate them even when executor env inspection fails.
-    local framework = game:GetService("ReplicatedStorage"):FindFirstChild("Framework")
-    local modules = framework and framework:FindFirstChild("Modules")
-    local client = modules and modules:FindFirstChild("Client")
-    local direct = client and client:FindFirstChild("2 - Network")
-    if direct and direct:IsA("ModuleScript") then return direct end
     local network = context.Library and context.Library.Network
     if type(network) ~= "table" then return nil end
     for _, name in ipairs({ "Fired", "Fire", "Invoke" }) do
@@ -912,23 +904,31 @@ local function resolveOpenEggSignal(context)
         problems[#problems + 1] = commandName .. ": " .. tostring(problem)
     end
 
-    -- The exact t4/t2[1] inbound route owns the live hatch event. The protected
-    -- Library.Network.Fired accessor is never called from this injected thread:
-    -- its anti-tamper returns an orphaned bindable whose silence masquerades as
-    -- a connected feed and previously starved every purchase confirmation.
-    if type(context.GetInboundSignal) == "function" then
+    local network = context.Library and context.Library.Network
+    if network and type(network.Fired) == "function" then
         for _, commandName in ipairs(OPEN_EGG_EVENT_NAMES) do
-            local signalOk, signal, sourceName = pcall(context.GetInboundSignal, commandName)
-            if signalOk and signal and type(signal.Connect) == "function" then
-                return signal,
-                    tostring(sourceName or "Network4 inbound"),
+            local signalOk, fallbackSignal = pcall(network.Fired, commandName)
+            if signalOk and fallbackSignal and type(fallbackSignal.Connect) == "function" then
+                -- Network4 binds a per-session hashed RemoteEvent lazily inside
+                -- Fired(). Retry the read-only resolver after that local bind;
+                -- this performs no FireServer/InvokeServer call and lets us
+                -- gate the visual producer before the first purchase.
+                local direct, sourceName, sessionIndex = directSignal(commandName)
+                if direct then
+                    return direct,
+                        tostring(sourceName) .. " after Library.Network.Fired binding",
+                        sessionIndex,
+                        commandName
+                end
+                return fallbackSignal,
+                    "Library.Network.Fired fallback",
                     nil,
                     commandName
             end
-            problems[#problems + 1] = commandName .. " inbound: " .. tostring(signalOk and sourceName or signal)
+            problems[#problems + 1] = commandName .. " fallback: " .. tostring(fallbackSignal)
         end
     else
-        problems[#problems + 1] = "GetInboundSignal is unavailable"
+        problems[#problems + 1] = "Library.Network.Fired unavailable"
     end
 
     return nil, nil, nil, nil, table.concat(problems, " | ")
@@ -1023,9 +1023,6 @@ local function ensureHeadlessProducerGate(state, context)
         state.OpenEggGateRoute = HEADLESS_EVENT_GATE
         return true, state.OpenEggGateRoute
     end
-    -- No periodic re-capture here: connection/constants scans on a cadence
-    -- hitch frames and show up as ping jitter. The gate is captured once at
-    -- module start; a manual retoggle re-runs that capture.
     if type(getsenv) ~= "function" then
         return useHeadlessInventoryFallback(state, context, openEggScript,
             "getsenv is unavailable and the exact event producer gate was not captured")
@@ -2627,8 +2624,6 @@ return function(action, context)
         EventRoute = eventRoute,
         EventCommand = eventCommand,
         EventIndex = eventIndex,
-        EventSignal = signal,
-        NextEventGateRecapture = 0,
         WorkerThread = nil,
         OpenEggScript = nil,
         OpenEggEnvironment = nil,
@@ -2714,16 +2709,13 @@ return function(action, context)
                 local ownsAcknowledgement = pending and pending.Headless
                     and pending.ProducerGateRoute == HEADLESS_EVENT_GATE
                 if ownsAcknowledgement and not state.AcknowledgedEvents[signature] then
-                    state.AcknowledgedEvents[signature] = now
-                    if matching then pending.Acknowledged = true end
-                    -- Live traffic proves the server grants pets inside
-                    -- openegggg itself; the Opening Egg ACK is cosmetic. Send
-                    -- it best-effort and never fail the hatch over it.
-                    task.defer(function()
-                        if state.Running then
-                            acknowledgeOpeningEgg(state, context, eggName, pets)
-                        end
-                    end)
+                    local ackOk, ackProblem = acknowledgeOpeningEgg(state, context, eggName, pets)
+                    if ackOk then
+                        state.AcknowledgedEvents[signature] = now
+                        if matching then pending.Acknowledged = true end
+                    elseif matching then
+                        pending.AckFailure = tostring(ackProblem)
+                    end
                 elseif ownsAcknowledgement and matching then
                     pending.Acknowledged = true
                 elseif matching then

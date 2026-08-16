@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.7.8"',
+requireText('local MODULE_VERSION = "1.7.4"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -44,10 +44,10 @@ requireText('state.EventGateConnections = {}',
     "native openegggg acknowledgement callback is still disabled after a successful renderer hook");
 requireText('or that command\'s private BindableEvent signal',
     "Library.Network.Fired fallback is not accepted as a command-specific producer gate");
-requireText('context.GetInboundSignal, commandName',
-    "the hatch event must come from the exact t4/t2[1] inbound route");
-requireText('GetInboundSignal is unavailable',
-    "the injected Fired accessor must not be used as a fallback");
+requireText('local direct, sourceName, sessionIndex = directSignal(commandName)',
+    "Network4's lazy Fired binding is not followed by a direct RemoteEvent retry");
+requireText('after Library.Network.Fired binding',
+    "the direct post-bind route is not exposed in diagnostics");
 requireText('local selected = #openEggCandidates > 0 and openEggCandidates',
     "all exact Open Eggs visual callbacks are not preferred over Network's bridge");
 requireText('for _, connection in ipairs(state.EventGateConnections or {}) do',

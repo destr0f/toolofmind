@@ -10,9 +10,7 @@ assert(source.includes("BossRejected = {}"),
     "boss presence latch must be retained in the existing coin-sync state");
 assert(source.includes('coinSync.BossRejected[coinId] = nil'));
 assert(source.includes('controller:HandleBossSpawn(record, source'));
-assert(source.includes('string.sub(source, 1, 17) == "Network4 inbound "'),
-    "the inbound feed must accept both the t4 RemoteEvent and the exact t2[1] bridge");
-assert(source.includes('directSource, data, true)'),
+assert(source.includes('source == "Network4 direct", data, true)'),
     "authoritative New Coin must always create a fresh reused-ID boss generation");
 assert(!source.includes('wasRejected or not previousAlive'),
     "a reused boss ID can still look alive and must not suppress New Coin");
@@ -41,10 +39,9 @@ const coinConnect = source.slice(
     source.indexOf("local function connectCoinSignals"),
     source.indexOf('connect("New Coin"', source.indexOf("local function connectCoinSignals"))
 );
-assert(coinConnect.includes("coinSync.NetworkTransport:ResolveInbound(name)"),
-    "farm lifecycle must resolve inbound coin signals from the exact t4/t2[1] route");
-assert(!coinConnect.includes("network.Fired") && !coinConnect.includes("Network.Fired"),
-    "injected Library.Network.Fired returns an orphaned bindable and must not mask a dead feed");
+assert(coinConnect.indexOf('coinSync.NetworkTransport:Resolve(')
+    < coinConnect.indexOf('pcall(network.Fired, name)'),
+    "farm lifecycle no longer uses the proven C54.1 direct-to-Network.Fired order");
 assert(!source.includes('if bossEventDriven and coinSync.BossBootstrapDone then'),
     "one-shot bootstrap sleep can strand a live C54.1 boss generation");
 assert(!source.includes('function petFarm:QueueFastDispatch(petId)\n    if config.Mode == "Boss Chest Only"'),
