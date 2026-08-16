@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.9-native-coin-cycle-rescue"
+local VERSION = "1.4.1-candidate.54.10-indexed-boss-rearm"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -5790,18 +5790,34 @@ local function restartFarmWatchers()
             local lastAssignment = tonumber(stats.LastAssignmentAt) or 0
             local assignmentAge = lastAssignment > 0 and os.clock() - lastAssignment
                 or math.huge
-            local targetReady = (tonumber(petFarm.LastTargetCount) or 0) > 0
-                and (tonumber(petFarm.TargetWindow) or 0) > 0
             local bossStats = petFarm:BossStats()
             local bossState = bossStats and tostring(bossStats.State) or "ABSENT"
             local bossId = bossStats and bossStats.CoinId or nil
+            local idleBossLane = expected > 0 and assigned == 0
+                and active == 0 and queued == 0 and invokes == 0
+                and assignmentAge >= 3.5
+            local indexedBoss
+            if idleBossLane then
+                -- Re-read only the existing local target index. This is not a
+                -- Get Coins request and performs no remote/polling work. A
+                -- same-ID boss respawn can leave the engine's old generation
+                -- ACTIVE while every pet is free; an ordinary allocator pulse
+                -- cannot advance that generation and becomes a permanent no-op.
+                local indexedTargets = orderedTargets("Boss Chest Only")
+                for _, candidate in ipairs(indexedTargets) do
+                    local candidateId = tostring(candidate.Id)
+                    if recordAlive(candidate)
+                        and not coinSync.BossRejected[candidateId]
+                        and os.clock() >= (rejectedUntil[candidateId] or 0) then
+                        indexedBoss = candidate
+                        break
+                    end
+                end
+            end
+            local bossRecord = bossId ~= nil and coinRecords[tostring(bossId)] or nil
             local orphanedBoss = bossId ~= nil and bossState == "ACTIVE"
-                and assigned == 0 and not targetReady
-                and active == 0 and queued == 0 and invokes == 0
-                and assignmentAge >= 3.5
-            local stalled = expected > 0 and assigned == 0 and targetReady
-                and active == 0 and queued == 0 and invokes == 0
-                and assignmentAge >= 3.5
+                and idleBossLane and indexedBoss == nil and not recordAlive(bossRecord)
+            local stalled = idleBossLane and indexedBoss ~= nil
             local now = os.clock()
             if orphanedBoss and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3
                 and petFarm:HandleBossRemoved(bossId, "local boss target vanished") then
@@ -5811,8 +5827,22 @@ local function restartFarmWatchers()
             elseif stalled and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3 then
                 farmWatch.LastRearmAt = now
                 farmWatch.StallRecoveries = farmWatch.StallRecoveries + 1
-                driverStatus = "boss target stalled; C54.1 allocator re-arm queued"
-                requestAllocatorPulse(true)
+                local rearmed = petFarm:HandleBossSpawn(
+                    indexedBoss,
+                    "idle indexed boss generation re-arm",
+                    false,
+                    {},
+                    true
+                )
+                if rearmed then
+                    driverStatus = "indexed boss generation re-armed; pets dispatched"
+                else
+                    -- The local index changed during this callback. Collapse
+                    -- the race into one ordinary allocator turn; do not add a
+                    -- snapshot request or a repeating network retry.
+                    driverStatus = "indexed boss changed during re-arm; allocator queued"
+                    requestAllocatorPulse(true)
+                end
             end
         end
         task.delay(livenessDelay, checkBossLiveness)

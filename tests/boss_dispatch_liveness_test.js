@@ -45,19 +45,22 @@ const watchers = body(
 assert(watchers.includes("LivenessToken = 0"));
 assert(watchers.includes("local function checkBossLiveness()"));
 assert(watchers.includes('config.Mode == "Boss Chest Only"'));
-assert(watchers.includes("assigned == 0 and targetReady"));
+assert(watchers.includes("local idleBossLane = expected > 0 and assigned == 0"));
 assert(watchers.includes("active == 0 and queued == 0 and invokes == 0"));
 assert(watchers.includes("assignmentAge >= 3.5"));
 assert(watchers.includes('bossState == "ACTIVE"'));
-assert(watchers.includes("assigned == 0 and not targetReady"));
+assert(watchers.includes('local indexedTargets = orderedTargets("Boss Chest Only")'));
+assert(watchers.includes("and not coinSync.BossRejected[candidateId]"));
+assert(watchers.includes("idleBossLane and indexedBoss == nil and not recordAlive(bossRecord)"));
 assert(watchers.includes('petFarm:HandleBossRemoved(bossId, "local boss target vanished")'));
 assert(watchers.includes('driverStatus = "boss lifecycle repaired; awaiting authoritative New Coin"'));
-assert(watchers.includes('driverStatus = "boss target stalled; C54.1 allocator re-arm queued"'));
+assert(watchers.includes('"idle indexed boss generation re-arm"'));
+assert(watchers.includes('driverStatus = "indexed boss generation re-armed; pets dispatched"'));
 assert(watchers.includes("requestAllocatorPulse(true)"));
 assert(!watchers.includes("BossLivenessRescueUsed"),
     "one-shot record latch can still leave a live C54.1 target permanently idle");
-assert(!watchers.includes('"active boss liveness rescue"'),
-    "liveness recovery still creates a synthetic boss generation");
+assert(!watchers.includes("BossLivenessPoll"),
+    "indexed boss recovery must remain transition-only, not a polling worker");
 for (const forbidden of ["refreshCoinSnapshot", "refreshWorkspaceCoins", "getgc", "getconnections"]) {
     assert(!watchers.includes(forbidden), `liveness watcher gained forbidden work: ${forbidden}`);
 }
