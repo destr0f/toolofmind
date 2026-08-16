@@ -1,6 +1,6 @@
 local transport = require("../network4_transport_module")
 
-assert(transport("version") == "1.5.0")
+assert(transport("version") == "1.5.1")
 assert(transport("sha256", "") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 assert(transport("sha256", "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 assert(transport("djb2Hash", "Get The Coins") == "2442970594")
@@ -231,4 +231,38 @@ assert(deadSignal == nil)
 assert(string.find(tostring(deadProblem), "inbound route unavailable", 1, true))
 
 transport("clear")
-print("PASS current DJB2 + Network5 direct/nested maps, generation cache, invalidation, bridges and inbound feed")
+
+-- Cold command with empty live maps: the resolver may ask the game's own
+-- lazy-bind accessor (a local upvalue of Network.Invoke/Fire) to materialise
+-- the remote. This performs no network traffic and saves commands like
+-- Buy Egg Yay before the first purchase.
+local lazyRemote = { ClassName = "RemoteFunction" }
+local function lazyBinder(name)
+    if name == "Buy Egg Yay" then return lazyRemote end
+    return nil
+end
+local function lazyInvoke() return true end
+local lazyUpvalues = {
+    [lazyInvoke] = { function() return true end, lazyBinder },
+}
+local lazyContext = {
+    Generation = 8,
+    Game = fakeGame,
+    Library = { Network = { Invoke = lazyInvoke, Fire = lazyInvoke } },
+    ReplicatedStorage = { FindFirstChild = function() return nil end },
+    FunctionUpvalueAt = function(callback, index)
+        local values = lazyUpvalues[callback]
+        return values and values[index] or nil
+    end,
+    IsRemote = context.IsRemote,
+    IsBridge = context.IsBridge,
+    RemoteSessionIndex = function() return 7 end,
+}
+local lazyResolved, lazySource, _, lazyProblem = transport(
+    "resolveFunction", lazyContext, "Buy Egg Yay"
+)
+assert(lazyResolved == lazyRemote, tostring(lazyProblem))
+assert(string.find(lazySource, "native lazy bind", 1, true))
+
+transport("clear")
+print("PASS current DJB2 + Network5 direct/nested maps, generation cache, invalidation, bridges, inbound feed and lazy bind")

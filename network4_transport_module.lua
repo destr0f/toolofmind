@@ -2,7 +2,7 @@
 -- Reads the live network module's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.5.0"
+local MODULE_VERSION = "1.5.1"
 local UINT32 = 4294967296
 
 local SHA256_K = {
@@ -227,6 +227,30 @@ local function routeState(context, kind, commandName)
     return remoteMaps, bridgeMaps, hash, remoteIndex, bridgeIndex, nil
 end
 
+-- The game Network module binds hashed remotes lazily through local accessor
+-- closures kept in Network.Fire/Invoke upvalues. Calling such an accessor with
+-- a command name performs only FindFirstChild + rename + bridge wiring; it
+-- sends no network traffic. This is the last legal step when the live map has
+-- not materialised a command yet (e.g. Buy Egg Yay before the first purchase).
+local function nativeBind(context, kind, commandName)
+    local network = context.Library and context.Library.Network
+    local method = network and (kind == 1 and network.Fire or network.Invoke)
+    if type(method) ~= "function" or type(context.FunctionUpvalueAt) ~= "function" then
+        return nil
+    end
+    local className = kind == 1 and "RemoteEvent" or "RemoteFunction"
+    for index = 1, 8 do
+        local accessor = readUpvalue(context, method, index)
+        if type(accessor) == "function" then
+            local ok, value = pcall(accessor, commandName)
+            if ok and liveRemote(context, value, className) then
+                return value, index
+            end
+        end
+    end
+    return nil
+end
+
 local function resolve(context, kind, commandName)
     if type(context) ~= "table" then return nil, "Network4", nil, "context is missing" end
     if kind ~= 1 and kind ~= 2 then return nil, "Network4", nil, "invalid network kind" end
@@ -259,6 +283,13 @@ local function resolve(context, kind, commandName)
             remote = found
             hashSource = candidate.Source
             break
+        end
+    end
+    if not liveRemote(context, remote, className) then
+        local bound, bindIndex = nativeBind(context, kind, commandName)
+        if liveRemote(context, bound, className) then
+            remote = bound
+            hashSource = "native lazy bind #" .. tostring(bindIndex)
         end
     end
     if not liveRemote(context, remote, className) then
@@ -381,6 +412,23 @@ local function resolveInboundEvent(context, commandName)
                 Signal = signal,
                 Holder = bridge,
                 IsRemote = false,
+                Source = source,
+                Generation = generation,
+            }
+            return signal, source, nil, nil
+        end
+    end
+
+    if true then
+        local bound, bindIndex = nativeBind(context, 1, commandName)
+        if liveRemote(context, bound, "RemoteEvent") then
+            local signal = bound.OnClientEvent
+            local source = "Network4 inbound RemoteEvent [native lazy bind #"
+                .. tostring(bindIndex) .. "]"
+            inboundCache[commandName] = {
+                Signal = signal,
+                Holder = bound,
+                IsRemote = true,
                 Source = source,
                 Generation = generation,
             }

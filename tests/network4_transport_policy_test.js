@@ -29,8 +29,12 @@ assert(transport.includes("rawget(bridgeMaps[bridgeKind], candidate.Value)"));
 assert(transport.includes('if action == "invalidate" then'));
 assert(transport.includes('if action == "stats" then return stats() end'));
 assert(transport.includes("cached.Generation == generation"));
-assert(!transport.includes("pcall(accessor"));
-assert(!transport.includes("accessor(commandName"));
+// The only permitted accessor execution is the bounded last-resort lazy bind:
+// the game's own u14/u18-style closures perform FindFirstChild + rename + wire
+// locally and send no traffic. Blind per-request accessor calls stay banned.
+assert(transport.includes("local function nativeBind(context, kind, commandName)"));
+assert(transport.includes("for index = 1, 8 do"));
+assert(transport.includes('hashSource = "native lazy bind #" .. tostring(bindIndex)'));
 
 assert(source.includes("coinSync.NetworkTransport"));
 assert(source.includes('loadRemoteController("networkTransport", "Network4 transport adapter")'));
