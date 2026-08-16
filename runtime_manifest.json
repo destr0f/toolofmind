@@ -109,7 +109,7 @@
     "petFarmEngine": {
       "id": "petFarmEngine",
       "label": "Pet farm engine",
-      "version": "1.4.5",
+      "version": "1.4.6",
       "versionAuthority": "module-api",
       "versionAction": "version",
       "compatibleSuite": "1.4.1-candidate.54.17-buy-egg-ok",
@@ -117,10 +117,10 @@
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "a3db1008fb1e2714930e18f02e997de8279102a1",
-      "bytes": 44411,
-      "sha256": "956f1080fa795b3491a515dafbc86dbbb70577ddb5aa57be977bbe6a37843acb",
-      "djb2": "c563e12e"
+      "commit": "4f21e1d9ccd3c06d32e6c45fee5fc33d13b317f9",
+      "bytes": 44948,
+      "sha256": "110a562af369fabe8d46f58f0b4a3f4d7dda025f7326c1d031edab41ca41c053",
+      "djb2": "4e4ce701"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -354,12 +354,12 @@
     }
   },
   "build": {
-    "generatedFromCommit": "ad65f1976d381bd023419c301563de4d2e1ad5df",
+    "generatedFromCommit": "4f21e1d9ccd3c06d32e6c45fee5fc33d13b317f9",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7035,
-      "sha256": "38a259599b2d558c265bb0149eb69abe2180b0b7ff594e9fee818b53a0cbd05c",
-      "djb2": "2fe4604d"
+      "sha256": "5c0d3f9ca53f2e966a317abad13c940cb5b84f880c77ad3e3ff67fc9eabc1be0",
+      "djb2": "8d45969d"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -372,14 +372,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 251805,
-        "sha256": "4797266c2d74c076b2fdf66eedce6609b43904d1ba7e87bba6999d7e91880e45",
-        "djb2": "b571ca95"
+        "sha256": "4562bfe9c8c02e445c2b85f5c714ee42fd8bd6934fdd94617997aea741dae00c",
+        "djb2": "7bf2cb3c"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 251805,
-        "sha256": "4797266c2d74c076b2fdf66eedce6609b43904d1ba7e87bba6999d7e91880e45",
-        "djb2": "b571ca95"
+        "sha256": "4562bfe9c8c02e445c2b85f5c714ee42fd8bd6934fdd94617997aea741dae00c",
+        "djb2": "7bf2cb3c"
       }
     }
   }
