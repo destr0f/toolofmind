@@ -1,6 +1,6 @@
 local transport = require("../network4_transport_module")
 
-assert(transport("version") == "1.4.0")
+assert(transport("version") == "1.5.0")
 assert(transport("sha256", "") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 assert(transport("sha256", "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 assert(transport("djb2Hash", "Get The Coins") == "2442970594")
@@ -184,4 +184,51 @@ assert(string.find(coldSource, "current DJB2", 1, true))
 assert(coldSession == "RemoteFunction")
 
 transport("clear")
-print("PASS current DJB2 + Network5 direct/nested maps, generation cache, invalidation and bridges")
+
+-- Inbound coin feed: the resolver must take the game's own t4[1] RemoteEvent
+-- OnClientEvent first, then the exact t2[1] inbound BindableEvent bridge, and
+-- never fabricate a stand-in when both are absent.
+local inboundContext = {
+    Generation = 5,
+    Game = fakeGame,
+    Library = { Network = { Fire = invoke } },
+    ReplicatedStorage = { FindFirstChild = function() return nil end },
+    FunctionUpvalueAt = context.FunctionUpvalueAt,
+    IsRemote = context.IsRemote,
+    IsBridge = context.IsBridge,
+}
+local inboundHash = "djb2-new-coin"
+hashMaps[1]["New Coin"] = inboundHash
+local inboundSignal = { fake = "on-client-event" }
+local inboundRemote = { ClassName = "RemoteEvent", OnClientEvent = inboundSignal }
+remoteMaps[1][inboundHash] = inboundRemote
+
+local feedSignal, feedSource, _, feedProblem = transport(
+    "resolveInboundEvent", inboundContext, "New Coin"
+)
+assert(feedSignal == inboundSignal, tostring(feedProblem))
+assert(string.find(feedSource, "inbound RemoteEvent", 1, true))
+
+-- Remote lost: only the exact t2[1] inbound bridge may replace it.
+remoteMaps[1][inboundHash] = nil
+inboundContext.Generation = 6
+local bridgeSignal = { fake = "inbound-bridge-event" }
+bridgeMaps[1][inboundHash] = { ClassName = "BindableEvent", Event = bridgeSignal }
+local feedSignal2, feedSource2, _, feedProblem2 = transport(
+    "resolveInboundEvent", inboundContext, "New Coin"
+)
+assert(feedSignal2 == bridgeSignal, tostring(feedProblem2))
+assert(string.find(feedSource2, "inbound BindableEvent bridge", 1, true))
+
+-- Neither t4 nor t2[1]: the resolver reports FEED_UNAVAILABLE instead of
+-- returning an orphaned bindable that would fake a live feed.
+bridgeMaps[1][inboundHash] = nil
+inboundContext.Generation = 7
+local deadSignal, _, _, deadProblem = transport(
+    "resolveInboundEvent", inboundContext, "New Coin"
+)
+assert(deadSignal == nil)
+assert(string.find(tostring(deadProblem), "inbound route unavailable", 1, true))
+
+transport("clear")
+print("PASS current DJB2 + Network5 direct/nested maps, generation cache, invalidation, bridges and inbound feed")

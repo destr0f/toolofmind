@@ -2,7 +2,7 @@
 -- Reads the live network module's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.4.0"
+local MODULE_VERSION = "1.5.0"
 local UINT32 = 4294967296
 
 local SHA256_K = {
@@ -26,6 +26,7 @@ local SHA256_K = {
 
 local routeCache = { [1] = {}, [2] = {} }
 local bridgeCache = { [1] = {}, [2] = {} }
+local inboundCache = {}
 
 local function generationOf(context)
     return type(context) == "table" and tonumber(context.Generation) or 0
@@ -327,12 +328,80 @@ local function resolveBridge(context, kind, commandName)
     return bridge, source, nil, nil
 end
 
-local function invalidate(context, kind, commandName, expected)
-    if kind ~= 1 and kind ~= 2 then return false, "invalid network kind" end
+-- Inbound (server -> client) command signals. The current Network module owns
+-- them through t4[1][hash] RemoteEvent.OnClientEvent or, before that remote is
+-- materialised, the exact inbound stand-in t2[1][hash] BindableEvent. Never
+-- fall back to Library.Network.Fired here: its anti-tamper check returns a
+-- fresh orphaned BindableEvent to injected callers, which fakes a live feed.
+local function resolveInboundEvent(context, commandName)
+    if type(context) ~= "table" then return nil, "Network4 inbound", nil, "context is missing" end
+    if type(commandName) ~= "string" or commandName == "" then
+        return nil, "Network4 inbound", nil, "command name is invalid"
+    end
+
+    local generation = generationOf(context)
+    local cached = inboundCache[commandName]
+    if type(cached) == "table" and cached.Generation == generation then
+        local holderLive = cached.IsRemote
+            and liveRemote(context, cached.Holder, "RemoteEvent")
+            or liveBridge(context, cached.Holder, "BindableEvent")
+        if holderLive and cached.Signal then
+            return cached.Signal, cached.Source, nil, nil
+        end
+    end
+    inboundCache[commandName] = nil
+
+    local remoteMaps, bridgeMaps, liveHash, remoteIndex, bridgeIndex, stateProblem =
+        routeState(context, 1, commandName)
+    if stateProblem then return nil, "Network4 inbound", nil, stateProblem end
+
+    for _, candidate in ipairs(routeHashes(context, 1, commandName, liveHash)) do
+        local remote = type(remoteMaps) == "table" and type(remoteMaps[1]) == "table"
+            and rawget(remoteMaps[1], candidate.Value) or nil
+        if liveRemote(context, remote, "RemoteEvent") then
+            local signal = remote.OnClientEvent
+            local source = "Network4 inbound RemoteEvent [" .. tostring(candidate.Source) .. "]"
+                .. (remoteIndex and (" via accessor #" .. tostring(remoteIndex)) or "")
+            inboundCache[commandName] = {
+                Signal = signal,
+                Holder = remote,
+                IsRemote = true,
+                Source = source,
+                Generation = generation,
+            }
+            return signal, source, nil, nil
+        end
+        local bridge = type(bridgeMaps) == "table" and type(bridgeMaps[1]) == "table"
+            and rawget(bridgeMaps[1], candidate.Value) or nil
+        if liveBridge(context, bridge, "BindableEvent") then
+            local signal = bridge.Event
+            local source = "Network4 inbound BindableEvent bridge [" .. tostring(candidate.Source) .. "]"
+                .. (bridgeIndex and (" via accessor #" .. tostring(bridgeIndex)) or "")
+            inboundCache[commandName] = {
+                Signal = signal,
+                Holder = bridge,
+                IsRemote = false,
+                Source = source,
+                Generation = generation,
+            }
+            return signal, source, nil, nil
+        end
+    end
+
+    return nil, "Network4 inbound", nil,
+        "inbound route unavailable: no live t4 RemoteEvent and no exact t2[1] bridge"
+end
+
+local function invalidate(context, kind, commandName, expected)    if kind ~= 1 and kind ~= 2 then return false, "invalid network kind" end
     if type(commandName) ~= "string" or commandName == "" then
         return false, "command name is invalid"
     end
     local generation = generationOf(context)
+    local inbound = inboundCache[commandName]
+    if type(inbound) == "table" and inbound.Generation == generation
+        and (expected == nil or inbound.Holder == expected) then
+        inboundCache[commandName] = nil
+    end
     local route = routeCache[kind][commandName]
     if type(route) == "table" and route.Generation == generation
         and (expected == nil or route.Remote == expected) then
@@ -352,6 +421,7 @@ local function stats()
         FunctionRoutes = cacheSize(routeCache[2]),
         FireBridges = cacheSize(bridgeCache[1]),
         InvokeBridges = cacheSize(bridgeCache[2]),
+        InboundSignals = cacheSize(inboundCache),
     }
 end
 
@@ -376,6 +446,10 @@ return function(action, ...)
         local context, commandName = ...
         return resolveBridge(context, 2, commandName)
     end
+    if action == "resolveInboundEvent" then
+        local context, commandName = ...
+        return resolveInboundEvent(context, commandName)
+    end
     if action == "invalidate" then
         local context, kind, commandName, expected = ...
         return invalidate(context, kind, commandName, expected)
@@ -386,6 +460,7 @@ return function(action, ...)
         table.clear(routeCache[2])
         table.clear(bridgeCache[1])
         table.clear(bridgeCache[2])
+        table.clear(inboundCache)
         return true
     end
     return nil, "unknown Network4 transport action: " .. tostring(action)
