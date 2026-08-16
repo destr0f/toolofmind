@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.7-c54-native-restore",
+    "version": "1.4.1-candidate.54.8-openeggg-farm-rescue",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+    "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.5.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -112,7 +112,7 @@
       "version": "1.4.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.7.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -141,17 +141,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.7.3",
+      "version": "1.7.4",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "4edbe3afba57509c57cc05d7961a0e7ca61f0954",
-      "bytes": 113493,
-      "sha256": "9c85dc9464b0b13b20f672ac620a606bcade5c8503f3d5f73717b9a058b41f16",
-      "djb2": "b079b35f"
+      "commit": "79478856a3c504d49874ba39e3feb2fd3ffd9cbe",
+      "bytes": 121343,
+      "sha256": "ec98a8ac38f5247e07d7f69b0c0d0d3833411b9c7feefb7dd203a9aa3dd2cdc3",
+      "djb2": "7d836332"
     },
     "enchant": {
       "id": "enchant",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.7-c54-native-restore",
+      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -354,32 +354,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "4edbe3afba57509c57cc05d7961a0e7ca61f0954",
+    "generatedFromCommit": "79478856a3c504d49874ba39e3feb2fd3ffd9cbe",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7140,
-      "sha256": "abfd51d9678aec391bd4c54f5cefe42807883f4298405d49ff67859c2c258aaa",
-      "djb2": "89b46b0c"
+      "bytes": 7170,
+      "sha256": "1582e99e0e2e5b00209c215c96c5b2a63be4c8918b3c92b1df528ffe80fcb4fa",
+      "djb2": "9bd7ad6f"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.7-c54-native-restore",
-      "bytes": 314469,
-      "sha256": "727e575013d1290e94ab075c9b356affa07114c184a38bdd93449d78fdfdeb59",
-      "djb2": "12df2bbe"
+      "version": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "bytes": 317419,
+      "sha256": "07a5147eca636d7cc26f712db442c60bf71312ac5fb30bde925abd258de28d5d",
+      "djb2": "a8453a2e"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 248689,
-        "sha256": "edd887d54375c2161a977df540af5cc0e8d3279cb79855b430c50446905b0c09",
-        "djb2": "77ed1421"
+        "bytes": 250710,
+        "sha256": "63e5868b1c64e14684be5e017e831a55b4899eb788f25da47176385328d6aefc",
+        "djb2": "2b954a14"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 248689,
-        "sha256": "edd887d54375c2161a977df540af5cc0e8d3279cb79855b430c50446905b0c09",
-        "djb2": "77ed1421"
+        "bytes": 250710,
+        "sha256": "63e5868b1c64e14684be5e017e831a55b4899eb788f25da47176385328d6aefc",
+        "djb2": "2b954a14"
       }
     }
   }
