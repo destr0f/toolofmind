@@ -141,17 +141,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.7.4",
+      "version": "1.7.5",
       "versionAuthority": "source-constant+content-hash",
       "compatibleSuite": "1.4.1-candidate.54.14-inbound-feed-rescue",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "79478856a3c504d49874ba39e3feb2fd3ffd9cbe",
-      "bytes": 121343,
-      "sha256": "ec98a8ac38f5247e07d7f69b0c0d0d3833411b9c7feefb7dd203a9aa3dd2cdc3",
-      "djb2": "7d836332"
+      "commit": "c766016a2ba5b4337f47b01ed5617416c6f6a657",
+      "bytes": 120974,
+      "sha256": "ce35fa901c39487d7b30e2e929e1302599e25bc6726c3b2f568dc3d6f09a7e79",
+      "djb2": "7b7593aa"
     },
     "enchant": {
       "id": "enchant",
@@ -354,32 +354,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "5530809543f916b448ef037b7d8660320c5a40ba",
+    "generatedFromCommit": "c766016a2ba5b4337f47b01ed5617416c6f6a657",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7170,
-      "sha256": "6b079602403360987fe531819b41ec48e5c80c04ece4018e0ccf3e85609223df",
-      "djb2": "a80aac2e"
+      "sha256": "7bc9765ab01462a8f063a070794a20fb021e3b3d20cb250a075468b7b39d709f",
+      "djb2": "70319a33"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-candidate.54.14-inbound-feed-rescue",
-      "bytes": 323417,
-      "sha256": "6edf8a469ae3bbfb0feb804758ee76cfdba74792b17c9c084b00ba65d62d34f4",
-      "djb2": "d16601a3"
+      "bytes": 323148,
+      "sha256": "46ce0ca1ead26452f3fabb82d096fc497a5bd71c7720244d72ca60102d2bdc88",
+      "djb2": "059e82bf"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 253059,
-        "sha256": "16451e744e8aaa7ced3659eb22074510c7f58168898241d314f04bebbd6c96f8",
-        "djb2": "39ae1581"
+        "bytes": 252352,
+        "sha256": "e11f0e72d98e2063fa8d708ea46be4930dd48473830a09400075c59d44feab39",
+        "djb2": "772fa20f"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 253059,
-        "sha256": "16451e744e8aaa7ced3659eb22074510c7f58168898241d314f04bebbd6c96f8",
-        "djb2": "39ae1581"
+        "bytes": 252352,
+        "sha256": "e11f0e72d98e2063fa8d708ea46be4930dd48473830a09400075c59d44feab39",
+        "djb2": "772fa20f"
       }
     }
   }
