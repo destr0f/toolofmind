@@ -847,21 +847,8 @@ local function signalEntries(job, entries, route)
     local failed = job.SignalFailures
     table.clear(failed)
     local context = run.Context
-    -- Spread the post-Join burst: 16 pets x 2 FireServer in one frame is the
-    -- only egress spike the farm produces, and it shows up as ping jitter.
-    -- One frame per 8 pets costs ~16ms and is invisible to the farm cycle.
-    local sentSinceYield = 0
     for _, entry in ipairs(entries) do
-        if sentSinceYield >= 8 then
-            sentSinceYield = 0
-            task.wait()
-            if not contextActive(job) then
-                clearPending(entries)
-                return failed
-            end
-        end
         if entryCurrent(entry) then
-            sentSinceYield = sentSinceYield + 1
             local targetSent, targetRoute = callNamedFire(
                 "Change Pet Target",
                 entry.PetId,

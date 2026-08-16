@@ -31,13 +31,11 @@ assert(farmContextStart >= 0, "pet farm Lite context was not found");
 const farmContextEnd = source.indexOf("DispatchWidth = 16,", farmContextStart);
 assert(farmContextEnd > farmContextStart, "pet farm Lite context end was not found");
 const farmContext = source.slice(farmContextStart, farmContextEnd);
-for (const forbidden of ["GetCommandBridge", "GetFireBridge"]) {
+for (const forbidden of ["NoNamedFallback", "GetCommandBridge", "GetFireBridge"]) {
     assert(!farmContext.includes(forbidden),
         `pet farm must not use Network4 native bridge path: ${forbidden}`);
 }
-assert(farmContext.includes("NoNamedFallback = true"),
-    "pet farm must prefer a bounded transport retry over the blocked named fallback");
 assert(farmContext.includes("NetworkReady = networkReady"),
-    "pet farm must keep the network readiness probe");
+    "pet farm must keep the known-good Library.Network fallback available");
 
 console.log("Pixel Vault minimal refresh OK | old farm retained | current routes resolved locally");

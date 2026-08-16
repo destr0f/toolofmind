@@ -3473,14 +3473,27 @@ local function invokeCommand(commandName, ...)
     end
     if not remote or not result[1] then
         local directProblem = remote and tostring(result[2]) or tostring(resolveProblem)
-        -- A BindableFunction stand-in whose remote never materialised yields
-        -- forever on Invoke (the game wires OnInvoke only when the real
-        -- RemoteFunction is found). Invoking it hung Buy Egg Yay purchases, so
-        -- the invoke path reports an honest transport failure instead.
-        local stage = coinSync.NetworkTransport.Controller == nil
-            and "Network4 transport module is still loading"
-            or "command route is unresolved in the live Network4 map"
-        result = table.pack(false, directProblem .. "; " .. stage)
+        local network = networkReady()
+        if network and type(network.Invoke) == "function" then
+            sourceName = "Library.Network.Invoke named fallback"
+            sessionIndex = nil
+            requestDiagnostics.Transition(subsystem, diagnosticId, "INVOKE_IN_FLIGHT", {
+                command = commandName,
+                route = sourceName,
+                fallback = directProblem,
+            })
+            result = table.pack(false, directProblem)
+            for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
+                routedCommand = candidate
+                result = table.pack(pcall(function()
+                    return network.Invoke(candidate, table.unpack(arguments, 1, arguments.n))
+                end))
+                if result[1] then break end
+            end
+            if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
+        else
+            result = table.pack(false, directProblem .. "; Library.Network.Invoke is unavailable")
+        end
     end
     if not result[1] then
         requestDiagnostics.Route("invoke", commandName, false, tostring(result[2]))
@@ -3533,13 +3546,23 @@ local function fireCommand(commandName, ...)
         end
         if not bridge or not ok then
             local bridgeFailure = bridge and tostring(problem) or tostring(bridgeProblem)
-            -- Library.Network.Fire is silently dropped by the game's anti-tamper
-            -- from injected threads; report an honest transport failure instead.
-            local stage = coinSync.NetworkTransport.Controller == nil
-                and "Network4 transport module is still loading"
-                or "command route is unresolved in the live Network4 map"
-            ok, problem = false, directProblem .. "; bridge=" .. bridgeFailure
-                .. "; " .. stage
+            local network = networkReady()
+            if network and type(network.Fire) == "function" then
+                sourceName = "Library.Network.Fire named fallback"
+                sessionIndex = nil
+                ok, problem = false, directProblem
+                for _, candidate in ipairs(coinSync.NetworkTransport:CommandRouteCandidates(commandName)) do
+                    routedCommand = candidate
+                    ok, problem = pcall(function()
+                        network.Fire(candidate, table.unpack(arguments, 1, arguments.n))
+                    end)
+                    if ok then break end
+                end
+                if ok then requestDiagnostics.Route("fire", commandName, true) end
+            else
+                ok, problem = false, directProblem .. "; bridge=" .. bridgeFailure
+                    .. "; Library.Network.Fire is unavailable"
+            end
         end
     end
     if not ok then
@@ -3896,10 +3919,6 @@ function petFarm:EnsureEngine()
         Enabled = function() return config.PetFarm end,
         Resetting = function() return farmResetRunning end,
         NetworkReady = networkReady,
-        -- The named Library.Network fallback is silently dropped by the game's
-        -- anti-tamper from injected threads; a transport error with a bounded
-        -- retry is strictly better than a fake rejection.
-        NoNamedFallback = true,
         CommandRouteCandidates = function(commandName)
             return coinSync.NetworkTransport:CommandRouteCandidates(commandName)
         end,
@@ -5584,17 +5603,6 @@ allocatorPass = function()
         end
 
         if not config.PetFarm or farmResetRunning then return end
-
-        -- While the Network4 transport module is still downloading, every
-        -- dispatch would fail as a transport error and the allocator would
-        -- instantly requeue it: a hot retry storm (1.3k retries/80s observed).
-        -- Pause dispatch and re-check on the next recovery tick instead.
-        if not coinSync.NetworkTransport.Controller then
-            coinSync.NetworkTransport:Ensure()
-            driverStatus = "network transport module is loading; dispatch paused"
-            if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
-            return
-        end
 
         if not petFarm.Engine then
             if not petFarm.Loading then

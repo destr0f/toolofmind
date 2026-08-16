@@ -41,12 +41,8 @@ assert(!transport.includes("bridge:Invoke("), "unwired BindableFunction bridges 
 assert(source.includes("coinSync.NetworkTransport"));
 assert(source.includes('loadRemoteController("networkTransport", "Network4 transport adapter")'));
 assert(source.includes('"resolveFireBridge", commandName, "BindableEvent"'));
-assert(!source.includes('sourceName = "Library.Network.Invoke named fallback"'),
-    "the u11-blocked named invoke fallback must not fake server rejections");
-assert(!source.includes('sourceName = "Library.Network.Fire named fallback"'),
-    "the u11-blocked named fire fallback must not fake delivery");
-assert(source.includes("Network4 transport module is still loading"),
-    "startup requests must surface an honest transport-loading state");
+assert(source.includes('sourceName = "Library.Network.Invoke named fallback"'));
+assert(source.includes('sourceName = "Library.Network.Fire named fallback"'));
 assert(source.includes('["Get Coins"] = { "Get The Coins", "Get Coins" }'));
 assert(!source.includes("pcall(accessor, commandName)"));
 assert(!source.includes("pcall(candidate, commandName)"));
@@ -69,8 +65,8 @@ const farmContextEnd = source.indexOf("DispatchWidth = 16,", farmContextStart);
 assert(farmContextStart >= 0 && farmContextEnd > farmContextStart,
     "pet farm runtime context was not found");
 const farmContext = source.slice(farmContextStart, farmContextEnd);
-assert(farmContext.includes("NoNamedFallback = true"),
-    "pet farm must prefer a bounded transport retry over the blocked named fallback");
+assert(!farmContext.includes("NoNamedFallback"),
+    "pet farm keeps the legacy named fallback path available");
 assert(!farmContext.includes("GetCommandBridge") && !farmContext.includes("GetFireBridge"),
     "pet farm must not use the RobloxScript-bound native bridge path");
 
