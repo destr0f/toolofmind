@@ -30,10 +30,15 @@ assert(source.includes('and controller and type(controller.HandleBossSpawn) == "
     "Coins.ChildAdded must retain the zero-request local boss wake edge");
 assert(!source.includes('and not coinSync.SignalConnections["New Coin"]\n            and controller'),
     "a stale Network5 New Coin listener can still suppress the local boss wake edge");
-assert(source.includes('local function network5StandinSignal(network, commandName)'),
-    "farm lifecycle does not resolve Network5's private command stand-in");
-assert(source.includes('source = signal and "Network5 BindableEvent stand-in" or nil'),
-    "farm lifecycle does not prefer the exact Network5 stand-in used by game scripts");
+assert(!source.includes('local function network5StandinSignal(network, commandName)'),
+    "farm lifecycle still performs ambiguous private BindableEvent discovery");
+const coinConnect = source.slice(
+    source.indexOf("local function connectCoinSignals"),
+    source.indexOf('connect("New Coin"', source.indexOf("local function connectCoinSignals"))
+);
+assert(coinConnect.indexOf('coinSync.NetworkTransport:Resolve(')
+    < coinConnect.indexOf('pcall(network.Fired, name)'),
+    "farm lifecycle no longer uses the proven C54.1 direct-to-Network.Fired order");
 assert(!source.includes('if bossEventDriven and coinSync.BossBootstrapDone then'),
     "one-shot bootstrap sleep can strand a live C54.1 boss generation");
 assert(!source.includes('function petFarm:QueueFastDispatch(petId)\n    if config.Mode == "Boss Chest Only"'),

@@ -48,6 +48,10 @@ assert(watchers.includes('config.Mode == "Boss Chest Only"'));
 assert(watchers.includes("assigned == 0 and targetReady"));
 assert(watchers.includes("active == 0 and queued == 0 and invokes == 0"));
 assert(watchers.includes("assignmentAge >= 3.5"));
+assert(watchers.includes('bossState == "ACTIVE"'));
+assert(watchers.includes("assigned == 0 and not targetReady"));
+assert(watchers.includes('petFarm:HandleBossRemoved(bossId, "local boss target vanished")'));
+assert(watchers.includes('driverStatus = "boss lifecycle repaired; awaiting authoritative New Coin"'));
 assert(watchers.includes('driverStatus = "boss target stalled; C54.1 allocator re-arm queued"'));
 assert(watchers.includes("requestAllocatorPulse(true)"));
 assert(!watchers.includes("BossLivenessRescueUsed"),
