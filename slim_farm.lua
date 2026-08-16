@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.17-buy-egg-ok"
+local VERSION = "1.4.1-candidate.54.18-feed-selfheal"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -5777,6 +5777,8 @@ local farmWatch = {
     LivenessToken = 0,
     LastRearmAt = 0,
     StallRecoveries = 0,
+    StartedAt = os.clock(),
+    LastFeedRebindAt = 0,
 }
 
 armFarmRecovery = function(delaySeconds)
@@ -5811,6 +5813,29 @@ local function restartFarmWatchers()
         if livenessToken ~= farmWatch.LivenessToken or not running()
             or not config.PetFarm then return end
         if config.Mode == "Boss Chest Only" and not farmResetRunning and petFarm.Engine then
+            -- Startup race self-heal: the New Coin listener can bind before the
+            -- game wires its stand-in, leaving a structurally connected but
+            -- silent feed (BOUND_VERIFIED forever, farm idle until retoggle).
+            -- One bounded rebind every 15s until the first real event; no
+            -- network request is involved.
+            if coinSync.FeedState ~= "LIVE" then
+                local now = os.clock()
+                if now - farmWatch.StartedAt >= 6
+                    and now - (tonumber(farmWatch.LastFeedRebindAt) or 0) >= 15 then
+                    farmWatch.LastFeedRebindAt = now
+                    for signalName, connection in pairs(coinSync.SignalConnections) do
+                        disconnect(connection)
+                        coinSync.SignalConnections[signalName] = nil
+                        coinSync.SignalSources[signalName] = nil
+                        coinSync.NetworkTransport:ClearRoute(
+                            coinSync.RemoteCaches.Event, signalName, nil)
+                    end
+                    coinSync.SignalsReady = false
+                    connectCoinSignals()
+                    lastRecovery = "silent coin feed rebind"
+                    driverStatus = "coin feed silent after 6s; listeners rebound"
+                end
+            end
             local expected = tonumber(petFarm.EquippedCount) or 0
             local assigned = assignmentCount()
             local stats = petFarm:RefreshStats()
