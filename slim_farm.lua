@@ -3490,6 +3490,10 @@ local function invokeCommand(commandName, ...)
                 end))
                 if result[1] then break end
             end
+            if result[1] and result[2] == nil then
+                -- Anti-tamper nil-answer is a blocked transport, not a rejection.
+                result = table.pack(false, "named fallback returned nil (blocked by anti-tamper)")
+            end
             if result[1] then requestDiagnostics.Route("invoke", commandName, true) end
         else
             result = table.pack(false, directProblem .. "; Library.Network.Invoke is unavailable")

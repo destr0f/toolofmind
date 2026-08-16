@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.4.6"
+local MODULE_VERSION = "1.4.7"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -598,6 +598,14 @@ local function transportInvokeCommand(command, ...)
     if not invoked then
         finishInvoke(gateKey, entry, false, payload, fallbackRoute)
         return false, payload, fallbackRoute
+    end
+    if payload == nil then
+        -- The game's anti-tamper silently nil-answers injected calls. That is a
+        -- transport failure, never a server rejection: treating it as a reject
+        -- latched BossRejected and stalled the farm until a manual retoggle.
+        local problem = "named fallback returned nil (blocked by anti-tamper)"
+        finishInvoke(gateKey, entry, false, problem, fallbackRoute)
+        return false, problem, fallbackRoute
     end
     finishInvoke(gateKey, entry, true, payload, fallbackRoute)
     return true, payload, fallbackRoute
