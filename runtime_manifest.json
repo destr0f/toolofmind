@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+    "version": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+    "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.5.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -112,7 +112,7 @@
       "version": "1.4.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.7.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.7.4",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.8-openeggg-farm-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -354,32 +354,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "79478856a3c504d49874ba39e3feb2fd3ffd9cbe",
+    "generatedFromCommit": "de7ab6d8f73e558027d7da9c359ba85db9597ffb",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7170,
-      "sha256": "1582e99e0e2e5b00209c215c96c5b2a63be4c8918b3c92b1df528ffe80fcb4fa",
-      "djb2": "9bd7ad6f"
+      "bytes": 7230,
+      "sha256": "1981d123504c3d69dd734f7efcd237c7b46095bf7683faa0f61510fdc024e28f",
+      "djb2": "8d3d3302"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.8-openeggg-farm-rescue",
-      "bytes": 317419,
-      "sha256": "07a5147eca636d7cc26f712db442c60bf71312ac5fb30bde925abd258de28d5d",
-      "djb2": "a8453a2e"
+      "version": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "bytes": 315539,
+      "sha256": "9508d18cd557adcae188617ff12eed14553af86e9a80758caadb49416381eaac",
+      "djb2": "ab6c0b25"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 250710,
-        "sha256": "63e5868b1c64e14684be5e017e831a55b4899eb788f25da47176385328d6aefc",
-        "djb2": "2b954a14"
+        "bytes": 249337,
+        "sha256": "eaf1604feac98ef36e8839894e870fed051f7ff702ca8ba68bb66f9ee7e66ec3",
+        "djb2": "c39b22ee"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 250710,
-        "sha256": "63e5868b1c64e14684be5e017e831a55b4899eb788f25da47176385328d6aefc",
-        "djb2": "2b954a14"
+        "bytes": 249337,
+        "sha256": "eaf1604feac98ef36e8839894e870fed051f7ff702ca8ba68bb66f9ee7e66ec3",
+        "djb2": "c39b22ee"
       }
     }
   }
