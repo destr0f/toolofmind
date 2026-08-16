@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.11-orphan-joining-recovery"
+local VERSION = "1.4.1-candidate.54.12-authoritative-spawn-warp"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2474,10 +2474,6 @@ local function connectCoinSignals(forceName)
 
     connect("New Coin", function(id, data)
         local coinId = tostring(id)
-        local previous = coinRecords[coinId]
-        local previousAlive = previous ~= nil and not previous.Removed
-            and (tonumber(previous.Health) or 0) > 0
-        local wasRejected = coinSync.BossRejected[coinId] == true
         coinSync.BossRejected[coinId] = nil
         local record = applyCoinData(id, data, true)
         local controller = coinSync.PetFarm
@@ -2497,9 +2493,12 @@ local function connectCoinSignals(forceName)
             end
             if selectedBoss and controller
                 and type(controller.HandleBossSpawn) == "function" then
-                controller:HandleBossSpawn(record, source, source == "Network4 direct", data,
-                    wasRejected or not previousAlive)
-            elseif selectedBoss and (wasRejected or not previousAlive) then
+                -- New Coin is the authoritative generation edge. Boss IDs are
+                -- reused, so the previous record can still look alive when the
+                -- next chest arrives; treating that edge as a duplicate skips
+                -- both Join Coin and the one-shot post-Join warp.
+                controller:HandleBossSpawn(record, source, source == "Network4 direct", data, true)
+            elseif selectedBoss then
                 if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(coinId) end
                 if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
             end
@@ -3021,7 +3020,9 @@ function petFarm:ResolveBossPetRuntime(rawPetIds)
     local petIds = warp.PetIds
     table.clear(petIds)
     for index = 1, math.min(#(rawPetIds or {}), 16) do
-        petIds[index] = tostring(rawPetIds[index])
+        local rawPet = rawPetIds[index]
+        local petId = type(rawPet) == "table" and rawPet.PetId or rawPet
+        if petId ~= nil then petIds[#petIds + 1] = tostring(petId) end
     end
     local signature = table.concat(petIds, "\0")
     if warp.PetSignature ~= signature then

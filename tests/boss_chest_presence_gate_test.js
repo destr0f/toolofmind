@@ -8,9 +8,12 @@ const engine = fs.readFileSync(path.join(root, "pet_farm_lite_engine.lua"), "utf
 
 assert(source.includes("BossRejected = {}"),
     "boss presence latch must be retained in the existing coin-sync state");
-assert(source.includes('local wasRejected = coinSync.BossRejected[coinId] == true'));
 assert(source.includes('coinSync.BossRejected[coinId] = nil'));
 assert(source.includes('controller:HandleBossSpawn(record, source'));
+assert(source.includes('source == "Network4 direct", data, true)'),
+    "authoritative New Coin must always create a fresh reused-ID boss generation");
+assert(!source.includes('wasRejected or not previousAlive'),
+    "a reused boss ID can still look alive and must not suppress New Coin");
 assert(source.includes('releaseAssignmentsForCoin(rawId, true)'));
 assert(source.includes('else\n        -- An attached RBXScriptConnection proves only that a listener exists;'),
     "boss removal must arm a bounded missed-edge watchdog even when the signal is attached");
@@ -62,6 +65,16 @@ const warp = source.slice(warpStart, warpEnd);
 assert(warp.includes('typeof(record.Position) == "Vector3"'));
 assert(warp.includes("workspace.BulkMoveTo"));
 assert(!warp.includes("Instance.new"), "optional warp creates a retained synthetic target instance");
+assert(engine.includes("local function notifyBatchAccepted(job, entries)"));
+assert(engine.includes("notifyBatchAccepted(job, acceptedEntries)"),
+    "accepted Join batches never reach the post-Join warp callback");
+assert(engine.indexOf("notifyBatchAccepted(job, acceptedEntries)")
+    < engine.indexOf("local signalFailures = signalEntries(job, acceptedEntries, route)"),
+    "post-Join warp must mark native arrival before farm signals are sent");
+assert(engine.includes("notifyBatchAccepted(job, entries)"),
+    "accepted signal retries never reach the post-Join warp callback");
+assert(source.includes('type(rawPet) == "table" and rawPet.PetId or rawPet'),
+    "warp cannot consume the engine's allocation-free accepted-entry list");
 assert(source.includes("table.clear(coinSync.BossRejected)"),
     "reload/stop must clear the boss presence latch");
 

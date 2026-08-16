@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.4.4"
+local MODULE_VERSION = "1.4.5"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -905,6 +905,16 @@ local function signalEntries(job, entries, route)
     return failed
 end
 
+local function notifyBatchAccepted(job, entries)
+    local context = run.Context
+    if #entries > 0 and context and type(context.OnBatchAccepted) == "function" then
+        -- One local callback per accepted Join batch. It does not send another
+        -- request; the runtime uses the accepted entries to move the same pets
+        -- onto the freshly spawned boss and mark their native state arrived.
+        pcall(context.OnBatchAccepted, job.Record, entries, job.BossGeneration)
+    end
+end
+
 local function process(job)
     local entries, petIds = currentEntries(job)
     if #entries == 0 then
@@ -913,6 +923,7 @@ local function process(job)
     end
 
     if job.Joined then
+        notifyBatchAccepted(job, entries)
         local failures = signalEntries(job, entries, "accepted join retry")
         if #failures > 0 then
             run.Errors = run.Errors + #failures
@@ -998,6 +1009,7 @@ local function process(job)
         return false
     end
 
+    notifyBatchAccepted(job, acceptedEntries)
     local signalFailures = signalEntries(job, acceptedEntries, route)
     if #signalFailures > 0 then
         run.Errors = run.Errors + #signalFailures
