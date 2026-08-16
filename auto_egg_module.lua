@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.5"
+local MODULE_VERSION = "1.7.6"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -2701,13 +2701,16 @@ return function(action, context)
                 local ownsAcknowledgement = pending and pending.Headless
                     and pending.ProducerGateRoute == HEADLESS_EVENT_GATE
                 if ownsAcknowledgement and not state.AcknowledgedEvents[signature] then
-                    local ackOk, ackProblem = acknowledgeOpeningEgg(state, context, eggName, pets)
-                    if ackOk then
-                        state.AcknowledgedEvents[signature] = now
-                        if matching then pending.Acknowledged = true end
-                    elseif matching then
-                        pending.AckFailure = tostring(ackProblem)
-                    end
+                    state.AcknowledgedEvents[signature] = now
+                    if matching then pending.Acknowledged = true end
+                    -- Live traffic proves the server grants pets inside
+                    -- openegggg itself; the Opening Egg ACK is cosmetic. Send
+                    -- it best-effort and never fail the hatch over it.
+                    task.defer(function()
+                        if state.Running then
+                            acknowledgeOpeningEgg(state, context, eggName, pets)
+                        end
+                    end)
                 elseif ownsAcknowledgement and matching then
                     pending.Acknowledged = true
                 elseif matching then
