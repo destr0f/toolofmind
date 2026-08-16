@@ -2403,7 +2403,7 @@ refreshCoinSnapshot = function()
     end
 end
 
-local function updateCoinFeedState()
+function coinSync.UpdateFeedState()
     local health = coinSync.SignalHealth["New Coin"]
     if health and (tonumber(health.EventsSeen) or 0) > 0 then
         coinSync.FeedState = "LIVE"
@@ -2462,7 +2462,7 @@ local function connectCoinSignals(forceName)
                     end
                     health.LastEventAt = os.clock()
                     health.EventsSeen = (tonumber(health.EventsSeen) or 0) + 1
-                    if coinSync.FeedState ~= "LIVE" then updateCoinFeedState() end
+                    if coinSync.FeedState ~= "LIVE" then coinSync.UpdateFeedState() end
                     local handled, problem = pcall(callback, ...)
                     if not handled then warn("[PSX SLIM] " .. name .. ": " .. tostring(problem)) end
                 end)
@@ -2550,7 +2550,7 @@ local function connectCoinSignals(forceName)
     coinSync.SignalsReady = coinSync.SignalConnections["New Coin"] ~= nil
         and coinSync.SignalConnections["Update Coin Health"] ~= nil
         and coinSync.SignalConnections["Remove Coin"] ~= nil
-    updateCoinFeedState()
+    coinSync.UpdateFeedState()
 
     local signal = Library.Signal
     if not coinSync.WorldSignalReady and signal and type(signal.Fired) == "function" then
@@ -2628,7 +2628,7 @@ function coinSync:RebindNewCoinSignal()
             coinSync.RemoteCaches.Event, "New Coin", nil)
     end
     connectCoinSignals("New Coin")
-    updateCoinFeedState()
+    coinSync.UpdateFeedState()
     return coinSync.SignalConnections["New Coin"] ~= nil
 end
 
