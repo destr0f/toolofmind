@@ -117,10 +117,10 @@
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "d9624ad35681d0db8833479214ca1087bfa2eb46",
-      "bytes": 46160,
-      "sha256": "8ccefd8b60f0959500c7ffe805b080608648dda082fa9b4a280466fe814191c5",
-      "djb2": "1a46fe22"
+      "commit": "c7dc9d43351bf82bb224501043cb73756c018ab2",
+      "bytes": 44877,
+      "sha256": "f350feb6c89c6943ee0b6cd032ebbe5af6012ca51b708544d21893b6bd0dd5d7",
+      "djb2": "c3d5711b"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -351,6 +351,36 @@
       "roots": [
         "payload/"
       ]
+    }
+  },
+  "build": {
+    "generatedFromCommit": "d9624ad35681d0db8833479214ca1087bfa2eb46",
+    "sourceTree": "clean",
+    "embeddedRuntimeFingerprint": {
+      "bytes": 7140,
+      "sha256": "c1d67719df1c2ff780abc84c345c3f8833943c57881920acd9ff36a4b6a21b90",
+      "djb2": "18de21ab"
+    },
+    "source": {
+      "path": "slim_farm.lua",
+      "version": "1.4.1-candidate.54.19-af37-farm-restore",
+      "bytes": 321544,
+      "sha256": "f2fac7808d763c27123ec167d958379a7dd4ae009c81d4e36bd92ff98e94c6de",
+      "djb2": "27193f45"
+    },
+    "artifacts": {
+      "loader": {
+        "path": "loader.lua",
+        "bytes": 251619,
+        "sha256": "d2613d2fb9315ced8b02eff06b23d91c6302ccd17492c64a509ff470cde3b19e",
+        "djb2": "233d7a60"
+      },
+      "toolofmind": {
+        "path": "toolofmind.lua",
+        "bytes": 251619,
+        "sha256": "d2613d2fb9315ced8b02eff06b23d91c6302ccd17492c64a509ff470cde3b19e",
+        "djb2": "233d7a60"
+      }
     }
   }
 }

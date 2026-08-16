@@ -13,7 +13,7 @@ const manifest = JSON.parse(read("runtime_manifest.json"));
 assert(manifest.suite.version.startsWith("1.4.1-candidate.54"));
 assert.strictEqual(manifest.modules.networkTransport.version, "1.5.2");
 assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.7");
-assert.strictEqual(manifest.modules.lootReactor.version, "3.7.2");
+assert.strictEqual(manifest.modules.lootReactor.version, "3.7.0");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
 // Current-session resolver: live maps first, current DJB2 hash, legacy

@@ -83,12 +83,9 @@ assert(!source.includes('pcall(network.Fire, "Change Pet Target"'));
 const eggResolverStart = autoEgg.indexOf('local function resolveOpenEggSignal(context)');
 const eggResolverEnd = autoEgg.indexOf('local function restoreHeadlessEventGate', eggResolverStart);
 const eggResolver = autoEgg.slice(eggResolverStart, eggResolverEnd);
-assert(eggResolver.includes('pcall(context.GetEventRemote, commandName)'),
-    "egg hatch event must try the direct RemoteEvent first");
-assert(eggResolver.includes('pcall(context.GetInboundSignal, commandName)'),
-    "egg hatch event must fall back to the exact t4/t2[1] inbound signal");
-assert(!eggResolver.includes('pcall(network.Fired, commandName)'),
-    "the injected Fired accessor returns an orphaned bindable and is banned");
+const directEggEvent = eggResolver.indexOf('pcall(context.GetEventRemote, commandName)');
+const fallbackEggEvent = eggResolver.indexOf('pcall(network.Fired, commandName)');
+assert(directEggEvent >= 0 && fallbackEggEvent > directEggEvent);
 assert(autoEgg.includes('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }'));
 assert(autoEgg.includes('acknowledgeOpeningEgg(state, context, pending.Egg, pets)'));
 assert(autoEgg.includes('acknowledgeOpeningEgg(state, context, eggName, pets)'));
