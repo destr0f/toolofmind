@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.7"
+local MODULE_VERSION = "1.7.8"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -1023,31 +1023,9 @@ local function ensureHeadlessProducerGate(state, context)
         state.OpenEggGateRoute = HEADLESS_EVENT_GATE
         return true, state.OpenEggGateRoute
     end
-    -- Late re-capture: at module start the native dispatcher may sit on the
-    -- not-yet-bound stand-in or the environment lookup may fail transiently.
-    -- Retry the exact capture occasionally instead of sticking to the visible
-    -- fallback until the user retoggles the feature.
-    if state.OpenEggGateRoute == HEADLESS_INVENTORY_FALLBACK
-        and state.EventSignal and os.clock() >= (tonumber(state.NextEventGateRecapture) or 0) then
-        state.NextEventGateRecapture = os.clock() + 10
-        local connections, exactSignal, nativeTarget =
-            captureHeadlessEventGate(state.EventSignal, state.EventRoute, context, openEggScript)
-        if type(connections) == "table" and #connections > 0 then
-            state.EventGateConnections = connections
-            if exactSignal then state.EventSignal = exactSignal end
-            if type(nativeTarget) == "function" and not state.NativeOpenEggHooked then
-                state.NativeOpenEggTarget = state.NativeOpenEggTarget or nativeTarget
-                installNativeOpenEggHook(state, context)
-            end
-            if not state.NativeOpenEggHooked then
-                state.OpenEggScript = openEggScript
-                state.OpenEggGateRoute = HEADLESS_EVENT_GATE
-                context.Trace("auto egg headless gate",
-                    "late re-capture found the native dispatcher; leaving the compatibility fallback")
-                return true, state.OpenEggGateRoute
-            end
-        end
-    end
+    -- No periodic re-capture here: connection/constants scans on a cadence
+    -- hitch frames and show up as ping jitter. The gate is captured once at
+    -- module start; a manual retoggle re-runs that capture.
     if type(getsenv) ~= "function" then
         return useHeadlessInventoryFallback(state, context, openEggScript,
             "getsenv is unavailable and the exact event producer gate was not captured")
