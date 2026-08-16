@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.11-orphan-joining-recovery",
+    "version": "1.4.1-candidate.54.12-authoritative-spawn-warp",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+    "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.5.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -109,18 +109,18 @@
     "petFarmEngine": {
       "id": "petFarmEngine",
       "label": "Pet farm engine",
-      "version": "1.4.4",
+      "version": "1.4.5",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "4edbe3afba57509c57cc05d7961a0e7ca61f0954",
-      "bytes": 43826,
-      "sha256": "10bdfe67640bb2736c6fe005c1072e46d5d6587b693559786206f87437d74d49",
-      "djb2": "d31816ec"
+      "commit": "a3db1008fb1e2714930e18f02e997de8279102a1",
+      "bytes": 44411,
+      "sha256": "956f1080fa795b3491a515dafbc86dbbb70577ddb5aa57be977bbe6a37843acb",
+      "djb2": "c563e12e"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -128,7 +128,7 @@
       "version": "3.7.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.7.4",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.11-orphan-joining-recovery",
+      "compatibleSuite": "1.4.1-candidate.54.12-authoritative-spawn-warp",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -354,32 +354,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "0b866c5fc32cff591aa2efdab483082c07555a63",
+    "generatedFromCommit": "a3db1008fb1e2714930e18f02e997de8279102a1",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7230,
-      "sha256": "add2ece1e0bcef44448f291c09479f156450e16875768099f0b820f3ae97d155",
-      "djb2": "273927a6"
+      "bytes": 7245,
+      "sha256": "a3739751e5ecf526935f03ff294e88690facfca8ab92aae6c78c5bb40d47c78d",
+      "djb2": "f89d60df"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.11-orphan-joining-recovery",
-      "bytes": 319321,
-      "sha256": "3af30609ab0a29e636e3875c231e34e5951d82ee56709add4ad08009857d1ce3",
-      "djb2": "b959bf59"
+      "version": "1.4.1-candidate.54.12-authoritative-spawn-warp",
+      "bytes": 319438,
+      "sha256": "16cd802590b08ff55a1e718c2de77f637fc97be3cb9567e7e7eb7e902d865497",
+      "djb2": "9ecd6bc6"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 250844,
-        "sha256": "edbfddd0dadc972e99a94dd92e918752c855609aef3816f43152ea23cb96eed8",
-        "djb2": "5eeb38c8"
+        "bytes": 250716,
+        "sha256": "dfd33e4f55465d6dcca1e34f38f8560baab7dfdb4d2e6efc05d414e95d896299",
+        "djb2": "4d53b404"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 250844,
-        "sha256": "edbfddd0dadc972e99a94dd92e918752c855609aef3816f43152ea23cb96eed8",
-        "djb2": "5eeb38c8"
+        "bytes": 250716,
+        "sha256": "dfd33e4f55465d6dcca1e34f38f8560baab7dfdb4d2e6efc05d414e95d896299",
+        "djb2": "4d53b404"
       }
     }
   }
