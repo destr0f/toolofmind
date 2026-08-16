@@ -141,17 +141,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.7.6",
+      "version": "1.7.7",
       "versionAuthority": "source-constant+content-hash",
       "compatibleSuite": "1.4.1-candidate.54.17-buy-egg-ok",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "8969ce74a637f7f451ff0b17fdbe50fd80584238",
-      "bytes": 121148,
-      "sha256": "3e7503b913f0e74580ebf020f2c180dcf1eda7401c709e2a4a0229dfbafc1269",
-      "djb2": "8f443800"
+      "commit": "eac46559a68e376f70798737abdedf96c8bfe785",
+      "bytes": 123288,
+      "sha256": "899b1a7cdefc1301ba15e30556643fe81f8bcbd34650c63f2cb2a93e40c01686",
+      "djb2": "2376ae5f"
     },
     "enchant": {
       "id": "enchant",
@@ -354,12 +354,12 @@
     }
   },
   "build": {
-    "generatedFromCommit": "12e3a9f96c8509088266b45c50a5d1d81bbae729",
+    "generatedFromCommit": "eac46559a68e376f70798737abdedf96c8bfe785",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7035,
-      "sha256": "df066c9ed231539c7ec6e32a74db02d9548333fbdcc3e0ca62a4b51c495d9268",
-      "djb2": "9699c45d"
+      "sha256": "7752302be5b61b13c9d3a10ecf45edca3ea45981b24d57a643c6866c4ca71e55",
+      "djb2": "92644514"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -372,14 +372,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 251805,
-        "sha256": "ecb6bacac345166735812a79104ec563810f5521fb137da81363a995abfbf3fc",
-        "djb2": "7ff0331f"
+        "sha256": "c4fe44a45b0a4d4338c99ebca1f91243fe887ddb5b13e000e91921369e88e0d9",
+        "djb2": "c2f236cb"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 251805,
-        "sha256": "ecb6bacac345166735812a79104ec563810f5521fb137da81363a995abfbf3fc",
-        "djb2": "7ff0331f"
+        "sha256": "c4fe44a45b0a4d4338c99ebca1f91243fe887ddb5b13e000e91921369e88e0d9",
+        "djb2": "c2f236cb"
       }
     }
   }
