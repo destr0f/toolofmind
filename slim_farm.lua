@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.10-indexed-boss-rearm"
+local VERSION = "1.4.1-candidate.54.11-orphan-joining-recovery"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -5790,14 +5790,36 @@ local function restartFarmWatchers()
             local lastAssignment = tonumber(stats.LastAssignmentAt) or 0
             local assignmentAge = lastAssignment > 0 and os.clock() - lastAssignment
                 or math.huge
+            local now = os.clock()
+            local joining = 0
+            local oldestJoiningAge = 0
+            for _, state in pairs(petStates) do
+                if state.Phase == "joining" then
+                    joining = joining + 1
+                    oldestJoiningAge = math.max(
+                        oldestJoiningAge,
+                        now - (tonumber(state.StartedAt) or now)
+                    )
+                end
+            end
             local bossStats = petFarm:BossStats()
             local bossState = bossStats and tostring(bossStats.State) or "ABSENT"
             local bossId = bossStats and bossStats.CoinId or nil
             local idleBossLane = expected > 0 and assigned == 0
                 and active == 0 and queued == 0 and invokes == 0
                 and assignmentAge >= 3.5
+            -- A cancelled/superseded local engine job can disappear without an
+            -- OnFailed callback, leaving every UID marked as JOINING forever.
+            -- Recover only the impossible local invariant: all assignments are
+            -- still JOINING, but the engine has no job, invoke or queue entry.
+            -- This is a 16-state scan on the existing liveness tick and sends no
+            -- snapshot request or periodic retry.
+            local orphanedJoiningLane = expected > 0 and assigned > 0
+                and joining == assigned
+                and active == 0 and queued == 0 and invokes == 0
+                and oldestJoiningAge >= 3.5
             local indexedBoss
-            if idleBossLane then
+            if idleBossLane or orphanedJoiningLane then
                 -- Re-read only the existing local target index. This is not a
                 -- Get Coins request and performs no remote/polling work. A
                 -- same-ID boss respawn can leave the engine's old generation
@@ -5818,8 +5840,31 @@ local function restartFarmWatchers()
             local orphanedBoss = bossId ~= nil and bossState == "ACTIVE"
                 and idleBossLane and indexedBoss == nil and not recordAlive(bossRecord)
             local stalled = idleBossLane and indexedBoss ~= nil
-            local now = os.clock()
-            if orphanedBoss and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3
+            if orphanedJoiningLane
+                and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3 then
+                local released = 0
+                for petId, state in pairs(petStates) do
+                    if state.Phase == "joining" then
+                        petStates[petId] = nil
+                        releasePetState(state, true)
+                        released = released + 1
+                    end
+                end
+                farmWatch.LastRearmAt = now
+                farmWatch.StallRecoveries = farmWatch.StallRecoveries + 1
+                lastRecovery = "orphaned joining release x" .. tostring(released)
+                if indexedBoss and petFarm:HandleBossSpawn(
+                    indexedBoss,
+                    "orphaned joining local re-arm",
+                    false,
+                    {},
+                    true
+                ) then
+                    driverStatus = "orphaned joining states released; pets dispatched"
+                else
+                    driverStatus = "orphaned joining states released; awaiting New Coin"
+                end
+            elseif orphanedBoss and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3
                 and petFarm:HandleBossRemoved(bossId, "local boss target vanished") then
                 farmWatch.LastRearmAt = now
                 farmWatch.StallRecoveries = farmWatch.StallRecoveries + 1
