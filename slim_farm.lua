@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.15-egg-invoke-hang-fix"
+local VERSION = "1.4.1-candidate.54.16-transport-load-gate"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -5583,6 +5583,17 @@ allocatorPass = function()
         end
 
         if not config.PetFarm or farmResetRunning then return end
+
+        -- While the Network4 transport module is still downloading, every
+        -- dispatch would fail as a transport error and the allocator would
+        -- instantly requeue it: a hot retry storm (1.3k retries/80s observed).
+        -- Pause dispatch and re-check on the next recovery tick instead.
+        if not coinSync.NetworkTransport.Controller then
+            coinSync.NetworkTransport:Ensure()
+            driverStatus = "network transport module is loading; dispatch paused"
+            if type(armFarmRecovery) == "function" then armFarmRecovery(1.05) end
+            return
+        end
 
         if not petFarm.Engine then
             if not petFarm.Loading then
