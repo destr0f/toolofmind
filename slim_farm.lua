@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.12-authoritative-spawn-warp"
+local VERSION = "1.4.1-candidate.54.13-stale-working-rescue"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -5793,13 +5793,22 @@ local function restartFarmWatchers()
                 or math.huge
             local now = os.clock()
             local joining = 0
+            local working = 0
             local oldestJoiningAge = 0
+            local oldestWorkingSilence = 0
             for _, state in pairs(petStates) do
                 if state.Phase == "joining" then
                     joining = joining + 1
                     oldestJoiningAge = math.max(
                         oldestJoiningAge,
                         now - (tonumber(state.StartedAt) or now)
+                    )
+                elseif state.Phase == "working" then
+                    working = working + 1
+                    oldestWorkingSilence = math.max(
+                        oldestWorkingSilence,
+                        now - (tonumber(state.ProgressObservedAt)
+                            or tonumber(state.AcceptedAt) or now)
                     )
                 end
             end
@@ -5819,8 +5828,18 @@ local function restartFarmWatchers()
                 and joining == assigned
                 and active == 0 and queued == 0 and invokes == 0
                 and oldestJoiningAge >= 3.5
+            -- If both Remove Coin and the next New Coin edge disappear, every
+            -- UID can remain WORKING forever while the transport is completely
+            -- idle. One local rebind/re-arm after a full missed respawn window
+            -- restores that generation without polling Get Coins. A healthy
+            -- ~3s boss cycle continuously resets LastAssignmentAt, so this path
+            -- stays dormant and adds no steady-state traffic.
+            local staleWorkingLane = expected > 0 and assigned == expected
+                and working == assigned and joining == 0
+                and active == 0 and queued == 0 and invokes == 0
+                and assignmentAge >= 4.75 and oldestWorkingSilence >= 4.75
             local indexedBoss
-            if idleBossLane or orphanedJoiningLane then
+            if idleBossLane or orphanedJoiningLane or staleWorkingLane then
                 -- Re-read only the existing local target index. This is not a
                 -- Get Coins request and performs no remote/polling work. A
                 -- same-ID boss respawn can leave the engine's old generation
@@ -5841,7 +5860,25 @@ local function restartFarmWatchers()
             local orphanedBoss = bossId ~= nil and bossState == "ACTIVE"
                 and idleBossLane and indexedBoss == nil and not recordAlive(bossRecord)
             local stalled = idleBossLane and indexedBoss ~= nil
-            if orphanedJoiningLane
+            if staleWorkingLane
+                and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 4 then
+                farmWatch.LastRearmAt = now
+                farmWatch.StallRecoveries = farmWatch.StallRecoveries + 1
+                coinSync:RebindNewCoinSignal()
+                if indexedBoss and petFarm:HandleBossSpawn(
+                    indexedBoss,
+                    "stale working local re-arm",
+                    false,
+                    {},
+                    true
+                ) then
+                    lastRecovery = "stale working generation re-armed"
+                    driverStatus = "stale WORKING generation replaced; pets dispatched"
+                else
+                    lastRecovery = "stale working New Coin listener rebound"
+                    driverStatus = "stale WORKING generation released; awaiting New Coin"
+                end
+            elseif orphanedJoiningLane
                 and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 3 then
                 local released = 0
                 for petId, state in pairs(petStates) do

@@ -52,6 +52,13 @@ assert(watchers.includes("local orphanedJoiningLane = expected > 0 and assigned 
 assert(watchers.includes("joining == assigned"));
 assert(watchers.includes("oldestJoiningAge >= 3.5"));
 assert(watchers.includes('state.Phase == "joining"'));
+assert(watchers.includes("local staleWorkingLane = expected > 0 and assigned == expected"));
+assert(watchers.includes("working == assigned and joining == 0"));
+assert(watchers.includes("assignmentAge >= 4.75 and oldestWorkingSilence >= 4.75"));
+assert(watchers.includes('state.Phase == "working"'));
+assert(watchers.includes("coinSync:RebindNewCoinSignal()"));
+assert(watchers.includes('"stale working local re-arm"'));
+assert(watchers.includes('driverStatus = "stale WORKING generation replaced; pets dispatched"'));
 assert(watchers.includes("releasePetState(state, true)"));
 assert(watchers.includes('"orphaned joining local re-arm"'));
 assert(watchers.includes('driverStatus = "orphaned joining states released; pets dispatched"'));
