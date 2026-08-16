@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+    "version": "1.4.1-candidate.54.10-indexed-boss-rearm",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+    "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.4.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.5.3",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -112,7 +112,7 @@
       "version": "1.4.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.7.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.7.4",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.5.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.5.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.0.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
+      "compatibleSuite": "1.4.1-candidate.54.10-indexed-boss-rearm",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -354,32 +354,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "de7ab6d8f73e558027d7da9c359ba85db9597ffb",
+    "generatedFromCommit": "6c71429f026fa6df7772df68f80fc9c59ba132ea",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7230,
-      "sha256": "1981d123504c3d69dd734f7efcd237c7b46095bf7683faa0f61510fdc024e28f",
-      "djb2": "8d3d3302"
+      "bytes": 7155,
+      "sha256": "4cbf1925b4c6f66cfec8a50e52eb23473ca9be1f3f60f0ed1089dd8d258c1448",
+      "djb2": "7e0234de"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.9-native-coin-cycle-rescue",
-      "bytes": 315539,
-      "sha256": "9508d18cd557adcae188617ff12eed14553af86e9a80758caadb49416381eaac",
-      "djb2": "ab6c0b25"
+      "version": "1.4.1-candidate.54.10-indexed-boss-rearm",
+      "bytes": 317088,
+      "sha256": "29c689fe8e31c25f1873f0480861f9f7988952f06128cc5f77ba899974f918ba",
+      "djb2": "018caae4"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 249337,
-        "sha256": "eaf1604feac98ef36e8839894e870fed051f7ff702ca8ba68bb66f9ee7e66ec3",
-        "djb2": "c39b22ee"
+        "bytes": 249758,
+        "sha256": "b64576187157c58a13c25a947fd3e28d02e38af71fc93f8eaa66c9851e70d028",
+        "djb2": "88bbdf64"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 249337,
-        "sha256": "eaf1604feac98ef36e8839894e870fed051f7ff702ca8ba68bb66f9ee7e66ec3",
-        "djb2": "c39b22ee"
+        "bytes": 249758,
+        "sha256": "b64576187157c58a13c25a947fd3e28d02e38af71fc93f8eaa66c9851e70d028",
+        "djb2": "88bbdf64"
       }
     }
   }
