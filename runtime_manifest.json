@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-      "compatibleSuite": "1.4.1-candidate.54.13-stale-working-rescue",
+    "compatibleSuite": "1.4.1-candidate.54.13-stale-working-rescue",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -354,32 +354,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "a3db1008fb1e2714930e18f02e997de8279102a1",
+    "generatedFromCommit": "235c53391ac074906b27765657e04fa0e186ca24",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7245,
-      "sha256": "a3739751e5ecf526935f03ff294e88690facfca8ab92aae6c78c5bb40d47c78d",
-      "djb2": "f89d60df"
+      "bytes": 7185,
+      "sha256": "20cc0fc85860b886142d607bd3ccc931eb7a7c763f72079637b3b04877c66fc1",
+      "djb2": "38d205f7"
     },
     "source": {
       "path": "slim_farm.lua",
-    "version": "1.4.1-candidate.54.13-stale-working-rescue",
-      "bytes": 319438,
-      "sha256": "16cd802590b08ff55a1e718c2de77f637fc97be3cb9567e7e7eb7e902d865497",
-      "djb2": "9ecd6bc6"
+      "version": "1.4.1-candidate.54.13-stale-working-rescue",
+      "bytes": 321492,
+      "sha256": "0cc14080c7dfbcba7cc151213f562b93472a0f1e9a0670ccdbd2e3262b3be110",
+      "djb2": "873d6861"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 250716,
-        "sha256": "dfd33e4f55465d6dcca1e34f38f8560baab7dfdb4d2e6efc05d414e95d896299",
-        "djb2": "4d53b404"
+        "bytes": 251622,
+        "sha256": "87d09ede960b520934f098862ba9e539dc405ac2d1d89621f4365115134086f7",
+        "djb2": "f54b5462"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 250716,
-        "sha256": "dfd33e4f55465d6dcca1e34f38f8560baab7dfdb4d2e6efc05d414e95d896299",
-        "djb2": "4d53b404"
+        "bytes": 251622,
+        "sha256": "87d09ede960b520934f098862ba9e539dc405ac2d1d89621f4365115134086f7",
+        "djb2": "f54b5462"
       }
     }
   }
