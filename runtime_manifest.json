@@ -141,17 +141,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.7.5",
+      "version": "1.7.6",
       "versionAuthority": "source-constant+content-hash",
       "compatibleSuite": "1.4.1-candidate.54.14-inbound-feed-rescue",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "c766016a2ba5b4337f47b01ed5617416c6f6a657",
-      "bytes": 120974,
-      "sha256": "ce35fa901c39487d7b30e2e929e1302599e25bc6726c3b2f568dc3d6f09a7e79",
-      "djb2": "7b7593aa"
+      "commit": "8969ce74a637f7f451ff0b17fdbe50fd80584238",
+      "bytes": 121148,
+      "sha256": "3e7503b913f0e74580ebf020f2c180dcf1eda7401c709e2a4a0229dfbafc1269",
+      "djb2": "8f443800"
     },
     "enchant": {
       "id": "enchant",
@@ -354,12 +354,12 @@
     }
   },
   "build": {
-    "generatedFromCommit": "c766016a2ba5b4337f47b01ed5617416c6f6a657",
+    "generatedFromCommit": "8969ce74a637f7f451ff0b17fdbe50fd80584238",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7170,
-      "sha256": "7bc9765ab01462a8f063a070794a20fb021e3b3d20cb250a075468b7b39d709f",
-      "djb2": "70319a33"
+      "sha256": "34b5b3291b09da1dfafbf3d6fdb175c93cfbc84f3f0c495741bfc2075870f5b6",
+      "djb2": "9dc6b661"
     },
     "source": {
       "path": "slim_farm.lua",
@@ -372,14 +372,14 @@
       "loader": {
         "path": "loader.lua",
         "bytes": 252352,
-        "sha256": "e11f0e72d98e2063fa8d708ea46be4930dd48473830a09400075c59d44feab39",
-        "djb2": "772fa20f"
+        "sha256": "6447bd912423c0a80e180f34b02a16482e88702b0be14b5c7025d3baf48df665",
+        "djb2": "17b8df42"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 252352,
-        "sha256": "e11f0e72d98e2063fa8d708ea46be4930dd48473830a09400075c59d44feab39",
-        "djb2": "772fa20f"
+        "sha256": "6447bd912423c0a80e180f34b02a16482e88702b0be14b5c7025d3baf48df665",
+        "djb2": "17b8df42"
       }
     }
   }
