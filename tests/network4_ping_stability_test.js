@@ -12,7 +12,7 @@ const manifest = JSON.parse(read("runtime_manifest.json"));
 
 assert(manifest.suite.version.startsWith("1.4.1-candidate.54"));
 assert.strictEqual(manifest.modules.networkTransport.version, "1.5.2");
-assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.5");
+assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.6");
 assert.strictEqual(manifest.modules.lootReactor.version, "3.7.0");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
