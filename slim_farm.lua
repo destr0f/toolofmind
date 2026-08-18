@@ -2010,7 +2010,7 @@ function coinSync.StoreBossTemplate(self, id, record)
     }
 end
 
-local function pruneCoinRecords()
+function coinSync.PruneRecords()
     -- coinRecords only shrank on Remove Coin; health events for missed coins
     -- create records forever. After hours that table held tens of thousands of
     -- dead entries and every allocator pass iterated all of them, which is the
@@ -2041,7 +2041,7 @@ local function applyCoinData(rawId, data, fromEvent)
     coinRecords[id] = record
     if created then
         coinSync.RecordCount = coinSync.RecordCount + 1
-        pruneCoinRecords()
+        coinSync.PruneRecords()
     end
     record.TouchedAt = os.clock()
     local selectionChanged = created
