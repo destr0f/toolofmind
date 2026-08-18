@@ -5702,7 +5702,15 @@ allocatorPass = function()
     if not ok then driverStatus = "allocator error: " .. tostring(problem) end
 
     allocatorBusy = false
-    if allocatorRequested then petFarm:ScheduleAllocatorPass() end
+    if allocatorRequested then
+        allocatorRequested = false
+        -- A same-cycle task.defer chain overflows the executor re-entrancy
+        -- limit when coin events request another pass every frame. The timer
+        -- queue breaks the chain; the allocator still coalesces bursts.
+        task.delay(0.05, function()
+            if running() then petFarm:ScheduleAllocatorPass() end
+        end)
+    end
 end
 
 requestAllocatorPulse = function(force)
