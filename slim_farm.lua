@@ -6290,6 +6290,42 @@ function UI.OpenConfig(name)
     return true
 end
 
+-- WindUI's own flag registration loses elements on this build (PendingFlags
+-- drained into nothing, AllElements keyed by a colliding per-section index).
+-- Track every flagged element ourselves at creation time so SAVE/LOAD can
+-- drive the real controls (same Set/Select path as a user click).
+UI.FlaggedElements = {}
+function UI.TrackFlag(flag, element)
+    if type(flag) == "string" and flag ~= "" and type(element) == "table" then
+        UI.FlaggedElements[flag] = element
+    end
+    return element
+end
+function UI.TrackSection(section)
+    if type(section) ~= "table" then return section end
+    for _, method in ipairs({ "Toggle", "Dropdown", "Slider", "Input", "Keybind", "Colorpicker" }) do
+        local original = section[method]
+        if type(original) == "function" then
+            section[method] = function(self, options, ...)
+                local element = original(self, options, ...)
+                if type(options) == "table" then UI.TrackFlag(options.Flag, element) end
+                return element
+            end
+        end
+    end
+    return section
+end
+function UI.TrackTab(tab)
+    if type(tab) ~= "table" then return tab end
+    local original = tab.Section
+    if type(original) == "function" then
+        tab.Section = function(self, options, ...)
+            return UI.TrackSection(original(self, options, ...))
+        end
+    end
+    return tab
+end
+
 for index, definition in ipairs({
     { "FarmTab", "Farm", "paw-print" },
     { "MonitorTab", "Monitor", "activity" },
@@ -6301,7 +6337,7 @@ for index, definition in ipairs({
     { "GraphicsTab", "Graphics", "monitor" },
     { "SessionTab", "Session", "shield-check" },
 }) do
-    UI[definition[1]] = Window:Tab({ Title = definition[2], Icon = definition[3] })
+    UI[definition[1]] = UI.TrackTab(Window:Tab({ Title = definition[2], Icon = definition[3] }))
     if index % 2 == 0 then uiStageYield("tabs " .. tostring(index) .. "/9") end
 end
 uiStageYield("tabs complete")
@@ -6973,28 +7009,28 @@ function UI.SaveProfile()
     UI.Profile:Set("selected_egg_scope", config.EggScope)
     UI.Profile:Set("enchant_rule_profiles", config.EnchantRuleProfiles)
     -- WindUI's own element registration saved an empty __elements list on this
-    -- setup, so toggles never persisted. Snapshot every flagged control
-    -- ourselves; load applies them straight onto the live elements.
+    -- setup, so toggles never persisted. Snapshot every flagged control from
+    -- our own creation-time registry (falls back to WindUI's maps below).
     local flagged = {}
+    local function collectFlag(flag, element)
+        if type(flag) ~= "string" or flag == "" or type(element) ~= "table" then return end
+        local value = element.Value
+        if type(value) == "table" then value = value.Default end
+        if value ~= nil and type(value) ~= "table" and type(value) ~= "userdata" then
+            flagged[flag] = value
+        end
+    end
+    for flag, element in pairs(UI.FlaggedElements or {}) do
+        collectFlag(flag, element)
+    end
     local pending = (Window and Window.PendingFlags) or {}
     for flag, element in pairs(pending) do
-        if type(element) == "table" then
-            local value = element.Value
-            if type(value) == "table" then value = value.Default end
-            if value ~= nil and type(value) ~= "table" and type(value) ~= "userdata" then
-                flagged[flag] = value
-            end
-        end
+        if flagged[flag] == nil then collectFlag(flag, element) end
     end
     if next(flagged) == nil then
         for _, element in ipairs((Window and Window.AllElements) or {}) do
-            if type(element) == "table" and type(element.Flag) == "string"
-                and element.Flag ~= "" then
-                local value = element.Value
-                if type(value) == "table" then value = value.Default end
-                if value ~= nil and type(value) ~= "table" and type(value) ~= "userdata" then
-                    flagged[element.Flag] = value
-                end
+            if type(element) == "table" then
+                collectFlag(element.Flag, element)
             end
         end
     end
@@ -7060,8 +7096,12 @@ function UI.LoadProfile(label)
     UI.SetProfileStatus("Profile loaded. Synchronizing controls and target location...")
     task.delay(0.3, function()
         UI.ReconcileProfile(label or "Manual load complete")
-        local applied = UI.ApplyAutomationConfig()
+        -- Controls first: each Set/Select fires the same callback a user click
+        -- would, which writes config.* and starts the feature. The config
+        -- snapshot pass afterwards only fills keys no control already synced
+        -- (config[key] ~= value is false for everything callbacks handled).
         local flaggedApplied = UI.ApplyFlaggedValues()
+        local applied = UI.ApplyAutomationConfig()
         UI.SetProfileStatus(string.format(
             "%s | automation values applied: %d | flagged controls applied: %d",
             tostring(label or "Profile loaded"),
@@ -7111,14 +7151,16 @@ function UI.ApplyFlaggedValues()
     local flagged = UI.Profile and UI.Profile:Get("flagged_values")
     if type(flagged) ~= "table" then return 0 end
     local applied = 0
-    -- Look the live element up in every map WindUI keeps: PendingFlags, the
-    -- current config's registered elements, and the global element list.
+    -- Drive the live controls exactly like a user click: Toggle/Slider/Input
+    -- :Set fires the element callback; Dropdown :Select only updates the
+    -- visual, so its callback is invoked manually right after.
     local pending = (Window and Window.PendingFlags) or {}
     local current = Window and Window.CurrentConfig
     local currentElements = current and current.Elements or nil
     local all = (Window and Window.AllElements) or {}
     for flag, value in pairs(flagged) do
-        local element = pending[flag]
+        local element = (UI.FlaggedElements or {})[flag]
+        if element == nil then element = pending[flag] end
         if element == nil and currentElements then element = currentElements[flag] end
         if element == nil then
             for _, candidate in ipairs(all) do
@@ -7129,10 +7171,15 @@ function UI.ApplyFlaggedValues()
             end
         end
         if type(element) == "table" then
-            if type(element.Set) == "function" then
+            if element.__type == "Dropdown" and type(element.Select) == "function" then
+                if pcall(element.Select, element, value) then
+                    if type(element.Callback) == "function" then
+                        pcall(element.Callback, value)
+                    end
+                    applied = applied + 1
+                end
+            elseif type(element.Set) == "function" then
                 if pcall(element.Set, element, value) then applied = applied + 1 end
-            elseif type(element.Select) == "function" and type(value) == "string" then
-                if pcall(element.Select, element, value) then applied = applied + 1 end
             end
         end
     end
