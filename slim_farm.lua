@@ -7864,7 +7864,8 @@ local function updateRuntimeTelemetry()
         end
 
         if monitorVisible then
-            local networkState = networkReady() and "ready" or "waiting"
+            local networkState = (networkReady() and "ready" or "waiting")
+                .. " | mem: " .. tostring(math.floor(collectgarbage("count") / 1024 + 0.5)) .. "MB"
             local bossStats = petFarm:BossStats()
             local bossLine = ""
             local warpLine = ""
