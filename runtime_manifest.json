@@ -358,28 +358,28 @@
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
       "bytes": 7110,
-      "sha256": "f4f9a953868615cad5f29e29784ebce2a8f18164c3df0c36dd28e01bdc0722d9",
-      "djb2": "4f687038"
+      "sha256": "1946e4158c547de1ba205a3880eea3883e37998f2b4939df97644d06a09ee3c0",
+      "djb2": "29a14ae1"
     },
     "source": {
       "path": "slim_farm.lua",
       "version": "1.4.1-candidate.54.20-config-profiles",
-      "bytes": 337144,
-      "sha256": "118b166f5cc1077457ebdd5a0f65e91a6b121a7ff430e09ed54bdfdb4dfe1567",
-      "djb2": "394d936d"
+      "bytes": 329168,
+      "sha256": "341ffe65fc1a5e73a6b4dd474c3e35a61416ff26d881561e2db53b8f95f49ad2",
+      "djb2": "f19104a5"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
         "bytes": 257036,
-        "sha256": "ea908b28c8b5b45eb4e137b28d403790fdf9fb458c0e026f6239ace009235007",
-        "djb2": "fdc48763"
+        "sha256": "20b97ca5712f99f1d32e8817c84da49f9740ca40c6c802373762d0a3fadc9571",
+        "djb2": "fa9cd9f2"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
         "bytes": 257036,
-        "sha256": "ea908b28c8b5b45eb4e137b28d403790fdf9fb458c0e026f6239ace009235007",
-        "djb2": "fdc48763"
+        "sha256": "20b97ca5712f99f1d32e8817c84da49f9740ca40c6c802373762d0a3fadc9571",
+        "djb2": "fa9cd9f2"
       }
     }
   }
