@@ -6953,6 +6953,21 @@ function UI.SaveProfile()
     UI.Profile:Set("selected_egg_id", config.EggName or "")
     UI.Profile:Set("selected_egg_scope", config.EggScope)
     UI.Profile:Set("enchant_rule_profiles", config.EnchantRuleProfiles)
+    -- WindUI's own element registration saved an empty __elements list on this
+    -- setup, so toggles never persisted. Snapshot every flagged control
+    -- ourselves; load applies them straight onto the live elements.
+    local flagged = {}
+    local pending = (Window and Window.PendingFlags) or {}
+    for flag, element in pairs(pending) do
+        if type(element) == "table" then
+            local value = element.Value
+            if type(value) == "table" then value = value.Default end
+            if value ~= nil and type(value) ~= "table" and type(value) ~= "userdata" then
+                flagged[flag] = value
+            end
+        end
+    end
+    UI.Profile:Set("flagged_values", flagged)
     UI.Profile:Set("script_version", VERSION)
     UI.Profile:Set("nova_autoload", true)
     UI.Profile:SetAutoLoad(false)
@@ -6999,9 +7014,31 @@ function UI.LoadProfile(label)
     UI.SetProfileStatus("Profile loaded. Synchronizing controls and target location...")
     task.delay(0.3, function()
         UI.ReconcileProfile(label or "Manual load complete")
+        UI.ApplyFlaggedValues()
         requestDiagnostics.Gauge("Startup", "configAppliedAt", os.clock())
         requestDiagnostics.Complete("Startup", diagnosticId, "COMPLETED", "profile reconciled")
     end)
+end
+
+function UI.ApplyFlaggedValues()
+    local flagged = UI.Profile and UI.Profile:Get("flagged_values")
+    if type(flagged) ~= "table" then return 0 end
+    local applied = 0
+    -- PendingFlags is WindUI's own flag -> live element map; reliable, unlike
+    -- per-config element registration which saved an empty __elements list.
+    local pending = (Window and Window.PendingFlags) or {}
+    for flag, value in pairs(flagged) do
+        local element = pending[flag]
+        if type(element) == "table" then
+            if type(element.Set) == "function" then
+                if pcall(element.Set, element, value) then applied = applied + 1 end
+            elseif type(element.Select) == "function" and type(value) == "string" then
+                if pcall(element.Select, element, value) then applied = applied + 1 end
+            end
+        end
+    end
+    trace("config flags applied", tostring(applied))
+    return applied
 end
 
 function UI.RefreshConfigDropdown()
