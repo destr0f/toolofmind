@@ -7014,18 +7014,28 @@ function UI.RefreshConfigDropdown()
     end)
 end
 
-UI.ConfigNameInput = UI.ProfileSection:Input({
-    Title = "Config name",
-    Desc = "Name for SAVE AS NEW / RENAME SELECTED",
-    Placeholder = "default",
-    Callback = function(value) UI.ConfigNameDraft = tostring(value or "") end,
-})
-UI.ConfigDropdown = UI.ProfileSection:Dropdown({
+pcall(function()
+    UI.ConfigNameInput = UI.ProfileSection:Input({
+        Title = "Config name",
+        Desc = "Name for SAVE AS NEW / RENAME SELECTED",
+        Placeholder = "default",
+        Callback = function(value) UI.ConfigNameDraft = tostring(value or "") end,
+    })
+end)
+if not UI.ConfigNameInput then
+    trace("config name input unavailable", "ProfileSection:Input failed")
+end
+pcall(function()
+    UI.ConfigDropdown = UI.ProfileSection:Dropdown({
     Title = "Config",
     Desc = "Pick which saved config this account uses; \"w/o config\" applies nothing",
     Values = { "w/o config" },
     Callback = function(value) UI.SelectedConfigName = tostring(value) end,
 })
+end)
+if not UI.ConfigDropdown then
+    trace("config dropdown unavailable", "ProfileSection:Dropdown failed")
+end
 UI.RefreshConfigDropdown()
 UI.ProfileSection:Button({
     Title = "SAVE PROFILE",
