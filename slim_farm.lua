@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.19-af37-farm-restore"
+local VERSION = "1.4.1-candidate.54.20-config-profiles"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -6195,6 +6195,8 @@ if Window.ConfigManager then
     end)
     if created then
         UI.Profile = profile
+        UI.CurrentConfigName = "default"
+        UI.SelectedConfigName = "default"
         local inspected, exists = pcall(function()
             return type(isfile) == "function" and isfile(profile.Path)
         end)
@@ -6204,6 +6206,42 @@ if Window.ConfigManager then
     end
 else
     UI.ProfileProblem = "executor filesystem API is unavailable"
+end
+
+function UI.ListConfigs()
+    local manager = Window and Window.ConfigManager
+    if not manager or type(manager.AllConfigs) ~= "function" then return {} end
+    local ok, names = pcall(function() return manager:AllConfigs() end)
+    if not ok or type(names) ~= "table" then return {} end
+    table.sort(names)
+    return names
+end
+
+function UI.ConfigPath(name)
+    return "WindUI/PSX_Nova_Stable/config/" .. tostring(name) .. ".json"
+end
+
+function UI.ConfigFileExists(name)
+    local ok, exists = pcall(function()
+        return type(isfile) == "function" and isfile(UI.ConfigPath(name))
+    end)
+    return ok and exists == true
+end
+
+function UI.OpenConfig(name)
+    local manager = Window and Window.ConfigManager
+    if not manager then return false, "config manager unavailable" end
+    local ok, profile = pcall(function()
+        return manager:Config(tostring(name), false)
+    end)
+    if not ok or type(profile) ~= "table" then
+        return false, tostring(profile)
+    end
+    UI.Profile = profile
+    UI.CurrentConfigName = tostring(name)
+    UI.SelectedConfigName = tostring(name)
+    UI.ProfileExists = UI.ConfigFileExists(name)
+    return true
 end
 
 for index, definition in ipairs({
@@ -6800,10 +6838,10 @@ UI.SessionSection:Toggle({
     Callback = function(value) config.AntiAFK = value == true end,
 })
 
-UI.ProfileSection = UI.SessionTab:Section({ Title = "Default Configuration", Box = true, Opened = true })
+UI.ProfileSection = UI.SessionTab:Section({ Title = "Configuration Profiles", Box = true, Opened = true })
 UI.ProfileSection:Paragraph({
-    Title = "SAVE ONCE / AUTO-LOAD EVERY RUN",
-    Desc = "The default profile restores controls through WindUI and then reapplies World before Zone.",
+    Title = "NAMED PROFILES / PICK AT START",
+    Desc = "Create as many named configs as you want; every account picks any of them at start. \"w/o config\" means no profile is applied.",
 })
 UI.ProfileStatus = UI.ProfileSection:Paragraph({
     Title = "Configuration Status",
@@ -6939,22 +6977,155 @@ function UI.LoadProfile(label)
     end)
 end
 
+function UI.RefreshConfigDropdown()
+    if not UI.ConfigDropdown then return end
+    local options = { "w/o config" }
+    for _, name in ipairs(UI.ListConfigs()) do options[#options + 1] = name end
+    pcall(function() UI.ConfigDropdown:Refresh(options) end)
+    pcall(function()
+        UI.ConfigDropdown:Select(UI.SelectedConfigName or UI.CurrentConfigName or "default")
+    end)
+end
+
+UI.ConfigNameInput = UI.ProfileSection:Input({
+    Title = "Config name",
+    Desc = "Name for SAVE AS NEW / RENAME SELECTED",
+    Placeholder = "default",
+    Callback = function(value) UI.ConfigNameDraft = tostring(value or "") end,
+})
+UI.ConfigDropdown = UI.ProfileSection:Dropdown({
+    Title = "Config",
+    Desc = "Pick which saved config this account uses; \"w/o config\" applies nothing",
+    Values = { "w/o config" },
+    Callback = function(value) UI.SelectedConfigName = tostring(value) end,
+})
+UI.RefreshConfigDropdown()
 UI.ProfileSection:Button({
     Title = "SAVE PROFILE",
-    Desc = "Stores every flagged control and enables automatic loading",
+    Desc = "Stores every flagged control into the current config",
     Icon = "save",
     Callback = UI.SaveProfile,
 })
 UI.ProfileSection:Button({
     Title = "LOAD PROFILE",
-    Desc = "Restores the saved profile immediately without restarting the script",
+    Desc = "Restores the selected config immediately without restarting the script",
     Icon = "folder-open",
-    Callback = function() UI.LoadProfile() end,
+    Callback = function()
+        local name = UI.SelectedConfigName
+        if name == "w/o config" then
+            UI.SetProfileStatus("w/o config selected: nothing was loaded")
+            return
+        end
+        if name and name ~= UI.CurrentConfigName then UI.OpenConfig(name) end
+        UI.LoadProfile("Config '" .. tostring(UI.CurrentConfigName) .. "' loaded")
+    end,
+})
+UI.ProfileSection:Button({
+    Title = "SAVE AS NEW",
+    Desc = "Creates a new named config from the current controls and switches to it",
+    Icon = "plus",
+    Callback = function()
+        local name = (UI.ConfigNameDraft ~= "" and UI.ConfigNameDraft) or "default"
+        local ok, problem = UI.OpenConfig(name)
+        if not ok then
+            UI.SetProfileStatus("Create failed: " .. tostring(problem))
+            return
+        end
+        UI.SaveProfile()
+        UI.RefreshConfigDropdown()
+    end,
+})
+UI.ProfileSection:Button({
+    Title = "RENAME SELECTED",
+    Desc = "Renames the selected config file to the name in the input",
+    Icon = "pencil",
+    Callback = function()
+        local from = UI.SelectedConfigName
+        local to = UI.ConfigNameDraft
+        if not from or from == "w/o config" or not to or to == "" or to == from then
+            UI.SetProfileStatus("Rename: pick a config and type a new name")
+            return
+        end
+        if type(readfile) ~= "function" or type(writefile) ~= "function"
+            or type(delfile) ~= "function" then
+            UI.SetProfileStatus("Rename unavailable: filesystem API missing")
+            return
+        end
+        if not UI.ConfigFileExists(from) then
+            UI.SetProfileStatus("Rename failed: '" .. from .. "' has no saved file")
+            return
+        end
+        local ok, problem = pcall(function()
+            writefile(UI.ConfigPath(to), readfile(UI.ConfigPath(from)))
+            delfile(UI.ConfigPath(from))
+        end)
+        if not ok then
+            UI.SetProfileStatus("Rename failed: " .. tostring(problem))
+            return
+        end
+        if UI.CurrentConfigName == from then UI.OpenConfig(to) end
+        UI.SelectedConfigName = to
+        UI.RefreshConfigDropdown()
+        UI.SetProfileStatus("Renamed '" .. from .. "' to '" .. to .. "'")
+    end,
+})
+UI.ProfileSection:Button({
+    Title = "DELETE SELECTED",
+    Desc = "Deletes the selected config file from disk",
+    Icon = "trash-2",
+    Callback = function()
+        local name = UI.SelectedConfigName
+        if not name or name == "w/o config" then
+            UI.SetProfileStatus("Delete: pick a config first")
+            return
+        end
+        local manager = Window and Window.ConfigManager
+        local ok, result = pcall(function() return manager:DeleteConfig(name) end)
+        if not ok or result ~= true then
+            UI.SetProfileStatus("Delete failed: " .. tostring(ok and result or "unknown"))
+            return
+        end
+        if UI.CurrentConfigName == name then UI.OpenConfig("default") end
+        UI.SelectedConfigName = UI.CurrentConfigName
+        UI.RefreshConfigDropdown()
+        UI.SetProfileStatus("Deleted config '" .. tostring(name) .. "'")
+    end,
 })
 
-if UI.Profile and UI.ProfileExists then
+if UI.Profile then
     task.delay(0.8, function()
-        if running() then UI.LoadProfile("Automatic load complete") end
+        if not running() then return end
+        local names = UI.ListConfigs()
+        if #names == 0 then return end
+        local buttons = {
+            {
+                Title = "w/o config",
+                Icon = "x",
+                Variant = "Secondary",
+                Callback = function() end,
+            },
+        }
+        for index, name in ipairs(names) do
+            if index > 7 then break end
+            buttons[#buttons + 1] = {
+                Title = name,
+                Icon = "folder-open",
+                Variant = name == "default" and "Primary" or "Secondary",
+                Callback = function()
+                    UI.OpenConfig(name)
+                    UI.LoadProfile("Config '" .. name .. "' selected at start")
+                    UI.RefreshConfigDropdown()
+                end,
+            }
+        end
+        pcall(function()
+            Window:Dialog({
+                Title = "Which config should this account use?",
+                Content = "Pick a saved config to apply now, or \"w/o config\" to run with the current controls.",
+                Icon = "folder-open",
+                Buttons = buttons,
+            })
+        end)
     end)
 end
 
