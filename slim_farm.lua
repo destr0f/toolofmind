@@ -6979,6 +6979,18 @@ function UI.SaveProfile()
         end
     end
     UI.Profile:Set("flagged_values", flagged)
+    -- WindUI's element registration saved an empty __elements list on this
+    -- build, so persist the plain automation state ourselves and re-drive the
+    -- features on load instead of trusting element registration.
+    local snapshot = {}
+    for key, value in pairs(config) do
+        local valueType = type(value)
+        if (valueType == "boolean" or valueType == "number" or valueType == "string")
+            and key ~= "EnchantRuleProfiles" then
+            snapshot[key] = value
+        end
+    end
+    UI.Profile:Set("automation_config", snapshot)
     UI.Profile:Set("script_version", VERSION)
     UI.Profile:Set("nova_autoload", true)
     UI.Profile:SetAutoLoad(false)
@@ -7028,14 +7040,51 @@ function UI.LoadProfile(label)
     UI.SetProfileStatus("Profile loaded. Synchronizing controls and target location...")
     task.delay(0.3, function()
         UI.ReconcileProfile(label or "Manual load complete")
-        local applied = UI.ApplyFlaggedValues()
+        local applied = UI.ApplyAutomationConfig()
+        local flaggedApplied = UI.ApplyFlaggedValues()
         UI.SetProfileStatus(string.format(
-            "%s | flagged controls applied: %d",
-            tostring(label or "Profile loaded"), tonumber(applied) or 0
+            "%s | automation values applied: %d | flagged controls applied: %d",
+            tostring(label or "Profile loaded"),
+            tonumber(applied) or 0,
+            tonumber(flaggedApplied) or 0
         ))
         requestDiagnostics.Gauge("Startup", "configAppliedAt", os.clock())
         requestDiagnostics.Complete("Startup", diagnosticId, "COMPLETED", "profile reconciled")
     end)
+end
+
+function UI.ApplyAutomationConfig()
+    local saved = UI.Profile and UI.Profile:Get("automation_config")
+    if type(saved) ~= "table" then return 0 end
+    local applied = 0
+    for key, value in pairs(saved) do
+        local valueType = type(value)
+        if (valueType == "boolean" or valueType == "number" or valueType == "string")
+            and key ~= "EnchantRuleProfiles" and config[key] ~= value then
+            config[key] = value
+            applied = applied + 1
+        end
+    end
+    if applied == 0 then return 0 end
+    -- Re-drive features the same way the toggle callbacks do.
+    if config.PetFarm and not petFarm.Engine and not petFarm.Loading then
+        task.defer(function()
+            local ready, problem = petFarm:EnsureEngine()
+            if not ready then trace("pet engine load", tostring(problem)) end
+        end)
+    end
+    restartFarmWatchers()
+    requestFarmReset("config applied")
+    if config.AutoEgg then
+        task.defer(startAutoEggModule)
+    end
+    machineModules:Start("Gold")
+    machineModules:Start("Rainbow")
+    machineModules:Start("DarkMatter")
+    reconcileBoostModule()
+    lootCollector:SyncWorker()
+    reconcileRewardWorker()
+    return applied
 end
 
 function UI.ApplyFlaggedValues()
