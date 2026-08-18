@@ -6978,6 +6978,18 @@ function UI.SaveProfile()
             end
         end
     end
+    if next(flagged) == nil then
+        for _, element in ipairs((Window and Window.AllElements) or {}) do
+            if type(element) == "table" and type(element.Flag) == "string"
+                and element.Flag ~= "" then
+                local value = element.Value
+                if type(value) == "table" then value = value.Default end
+                if value ~= nil and type(value) ~= "table" and type(value) ~= "userdata" then
+                    flagged[element.Flag] = value
+                end
+            end
+        end
+    end
     UI.Profile:Set("flagged_values", flagged)
     -- WindUI's element registration saved an empty __elements list on this
     -- build, so persist the plain automation state ourselves and re-drive the
@@ -7091,11 +7103,23 @@ function UI.ApplyFlaggedValues()
     local flagged = UI.Profile and UI.Profile:Get("flagged_values")
     if type(flagged) ~= "table" then return 0 end
     local applied = 0
-    -- PendingFlags is WindUI's own flag -> live element map; reliable, unlike
-    -- per-config element registration which saved an empty __elements list.
+    -- Look the live element up in every map WindUI keeps: PendingFlags, the
+    -- current config's registered elements, and the global element list.
     local pending = (Window and Window.PendingFlags) or {}
+    local current = Window and Window.CurrentConfig
+    local currentElements = current and current.Elements or nil
+    local all = (Window and Window.AllElements) or {}
     for flag, value in pairs(flagged) do
         local element = pending[flag]
+        if element == nil and currentElements then element = currentElements[flag] end
+        if element == nil then
+            for _, candidate in ipairs(all) do
+                if type(candidate) == "table" and candidate.Flag == flag then
+                    element = candidate
+                    break
+                end
+            end
+        end
         if type(element) == "table" then
             if type(element.Set) == "function" then
                 if pcall(element.Set, element, value) then applied = applied + 1 end
