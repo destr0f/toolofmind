@@ -6268,6 +6268,17 @@ function UI.OpenConfig(name)
     UI.CurrentConfigName = tostring(name)
     UI.SelectedConfigName = tostring(name)
     UI.ProfileExists = UI.ConfigFileExists(name)
+    -- Official pattern: the opened config becomes the window's current config,
+    -- so newly created flagged elements register into it instead of the void.
+    if Window then
+        pcall(function()
+            if type(Window.SetCurrentConfig) == "function" then
+                Window:SetCurrentConfig(profile)
+            else
+                Window.CurrentConfig = profile
+            end
+        end)
+    end
     return true
 end
 
@@ -6977,11 +6988,14 @@ function UI.SaveProfile()
         return
     end
     UI.ProfileExists = true
+    local flaggedCount = 0
+    for _ in pairs(flagged) do flaggedCount = flaggedCount + 1 end
     UI.SetProfileStatus(string.format(
-        "Profile saved successfully.\nWorld: %s | Zone: %s | Egg: %s | auto-load: enabled",
+        "Profile saved successfully.\nWorld: %s | Zone: %s | Egg: %s | flagged controls: %d",
         tostring(config.World),
         tostring(config.Zone),
-        tostring(config.EggName or "none")
+        tostring(config.EggName or "none"),
+        flaggedCount
     ))
     trace("config saved", tostring(UI.Profile.Path))
 end
@@ -7014,7 +7028,11 @@ function UI.LoadProfile(label)
     UI.SetProfileStatus("Profile loaded. Synchronizing controls and target location...")
     task.delay(0.3, function()
         UI.ReconcileProfile(label or "Manual load complete")
-        UI.ApplyFlaggedValues()
+        local applied = UI.ApplyFlaggedValues()
+        UI.SetProfileStatus(string.format(
+            "%s | flagged controls applied: %d",
+            tostring(label or "Profile loaded"), tonumber(applied) or 0
+        ))
         requestDiagnostics.Gauge("Startup", "configAppliedAt", os.clock())
         requestDiagnostics.Complete("Startup", diagnosticId, "COMPLETED", "profile reconciled")
     end)
