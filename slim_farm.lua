@@ -7134,12 +7134,13 @@ if UI.Profile then
         if not running() then return end
         local names = UI.ListConfigs()
         if #names == 0 then return end
+        UI.ConfigChosen = false
         local buttons = {
             {
                 Title = "w/o config",
                 Icon = "x",
                 Variant = "Secondary",
-                Callback = function() end,
+                Callback = function() UI.ConfigChosen = true end,
             },
         }
         for index, name in ipairs(names) do
@@ -7149,6 +7150,7 @@ if UI.Profile then
                 Icon = "folder-open",
                 Variant = name == "default" and "Primary" or "Secondary",
                 Callback = function()
+                    UI.ConfigChosen = true
                     UI.OpenConfig(name)
                     UI.LoadProfile("Config '" .. name .. "' selected at start")
                     UI.RefreshConfigDropdown()
@@ -7162,6 +7164,16 @@ if UI.Profile then
                 Icon = "folder-open",
                 Buttons = buttons,
             })
+        end)
+        -- If the dialog failed to open or nobody answered, fall back to the
+        -- legacy behavior: auto-load the default profile instead of leaving
+        -- farm/machines off.
+        task.delay(15, function()
+            if not running() or UI.ConfigChosen then return end
+            if UI.ConfigFileExists("default") then
+                UI.OpenConfig("default")
+                UI.LoadProfile("Automatic default load (no answer)")
+            end
         end)
     end)
 end
