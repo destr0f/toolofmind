@@ -2010,13 +2010,40 @@ function coinSync.StoreBossTemplate(self, id, record)
     }
 end
 
+local function pruneCoinRecords()
+    -- coinRecords only shrank on Remove Coin; health events for missed coins
+    -- create records forever. After hours that table held tens of thousands of
+    -- dead entries and every allocator pass iterated all of them, which is the
+    -- long-run farm/ping degradation. Bounded: prune stale model-less records,
+    -- never boss templates, at most once a minute and only past 4096 entries.
+    local now = os.clock()
+    if coinSync.RecordCount <= 4096 or now < (coinSync.NextPruneAt or 0) then return end
+    coinSync.NextPruneAt = now + 60
+    for coinId, record in pairs(coinRecords) do
+        if record.Model == nil and not record.FromServer
+            and (now - (tonumber(record.TouchedAt) or now)) > 300 then
+            coinRecords[coinId] = nil
+            coinSync.RecordCount = coinSync.RecordCount - 1
+        elseif record.Model == nil and record.FromServer
+            and record.Removed == true
+            and (now - (tonumber(record.TouchedAt) or now)) > 300 then
+            coinRecords[coinId] = nil
+            coinSync.RecordCount = coinSync.RecordCount - 1
+        end
+    end
+end
+
 local function applyCoinData(rawId, data, fromEvent)
     if rawId == nil or type(data) ~= "table" then return nil end
     local id = tostring(rawId)
     local created = coinRecords[id] == nil
     local record = coinRecords[id] or { Id = id }
     coinRecords[id] = record
-    if created then coinSync.RecordCount = coinSync.RecordCount + 1 end
+    if created then
+        coinSync.RecordCount = coinSync.RecordCount + 1
+        pruneCoinRecords()
+    end
+    record.TouchedAt = os.clock()
     local selectionChanged = created
     local previousHealth = tonumber(record.Health)
     local template = coinSync.BossTemplates[id]
