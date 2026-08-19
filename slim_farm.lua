@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.22-target-quarantine"
+local VERSION = "1.4.1-candidate.54.23-rebind-fix"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2432,7 +2432,7 @@ end
 local function connectCoinSignals(forceName)
     if forceName ~= nil then
         local existing = coinSync.SignalConnections[forceName]
-        if existing then disconnect(existing) end
+        if existing then pcall(function() existing:Disconnect() end) end
         coinSync.SignalConnections[forceName] = nil
         coinSync.SignalSources[forceName] = nil
         coinSync.SignalsReady = false
@@ -2581,7 +2581,7 @@ local function connectCoinSignals(forceName)
                 coinGeneration = coinGeneration + 1
                 coinMutationSerial = coinMutationSerial + 1
                 for name, namedConnection in pairs(coinSync.SignalConnections) do
-                    disconnect(namedConnection)
+                    pcall(function() namedConnection:Disconnect() end)
                     coinSync.SignalConnections[name] = nil
                     coinSync.SignalSources[name] = nil
                 end
