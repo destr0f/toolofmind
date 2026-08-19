@@ -3741,6 +3741,7 @@ function petFarm:ConfirmStateProgress(state, source, now)
     state.ProgressConfirmedAt = confirmedAt
     state.ProgressConfirmSource = tostring(source or "unknown")
     state.ProgressObservedAt = confirmedAt
+    state.ProgressRenewals = 0
     local record = coinRecords[tostring(state.CoinId)]
     state.ProgressObservedHealth = record and tonumber(record.Health)
         or state.ProgressObservedHealth
@@ -3796,15 +3797,32 @@ function petFarm:RunProgressLeases(token)
             if health and observedHealth and health < observedHealth then
                 state.ProgressObservedHealth = health
                 state.ProgressObservedAt = now
+                state.ProgressRenewals = 0
                 state.ProgressDeadline = now + self:ProgressLeaseSeconds()
             elseif now >= (tonumber(state.ProgressDeadline) or now) then
                 -- Missing local health deltas are not transport failures. Keep a
-                -- live accepted target without replaying its transport pair.
-                -- Remove Coin or an authoritative Update Coin Pets absence
-                -- is the only event that releases this lock.
-                state.ProgressObservedAt = now
-                state.ProgressObservedHealth = health
-                state.ProgressDeadline = now + self:ProgressLeaseSeconds()
+                -- live accepted target without replaying its transport pair,
+                -- but only for a bounded number of renewals: if many lease
+                -- windows pass without a single health drop, the coin is a
+                -- server-side corpse (Join accepted, zero damage) and the lock
+                -- must be released or the farm sits on it forever.
+                state.ProgressRenewals = (tonumber(state.ProgressRenewals) or 0) + 1
+                if state.ProgressRenewals >= 10 then
+                    local deadId = tostring(state.CoinId)
+                    rejectedUntil[deadId] = now + 90
+                    self.ProgressLeases[petId] = nil
+                    petStates[petId] = nil
+                    releasePetState(state, true)
+                    self.FastPets[petId] = true
+                    self.ProgressLeaseQuarantines = (tonumber(self.ProgressLeaseQuarantines) or 0) + 1
+                    released = released + 1
+                    trace("farm target quarantined", deadId .. " | no health drop across "
+                        .. tostring(state.ProgressRenewals) .. " lease windows")
+                else
+                    state.ProgressObservedAt = now
+                    state.ProgressObservedHealth = health
+                    state.ProgressDeadline = now + self:ProgressLeaseSeconds()
+                end
             end
         end
     end
@@ -7787,6 +7805,7 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "progressConfirms", petFarm.ProgressConfirms)
     requestDiagnostics.Gauge("Farm", "progressLeaseExpiries", petFarm.ProgressLeaseExpiries)
     requestDiagnostics.Gauge("Farm", "progressLeaseRepairs", petFarm.ProgressLeaseRepairs)
+    requestDiagnostics.Gauge("Farm", "progressLeaseQuarantines", tonumber(petFarm.ProgressLeaseQuarantines) or 0)
     requestDiagnostics.Gauge("Farm", "progressAckMode", petFarm.ProgressAckMode)
     requestDiagnostics.Gauge("Farm", "lastRoute", tostring(dispatchStats.LastRoute or "none"))
     requestDiagnostics.Gauge("Farm", "lastAssignmentAge", (tonumber(dispatchStats.LastAssignmentAt) or 0) > 0
