@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.25-egg-alias"
+local VERSION = "1.4.1-candidate.54.26-range-anchor"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3128,6 +3128,21 @@ function petFarm:ResolveBossPetRuntime(rawPetIds)
     return nil, warp.LastProblem
 end
 
+function petFarm:AnchorCharacterToBoss(record)
+    -- The server now kicks with "Attempted to farm a coin out of range" when
+    -- Farm Coin arrives while the player character is far from the coin.
+    -- Keep the character pinned next to the active boss chest while farming.
+    if config.Mode ~= "Boss Chest Only" or not recordAlive(record) then return false end
+    local position = typeof(record.Position) == "Vector3" and record.Position or nil
+    if not position then return false end
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    if (root.Position - position).Magnitude <= 60 then return true end
+    root.CFrame = CFrame.new(position + Vector3.new(0, 6, 25))
+    return true
+end
+
 function petFarm:WarpBossPetsOnce(record, rawPetIds, bossGeneration)
     local warp = self.BossPetWarp
     if not config.BossPetInstantArrival or config.Mode ~= "Boss Chest Only"
@@ -3233,6 +3248,7 @@ function petFarm:WarpBossPetsOnce(record, rawPetIds, bossGeneration)
     warp.Applied = (tonumber(warp.Applied) or 0) + 1
     warp.PetsMoved = (tonumber(warp.PetsMoved) or 0) + #parts
     warp.LastProblem = "post-Join batch moved " .. tostring(#parts) .. " pet(s)"
+    self:AnchorCharacterToBoss(record)
     table.clear(parts)
     table.clear(cframes)
     table.clear(states)
@@ -5911,6 +5927,11 @@ local function restartFarmWatchers()
                 end
             end
             local bossRecord = bossId ~= nil and coinRecords[tostring(bossId)] or nil
+            -- The server kicks out-of-range Farm Coin calls; keep the character
+            -- pinned next to the live boss for the whole fight, not just at Join.
+            if bossState == "ACTIVE" and recordAlive(bossRecord) then
+                petFarm:AnchorCharacterToBoss(bossRecord)
+            end
             local orphanedBoss = bossId ~= nil and bossState == "ACTIVE"
                 and idleBossLane and indexedBoss == nil and not recordAlive(bossRecord)
             local stalled = idleBossLane and indexedBoss ~= nil
