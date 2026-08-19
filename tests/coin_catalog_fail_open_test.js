@@ -18,7 +18,7 @@ for (const marker of [
     "SnapshotFailOpen = false",
     "EventConfirmed = false",
     "coinSync.SnapshotAttempts = coinSync.SnapshotAttempts + 1",
-    '["Get Coins"] = { "Get The Coins", "Get Coins" }',
+    '["Get Coins"] = { "Get Coins Data", "Get The Coins", "Get Coins" }',
     "pcall(network.Invoke, candidate)",
     'coinSync.LastProblem = coinSync.LastProblem .. "; event-driven fail-open"',
     "folder.ChildAdded:Connect",

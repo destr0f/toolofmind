@@ -14,9 +14,9 @@ for (const marker of [
     'if namesMatch(zone, "Pixel Vault")',
     'and positionInsideNamedArea(record.Position, zone, 42) then',
     '["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" }',
-    '["Join Coin"] = { "Join The Coin", "Join Coin" }',
-    '["Farm Coin"] = { "Farm The Coin", "Farm Coin" }',
-    '["Leave Coin"] = { "Leave The Coin", "Leave Coin" }',
+    '["Join Coin"] = { "Join Coin mmm", "Join The Coin", "Join Coin" }',
+    '["Farm Coin"] = { "Farm Coin mmm", "Farm The Coin", "Farm Coin" }',
+    '["Leave Coin"] = { "Leave Coin mmm", "Leave The Coin", "Leave Coin" }',
 ]) {
     assert(source.includes(marker), `minimal Pixel refresh misses ${marker}`);
 }

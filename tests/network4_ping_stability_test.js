@@ -58,7 +58,7 @@ const lease = farm.slice(
 for (const command of ["Join Coin", "Leave Coin", "Change Pet Target", "Farm Coin"]) {
     assert(!lease.includes(command), `lease timeout sends ${command}`);
 }
-assert(farm.includes('["Get Coins"] = { "Get The Coins", "Get Coins" }'));
+assert(farm.includes('["Get Coins"] = { "Get Coins Data", "Get The Coins", "Get Coins" }'));
 assert(farm.includes("self.ProgressLeaseEvictions = self.ProgressLeaseEvictions + 1")
     && farm.includes("self:QueueFastDispatch()"));
 

@@ -43,7 +43,7 @@ assert(source.includes('loadRemoteController("networkTransport", "Network4 trans
 assert(source.includes('"resolveFireBridge", commandName, "BindableEvent"'));
 assert(source.includes('sourceName = "Library.Network.Invoke named fallback"'));
 assert(source.includes('sourceName = "Library.Network.Fire named fallback"'));
-assert(source.includes('["Get Coins"] = { "Get The Coins", "Get Coins" }'));
+assert(source.includes('["Get Coins"] = { "Get Coins Data", "Get The Coins", "Get Coins" }'));
 assert(!source.includes("pcall(accessor, commandName)"));
 assert(!source.includes("pcall(candidate, commandName)"));
 assert(!source.includes('"Network.Invoke GetRemoteFunction upvalue #2"'));
