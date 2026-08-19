@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.23-rebind-fix"
+local VERSION = "1.4.1-candidate.54.24-route-aliases"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3330,11 +3330,11 @@ end
 -- Logical command names stay stable inside the farm. Only this tiny table tracks
 -- game-side route renames; Network4 still resolves the per-session hashed remote.
 coinSync.NetworkTransport.RouteAliases = {
-    ["Get Coins"] = { "Get The Coins", "Get Coins" },
+    ["Get Coins"] = { "Get Coins Data", "Get The Coins", "Get Coins" },
     ["Change Pet Target"] = { "Change Pet Target NOW", "Change Pet Target" },
-    ["Join Coin"] = { "Join The Coin", "Join Coin" },
-    ["Farm Coin"] = { "Farm The Coin", "Farm Coin" },
-    ["Leave Coin"] = { "Leave The Coin", "Leave Coin" },
+    ["Join Coin"] = { "Join Coin mmm", "Join The Coin", "Join Coin" },
+    ["Farm Coin"] = { "Farm Coin mmm", "Farm The Coin", "Farm Coin" },
+    ["Leave Coin"] = { "Leave Coin mmm", "Leave The Coin", "Leave Coin" },
     ["Buy Egg Yay"] = { "Buy Egg Ok", "Buy Egg Yay" },
 }
 
