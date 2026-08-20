@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.29-autohatch-diag"
+local VERSION = "1.4.1-candidate.54.30-autoload-600"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -7389,8 +7389,9 @@ if UI.Profile then
         end)
         -- If the dialog failed to open or nobody answered, fall back to the
         -- legacy behavior: auto-load the default profile instead of leaving
-        -- farm/machines off.
-        task.delay(15, function()
+        -- farm/machines off. Ten minutes gives every account in a multi-client
+        -- setup time to pick its own config first.
+        task.delay(600, function()
             if not running() or UI.ConfigChosen then return end
             if UI.ConfigFileExists("default") then
                 UI.OpenConfig("default")
