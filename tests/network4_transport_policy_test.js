@@ -26,7 +26,7 @@ assert(transport.includes('return resolve(context, 2, commandName)'));
 assert(transport.includes('return resolveBridge(context, 1, commandName)'));
 assert(transport.includes('return resolveBridge(context, 2, commandName)'));
 assert(transport.includes("rawget(hashMaps[kind], commandName)"));
-assert(transport.includes("rawget(remoteMaps[kind], candidate.Value)"));
+assert(transport.includes("rawget(map, candidate.Value)"));
 assert(transport.includes("rawget(bridgeMaps[bridgeKind], candidate.Value)"));
 assert(transport.includes('if action == "invalidate" then'));
 assert(transport.includes('if action == "stats" then return stats() end'));
