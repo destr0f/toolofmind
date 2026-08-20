@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.28-server-autohatch"
+local VERSION = "1.4.1-candidate.54.29-autohatch-diag"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)

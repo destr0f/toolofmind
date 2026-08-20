@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.6"
+local MODULE_VERSION = "1.7.7"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -2308,13 +2308,25 @@ local function beginRequest(state, context, options, inspection)
     -- toggle, not a set, so fire only while the save still reports Enabled.
     local save = saveFor(context)
     local autoHatchSettings = type(save) == "table" and save.AutoHatchSettings or nil
+    -- Diagnose every cycle in the status line: if the save never reports the
+    -- setting, or the toggle route fails, the duplicate buyer keeps hatching
+    -- and we need to see it instead of assuming the disable worked.
+    if not state.ServerAutoHatchStateLogged then
+        state.ServerAutoHatchStateLogged = true
+        context.Trace("auto egg native autohatch", "save.AutoHatchSettings = "
+            .. tostring(autoHatchSettings and autoHatchSettings.Enabled))
+    end
     if type(autoHatchSettings) == "table" and autoHatchSettings.Enabled == true
         and type(context.FireCommand) == "function" then
-        local fired = pcall(context.FireCommand, "Toggle Auto Hatch Setting", "Enabled")
-        if fired and not state.ServerAutoHatchReported then
-            state.ServerAutoHatchReported = true
+        local now = os.clock()
+        if now - (tonumber(state.ServerAutoHatchToggleAt) or 0) >= 30 then
+            state.ServerAutoHatchToggleAt = now
+            local called, accepted, problem = pcall(context.FireCommand, "Toggle Auto Hatch Setting", "Enabled")
             context.Trace("auto egg native autohatch",
-                "server-side Auto Hatch was enabled; toggled Enabled off via Toggle Auto Hatch Setting")
+                "server-side Auto Hatch is enabled; Toggle Auto Hatch Setting sent"
+                    .. " | called=" .. tostring(called)
+                    .. " | accepted=" .. tostring(accepted)
+                    .. " | problem=" .. tostring(problem))
         end
     end
     local headless = options.Animation == "Headless (No Animation)"
