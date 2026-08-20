@@ -1,6 +1,6 @@
 # Active Network4/Network5 Route Manifest
 
-Suite: `1.4.1-dev.50-network4.2`
+Suite: `1.4.1-candidate.54.32-cobalt-route-audit`
 
 Evidence used:
 
@@ -8,6 +8,9 @@ Evidence used:
 - Cobalt archive session `20260813_170240` and its 45 route snapshots;
 - Cobalt archive session `20260815_192259`: 36,382 calls, 67 unique
   signatures and 401 full snapshots from the current Network layout;
+- Cobalt archive session `20260820_084121`: 40,620 traffic records over
+  roughly 656 seconds, 89 unique calls, 534 snapshots and zero recorder
+  drops/errors;
 - `PSX_COBALT_NETWORK_CONSPECT_20260813.md`;
 - command call sites in `slim_farm.lua`, `pet_farm_lite_engine.lua`, `loot_reactor.lua`, `auto_egg_module.lua`, machine, boost, enchant and reward workers.
 
@@ -17,10 +20,10 @@ Evidence used:
 
 1. The primary identity is `(kind, logical command name)`, never `GetChildren()[index]` and never a physical hash copied from another session.
 2. The active resolver reads the live command-to-hash and hash-to-instance maps from `ReplicatedStorage.Framework.Modules.Client.2 - Network` without executing its RobloxScript-bound accessor.
-3. The current 2026-08-15 network hashes a logical command with unsigned DJB2
-   (`value=5381; value=(value*33+byte)%2^32`) and stores the decimal result as
-   the physical remote name. If the live command map is cold, the resolver
-   computes this name locally and reads the matching ReplicatedStorage child.
+3. Physical remote names are session-bound. The current resolver must read the
+   live command map and may use a locally computed name only as a same-session
+   compatibility candidate. A hash copied from Cobalt traffic is never a
+   persistent command identity.
 4. The previous Network5 fallback remains compatibility-only:
 
    ```text
@@ -38,10 +41,10 @@ Evidence used:
 
 | Project command | Live name / aliases | Arguments, in order | Result used by runtime | Confirmation | Replay | Evidence |
 |---|---|---|---|---|---|---|
-| `Get Coins` | `Get The Coins`, `Get Coins` | none | coin catalog table keyed by coin ID | valid non-empty table, then live coin deltas | read-only startup snapshot only | Captured |
-| `Join Coin` | `Join The Coin`, `Join Coin` | `coinId`, `{petUid...}` | table/map of accepted pet UIDs, or boolean rejection | returned UID map; later `Update Coin Pets`, health and removal are state events | forbidden | Captured |
-| `Leave Coin` | `Leave The Coin`, `Leave Coin` | `coinId`, `{petUid...}` | boolean/message when supplied | function result; used only during reset/explicit release | forbidden | Source |
-| `Buy Egg Yay` | same | `eggName`, `triple:boolean` | boolean plus hatch payload/message depending game path | function result, then `openegggg`/`Opening Egg` or exact inventory delta | forbidden | Captured |
+| `Get Coins` | `Get Coins Data`, `Get The Coins`, `Get Coins` | none | coin catalog table keyed by coin ID | valid non-empty table, then live coin deltas | read-only startup/world-change snapshot only | Captured |
+| `Join Coin` | `Join Coin mmm`, `Join The Coin`, `Join Coin` | `coinId`, `{petUid...}` | table/map of accepted pet UIDs, or boolean rejection | returned UID map; later `Update Coin Pets`, health and removal are state events | forbidden | Captured; native batch 16 |
+| `Leave Coin` | `Leave Coin mmm`, `Leave The Coin`, `Leave Coin` | `coinId`, `{petUid...}` | boolean/message when supplied | function result; used only during reset/explicit release | forbidden | Captured |
+| `Buy Egg Yay` | `Egg: Buy Egg`, `Buy Egg Ok`, `Buy Egg Yay` | `eggName`, `triple:boolean` | boolean plus hatch payload/message depending game path | function result, then `openegggg`/`Opening Egg` or exact inventory delta | forbidden | Captured |
 | `Delete Several Pets` | same | `{petUid...}` | boolean/message | exact inventory delta | forbidden | Captured |
 | `Enchant Pet` | same | `petUid` | boolean/result payload | changed enchant in `Save.Pets` | forbidden | Source |
 | `Get Golden Machine Info` | same | none | machine tier table | valid tier table, cached after success | read-only result cache allowed | Source |
@@ -65,8 +68,8 @@ Every row resolves through `resolveFunction`; the active command wrapper tries t
 | Project command | Live name / aliases | Arguments, in order | Local send verification | Server/game confirmation | Retry rule | Evidence |
 |---|---|---|---|---|---|---|
 | `Change Pet Target` | `Change Pet Target NOW`, `Change Pet Target` | `petUid`, `"Coin"`, `coinId`; reset form `petUid`, `"Player"` | `pcall(FireServer)` | `Update Coin Pets`, health/removal state; absence of a local delta is not failure | only a genuine local transport failure | Captured |
-| `Farm Coin` | `Farm The Coin`, `Farm Coin` | `coinId`, `petUid` | `pcall(FireServer)` | health/removal state | only a genuine local transport failure | Captured |
-| `Claim Orbs` | same | `{orbId...}` | one successful local Fire commits each ID | `Orb Removed` is cleanup/statistics only | retry the same ID only after local Fire failure | Captured |
+| `Farm Coin` | `Farm Coin mmm`, `Farm The Coin`, `Farm Coin` | `coinId`, `petUid` | `pcall(FireServer)` | health/removal state | only a genuine local transport failure | Captured |
+| `Claim Orbs` | same | `{orbId...}` | one successful local Fire commits each ID | `Orb Removed` is cleanup/statistics only | retry the same ID only after local Fire failure | Captured; native batches 1-40 observed, no hard limit 8 |
 | `Collect Lootbag` | same | `lootbagId`, current `Vector3` | one successful local Fire closes the record | `Remove Lootbag` is optional cleanup/statistics | retry only after local Fire failure while the physical bag still exists | Captured |
 | `Activate Boost` | same | boost name (`Triple Coins`, `Triple Damage`, `Super Lucky`, `Ultra Lucky`) | `pcall(FireServer)` | `Save.Boosts` timer change | worker retries only from its normal due-state after a real send failure | Captured |
 
@@ -86,7 +89,14 @@ Every row resolves through `resolveEvent`; a real command-specific BindableEvent
 | `Spawn Lootbag` / producer `Add` | ID, payload/position | `loot_reactor.lua` | enqueue one native-compatible collect |
 | `Remove Lootbag` / producer `Remove` | lootbag ID | `loot_reactor.lua` | optional acknowledgement and local cleanup |
 
-Inbound events resolve as live `RemoteEvent` instances first and use `Library.Network.Fired(name)` only as the established game signal fallback. They are observations; missing observations do not retroactively turn a successful outbound RemoteEvent into a transport error.
+Farm lifecycle events resolve only through the verified inbound resolver: the
+live `t4[1]` `RemoteEvent`, then the exact existing `t2[1]` command bridge.
+`Library.Network.Fired(name)` is forbidden for injected farm callers because
+the game's anti-injection branch can return a fresh orphaned BindableEvent;
+`Connect` then succeeds while no `New Coin` or `Remove Coin` event can arrive.
+Other inbound consumers must likewise prove that a signal belongs to the live
+Network tables before marking it ready. Missing observations do not
+retroactively turn a successful outbound RemoteEvent into a transport error.
 
 ## Cache and lifecycle policy
 

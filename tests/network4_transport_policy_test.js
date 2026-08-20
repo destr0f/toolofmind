@@ -74,6 +74,11 @@ assert(source.includes('FireCommand = fireCommand'));
 assert(source.includes('GetEventRemote = getEventRemote'));
 assert(source.includes('GetFireRemote = getFireRemote'));
 assert(source.includes('coinSync.NetworkTransport:Resolve('));
+const coinSignalStart = source.indexOf("local function connectCoinSignals");
+const coinSignalEnd = source.indexOf('connect("New Coin"', coinSignalStart);
+const coinSignalResolver = source.slice(coinSignalStart, coinSignalEnd);
+assert(coinSignalResolver.includes('"resolveInboundEvent"'));
+assert(!coinSignalResolver.includes("network.Fired"));
 assert(source.includes('CommandRouteCandidates("Get Coins")')
     && source.includes('candidate,\n                "RemoteFunction"'));
 assert(source.includes('local sent = pcall(remote.InvokeServer, remote, tostring(record.Id), petIds)'));

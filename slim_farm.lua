@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.31-reject-diag"
+local VERSION = "1.4.1-candidate.54.32-cobalt-route-audit"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2436,33 +2436,50 @@ local function connectCoinSignals(forceName)
         coinSync.SignalConnections[forceName] = nil
         coinSync.SignalSources[forceName] = nil
         coinSync.SignalsReady = false
+        local controller = coinSync.NetworkTransport:Ensure()
+        if controller then
+            pcall(controller, "invalidate", coinSync.NetworkTransport.Context, 1, forceName, nil)
+        end
+        coinSync.NetworkTransport.ResolvedRoutes["resolveInboundEvent:" .. forceName] = nil
+        coinSync.NetworkTransport.UnresolvedRoutes["resolveInboundEvent:" .. forceName] = nil
     elseif coinSync.SignalsReady then
         return
     end
 
     local function connect(name, callback)
         if coinSync.SignalConnections[name] then return true end
-        -- Keep the stable C54.1 inbound order. Network.Fired owns Network5's
-        -- private command stand-in selection; searching the ModuleScript with
-        -- FindFirstChild can attach to a same-named outbound BindableEvent and
-        -- create a listener that never receives New Coin / Remove Coin.
-        local remote = coinSync.NetworkTransport:Resolve(
-            coinSync.RemoteCaches.Event,
-            "resolveEvent",
-            name,
-            "RemoteEvent"
-        )
-        local signal = remote and remote.OnClientEvent or nil
-        local source = signal and "Network4 direct" or nil
-        if not signal then
-            local network = networkReady()
-            if network and type(network.Fired) == "function" then
-                local ok, fallbackSignal = pcall(network.Fired, name)
-                if ok then
-                    signal = fallbackSignal
-                    source = "Library.Network.Fired fallback"
-                end
+        -- Farm deltas are inbound commands. Resolve only the live t4[1]
+        -- RemoteEvent or the exact t2[1] command bridge already owned by the
+        -- game's Network module. Library.Network.Fired rejects injected callers
+        -- by returning a fresh orphaned stand-in; Connect succeeds on it, but
+        -- New/Remove Coin never arrives and the boss farm dies after one cycle.
+        local controller, loadProblem = coinSync.NetworkTransport:Ensure()
+        local signal, source, resolveProblem
+        if controller then
+            local called, resolvedSignal, sourceName, _, problem = pcall(
+                controller,
+                "resolveInboundEvent",
+                coinSync.NetworkTransport.Context,
+                name
+            )
+            if called then
+                signal = resolvedSignal
+                source = sourceName
+                resolveProblem = problem
+            else
+                resolveProblem = resolvedSignal
             end
+        else
+            resolveProblem = loadProblem
+        end
+        local routeKey = "resolveInboundEvent:" .. name
+        if signal then
+            coinSync.NetworkTransport.UnresolvedRoutes[routeKey] = nil
+            coinSync.NetworkTransport.ResolvedRoutes[routeKey] = tostring(source or "Network4 inbound")
+        else
+            coinSync.NetworkTransport.ResolvedRoutes[routeKey] = nil
+            coinSync.NetworkTransport.UnresolvedRoutes[routeKey] = tostring(
+                resolveProblem or "verified inbound route is unavailable")
         end
         local ok = signal ~= nil
         if ok and signal and type(signal.Connect) == "function" then
@@ -2477,6 +2494,7 @@ local function connectCoinSignals(forceName)
             }
             health.BoundAt = os.clock()
             health.Source = source or "unknown"
+            health.RouteProblem = nil
             coinSync.SignalHealth[name] = health
             local connected, connection = pcall(function()
                 return signal:Connect(function(...)
@@ -2496,6 +2514,9 @@ local function connectCoinSignals(forceName)
                 return true
             end
         end
+        local health = coinSync.SignalHealth[name] or {}
+        health.RouteProblem = tostring(resolveProblem or "verified inbound signal did not connect")
+        coinSync.SignalHealth[name] = health
         return false
     end
 
@@ -2510,9 +2531,10 @@ local function connectCoinSignals(forceName)
                 and targetRecordAllowed(record, "Boss Chest Only",
                     selectedWorld, selectedZone, nil)
             local source = coinSync.SignalSources["New Coin"] or "unknown"
+            local direct = string.find(source, "inbound RemoteEvent", 1, true) ~= nil
             local health = coinSync.SignalHealth["New Coin"]
             if health then
-                if source == "Network4 direct" then
+                if direct then
                     health.DirectSpawnCount = (tonumber(health.DirectSpawnCount) or 0) + 1
                 else
                     health.FallbackSpawnCount = (tonumber(health.FallbackSpawnCount) or 0) + 1
@@ -2524,7 +2546,7 @@ local function connectCoinSignals(forceName)
                 -- reused, so the previous record can still look alive when the
                 -- next chest arrives; treating that edge as a duplicate skips
                 -- both Join Coin and the one-shot post-Join warp.
-                controller:HandleBossSpawn(record, source, source == "Network4 direct", data, true)
+                controller:HandleBossSpawn(record, source, direct, data, true)
             elseif selectedBoss then
                 if type(releaseAssignmentsForCoin) == "function" then releaseAssignmentsForCoin(coinId) end
                 if type(requestAllocatorPulse) == "function" then requestAllocatorPulse(true) end
