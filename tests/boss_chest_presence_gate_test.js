@@ -41,8 +41,8 @@ const coinConnect = source.slice(
 );
 assert(coinConnect.includes('"resolveInboundEvent"'),
     "farm lifecycle does not use the verified inbound command resolver");
-assert(!coinConnect.includes("network.Fired"),
-    "farm lifecycle can still accept an orphaned anti-inject Network.Fired stand-in");
+assert(!coinConnect.includes("pcall(network.Fired"),
+    "farm lifecycle must not bypass the transport's verified native inbound resolver");
 assert(coinConnect.includes('controller, "invalidate", coinSync.NetworkTransport.Context, 1, forceName, nil'),
     "farm signal rebind does not invalidate the exact inbound route cache");
 assert(!source.includes('if bossEventDriven and coinSync.BossBootstrapDone then'),

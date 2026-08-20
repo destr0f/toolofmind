@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.33-network5-vlg-hash"
+local VERSION = "1.4.1-candidate.54.34-native-farm-feed"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2448,11 +2448,10 @@ local function connectCoinSignals(forceName)
 
     local function connect(name, callback)
         if coinSync.SignalConnections[name] then return true end
-        -- Farm deltas are inbound commands. Resolve only the live t4[1]
-        -- RemoteEvent or the exact t2[1] command bridge already owned by the
-        -- game's Network module. Library.Network.Fired rejects injected callers
-        -- by returning a fresh orphaned stand-in; Connect succeeds on it, but
-        -- New/Remove Coin never arrives and the boss farm dies after one cycle.
+        -- Farm deltas are inbound commands. The transport first asks the live
+        -- Network5 module for the exact signal used by the game's LocalScripts,
+        -- then falls back to verified t4[1]/t2[1] discovery. Neither path sends
+        -- a server request.
         local controller, loadProblem = coinSync.NetworkTransport:Ensure()
         local signal, source, resolveProblem
         if controller then
@@ -2532,6 +2531,7 @@ local function connectCoinSignals(forceName)
                     selectedWorld, selectedZone, nil)
             local source = coinSync.SignalSources["New Coin"] or "unknown"
             local direct = string.find(source, "inbound RemoteEvent", 1, true) ~= nil
+                or string.find(source, "native Fired signal", 1, true) ~= nil
             local health = coinSync.SignalHealth["New Coin"]
             if health then
                 if direct then

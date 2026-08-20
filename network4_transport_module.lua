@@ -2,7 +2,7 @@
 -- Reads the live network module's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.5.3"
+local MODULE_VERSION = "1.5.4"
 local UINT32 = 4294967296
 local NETWORK5_VLG_SECRET = "PSXOG:SECRET:NETWORK:VLG:12910259120591716249102"
 
@@ -356,11 +356,10 @@ local function resolveBridge(context, kind, commandName)
     return bridge, source, nil, nil
 end
 
--- Inbound (server -> client) command signals. The current Network module owns
--- them through t4[1][hash] RemoteEvent.OnClientEvent or, before that remote is
--- materialised, the exact inbound stand-in t2[1][hash] BindableEvent. Never
--- fall back to Library.Network.Fired here: its anti-tamper check returns a
--- fresh orphaned BindableEvent to injected callers, which fakes a live feed.
+-- Inbound (server -> client) command signals. Prefer the current Network5
+-- module's own Fired resolver: it returns the same t4[1][hash].OnClientEvent or
+-- t2[1][hash].Event used by the game's LocalScripts and performs no outbound
+-- request. Keep direct table discovery only as a compatibility fallback.
 local function resolveInboundEvent(context, commandName)
     if type(context) ~= "table" then return nil, "Network4 inbound", nil, "context is missing" end
     if type(commandName) ~= "string" or commandName == "" then
@@ -370,14 +369,31 @@ local function resolveInboundEvent(context, commandName)
     local generation = generationOf(context)
     local cached = inboundCache[commandName]
     if type(cached) == "table" and cached.Generation == generation then
-        local holderLive = cached.IsRemote
-            and liveRemote(context, cached.Holder, "RemoteEvent")
-            or liveBridge(context, cached.Holder, "BindableEvent")
-        if holderLive and cached.Signal then
+        local holderLive = cached.IsNative == true
+            or (cached.IsRemote and liveRemote(context, cached.Holder, "RemoteEvent"))
+            or (cached.IsRemote == false and liveBridge(context, cached.Holder, "BindableEvent"))
+        if holderLive and cached.Signal and type(cached.Signal.Connect) == "function" then
             return cached.Signal, cached.Source, nil, nil
         end
     end
     inboundCache[commandName] = nil
+
+    local network = context.Library and context.Library.Network
+    local fired = network and network.Fired
+    if type(fired) == "function" then
+        local ok, signal = pcall(fired, commandName)
+        if ok and signal and type(signal.Connect) == "function" then
+            local source = "Network5 native Fired signal"
+            inboundCache[commandName] = {
+                Signal = signal,
+                Holder = nil,
+                IsNative = true,
+                Source = source,
+                Generation = generation,
+            }
+            return signal, source, nil, nil
+        end
+    end
 
     local remoteMaps, bridgeMaps, liveHash, remoteIndex, bridgeIndex, stateProblem =
         routeState(context, 1, commandName)

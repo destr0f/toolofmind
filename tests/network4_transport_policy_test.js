@@ -25,6 +25,9 @@ assert(transport.includes('return resolve(context, 1, commandName)'));
 assert(transport.includes('return resolve(context, 2, commandName)'));
 assert(transport.includes('return resolveBridge(context, 1, commandName)'));
 assert(transport.includes('return resolveBridge(context, 2, commandName)'));
+assert(transport.includes('local fired = network and network.Fired'));
+assert(transport.includes('local ok, signal = pcall(fired, commandName)'));
+assert(transport.includes('local source = "Network5 native Fired signal"'));
 assert(transport.includes("rawget(hashMaps[kind], commandName)"));
 assert(transport.includes("rawget(map, candidate.Value)"));
 assert(transport.includes("rawget(bridgeMaps[bridgeKind], candidate.Value)"));
@@ -80,7 +83,8 @@ const coinSignalStart = source.indexOf("local function connectCoinSignals");
 const coinSignalEnd = source.indexOf('connect("New Coin"', coinSignalStart);
 const coinSignalResolver = source.slice(coinSignalStart, coinSignalEnd);
 assert(coinSignalResolver.includes('"resolveInboundEvent"'));
-assert(!coinSignalResolver.includes("network.Fired"));
+assert(!coinSignalResolver.includes("pcall(network.Fired"),
+    "farm lifecycle must keep native inbound resolution inside the transport adapter");
 assert(source.includes('CommandRouteCandidates("Get Coins")')
     && source.includes('candidate,\n                "RemoteFunction"'));
 assert(source.includes('local sent = pcall(remote.InvokeServer, remote, tostring(record.Id), petIds)'));

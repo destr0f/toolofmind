@@ -1,6 +1,6 @@
 local transport = require("../network4_transport_module")
 
-assert(transport("version") == "1.5.3")
+assert(transport("version") == "1.5.4")
 assert(transport("sha256", "") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 assert(transport("sha256", "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 assert(transport("djb2Hash", "Get The Coins") == "2442970594")
@@ -214,9 +214,28 @@ assert(attributeSession == attributeHash)
 
 transport("clear")
 
--- Inbound coin feed: the resolver must take the game's own t4[1] RemoteEvent
--- OnClientEvent first, then the exact t2[1] inbound BindableEvent bridge, and
--- never fabricate a stand-in when both are absent.
+-- Inbound coin feed: prefer the game's own Network.Fired resolver. Current
+-- Network5 returns the shared t4[1]/t2[1] signal and performs no outbound call.
+local nativeSignal = { fake = "network-fired", Connect = function() end }
+local nativeCalls = 0
+local nativeContext = {
+    Generation = 5,
+    Library = { Network = { Fired = function(commandName)
+        nativeCalls = nativeCalls + 1
+        assert(commandName == "New Coin")
+        return nativeSignal
+    end } },
+}
+local nativeResolved, nativeSource, _, nativeProblem = transport(
+    "resolveInboundEvent", nativeContext, "New Coin"
+)
+assert(nativeResolved == nativeSignal, tostring(nativeProblem))
+assert(nativeCalls == 1)
+assert(string.find(nativeSource, "native Fired signal", 1, true))
+
+-- Without Network.Fired, take the game's own t4[1] RemoteEvent OnClientEvent,
+-- then the exact t2[1] inbound BindableEvent bridge, and never fabricate a
+-- stand-in when both are absent.
 local inboundContext = {
     Generation = 6,
     Game = fakeGame,

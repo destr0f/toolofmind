@@ -901,6 +901,12 @@ Warp меняет local pet physical state после accepted Join. Он мож
 - 6+ hour C54.4 logger run без изменения config;
 - paired MicroProfiler + logger snapshot на одном ping spike.
 
+Current Network5 decompile from `20260820_084121` additionally proves that
+`Library.Network.Fired(command)` is a local inbound resolver: it returns the
+shared physical `RemoteEvent.OnClientEvent` or the shared command bridge event
+and does not send a server request. This supersedes the older assumption that
+every injected `Fired` call receives an orphaned stand-in.
+
 ## 19. Как проводить следующий доказуемый тест
 
 ### 19.1 Перед запуском

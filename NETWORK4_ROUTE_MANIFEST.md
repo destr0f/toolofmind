@@ -94,14 +94,15 @@ Every row resolves through `resolveEvent`; a real command-specific BindableEvent
 | `Spawn Lootbag` / producer `Add` | ID, payload/position | `loot_reactor.lua` | enqueue one native-compatible collect |
 | `Remove Lootbag` / producer `Remove` | lootbag ID | `loot_reactor.lua` | optional acknowledgement and local cleanup |
 
-Farm lifecycle events resolve only through the verified inbound resolver: the
-live `t4[1]` `RemoteEvent`, then the exact existing `t2[1]` command bridge.
-`Library.Network.Fired(name)` is forbidden for injected farm callers because
-the game's anti-injection branch can return a fresh orphaned BindableEvent;
-`Connect` then succeeds while no `New Coin` or `Remove Coin` event can arrive.
-Other inbound consumers must likewise prove that a signal belongs to the live
-Network tables before marking it ready. Missing observations do not
-retroactively turn a successful outbound RemoteEvent into a transport error.
+Farm lifecycle events resolve through the transport adapter. In the captured
+Network5 build, its primary path is the game's own `Library.Network.Fired(name)`:
+the function returns the shared `t4[1][hash].OnClientEvent` or
+`t2[1][hash].Event` used by game LocalScripts and performs no outbound request.
+Verified direct discovery of the same `t4[1]`/`t2[1]` entries remains the
+compatibility fallback. The farm never fabricates its own BindableEvent and
+never treats `Connect` alone as proof that events are flowing. Missing
+observations do not retroactively turn a successful outbound RemoteEvent into
+a transport error.
 
 ## Cache and lifecycle policy
 
