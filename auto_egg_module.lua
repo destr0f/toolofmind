@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.5"
+local MODULE_VERSION = "1.7.6"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -2298,6 +2298,23 @@ local function beginRequest(state, context, options, inspection)
             state.NativeAutoHatchReported = true
             context.Trace("auto egg native autohatch",
                 "game Auto Hatch was enabled; disabled to prevent duplicate purchases")
+        end
+    end
+    -- The same Auto Hatch also exists server-side (save.AutoHatchSettings.Enabled)
+    -- and is flipped through the "Toggle Auto Hatch Setting" command with a
+    -- settings key. While enabled, the SERVER hatches on its own cadence and
+    -- every manual Egg: Buy Egg fails with "Something went wrong": the client
+    -- sees steady native opens plus periodic rejections. The command is a
+    -- toggle, not a set, so fire only while the save still reports Enabled.
+    local save = saveFor(context)
+    local autoHatchSettings = type(save) == "table" and save.AutoHatchSettings or nil
+    if type(autoHatchSettings) == "table" and autoHatchSettings.Enabled == true
+        and type(context.FireCommand) == "function" then
+        local fired = pcall(context.FireCommand, "Toggle Auto Hatch Setting", "Enabled")
+        if fired and not state.ServerAutoHatchReported then
+            state.ServerAutoHatchReported = true
+            context.Trace("auto egg native autohatch",
+                "server-side Auto Hatch was enabled; toggled Enabled off via Toggle Auto Hatch Setting")
         end
     end
     local headless = options.Animation == "Headless (No Animation)"
