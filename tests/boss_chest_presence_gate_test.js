@@ -80,6 +80,15 @@ assert(source.includes('type(rawPet) == "table" and rawPet.PetId or rawPet'),
     "warp cannot consume the engine's allocation-free accepted-entry list");
 assert(source.includes("table.clear(coinSync.BossRejected)"),
     "reload/stop must clear the boss presence latch");
+assert(source.includes("BossDistanceSafety = false"),
+    "distance compatibility mode must default off for remote egg farming");
+const anchorStart = source.indexOf("function petFarm:AnchorCharacterToBoss");
+const anchorEnd = source.indexOf("function petFarm:WarpBossPetsOnce", anchorStart);
+const anchor = source.slice(anchorStart, anchorEnd);
+assert(anchor.includes("if config.BossDistanceSafety ~= true then return false end"),
+    "character anchoring is not guarded by the explicit distance toggle");
+assert(source.includes('Flag = "boss_distance_safety"'));
+assert(source.includes("config.BossDistanceSafety = value == true"));
 
 const rejection = { rejected: true, joins: 1 };
 const duplicateRecoveryPolls = rejection.rejected ? 0 : 1;

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.34-native-farm-feed"
+local VERSION = "1.4.1-candidate.54.35-distance-toggle"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -357,6 +357,7 @@ local config = {
     DMCleanupConfirmed = false,
     DMCleanupBatchSize = 25,
     BossFastPathDiagnostics = true,
+    BossDistanceSafety = false,
     BossPetInstantArrival = false,
     QuickHUD = true,
     QuickHUDPing = true,
@@ -3151,9 +3152,10 @@ function petFarm:ResolveBossPetRuntime(rawPetIds)
 end
 
 function petFarm:AnchorCharacterToBoss(record)
-    -- The server now kicks with "Attempted to farm a coin out of range" when
-    -- Farm Coin arrives while the player character is far from the coin.
-    -- Keep the character pinned next to the active boss chest while farming.
+    -- Optional compatibility mode for servers that still enforce character
+    -- distance. Current client decompiles do not gate Join/Farm by this range,
+    -- so the default leaves the player at the egg and changes no farm request.
+    if config.BossDistanceSafety ~= true then return false end
     if config.Mode ~= "Boss Chest Only" or not recordAlive(record) then return false end
     local position = typeof(record.Position) == "Vector3" and record.Position or nil
     if not position then return false end
@@ -6490,6 +6492,15 @@ UI.FarmHero:Toggle({
     Desc = "Shows a bounded 64-cycle summary; it adds no scan, polling, or server request.",
     Value = true,
     Callback = function(value) config.BossFastPathDiagnostics = value ~= false end,
+})
+UI.FarmHero:Toggle({
+    Flag = "boss_distance_safety",
+    Title = "Enforce Boss Distance",
+    Desc = "ON keeps your character within 60 studs of the live boss. OFF allows remote farming from the egg. Join/Farm traffic is unchanged.",
+    Value = false,
+    Callback = function(value)
+        config.BossDistanceSafety = value == true
+    end,
 })
 UI.FarmHero:Toggle({
     Flag = "boss_pet_instant_arrival",
