@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.4"
+local MODULE_VERSION = "1.7.5"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -2286,6 +2286,20 @@ local function handlePending(state, context, now)
 end
 
 local function beginRequest(state, context, options, inspection)
+    -- The game has its own gamepass Auto Hatch (Library.Variables.AutoHatchEnabled,
+    -- persisted via AutoHatchSettings.Enabled). While it is on, the game buys the
+    -- same egg in parallel: the player sees duplicate UI opens and our purchase is
+    -- server-rejected with "Something went wrong" (funds/overlap), which inflates
+    -- the adaptive delay. Neutralize the native buyer before every purchase.
+    local variables = context.Library and context.Library.Variables
+    if variables and variables.AutoHatchEnabled == true then
+        pcall(function() variables.AutoHatchEnabled = false end)
+        if not state.NativeAutoHatchReported then
+            state.NativeAutoHatchReported = true
+            context.Trace("auto egg native autohatch",
+                "game Auto Hatch was enabled; disabled to prevent duplicate purchases")
+        end
+    end
     local headless = options.Animation == "Headless (No Animation)"
     local retryKey = requestRetryKey(options.Egg, options.Count, options.Animation)
     if headless then
