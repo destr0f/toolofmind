@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.7"
+local MODULE_VERSION = "1.7.8"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -2032,9 +2032,19 @@ local function finishRejection(state, context, pending)
         or (state.ConsecutiveFailures >= 3 and 15 or state.RequestDelay)
     state.SuspendedUntil = (suspicious or state.ConsecutiveFailures >= 3) and (os.clock() + pause) or 0
     state.NextAction = os.clock() + pause
+    -- Surface the preflight inventory state: the most common genuine reject
+    -- reason is a full pet inventory (server cannot grant the hatch), and the
+    -- local save can lag the real count.
+    local slots = "unknown"
+    if type(pending.Inspection) == "table" and pending.Inspection.FreeSlots ~= nil then
+        slots = tostring(pending.Inspection.FreeSlots)
+    end
+    context.Trace("auto egg reject", string.format(
+        "server rejected %s | message=%s | free slots at preflight=%s | consecutive=%d",
+        requestLabel(pending), message, slots, tonumber(state.ConsecutiveFailures) or 0))
     setStatus(state, context, string.format(
-        "Server rejected %s: %s\nNo retry overlap | next local attempt in %.1fs | rejects: %d",
-        requestLabel(pending), message, pause, state.Rejections
+        "Server rejected %s: %s\nNo retry overlap | next local attempt in %.1fs | rejects: %d | free slots: %s",
+        requestLabel(pending), message, pause, state.Rejections, slots
     ))
 end
 
