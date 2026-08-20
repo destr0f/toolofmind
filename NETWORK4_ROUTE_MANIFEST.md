@@ -1,6 +1,6 @@
 # Active Network4/Network5 Route Manifest
 
-Suite: `1.4.1-candidate.54.33-network5-vlg-hash`
+Suite: `1.4.1-candidate.54.34-native-farm-feed`
 
 Evidence used:
 

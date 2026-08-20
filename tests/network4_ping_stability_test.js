@@ -11,7 +11,7 @@ const transport = read("network4_transport_module.lua");
 const manifest = JSON.parse(read("runtime_manifest.json"));
 
 assert(manifest.suite.version.startsWith("1.4.1-candidate.54"));
-assert.strictEqual(manifest.modules.networkTransport.version, "1.5.3");
+assert.strictEqual(manifest.modules.networkTransport.version, "1.5.4");
 assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.7");
 assert.strictEqual(manifest.modules.lootReactor.version, "3.7.0");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
