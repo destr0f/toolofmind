@@ -2,8 +2,9 @@
 -- Reads the live network module's existing route tables without executing its internal
 -- GetRemoteEvent/GetRemoteFunction accessors from the injected thread.
 
-local MODULE_VERSION = "1.5.2"
+local MODULE_VERSION = "1.5.3"
 local UINT32 = 4294967296
+local NETWORK5_VLG_SECRET = "PSXOG:SECRET:NETWORK:VLG:12910259120591716249102"
 
 local SHA256_K = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -97,10 +98,8 @@ local function sha256(message)
     return string.format("%08x%08x%08x%08x%08x%08x%08x%08x", h0, h1, h2, h3, h4, h5, h6, h7)
 end
 
--- Current PSX OG Network hashes the logical command with a plain unsigned
--- DJB2 pass. Unlike the previous Network5 SHA route, this hash is independent
--- from the place, job and remote kind. Keep it computed at runtime instead of
--- persisting a physical remote name or a ReplicatedStorage child index.
+-- Some older PSX OG builds used a plain unsigned DJB2 command hash. Keep it as
+-- a compatibility candidate after the current session-bound Network5 route.
 local function djb2Hash(message)
     message = tostring(message or "")
     local value = 5381
@@ -114,10 +113,9 @@ local function routeHash(context, kind, commandName)
     local gameObject = context.Game or game
     local jobId = tostring(gameObject.JobId or "")
     if jobId == "" then jobId = "00000000-0000-0000-0000-000000000000" end
-    -- Current PSX OG sessions use Network5. This is only a fail-safe when the
-    -- live hash map has not materialised the requested command yet; normal
-    -- resolution still reads the current session's map first.
-    local source = "mmmmmmevilfanta54125612512416124/Network5/"
+    -- Current PSX OG Network5 VLG route captured on 2026-08-20. The physical
+    -- hash remains session-bound and is never persisted between executions.
+    local source = NETWORK5_VLG_SECRET .. "/Network5/"
         .. tostring(gameObject.GameId) .. "/"
         .. tostring(gameObject.PlaceId) .. "/"
         .. tostring(gameObject.PlaceVersion) .. "/"
@@ -133,8 +131,8 @@ local function routeHashes(context, kind, commandName, liveHash)
         candidates[#candidates + 1] = { Value = value, Source = source }
     end
     add(liveHash, "live command map")
-    add(djb2Hash(commandName), "current DJB2")
-    add(routeHash(context, kind, commandName), "legacy Network5")
+    add(routeHash(context, kind, commandName), "current Network5 VLG")
+    add(djb2Hash(commandName), "legacy DJB2")
     return candidates
 end
 
@@ -148,6 +146,48 @@ end
 local function liveBridge(context, bridge, className)
     if type(context.IsBridge) == "function" then return context.IsBridge(bridge, className) end
     return typeof(bridge) == "Instance" and bridge:IsA(className) and bridge.Parent ~= nil
+end
+
+local function networkHashOf(context, remote)
+    if type(context.RemoteNetworkHash) == "function" then
+        local ok, value = pcall(context.RemoteNetworkHash, remote)
+        if ok and type(value) == "string" and value ~= "" then return value end
+    end
+    if typeof(remote) ~= "Instance" then return nil end
+    local ok, value = pcall(remote.GetAttribute, remote, "NetworkHash")
+    if ok and type(value) == "string" and value ~= "" then return value end
+    return nil
+end
+
+-- Network5 renames a materialised physical route to RemoteEvent/RemoteFunction
+-- and preserves its original hash in the NetworkHash attribute. The live t4
+-- map is authoritative; this one bounded direct-child pass is cold-path only.
+local function findRemote(context, kind, className, remoteMaps, candidates)
+    local map = type(remoteMaps) == "table" and remoteMaps[kind] or nil
+    local storage = context.ReplicatedStorage
+    for _, candidate in ipairs(candidates) do
+        local found = type(map) == "table" and rawget(map, candidate.Value) or nil
+        if not liveRemote(context, found, className) then
+            found = storage and storage:FindFirstChild(candidate.Value) or nil
+        end
+        if liveRemote(context, found, className) then
+            return found, candidate.Source
+        end
+    end
+
+    if not storage or type(storage.GetChildren) ~= "function" then return nil end
+    local wanted = {}
+    for _, candidate in ipairs(candidates) do wanted[candidate.Value] = candidate.Source end
+    local ok, children = pcall(storage.GetChildren, storage)
+    if not ok or type(children) ~= "table" then return nil end
+    for _, child in ipairs(children) do
+        if liveRemote(context, child, className) then
+            local hash = networkHashOf(context, child)
+            local source = hash and wanted[hash] or nil
+            if source then return child, source .. " via NetworkHash attribute" end
+        end
+    end
+    return nil
 end
 
 local function readUpvalue(context, callback, index)
@@ -227,31 +267,6 @@ local function routeState(context, kind, commandName)
     return remoteMaps, bridgeMaps, hash, remoteIndex, bridgeIndex, nil
 end
 
--- The game Network module binds hashed remotes lazily through local accessor
--- closures kept in Network.Fire/Invoke upvalues. Calling such an accessor with
--- a command name performs only FindFirstChild + rename + bridge wiring; it
--- sends no network traffic. This is the last legal step when the live map has
--- not materialised a command yet (e.g. Buy Egg Yay before the first purchase).
-local function nativeBind(context, kind, commandName)
-    local network = context.Library and context.Library.Network
-    local method = network and (kind == 1 and network.Fire or network.Invoke)
-    if type(method) ~= "function" or type(context.FunctionUpvalueAt) ~= "function" then
-        return nil
-    end
-    local className = kind == 1 and "RemoteEvent" or "RemoteFunction"
-    -- Only the direct remote accessor (u14/u18; upvalue #2 in the current
-    -- layout) is safe to call. The neighbours create unwired Bindable
-    -- stand-ins as a side effect, and invoking such a stand-in yields forever.
-    local accessor = readUpvalue(context, method, 2)
-    if type(accessor) == "function" then
-        local ok, value = pcall(accessor, commandName)
-        if ok and liveRemote(context, value, className) then
-            return value, 2
-        end
-    end
-    return nil
-end
-
 local function resolve(context, kind, commandName)
     if type(context) ~= "table" then return nil, "Network4", nil, "context is missing" end
     if kind ~= 1 and kind ~= 2 then return nil, "Network4", nil, "invalid network kind" end
@@ -272,34 +287,15 @@ local function resolve(context, kind, commandName)
         routeState(context, kind, commandName)
     if stateProblem then return nil, "Network4", nil, stateProblem end
 
-    local remote, hashSource
-    for _, candidate in ipairs(routeHashes(context, kind, commandName, liveHash)) do
-        local found = type(remoteMaps) == "table" and type(remoteMaps[kind]) == "table"
-            and rawget(remoteMaps[kind], candidate.Value) or nil
-        if not liveRemote(context, found, className) then
-            local storage = context.ReplicatedStorage
-            found = storage and storage:FindFirstChild(candidate.Value) or nil
-        end
-        if liveRemote(context, found, className) then
-            remote = found
-            hashSource = candidate.Source
-            break
-        end
-    end
+    local candidates = routeHashes(context, kind, commandName, liveHash)
+    local remote, hashSource = findRemote(context, kind, className, remoteMaps, candidates)
     if not liveRemote(context, remote, className) then
-        local bound, bindIndex = nativeBind(context, kind, commandName)
-        if liveRemote(context, bound, className) then
-            remote = bound
-            hashSource = "native lazy bind #" .. tostring(bindIndex)
-        end
-    end
-    if not liveRemote(context, remote, className) then
-        local detail = remoteMaps and "hashed route is not present in the live Network4 map"
-            or "Network4 route tables are unavailable"
-        return nil, "Network4 hashed " .. className, nil, detail
+        local detail = remoteMaps and "hashed route is not present in the live Network5 map"
+            or "Network5 route tables are unavailable"
+        return nil, "Network5 hashed " .. className, nil, detail
     end
 
-    local source = "Network4 hashed " .. className .. " cache ["
+    local source = "Network5 hashed " .. className .. " cache ["
         .. tostring(hashSource or "unknown hash") .. "]"
         .. (accessorIndex and (" via accessor #" .. tostring(accessorIndex)) or "")
     local sessionIndex = type(context.RemoteSessionIndex) == "function"
@@ -387,22 +383,23 @@ local function resolveInboundEvent(context, commandName)
         routeState(context, 1, commandName)
     if stateProblem then return nil, "Network4 inbound", nil, stateProblem end
 
-    for _, candidate in ipairs(routeHashes(context, 1, commandName, liveHash)) do
-        local remote = type(remoteMaps) == "table" and type(remoteMaps[1]) == "table"
-            and rawget(remoteMaps[1], candidate.Value) or nil
-        if liveRemote(context, remote, "RemoteEvent") then
-            local signal = remote.OnClientEvent
-            local source = "Network4 inbound RemoteEvent [" .. tostring(candidate.Source) .. "]"
-                .. (remoteIndex and (" via accessor #" .. tostring(remoteIndex)) or "")
-            inboundCache[commandName] = {
-                Signal = signal,
-                Holder = remote,
-                IsRemote = true,
-                Source = source,
-                Generation = generation,
-            }
-            return signal, source, nil, nil
-        end
+    local candidates = routeHashes(context, 1, commandName, liveHash)
+    local remote, remoteSource = findRemote(context, 1, "RemoteEvent", remoteMaps, candidates)
+    if liveRemote(context, remote, "RemoteEvent") then
+        local signal = remote.OnClientEvent
+        local source = "Network5 inbound RemoteEvent [" .. tostring(remoteSource) .. "]"
+            .. (remoteIndex and (" via accessor #" .. tostring(remoteIndex)) or "")
+        inboundCache[commandName] = {
+            Signal = signal,
+            Holder = remote,
+            IsRemote = true,
+            Source = source,
+            Generation = generation,
+        }
+        return signal, source, nil, nil
+    end
+
+    for _, candidate in ipairs(candidates) do
         local bridge = type(bridgeMaps) == "table" and type(bridgeMaps[1]) == "table"
             and rawget(bridgeMaps[1], candidate.Value) or nil
         if liveBridge(context, bridge, "BindableEvent") then
@@ -413,23 +410,6 @@ local function resolveInboundEvent(context, commandName)
                 Signal = signal,
                 Holder = bridge,
                 IsRemote = false,
-                Source = source,
-                Generation = generation,
-            }
-            return signal, source, nil, nil
-        end
-    end
-
-    if true then
-        local bound, bindIndex = nativeBind(context, 1, commandName)
-        if liveRemote(context, bound, "RemoteEvent") then
-            local signal = bound.OnClientEvent
-            local source = "Network4 inbound RemoteEvent [native lazy bind #"
-                .. tostring(bindIndex) .. "]"
-            inboundCache[commandName] = {
-                Signal = signal,
-                Holder = bound,
-                IsRemote = true,
                 Source = source,
                 Generation = generation,
             }

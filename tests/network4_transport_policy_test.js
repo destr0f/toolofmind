@@ -15,9 +15,11 @@ assert(manifest.moduleOrder.includes("networkTransport"));
 assert.strictEqual(manifest.modules.networkTransport.path, "network4_transport_module.lua");
 assert.strictEqual(manifest.modules.networkTransport.load, "lazy");
 
-assert(transport.includes('"mmmmmmevilfanta54125612512416124/Network5/"'));
+assert(transport.includes('"PSXOG:SECRET:NETWORK:VLG:12910259120591716249102"'));
+assert(!transport.includes('"mmmmmmevilfanta54125612512416124/Network5/"'));
 assert(transport.includes("local function djb2Hash(message)"));
-assert(transport.includes('add(djb2Hash(commandName), "current DJB2")'));
+assert(transport.includes('add(routeHash(context, kind, commandName), "current Network5 VLG")'));
+assert(transport.includes('add(djb2Hash(commandName), "legacy DJB2")'));
 assert(!transport.includes('"duskissexyyyyy123iloveudUsk/Network4/"'));
 assert(transport.includes('return resolve(context, 1, commandName)'));
 assert(transport.includes('return resolve(context, 2, commandName)'));
@@ -29,13 +31,12 @@ assert(transport.includes("rawget(bridgeMaps[bridgeKind], candidate.Value)"));
 assert(transport.includes('if action == "invalidate" then'));
 assert(transport.includes('if action == "stats" then return stats() end'));
 assert(transport.includes("cached.Generation == generation"));
-// The only permitted accessor execution is the bounded last-resort lazy bind:
-// the game's own u14/u18-style closures perform FindFirstChild + rename + wire
-// locally and send no traffic. Blind per-request accessor calls stay banned.
-assert(transport.includes("local function nativeBind(context, kind, commandName)"));
-assert(transport.includes("readUpvalue(context, method, 2)"),
-    "lazy bind must call only the direct remote accessor; the other upvalues create unwired stand-ins");
-assert(transport.includes('hashSource = "native lazy bind #" .. tostring(bindIndex)'));
+// Cold routes are derived locally. The current layout exposes the remote map as
+// upvalue #2, not a callable accessor; invoking it must never be attempted.
+assert(!transport.includes("local function nativeBind(context, kind, commandName)"));
+assert(transport.includes('remote.GetAttribute, remote, "NetworkHash"'));
+assert(transport.includes("pcall(storage.GetChildren, storage)"));
+assert(transport.includes('source .. " via NetworkHash attribute"'));
 assert(!transport.includes("bridge:Invoke("), "unwired BindableFunction bridges must never be invoked");
 
 assert(source.includes("coinSync.NetworkTransport"));
@@ -73,6 +74,7 @@ assert(!farmContext.includes("GetCommandBridge") && !farmContext.includes("GetFi
 assert(source.includes('FireCommand = fireCommand'));
 assert(source.includes('GetEventRemote = getEventRemote'));
 assert(source.includes('GetFireRemote = getFireRemote'));
+assert(source.includes('pcall(remote.GetAttribute, remote, "NetworkHash")'));
 assert(source.includes('coinSync.NetworkTransport:Resolve('));
 const coinSignalStart = source.indexOf("local function connectCoinSignals");
 const coinSignalEnd = source.indexOf('connect("New Coin"', coinSignalStart);

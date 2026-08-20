@@ -1,6 +1,6 @@
 local transport = require("../network4_transport_module")
 
-assert(transport("version") == "1.5.2")
+assert(transport("version") == "1.5.3")
 assert(transport("sha256", "") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 assert(transport("sha256", "abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 assert(transport("djb2Hash", "Get The Coins") == "2442970594")
@@ -51,6 +51,7 @@ local context = {
 
 local hash = transport("routeHash", context, 2, "Buy Boost Bundle")
 assert(type(hash) == "string" and #hash == 32)
+assert(hash == "67d7e0fc5eb9dd69b8e377a665b12760")
 local remote = { ClassName = "RemoteFunction" }
 remoteMaps[2][hash] = remote
 
@@ -60,7 +61,7 @@ local resolved, source, sessionIndex, problem = transport(
     "Buy Boost Bundle"
 )
 assert(resolved == remote, tostring(problem))
-assert(string.find(source, "Network4 hashed RemoteFunction", 1, true))
+assert(string.find(source, "Network5 hashed RemoteFunction", 1, true))
 assert(sessionIndex == 99)
 
 local bridge = { ClassName = "BindableFunction" }
@@ -155,12 +156,11 @@ local directBridgeResolved, directBridgeSource, _, directBridgeProblem = transpo
 assert(directBridgeResolved == directBridge, tostring(directBridgeProblem))
 assert(string.find(directBridgeSource, "accessor #6", 1, true))
 
--- Current 2026-08-15 layout can expose a command before its native command
--- map is warm. The resolver must find the current DJB2-named remote directly
--- in ReplicatedStorage without calling the protected Network accessor.
+-- Current Network5 VLG layout can expose a command before its native command
+-- map is warm. The resolver derives the exact current-session hash locally.
 transport("clear")
 local coldCommand = "Get Dark Matter Machine Info"
-local coldHash = transport("djb2Hash", coldCommand)
+local coldHash = transport("routeHash", context, 2, coldCommand)
 local coldRemote = { ClassName = "RemoteFunction" }
 local coldContext = {
     Generation = 4,
@@ -180,8 +180,37 @@ local coldResolved, coldSource, coldSession, coldProblem = transport(
     "resolveFunction", coldContext, coldCommand
 )
 assert(coldResolved == coldRemote, tostring(coldProblem))
-assert(string.find(coldSource, "current DJB2", 1, true))
+assert(string.find(coldSource, "current Network5 VLG", 1, true))
 assert(coldSession == "RemoteFunction")
+
+transport("clear")
+
+-- Once the game materialises a route it renames the instance to its generic
+-- class and preserves the original hash in the NetworkHash attribute. A single
+-- bounded direct-child scan recovers that route without invoking game accessors.
+local attributeCommand = "Buy Egg Yay"
+local attributeHash = transport("routeHash", context, 2, attributeCommand)
+local attributeRemote = { ClassName = "RemoteFunction", NetworkHash = attributeHash }
+local attributeContext = {
+    Generation = 5,
+    Game = fakeGame,
+    Library = { Network = { Invoke = invoke } },
+    ReplicatedStorage = {
+        FindFirstChild = function() return nil end,
+        GetChildren = function() return { attributeRemote } end,
+    },
+    FunctionUpvalueAt = context.FunctionUpvalueAt,
+    IsRemote = context.IsRemote,
+    IsBridge = context.IsBridge,
+    RemoteNetworkHash = function(remoteValue) return remoteValue.NetworkHash end,
+    RemoteSessionIndex = function() return attributeHash end,
+}
+local attributeResolved, attributeSource, attributeSession, attributeProblem = transport(
+    "resolveFunction", attributeContext, attributeCommand
+)
+assert(attributeResolved == attributeRemote, tostring(attributeProblem))
+assert(string.find(attributeSource, "NetworkHash attribute", 1, true))
+assert(attributeSession == attributeHash)
 
 transport("clear")
 
@@ -189,7 +218,7 @@ transport("clear")
 -- OnClientEvent first, then the exact t2[1] inbound BindableEvent bridge, and
 -- never fabricate a stand-in when both are absent.
 local inboundContext = {
-    Generation = 5,
+    Generation = 6,
     Game = fakeGame,
     Library = { Network = { Fire = invoke } },
     ReplicatedStorage = { FindFirstChild = function() return nil end },
@@ -211,7 +240,7 @@ assert(string.find(feedSource, "inbound RemoteEvent", 1, true))
 
 -- Remote lost: only the exact t2[1] inbound bridge may replace it.
 remoteMaps[1][inboundHash] = nil
-inboundContext.Generation = 6
+inboundContext.Generation = 7
 local bridgeSignal = { fake = "inbound-bridge-event" }
 bridgeMaps[1][inboundHash] = { ClassName = "BindableEvent", Event = bridgeSignal }
 local feedSignal2, feedSource2, _, feedProblem2 = transport(
@@ -223,7 +252,7 @@ assert(string.find(feedSource2, "inbound BindableEvent bridge", 1, true))
 -- Neither t4 nor t2[1]: the resolver reports FEED_UNAVAILABLE instead of
 -- returning an orphaned bindable that would fake a live feed.
 bridgeMaps[1][inboundHash] = nil
-inboundContext.Generation = 7
+inboundContext.Generation = 8
 local deadSignal, _, _, deadProblem = transport(
     "resolveInboundEvent", inboundContext, "New Coin"
 )
@@ -231,38 +260,4 @@ assert(deadSignal == nil)
 assert(string.find(tostring(deadProblem), "inbound route unavailable", 1, true))
 
 transport("clear")
-
--- Cold command with empty live maps: the resolver may ask the game's own
--- lazy-bind accessor (a local upvalue of Network.Invoke/Fire) to materialise
--- the remote. This performs no network traffic and saves commands like
--- Buy Egg Yay before the first purchase.
-local lazyRemote = { ClassName = "RemoteFunction" }
-local function lazyBinder(name)
-    if name == "Buy Egg Yay" then return lazyRemote end
-    return nil
-end
-local function lazyInvoke() return true end
-local lazyUpvalues = {
-    [lazyInvoke] = { function() return true end, lazyBinder },
-}
-local lazyContext = {
-    Generation = 8,
-    Game = fakeGame,
-    Library = { Network = { Invoke = lazyInvoke, Fire = lazyInvoke } },
-    ReplicatedStorage = { FindFirstChild = function() return nil end },
-    FunctionUpvalueAt = function(callback, index)
-        local values = lazyUpvalues[callback]
-        return values and values[index] or nil
-    end,
-    IsRemote = context.IsRemote,
-    IsBridge = context.IsBridge,
-    RemoteSessionIndex = function() return 7 end,
-}
-local lazyResolved, lazySource, _, lazyProblem = transport(
-    "resolveFunction", lazyContext, "Buy Egg Yay"
-)
-assert(lazyResolved == lazyRemote, tostring(lazyProblem))
-assert(string.find(lazySource, "native lazy bind", 1, true))
-
-transport("clear")
-print("PASS current DJB2 + Network5 direct/nested maps, generation cache, invalidation, bridges, inbound feed and lazy bind")
+print("PASS current Network5 VLG direct/nested maps, cold hash/attribute lookup, generation cache, invalidation, bridges and inbound feed")

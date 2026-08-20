@@ -1,6 +1,6 @@
 # Active Network4/Network5 Route Manifest
 
-Suite: `1.4.1-candidate.54.32-cobalt-route-audit`
+Suite: `1.4.1-candidate.54.33-network5-vlg-hash`
 
 Evidence used:
 
@@ -20,20 +20,25 @@ Evidence used:
 
 1. The primary identity is `(kind, logical command name)`, never `GetChildren()[index]` and never a physical hash copied from another session.
 2. The active resolver reads the live command-to-hash and hash-to-instance maps from `ReplicatedStorage.Framework.Modules.Client.2 - Network` without executing its RobloxScript-bound accessor.
-3. Physical remote names are session-bound. The current resolver must read the
-   live command map and may use a locally computed name only as a same-session
-   compatibility candidate. A hash copied from Cobalt traffic is never a
-   persistent command identity.
-4. The previous Network5 fallback remains compatibility-only:
+3. Physical remote names are session-bound. The current resolver first reads
+   the live command map, then computes the current same-session Network5 VLG
+   identity. A hash copied from Cobalt traffic is never a persistent command
+   identity.
+4. The current Network5 VLG identity, confirmed by Cobalt session
+   `20260820_084121`, is:
 
    ```text
-   sha256("mmmmmmevilfanta54125612512416124/Network5/"
+   sha256("PSXOG:SECRET:NETWORK:VLG:12910259120591716249102/Network5/"
        + GameId + "/" + PlaceId + "/" + PlaceVersion + "/" + JobId
        + "/" + kind + "/" + command):sub(5, 36)
    ```
 
-   `kind=1` is `RemoteEvent`; `kind=2` is `RemoteFunction`.
-5. A resolved instance must have the expected class and be a descendant of `ReplicatedStorage`. Bindable bridges are accepted only when the live Network table actually exposes a matching live bridge.
+   `kind=1` is `RemoteEvent`; `kind=2` is `RemoteFunction`. After materialising
+   a route, the game renames the instance to its generic class and stores the
+   original hash in its `NetworkHash` attribute. Therefore the cold path may do
+   one bounded direct-child scan for that exact attribute. Plain DJB2 remains
+   legacy compatibility only.
+5. A resolved instance must have the expected class and be a descendant of `ReplicatedStorage`. Bindable bridges are accepted only when the live Network table actually exposes a matching live bridge. Upvalue #2 is a route-map table in the current layout and must never be invoked as a lazy accessor.
 6. Route caches are scoped to the runtime generation. A transport failure invalidates only the exact `(kind, command, expected instance)` route. Named `Library.Network.Fire/Invoke` is the final compatibility fallback and receives the first current live alias (`Join The Coin`, `Change Pet Target NOW`, `Farm The Coin`) rather than the project's legacy logical name.
 7. Local `FireServer` success is transport commitment, not server acknowledgement. `InvokeServer` results are returned to the caller but completed state-changing responses are never replayed.
 

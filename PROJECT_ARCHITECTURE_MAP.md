@@ -32,14 +32,14 @@ flowchart TD
     L --> W["Проверка и запуск WindUI"]
     W --> S["Startup-модули: inspector + automation UI"]
     S --> M["Главный runtime slim_farm"]
-    M --> N["Network4 transport"]
+    M --> N["Network5 VLG transport"]
     M --> A["Automation support"]
     M --> F["Pet farm engine"]
     M --> O["Loot reactor"]
     M --> E["Auto egg"]
     M --> C["Machines / enchant / boosts"]
     M --> P["Graphics / potato"]
-    F --> R["Network4 hashed remotes"]
+    F --> R["Network5 hashed remotes"]
     O --> R
     E --> R
     C --> R
@@ -513,17 +513,21 @@ Resolver сначала исследует текущие upvalues `Library.Netw
 
 ### 10.3 Hash fallback
 
-Если live map не отдаёт готовое имя, fallback вычисляет совместимый hash из identity текущей сессии:
+Если live map не отдаёт готовый route, cold path вычисляет актуальный VLG hash из identity текущей сессии:
 
 ```text
 sha256(
-  "mmmmmmevilfanta54125612512416124/Network5/" +
+  "PSXOG:SECRET:NETWORK:VLG:12910259120591716249102/Network5/" +
   GameId + "/" + PlaceId + "/" + PlaceVersion + "/" + JobId + "/" +
   kind + "/" + command
 ):sub(5, 36)
 ```
 
-Fallback не отменяет structural validation remote. Одного совпавшего имени недостаточно.
+После materialization игра переименовывает remote в `RemoteEvent` или
+`RemoteFunction`, сохраняя исходный hash в атрибуте `NetworkHash`. Поэтому
+разрешён один bounded direct-child scan по этому атрибуту. Plain DJB2 остаётся
+только legacy-кандидатом. Любой найденный remote всё равно проходит structural
+validation; одного имени или атрибута недостаточно.
 
 ### 10.4 Invoke/Fire ladder
 

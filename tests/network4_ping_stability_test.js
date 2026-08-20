@@ -11,22 +11,26 @@ const transport = read("network4_transport_module.lua");
 const manifest = JSON.parse(read("runtime_manifest.json"));
 
 assert(manifest.suite.version.startsWith("1.4.1-candidate.54"));
-assert.strictEqual(manifest.modules.networkTransport.version, "1.5.2");
+assert.strictEqual(manifest.modules.networkTransport.version, "1.5.3");
 assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.7");
 assert.strictEqual(manifest.modules.lootReactor.version, "3.7.0");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
-// Current-session resolver: live maps first, current DJB2 hash, legacy
-// Network5 fallback, exact invalidation and no physical child index.
+// Current-session resolver: live maps first, current Network5 VLG hash,
+// bounded NetworkHash attribute fallback, exact invalidation and no child index.
 for (const marker of [
     "local function djb2Hash(message)",
-    'add(djb2Hash(commandName), "current DJB2")',
-    '"mmmmmmevilfanta54125612512416124/Network5/"',
+    'add(routeHash(context, kind, commandName), "current Network5 VLG")',
+    'add(djb2Hash(commandName), "legacy DJB2")',
+    '"PSXOG:SECRET:NETWORK:VLG:12910259120591716249102"',
+    'remote.GetAttribute, remote, "NetworkHash"',
+    "pcall(storage.GetChildren, storage)",
     "cached.Generation == generation",
     "local function invalidate(context, kind, commandName, expected)",
     'if action == "stats" then return stats() end',
 ]) assert(transport.includes(marker), `transport misses ${marker}`);
 assert(!transport.includes("GetChildren()[")
+    && !transport.includes('"mmmmmmevilfanta54125612512416124/Network5/"')
     && !transport.includes('"duskissexyyyyy123iloveudUsk/Network4/"'));
 
 // Completed Join Coin responses are not replayable. TTL records self-delete

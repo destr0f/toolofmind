@@ -337,19 +337,25 @@ C:\Users\destr\Documents\Codex\2026-07-17\new-chat\PSX_COBALT_NETWORK_CONSPECT_2
 - список отсутствующих captures;
 - практическую dependency map для нового runtime.
 
-### 8.4 Подтверждённая Network5 формула
+### 8.4 Подтверждённая текущая Network5 VLG формула
 
-Согласно capture/decompiled evidence, hash строится из command, game/session identity и remote kind:
+Согласно свежему capture/decompiled evidence из Cobalt session
+`20260820_084121`, hash строится из command, game/session identity и remote kind:
 
 ```text
 sha256(
-  "mmmmmmevilfanta54125612512416124/Network5/" ..
+  "PSXOG:SECRET:NETWORK:VLG:12910259120591716249102/Network5/" ..
   GameId .. "/" .. PlaceId .. "/" .. PlaceVersion .. "/" .. JobId .. "/" ..
   remoteType .. "/" .. logicalName
 ):sub(5, 36)
 ```
 
-Где remote type различает Event и Function. Именно поэтому нельзя переносить literal hash между серверами/версиями и нельзя кэшировать route без generation/session validation.
+Где remote type различает Event и Function. После bind игра переносит исходный
+hash в атрибут `NetworkHash`, а instance переименовывает в generic class. Старый
+salt `mmmmmmevilfanta54125612512416124` теперь является только историческим
+evidence и не должен участвовать в активном resolver. Именно поэтому нельзя
+переносить literal hash между серверами/версиями и нельзя кэшировать route без
+generation/session validation.
 
 ### 8.5 Подтверждённые команды и роли
 

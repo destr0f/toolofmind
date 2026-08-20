@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.32-cobalt-route-audit"
+local VERSION = "1.4.1-candidate.54.33-network5-vlg-hash"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3279,6 +3279,10 @@ end
 
 local function remoteSessionIndex(remote)
     if typeof(remote) ~= "Instance" then return nil end
+    local hashOk, hash = pcall(remote.GetAttribute, remote, "NetworkHash")
+    if hashOk and type(hash) == "string" and hash ~= "" then return hash end
+    local debugOk, debugId = pcall(remote.GetDebugId, remote)
+    if debugOk and type(debugId) == "string" and debugId ~= "" then return debugId end
     return tostring(remote.Name)
 end
 
