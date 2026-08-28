@@ -4,9 +4,9 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.7.0"
+local MODULE_VERSION = "3.8.0"
 local ORB_MIN_BATCH = 8
-local ORB_BATCH_SIZE = 32
+local ORB_BATCH_SIZE = 128
 local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.65
 local ORB_CONFIRM_MIN_DELAY = 2.5
@@ -554,8 +554,12 @@ local function queueOrb(itemOrId, fromEvent, payload)
     elseif not run.PendingOrbIds[orbId] then
         if run.PendingOrbCount + run.UnconfirmedOrbCount >= MAX_PENDING_ORBS then
             run.OrbOverflow = run.OrbOverflow + 1
+            run.OrbDropped = run.OrbDropped + 1
             armStatus()
-            return false
+            -- The producer is already gated. Falling through to the native
+            -- AddOrb here would recreate the exact physical/visual backlog
+            -- this bounded queue is meant to prevent.
+            return true
         end
         run.PendingOrbIds[orbId] = 0
         run.PendingOrbCount = run.PendingOrbCount + 1
@@ -1589,8 +1593,17 @@ end
 
 local function resolveThings()
     local context = run.Context
-    local things = context and type(context.GetThings) == "function"
-        and context.GetThings() or workspace:FindFirstChild("__THINGS")
+    local things
+    if context and type(context.GetThings) == "function" then
+        local ok, result = pcall(context.GetThings)
+        if ok then things = result end
+    end
+    if typeof(things) == "Instance" then
+        local live = false
+        pcall(function() live = things:IsDescendantOf(workspace) end)
+        if live then return things end
+    end
+    things = workspace:FindFirstChild("__THINGS")
     return typeof(things) == "Instance" and things or nil
 end
 
@@ -1693,7 +1706,14 @@ local function start(context)
     reconcileGates(true, true)
     run.Connections[#run.Connections + 1] = workspace.ChildAdded:Connect(function(child)
         if child.Name == "__THINGS" and generation == run.Generation then
+            scheduleProducerRebind("__THINGS added")
             bindRoots(true, true, true)
+        end
+    end)
+    run.Connections[#run.Connections + 1] = workspace.ChildRemoved:Connect(function(child)
+        if child == run.Things and generation == run.Generation then
+            clearWorld()
+            scheduleProducerRebind("__THINGS removed")
         end
     end)
     local signal = context.Library and context.Library.Signal
@@ -1701,6 +1721,7 @@ local function start(context)
         local ok, connection = pcall(function()
             return signal.Fired("World Changed"):Connect(function()
                 if generation ~= run.Generation then return end
+                clearWorld()
                 scheduleProducerRebind("World Changed")
                 task.defer(function()
                     if generation == run.Generation then

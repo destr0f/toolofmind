@@ -63,6 +63,22 @@ armed = false;
 assert(queue.every((item) => item === undefined) && seen.size === 0,
     "queue cleanup retained synthetic instances");
 
+// A world transition must discard every old-world queue reference before
+// accepting work from the new roots.
+for (let index = 0; index < 2048; index += 1) enqueue(`old-world-${index}`);
+assert(count === 2048, "old-world setup did not populate the queue");
+while (count > 0) {
+    queue[head] = undefined;
+    head = (head + 1) % CAPACITY;
+    count -= 1;
+}
+seen.clear();
+armed = false;
+enqueue("new-world-object");
+assert(count === 1 && queue[head] === "new-world-object"
+    && !seen.has("old-world-0"),
+"world reset retained old objects or rejected the new root");
+
 for (const marker of [
     "if active.DrainConnection or not active.Running then return end",
     "if active.QueueCount >= QUEUE_CAPACITY then",
@@ -71,6 +87,13 @@ for (const marker of [
     "active.QueueKinds[index] = nil",
     "active.QueueScans[index] = nil",
     "active.Seen[object] = true",
+    "local function clearQueue(active)",
+    "local function resetWorldState(active)",
+    "local function scheduleRootRefresh(active, resetWorld)",
+    "active.Seen = setmetatable({}, { __mode = \"k\" })",
+    "active.Protection = setmetatable({}, { __mode = \"k\" })",
+    "active.WorldGeneration = active.WorldGeneration + 1",
+    "active.WorldResets = active.WorldResets + 1",
 ]) {
     assert(graphics.includes(marker), `missing queue coalescing marker: ${marker}`);
 }

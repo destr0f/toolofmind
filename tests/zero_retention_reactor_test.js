@@ -103,9 +103,9 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.7.0"',
+    'local MODULE_VERSION = "3.8.0"',
     "ORB_MIN_BATCH = 8",
-    "ORB_BATCH_SIZE = 32",
+    "ORB_BATCH_SIZE = 128",
     "MAX_PENDING_ORBS = 8192",
     "ORB_FLUSH_INTERVAL = 0.65",
     "CLIENT_STAGGER_SLOTS = 16",
@@ -129,6 +129,8 @@ for (const marker of [
     'networkSignal("Remove Lootbag")',
     "type(getsenv)",
     'findGameScript("Orbs")',
+    "run.OrbDropped = run.OrbDropped + 1",
+    "return true",
     'findGameScript("Lootbags")',
     'findGameScript("Coins")',
     "environment.AddOrb",
@@ -229,6 +231,9 @@ for (const marker of [
     "active.QueueObjects[index] = nil",
     'debug.profilebegin',
     '"PSX_GraphicsQueue"',
+    "local function resetWorldState(active)",
+    "local function scheduleRootRefresh(active, resetWorld)",
+    "active.WorldResets = active.WorldResets + 1",
 ]) {
     assert(graphics.includes(marker), `missing coalesced graphics marker: ${marker}`);
 }

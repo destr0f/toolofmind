@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.35-distance-toggle"
+local VERSION = "1.4.1-candidate.54.36-antialag-world-rebind"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -6087,7 +6087,11 @@ lootCollector.Context = {
     end,
     GetThings = function()
         local things = Library and Library.Things
-        if typeof(things) == "Instance" then return things end
+        if typeof(things) == "Instance" then
+            local live = false
+            pcall(function() live = things:IsDescendantOf(workspace) end)
+            if live then return things end
+        end
         return workspace:FindFirstChild("__THINGS")
     end,
     GetRTT = function()

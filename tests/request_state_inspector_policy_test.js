@@ -138,7 +138,7 @@ for (const marker of [
 }
 for (const marker of [
     "local ORB_MIN_BATCH = 8",
-    "local ORB_BATCH_SIZE = 32",
+    "local ORB_BATCH_SIZE = 128",
     "local MAX_PENDING_ORBS = 8192",
     "local BAG_LANES = 4",
     "local MAX_PENDING_BAGS = 4096",

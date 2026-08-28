@@ -219,14 +219,14 @@ Manifest содержит:
 | 3 | `automationSupport` | 1.5.0 | lazy |
 | 4 | `automationUI` | 1.5.3 | startup required |
 | 5 | `petFarmEngine` | 1.4.3 | lazy, preloaded after UI |
-| 6 | `lootReactor` | 3.7.0 | lazy, deferred start |
+| 6 | `lootReactor` | 3.8.0 | lazy, deferred start |
 | 7 | `autoEgg` | 1.7.0 | lazy |
 | 8 | `enchant` | 1.0.1 | lazy |
 | 9 | `goldMachine` | 1.5.0 | lazy |
 | 10 | `rainbowMachine` | 1.5.0 | lazy |
 | 11 | `darkMatter` | 1.5.1 | lazy |
 | 12 | `boost` | 1.2.0 | lazy |
-| 13 | `graphics` | 4.0.1 | lazy |
+| 13 | `graphics` | 4.1.0 | lazy |
 
 ### 5.3 Build pipeline
 

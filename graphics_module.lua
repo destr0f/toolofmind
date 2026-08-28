@@ -2,7 +2,7 @@
 -- High-rate Coins/Orbs producers are owned by loot_reactor.lua. This module
 -- never destroys, reparents, teleports, anchors, or otherwise moves game data.
 
-local MODULE_VERSION = "4.0.1"
+local MODULE_VERSION = "4.1.0"
 local env = type(getgenv) == "function" and getgenv() or _G
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
@@ -62,22 +62,26 @@ local function endProfile(started)
     if type(callback) == "function" then pcall(callback) end
 end
 
-local function stopActive(active)
-    if type(active) ~= "table" then return end
-    active.Running = false
-    active.Generation = (active.Generation or 0) + 1
+local function clearQueue(active)
     disconnect(active.DrainConnection)
     active.DrainConnection = nil
-    clearConnections(active.Connections)
-    clearConnections(active.RootConnections)
-    clearConnections(active.ThingsConnections)
-    table.clear(active.Roots)
     table.clear(active.QueueObjects)
     table.clear(active.QueueRoots)
     table.clear(active.QueueKinds)
     table.clear(active.QueueScans)
     active.QueueHead = 1
     active.QueueCount = 0
+end
+
+local function stopActive(active)
+    if type(active) ~= "table" then return end
+    active.Running = false
+    active.Generation = (active.Generation or 0) + 1
+    clearQueue(active)
+    clearConnections(active.Connections)
+    clearConnections(active.RootConnections)
+    clearConnections(active.ThingsConnections)
+    table.clear(active.Roots)
     active.Seen = nil
     active.Protection = nil
     active.Things = nil
@@ -321,8 +325,11 @@ local function bindRoot(active, key, root, kind, watchTopLevel)
     if not root then return end
     queueTree(active, root, kind)
     if watchTopLevel then
+        local worldGeneration = active.WorldGeneration
         active.RootConnections[key] = root.ChildAdded:Connect(function(child)
-            queueTree(active, child, kind)
+            if active.WorldGeneration == worldGeneration then
+                queueTree(active, child, kind)
+            end
         end)
     end
 end
@@ -339,7 +346,9 @@ local function bindThings(active, things)
         end
         active.Things = things
         if things then
+            local worldGeneration = active.WorldGeneration
             active.ThingsConnections.Added = things.ChildAdded:Connect(function(child)
+                if active.WorldGeneration ~= worldGeneration then return end
                 local kind = LOW_RATE_ROOTS[child.Name]
                 if kind then
                     bindRoot(active, "things:" .. child.Name, child, kind, true)
@@ -348,6 +357,7 @@ local function bindThings(active, things)
                 end
             end)
             active.ThingsConnections.Removed = things.ChildRemoved:Connect(function(child)
+                if active.WorldGeneration ~= worldGeneration then return end
                 local key = "things:" .. child.Name
                 if active.Roots[key] == child then
                     bindRoot(active, key, nil, LOW_RATE_ROOTS[child.Name] or "farm", false)
@@ -363,12 +373,41 @@ local function bindThings(active, things)
     end
 end
 
+local function resetWorldState(active)
+    local lighting = active.Roots.lighting
+    clearQueue(active)
+    clearConnections(active.RootConnections)
+    clearConnections(active.ThingsConnections)
+    table.clear(active.Roots)
+    active.Roots.lighting = lighting
+    active.Things = nil
+    active.Seen = setmetatable({}, { __mode = "k" })
+    active.Protection = setmetatable({}, { __mode = "k" })
+    active.WorldGeneration = active.WorldGeneration + 1
+    active.WorldResets = active.WorldResets + 1
+end
+
 local function refreshRoots(active)
     if not active.Running then return end
     bindRoot(active, "map", workspace:FindFirstChild("__MAP"), "world", false)
     bindRoot(active, "lighting", Lighting, "world", false)
     bindRoot(active, "debris", workspace:FindFirstChild("__DEBRIS"), "effects", false)
     bindThings(active, workspace:FindFirstChild("__THINGS"))
+end
+
+local function scheduleRootRefresh(active, resetWorld)
+    active.RootRefreshReset = active.RootRefreshReset or resetWorld == true
+    if active.RootRefreshArmed then return end
+    active.RootRefreshArmed = true
+    local generation = active.Generation
+    task.defer(function()
+        if not active.Running or active.Generation ~= generation then return end
+        local shouldReset = active.RootRefreshReset
+        active.RootRefreshArmed = false
+        active.RootRefreshReset = false
+        if shouldReset then resetWorldState(active) end
+        refreshRoots(active)
+    end)
 end
 
 local function startPotato()
@@ -378,6 +417,7 @@ local function startPotato()
     local active = {
         Running = true,
         Generation = 1,
+        WorldGeneration = 1,
         Connections = {},
         RootConnections = {},
         ThingsConnections = {},
@@ -401,6 +441,9 @@ local function startPotato()
         Errors = 0,
         Processed = 0,
         QueueDropped = 0,
+        WorldResets = 0,
+        RootRefreshArmed = false,
+        RootRefreshReset = false,
     }
     state = active
     env.PSX_POTATO_STATE = active
@@ -409,17 +452,15 @@ local function startPotato()
     active.Connections.Added = workspace.ChildAdded:Connect(function(object)
         if object.Name == "__MAP" or object.Name == "__THINGS"
             or object.Name == "__DEBRIS" then
-            task.defer(function()
-                if active.Running then refreshRoots(active) end
-            end)
+            scheduleRootRefresh(active,
+                object.Name == "__MAP" or object.Name == "__THINGS")
         end
     end)
     active.Connections.Removed = workspace.ChildRemoved:Connect(function(object)
         if object == active.Roots.map or object == active.Things
             or object == active.Roots.debris then
-            task.defer(function()
-                if active.Running then refreshRoots(active) end
-            end)
+            scheduleRootRefresh(active,
+                object == active.Roots.map or object == active.Things)
         end
     end)
 
@@ -453,6 +494,7 @@ local function stats()
         Pending = active.QueueCount,
         Processed = active.Processed,
         Dropped = active.QueueDropped,
+        WorldResets = active.WorldResets,
         Hidden = active.Hidden,
         Disabled = active.Disabled,
         Stripped = active.Stripped,
