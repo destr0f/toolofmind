@@ -112,6 +112,21 @@ const format = (amount) => {
 assert(format(999_999_999) === "1.00B", "999M transition produced 1000M");
 assert(format(1_000_000_000) === "1.00B", "1B formatting is incorrect");
 
+const permanent = new Set([
+    "coins", "diamonds", "fantasycoins", "techcoins", "rainbowcoins", "cartooncoins",
+]);
+const autoTracked = ["Rainbow Coins", "Diamonds"];
+for (const currencyName of ["Coins", "Halloween Candy", "Gingerbread", "Future Event Token"]) {
+    const normalized = currencyName.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!permanent.has(normalized) && !autoTracked.includes(currencyName)) {
+        autoTracked.push(currencyName);
+    }
+}
+assert(autoTracked.includes("Halloween Candy")
+    && autoTracked.includes("Gingerbread")
+    && autoTracked.includes("Future Event Token"),
+"Auto did not include discovered event currencies");
+
 for (const marker of [
     "CURRENCY_WINDOW_SECONDS = 60",
     "CURRENCY_WINDOW_CAPACITY = 1024",
@@ -120,6 +135,11 @@ for (const marker of [
     "sample.TotalSpent",
     "buildCurrencyMap(save, currencyNames, self.WantedMap, self.MappedValues)",
     "tracked[#tracked + 1] = \"Diamonds\"",
+    "function currencyMonitor:RefreshNames(now)",
+    "Library.Shared and Library.Shared.Currency",
+    "worldData.mainCurrency",
+    "not self.PermanentNames[normalizeCurrencyName(currencyName)]",
+    '"Halloween Candy"',
     "local balances = self.Balances",
     "local active = currencyMonitor.ActiveNames",
     "local lines = currencyMonitor.RateLines",

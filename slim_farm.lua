@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.36-antialag-world-rebind"
+local VERSION = "1.4.1-candidate.54.37-event-currency-pack"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -367,7 +367,8 @@ local config = {
 }
 
 local DIAMOND_PACK_TIER = 4
-local DIAMOND_PACK_PRICE = 250e9
+local DIAMOND_PACK_CURRENCY = "Halloween Candy"
+local DIAMOND_PACK_PRICE = 12.5e9
 local DIAMOND_PACK_RESERVE = 0.5e9
 local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE
 local DIAMOND_PACK_INTERVAL = 180
@@ -620,7 +621,7 @@ function hud:Update(rateText, equippedCount, workingCount, joiningCount, zone)
     if config.AutoGoldenGalaxyFox then active[#active + 1] = "Gold" end
     if config.AutoRainbowGalaxyFox then active[#active + 1] = "RB" end
     if config.AutoDarkMatterGalaxyFox or config.AutoClaimDarkMatter then active[#active + 1] = "DM" end
-    if config.AutoTechDiamondPack then active[#active + 1] = "250.5B Pack" end
+    if config.AutoTechDiamondPack then active[#active + 1] = "13B Pack" end
     if config.AutoVIPRewards or config.AutoRankRewards or config.AutoFreeGifts then
         active[#active + 1] = "Rewards"
     end
@@ -1221,7 +1222,7 @@ local WorldOrder = {
 
 local CurrencyChoices = {
     "Active Balances", "Auto", "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
-    "Rainbow Coins", "Cartoon Coins", "Gingerbread",
+    "Rainbow Coins", "Cartoon Coins", "Gingerbread", "Halloween Candy",
 }
 
 local CurrencyByWorld = {
@@ -1672,9 +1673,20 @@ local currencyMonitor = {
     MappedValues = {},
     ActiveNames = {},
     RateLines = {},
-    Names = {
+    BaseNames = {
         "Coins", "Diamonds", "Fantasy Coins", "Tech Coins",
-        "Rainbow Coins", "Cartoon Coins", "Gingerbread",
+        "Rainbow Coins", "Cartoon Coins", "Gingerbread", "Halloween Candy",
+    },
+    Names = {},
+    CatalogSeen = {},
+    CatalogAt = -math.huge,
+    PermanentNames = {
+        coins = true,
+        diamonds = true,
+        fantasycoins = true,
+        techcoins = true,
+        rainbowcoins = true,
+        cartooncoins = true,
     },
 }
 local CURRENCY_WINDOW_SECONDS = 60
@@ -1745,7 +1757,35 @@ function currencyMonitor:Reset()
     self.StartedAt = os.clock()
 end
 
+function currencyMonitor:RefreshNames(now)
+    now = tonumber(now) or os.clock()
+    if now - self.CatalogAt < 30 then return end
+    self.CatalogAt = now
+    local names, seen = self.Names, self.CatalogSeen
+    table.clear(names)
+    table.clear(seen)
+    local function add(currencyName)
+        if type(currencyName) ~= "string" or currencyName == "" then return end
+        local normalized = normalizeCurrencyName(currencyName)
+        if normalized == "" or seen[normalized] then return end
+        seen[normalized] = true
+        names[#names + 1] = currencyName
+    end
+    for _, currencyName in ipairs(self.BaseNames) do add(currencyName) end
+    local sharedCurrencies = Library.Shared and Library.Shared.Currency
+    if type(sharedCurrencies) == "table" then
+        for currencyName in pairs(sharedCurrencies) do add(currencyName) end
+    end
+    local worlds = Library.Directory and Library.Directory.Worlds
+    if type(worlds) == "table" then
+        for _, worldData in pairs(worlds) do
+            if type(worldData) == "table" then add(worldData.mainCurrency) end
+        end
+    end
+end
+
 function currencyMonitor:TrackedNames()
+    self:RefreshNames(os.clock())
     if config.TrackedCurrency == "Active Balances" then return self.Names end
     local tracked = self.Tracked
     table.clear(tracked)
@@ -1753,6 +1793,14 @@ function currencyMonitor:TrackedNames()
     if selected then tracked[#tracked + 1] = selected end
     if config.TrackedCurrency == "Auto" and selected ~= "Diamonds" then
         tracked[#tracked + 1] = "Diamonds"
+    end
+    if config.TrackedCurrency == "Auto" then
+        for _, currencyName in ipairs(self.Names) do
+            if currencyName ~= selected and currencyName ~= "Diamonds"
+                and not self.PermanentNames[normalizeCurrencyName(currencyName)] then
+                tracked[#tracked + 1] = currencyName
+            end
+        end
     end
     return tracked
 end
@@ -5490,15 +5538,19 @@ local function runDiamondPackCheck()
     if diamondPackBusy then return end
     diamondPackBusy = true
 
-    local balance = getCurrentCurrency("Rainbow Coins")
+    local balance = getCurrentCurrency(DIAMOND_PACK_CURRENCY)
     local balanceText = balance ~= nil and formatRateNumber(balance) or "unknown"
     local status
 
     if balance == nil then
-        status = "Local check: Rainbow Coins balance was not found; no request sent."
+        status = "Local check: " .. DIAMOND_PACK_CURRENCY
+            .. " balance was not found; no request sent."
     elseif balance < DIAMOND_PACK_MINIMUM then
         status = "Local threshold hold: " .. balanceText
-            .. " is below 250.5B Rainbow Coins (250B pack + 500M reserve); no server request sent."
+            .. " is below " .. formatRateNumber(DIAMOND_PACK_MINIMUM) .. " "
+            .. DIAMOND_PACK_CURRENCY .. " (" .. formatRateNumber(DIAMOND_PACK_PRICE)
+            .. " pack + " .. formatRateNumber(DIAMOND_PACK_RESERVE)
+            .. " reserve); no server request sent."
     else
         local transportOk, accepted, serverMessage, sourceName, sessionIndex =
             invokeCommand("Buy DiamondPack", DIAMOND_PACK_TIER)
@@ -6845,16 +6897,16 @@ do
 end
 uiStageYield("automation controls")
 
-UI.DiamondSection = UI.MachinesTab:Section({ Title = "Rainbow Diamond Exchange", Box = true, Opened = true })
+UI.DiamondSection = UI.MachinesTab:Section({ Title = "Halloween Diamond Exchange", Box = true, Opened = true })
 UI.DiamondSection:Toggle({
     Flag = "auto_tech_diamond_pack",
-    Title = "Auto Best Rainbow Diamond Pack",
-    Desc = "Tier 4 costs 250B / checks every 3 minutes / buys only at 250.5B to preserve 500M",
+    Title = "Auto Best Halloween Diamond Pack",
+    Desc = "Tier 4 costs 12.5B Halloween Candy / checks every 3 minutes / buys at 13B to preserve 500M",
     Value = false,
     Callback = function(value)
         config.AutoTechDiamondPack = value == true
         if config.AutoTechDiamondPack then
-            statusSetters.Diamond("Enabled. A local balance check will run now; below 250.5B no request is sent.")
+            statusSetters.Diamond("Enabled. A local Halloween Candy check will run now; below 13B no request is sent.")
         else
             statusSetters.Diamond("Disabled. No purchase requests will be sent.")
         end

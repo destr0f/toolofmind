@@ -21,11 +21,12 @@ for (const marker of [
 }
 
 for (const marker of [
-    "local DIAMOND_PACK_PRICE = 250e9",
+    'local DIAMOND_PACK_CURRENCY = "Halloween Candy"',
+    "local DIAMOND_PACK_PRICE = 12.5e9",
     "local DIAMOND_PACK_RESERVE = 0.5e9",
     "local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE",
-    'getCurrentCurrency("Rainbow Coins")',
-    "below 250.5B Rainbow Coins",
+    "getCurrentCurrency(DIAMOND_PACK_CURRENCY)",
+    "formatRateNumber(DIAMOND_PACK_MINIMUM)",
 ]) {
     assert(source.includes(marker), `Rainbow pack policy misses ${marker}`);
 }
@@ -45,4 +46,4 @@ for (const marker of [
     assert(source.includes(marker), `current farm route policy misses ${marker}`);
 }
 
-process.stdout.write("Auto Gifts + 250B Rainbow pack policy OK\n");
+process.stdout.write("Auto Gifts + 13B Halloween pack policy OK\n");
