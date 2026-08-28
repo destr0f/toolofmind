@@ -593,7 +593,7 @@ Alias нужен для совместимости конкретного обн
 | Redeem VIP Rewards | Rewards | command-specific | timer/reward state | Только due |
 | Redeem Rank Rewards | Rewards | command-specific | timer/reward state | Только due |
 | Redeem Free Gift | Rewards | gift index | claimed index | Один раз на доступный index |
-| Buy DiamondPack | Rewards/pack | pack tier | currency/balance delta | Проверка 12.5B Halloween Candy + 0.5B reserve; интервал 180s |
+| Buy DiamondPack | Rewards/pack | pack tier | currency/balance delta | Проверка 12.5B Halloween Candy + 0.5B reserve; выбираемый интервал 30–300s |
 
 ### 11.2 RemoteEvents
 
@@ -1173,7 +1173,7 @@ Rewards не polling-loop каждую секунду. Main вычисляет d
 
 ### 22.3 Diamond pack
 
-Текущий pack tier 4 стоит 12.5B Halloween Candy. Запрос разрешается только при балансе не ниже 13B, оставляя 0.5B reserve. Проверка локальная по Save/balance, не чаще примерно одного раза в 180 секунд. Если threshold не достигнут, server request не отправляется.
+Текущий pack tier 4 стоит 12.5B Halloween Candy. Запрос разрешается только при балансе не ниже 13B, оставляя 0.5B reserve. Проверка локальная по Save/balance; пользователь выбирает интервал от 30 секунд до 5 минут. Изменение интервала переносит следующую проверку без немедленного запроса. Если threshold не достигнут, server request не отправляется.
 
 ## 23. Graphics / Potato / anti-lag
 
@@ -1281,7 +1281,7 @@ Incident — наблюдение, не автоматическое разре�
 | Auto Enchant | active UID не совпал | Toggle on | Один Invoke за попытку |
 | Boost refresh | примерно 8–30s по состоянию | Selected boosts | Только renewal/zero stock |
 | Rewards | computed due time | Toggle on | Только due |
-| Diamond pack | threshold, не чаще 180s | Toggle on | Только threshold |
+| Diamond pack | threshold, выбранные 30–300s | Toggle on | Только threshold |
 | Graphics drain | queued visual work | Potato/settings change | Нет |
 | Main telemetry | 1s cheap publish | UI runtime | Нет |
 | Heavy diagnostic sample | 0.5s visible / 5s hidden | Monitor/HUD/inspector | Нет |

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.37-event-currency-pack"
+local VERSION = "1.4.1-candidate.54.38-pack-interval"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -308,6 +308,7 @@ local config = {
     PotatoMode = false,
     FPSLimit = "Unchanged",
     AutoTechDiamondPack = false,
+    DiamondPackInterval = 180,
     AutoVIPRewards = false,
     AutoRankRewards = false,
     AutoFreeGifts = false,
@@ -371,7 +372,6 @@ local DIAMOND_PACK_CURRENCY = "Halloween Candy"
 local DIAMOND_PACK_PRICE = 12.5e9
 local DIAMOND_PACK_RESERVE = 0.5e9
 local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE
-local DIAMOND_PACK_INTERVAL = 180
 local diamondPackNextCheck = 0
 local diamondPackBusy = false
 local VIP_REWARD_COOLDOWN = 14400
@@ -5570,10 +5570,11 @@ local function runDiamondPackCheck()
         end
     end
 
-    diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
+    local interval = math.clamp(tonumber(config.DiamondPackInterval) or 180, 30, 300)
+    diamondPackNextCheck = os.clock() + interval
     diamondPackBusy = false
     trace("diamond pack", status)
-    statusSetters.Diamond(status .. "\nNext local check in 3 minutes.")
+    statusSetters.Diamond(status .. "\nNext local check in " .. formatDuration(interval) .. ".")
 end
 
 local diamondWorker = {
@@ -5605,24 +5606,27 @@ diamondWorker.Run = function(generation)
         local ok, problem = pcall(runDiamondPackCheck)
         if not ok then
             diamondPackBusy = false
-            diamondPackNextCheck = os.clock() + DIAMOND_PACK_INTERVAL
+            local interval = math.clamp(tonumber(config.DiamondPackInterval) or 180, 30, 300)
+            diamondPackNextCheck = os.clock() + interval
             local status = "Worker error: " .. tostring(problem)
             trace("diamond pack", status)
-            statusSetters.Diamond(status .. "\nNext retry in 3 minutes.")
+            statusSetters.Diamond(status .. "\nNext retry in " .. formatDuration(interval) .. ".")
         end
     end
     local remaining = math.max(diamondPackNextCheck - os.clock(), 0)
     diamondWorker.Schedule(generation, math.max(remaining, 0.25))
 end
 
-local function reconcileDiamondWorker()
+local function reconcileDiamondWorker(delay)
     diamondWorker.Generation = diamondWorker.Generation + 1
     cancelScheduledTask(diamondWorker.Thread)
     diamondWorker.Thread = nil
     local generation = diamondWorker.Generation
-    diamondPackNextCheck = 0
+    local initialDelay = delay ~= nil
+        and math.clamp(tonumber(delay) or 180, 30, 300) or nil
+    diamondPackNextCheck = initialDelay and (os.clock() + initialDelay) or 0
     if not running() or not config.AutoTechDiamondPack then return end
-    diamondWorker.Schedule(generation, token.AutomationStartupPhase(5))
+    diamondWorker.Schedule(generation, initialDelay or token.AutomationStartupPhase(5))
 end
 
 local rewardWorker = {
@@ -6898,10 +6902,25 @@ end
 uiStageYield("automation controls")
 
 UI.DiamondSection = UI.MachinesTab:Section({ Title = "Halloween Diamond Exchange", Box = true, Opened = true })
+UI.DiamondSection:Slider({
+    Flag = "diamond_pack_interval",
+    Title = "Gem Pack Interval",
+    Desc = "Choose 30 seconds to 5 minutes between local balance checks and purchase attempts.",
+    Step = 30,
+    Value = { Min = 30, Max = 300, Default = tonumber(config.DiamondPackInterval) or 180 },
+    Callback = function(value)
+        config.DiamondPackInterval = math.clamp(math.floor(tonumber(value) or 180), 30, 300)
+        if config.AutoTechDiamondPack then
+            statusSetters.Diamond("Interval updated to " .. formatDuration(config.DiamondPackInterval)
+                .. ". The next local check was rescheduled; no immediate request was sent.")
+            reconcileDiamondWorker(config.DiamondPackInterval)
+        end
+    end,
+})
 UI.DiamondSection:Toggle({
     Flag = "auto_tech_diamond_pack",
     Title = "Auto Best Halloween Diamond Pack",
-    Desc = "Tier 4 costs 12.5B Halloween Candy / checks every 3 minutes / buys at 13B to preserve 500M",
+    Desc = "Tier 4 costs 12.5B Halloween Candy / uses the selected interval / buys at 13B to preserve 500M",
     Value = false,
     Callback = function(value)
         config.AutoTechDiamondPack = value == true

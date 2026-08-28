@@ -34,6 +34,9 @@ for (const marker of [
     "local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE",
     "getCurrentCurrency(DIAMOND_PACK_CURRENCY)",
     "formatRateNumber(DIAMOND_PACK_MINIMUM)",
+    "DiamondPackInterval = 180",
+    'Flag = "diamond_pack_interval"',
+    "Value = { Min = 30, Max = 300",
     'Command = "Redeem Free Gift"',
     "FreeGiftsRedeemed",
 ]) {

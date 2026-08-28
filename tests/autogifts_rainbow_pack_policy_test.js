@@ -27,6 +27,10 @@ for (const marker of [
     "local DIAMOND_PACK_MINIMUM = DIAMOND_PACK_PRICE + DIAMOND_PACK_RESERVE",
     "getCurrentCurrency(DIAMOND_PACK_CURRENCY)",
     "formatRateNumber(DIAMOND_PACK_MINIMUM)",
+    "DiamondPackInterval = 180",
+    'Flag = "diamond_pack_interval"',
+    "Value = { Min = 30, Max = 300",
+    "math.clamp(math.floor(tonumber(value) or 180), 30, 300)",
 ]) {
     assert(source.includes(marker), `Rainbow pack policy misses ${marker}`);
 }
