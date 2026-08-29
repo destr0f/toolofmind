@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.38-pack-interval"
+local VERSION = "1.4.1-candidate.54.39-regular-farm-shard"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -4126,7 +4126,11 @@ function petFarm:EnsureEngine()
                     coinSync.BossRejected[coinId] = true
                     rejectedUntil[coinId] = nil
                 else
-                    rejectedUntil[coinId] = now + 0.75
+                    -- A regular target rejected by the server is usually
+                    -- already dead or contended by another client. Keep that
+                    -- exact ID out of the hot reroute set long enough for the
+                    -- authoritative coin lifecycle to replace/remove it.
+                    rejectedUntil[coinId] = now + 2.5
                 end
             end
             if authoritativeBoss then
@@ -4617,8 +4621,15 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
     end
 
     local targetWindow = math.min(#usable, math.max(#freePets + occupiedCount, 1))
+    -- Different mode used to let every account select the same first N
+    -- strongest targets and only rotate pets inside that identical window.
+    -- Rotate the window across the complete sorted live pool instead. This is
+    -- deterministic, allocation-free and spreads multi-client joins without
+    -- changing the grouped regular/boss paths above.
+    local accountPoolSize = #usable
+    local accountOffset = math.abs(tonumber(player.UserId) or 0) % accountPoolSize
     for index = 1, targetWindow do
-        local record = usable[index]
+        local record = usable[((accountOffset + index - 1) % accountPoolSize) + 1]
         local coinId = tostring(record.Id)
         candidates[index] = record
         candidateById[coinId] = record
@@ -4629,7 +4640,7 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
         if loads[coinId] ~= nil then loads[coinId] = loads[coinId] + 1 end
     end
 
-    local accountOffset = math.abs(tonumber(player.UserId) or 0) % targetWindow
+    local accountRotation = accountOffset % targetWindow
     for petIndex, rawPetId in ipairs(freePets) do
         local petId = tostring(rawPetId)
         local minimumLoad = math.huge
@@ -4644,7 +4655,7 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
             chosen = candidateById[reservedId]
         end
         if not chosen then
-            local start = ((accountOffset + petIndex - 2) % targetWindow) + 1
+            local start = ((accountRotation + petIndex - 2) % targetWindow) + 1
             for step = 0, targetWindow - 1 do
                 local record = candidates[((start + step - 1) % targetWindow) + 1]
                 if (loads[tostring(record.Id)] or 0) == minimumLoad then
@@ -4672,7 +4683,7 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
 
         local nextRecord, nextLoad
         for step = 1, targetWindow do
-            local record = candidates[((accountOffset + petIndex + step - 2) % targetWindow) + 1]
+            local record = candidates[((accountRotation + petIndex + step - 2) % targetWindow) + 1]
             local load = loads[tostring(record.Id)] or 0
             if not nextRecord or load < nextLoad then
                 nextRecord, nextLoad = record, load
@@ -7899,8 +7910,14 @@ function requestDiagnostics.UpdateTelemetry()
     local equipped = tonumber(petFarm.EquippedCount) or 0
     local assigned = assignmentCount()
     local cooldownCount = 0
-    for _, untilAt in pairs(rejectedUntil) do
-        if (tonumber(untilAt) or 0) > now then cooldownCount = cooldownCount + 1 end
+    for coinId, untilAt in pairs(rejectedUntil) do
+        if (tonumber(untilAt) or 0) > now then
+            cooldownCount = cooldownCount + 1
+        else
+            -- Reuse the existing one-second diagnostics pass to bound this
+            -- map; no extra cleanup worker or hot-path scan is introduced.
+            rejectedUntil[coinId] = nil
+        end
     end
     local pendingProgressLeases = 0
     for _ in pairs(petFarm.ProgressLeases) do

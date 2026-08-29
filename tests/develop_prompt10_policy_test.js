@@ -34,8 +34,10 @@ assert(farm.includes("mode ~= \"Boss Chest Only\" and (hackerPortal or not boss)
     "regular Hacker Portal target policy is missing");
 assert(farm.includes("function petFarm:BuildDispatchPlans(")
     && farm.includes("minimumLoad")
-    && farm.includes("accountOffset"),
-    "balanced UserId-offset allocator is missing");
+    && farm.includes("local accountPoolSize = #usable")
+    && farm.includes("% accountPoolSize")
+    && farm.includes("accountRotation"),
+    "balanced full-pool UserId-offset allocator is missing");
 assert(farm.includes("function petFarm:QueueFastDispatch(")
     && farm.includes("task.defer(function()")
     && farm.includes("releaseAssignmentsForCoin(id) or 0"),
@@ -56,6 +58,15 @@ assert(rejectionBranch.includes("failEntries(") && !rejectionBranch.includes("sc
     "stale/contended Join rejection still retries the same coin");
 assert(engine.includes("local DEFAULT_DISPATCH_WIDTH = 16"),
     "transport lane ceiling is not 16");
+assert(farm.includes("rejectedUntil[coinId] = now + 2.5"),
+    "regular server rejects are not cooled before fast reroute");
+const cooldownTelemetry = farm.slice(
+    farm.indexOf("function requestDiagnostics.UpdateTelemetry"),
+    farm.indexOf('requestDiagnostics.Gauge("Farm", "queued"')
+);
+assert(cooldownTelemetry.includes("for coinId, untilAt in pairs(rejectedUntil)")
+    && cooldownTelemetry.includes("rejectedUntil[coinId] = nil"),
+    "expired regular target cooldowns are retained forever");
 
 for (const file of [
     "slim_farm.lua",
@@ -96,6 +107,22 @@ for (const [pets, targets, expectedAssigned] of [
     }
 }
 
+const farmAccountIds = [
+    11219080636, 11219145353, 11222099925, 11222233239, 11222313457,
+    11222378708, 11229414145, 11229442849, 11229634197, 11283204598,
+];
+const coveredTargets = new Set();
+for (const userId of farmAccountIds) {
+    const poolSize = 55;
+    const windowSize = 15;
+    const offset = Math.abs(userId) % poolSize;
+    for (let index = 1; index <= windowSize; index += 1) {
+        coveredTargets.add((offset + index - 1) % poolSize);
+    }
+}
+assert(coveredTargets.size >= 45,
+    `full-pool account sharding only covered ${coveredTargets.size}/55 targets`);
+
 process.stdout.write(
-    "Prompt 10 policy OK | machines=Pixel Demon | Hacker Portal=regular pool | allocator=balanced/16 | stale=no-retry\n"
+    "Prompt 10 policy OK | machines=Pixel Demon | regular pool=account-sharded | allocator=balanced/16 | stale=no-retry\n"
 );
