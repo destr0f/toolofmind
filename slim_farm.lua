@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.39-regular-farm-shard"
+local VERSION = "1.4.1-candidate.54.40-regular-reject-settle"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2897,6 +2897,7 @@ local petFarm = {
     FastPets = {},
     FastScheduled = false,
     FastToken = 0,
+    RejectSettleTokens = {},
     MembershipConfirms = 0,
     ProgressLeases = {},
     ProgressLeaseScheduled = false,
@@ -3017,6 +3018,7 @@ releaseAssignmentsForCoin = function(rawId, suppressFastDispatch)
         petFarm.ProgressLeaseScheduled = false
         petFarm.FastScheduled = false
         table.clear(petFarm.FastPets)
+        table.clear(petFarm.RejectSettleTokens)
         table.clear(petFarm.ProgressLeases)
         table.clear(petFarm.NextTargetByPet)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
@@ -3998,6 +4000,28 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
     end
 end
 
+function petFarm:ScheduleRejectSettle(rawPetId)
+    local petId = tostring(rawPetId)
+    local token = (tonumber(self.RejectSettleTokens[petId]) or 0) + 1
+    self.RejectSettleTokens[petId] = token
+    local generation = farmGeneration
+    local phase = (math.abs(tonumber(player.UserId) or 0) % 7) * 0.015
+    task.delay(0.18 + phase, function()
+        if self.RejectSettleTokens[petId] ~= token then return end
+        self.RejectSettleTokens[petId] = nil
+        if not running() or not config.PetFarm or farmResetRunning
+            or generation ~= farmGeneration or petStates[petId] ~= nil then
+            return
+        end
+        self.FastPets[petId] = true
+        if type(self.QueueFastDispatch) == "function" then
+            self:QueueFastDispatch()
+        elseif type(requestAllocatorPulse) == "function" then
+            requestAllocatorPulse()
+        end
+    end)
+end
+
 local function resetSupportCoordinator()
     if supportController then pcall(supportController, "reset", supportContext) end
 end
@@ -4140,15 +4164,15 @@ function petFarm:EnsureEngine()
                     or "boss transport failed; waiting for next authoritative New Coin"
                 return
             end
-            self.FastPets[petId] = true
             if rejected then
                 self.FastReroutes = self.FastReroutes + 1
             else
+                self.FastPets[petId] = true
                 idleRecoveryCount = idleRecoveryCount + 1
             end
             lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
             driverStatus = rejected
-                and "stale/contended target skipped; fast reroute queued"
+                and "stale/contended target skipped; bounded settle queued"
                 or "transport failed after bounded retry; fast reroute queued"
             self.SuppressedFailures = self.SuppressedFailures + 1
             if now >= self.NextFailureTraceAt then
@@ -4157,7 +4181,9 @@ function petFarm:EnsureEngine()
                 self.SuppressedFailures = 0
                 self.NextFailureTraceAt = now + 2
             end
-            if type(self.QueueFastDispatch) == "function" then
+            if rejected then
+                self:ScheduleRejectSettle(petId)
+            elseif type(self.QueueFastDispatch) == "function" then
                 self:QueueFastDispatch()
             elseif type(requestAllocatorPulse) == "function" then
                 requestAllocatorPulse()
@@ -4621,15 +4647,11 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
     end
 
     local targetWindow = math.min(#usable, math.max(#freePets + occupiedCount, 1))
-    -- Different mode used to let every account select the same first N
-    -- strongest targets and only rotate pets inside that identical window.
-    -- Rotate the window across the complete sorted live pool instead. This is
-    -- deterministic, allocation-free and spreads multi-client joins without
-    -- changing the grouped regular/boss paths above.
-    local accountPoolSize = #usable
-    local accountOffset = math.abs(tonumber(player.UserId) or 0) % accountPoolSize
+    -- Keep Different mode inside the strongest live window. Rotating the
+    -- window across the full pool made some accounts select short-lived weak
+    -- objects, while reject cooldowns continually changed the modulo base.
     for index = 1, targetWindow do
-        local record = usable[((accountOffset + index - 1) % accountPoolSize) + 1]
+        local record = usable[index]
         local coinId = tostring(record.Id)
         candidates[index] = record
         candidateById[coinId] = record
@@ -4640,7 +4662,7 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
         if loads[coinId] ~= nil then loads[coinId] = loads[coinId] + 1 end
     end
 
-    local accountRotation = accountOffset % targetWindow
+    local accountRotation = math.abs(tonumber(player.UserId) or 0) % targetWindow
     for petIndex, rawPetId in ipairs(freePets) do
         local petId = tostring(rawPetId)
         local minimumLoad = math.huge
@@ -7607,6 +7629,7 @@ local function finishShutdown()
     table.clear(petFarm.DispatchPayload)
     petFarm:ResetBossPetWarp("shutdown")
     table.clear(petFarm.FastPets)
+    table.clear(petFarm.RejectSettleTokens)
     petFarm.ProgressLeaseToken = petFarm.ProgressLeaseToken + 1
     petFarm.ProgressLeaseScheduled = false
     table.clear(petFarm.ProgressLeases)
