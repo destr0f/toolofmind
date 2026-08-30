@@ -32,16 +32,12 @@ assert(farm.includes('local hackerPortal = namesMatch(zone, "Hacker Portal")'),
     "Hacker Portal does not opt chest-named breakables into regular modes");
 assert(farm.includes("mode ~= \"Boss Chest Only\" and (hackerPortal or not boss)"),
     "regular Hacker Portal target policy is missing");
-const plannerStart = farm.indexOf("function petFarm:BuildDispatchPlans(");
-const plannerEnd = farm.indexOf("function petFarm:QueueFastDispatch(", plannerStart);
-assert(plannerStart >= 0 && plannerEnd > plannerStart,
-    "regular dispatch planner was not found");
-const planner = farm.slice(plannerStart, plannerEnd);
-assert(planner.includes("minimumLoad")
-    && planner.includes("local record = usable[index]")
-    && planner.includes("accountRotation")
-    && !planner.includes("accountPoolSize"),
-    "balanced strongest-window UserId-offset allocator is missing");
+assert(farm.includes("function petFarm:BuildDispatchPlans(")
+    && farm.includes("minimumLoad")
+    && farm.includes("local accountPoolSize = #usable")
+    && farm.includes("% accountPoolSize")
+    && farm.includes("accountRotation"),
+    "balanced full-pool UserId-offset allocator is missing");
 assert(farm.includes("function petFarm:QueueFastDispatch(")
     && farm.includes("task.defer(function()")
     && farm.includes("releaseAssignmentsForCoin(id) or 0"),
@@ -64,11 +60,8 @@ assert(engine.includes("local DEFAULT_DISPATCH_WIDTH = 16"),
     "transport lane ceiling is not 16");
 assert(farm.includes("rejectedUntil[coinId] = now + 2.5"),
     "regular server rejects are not cooled before fast reroute");
-assert(farm.includes("function petFarm:ScheduleRejectSettle(")
-    && farm.includes("RejectSettleTokens")
-    && farm.includes("task.delay(0.18 + phase")
-    && farm.includes("self:ScheduleRejectSettle(petId)"),
-    "regular server rejects do not use a bounded per-pet settle");
+assert(!farm.includes("ScheduleRejectSettle") && !farm.includes("RejectSettleTokens"),
+    "regular server rejects still wait behind the 54.40 settle experiment");
 const cooldownTelemetry = farm.slice(
     farm.indexOf("function requestDiagnostics.UpdateTelemetry"),
     farm.indexOf('requestDiagnostics.Gauge("Farm", "queued"')
@@ -116,6 +109,22 @@ for (const [pets, targets, expectedAssigned] of [
     }
 }
 
+const farmAccountIds = [
+    11219080636, 11219145353, 11222099925, 11222233239, 11222313457,
+    11222378708, 11229414145, 11229442849, 11229634197, 11283204598,
+];
+const coveredTargets = new Set();
+for (const userId of farmAccountIds) {
+    const poolSize = 55;
+    const windowSize = 15;
+    const offset = Math.abs(userId) % poolSize;
+    for (let index = 1; index <= windowSize; index += 1) {
+        coveredTargets.add((offset + index - 1) % poolSize);
+    }
+}
+assert(coveredTargets.size >= 45,
+    `full-pool account sharding only covered ${coveredTargets.size}/55 targets`);
+
 process.stdout.write(
-    "Prompt 10 policy OK | machines=Pixel Demon | regular pool=strongest-window | allocator=balanced/16 | stale=settled/no-retry\n"
+    "Prompt 10 policy OK | machines=Pixel Demon | regular pool=account-sharded | allocator=balanced/16 | stale=no-retry\n"
 );

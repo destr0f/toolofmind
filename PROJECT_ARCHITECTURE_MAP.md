@@ -315,7 +315,7 @@ Main сериализует загрузку модулей, чтобы неск
 
 1. берётся manifest descriptor;
 2. ищется generation-scoped cache;
-3. при необходимости загружается pinned blob;
+3. при необходимости загружается pinned blob; если основной HTTPS endpoint дал transport/SSL/identity error, выполняется ровно один fallback на jsDelivr с тем же exact commit/path;
 4. сверяются bytes/DJB2 и версия;
 5. chunk компилируется;
 6. exported factory получает action/context;
@@ -703,7 +703,7 @@ UI выбирает world и zone, main приводит названия area �
 | All on Strongest Regular | Все доступные pets группируются на сильной обычной цели |
 | Boss Chest Only | Event-driven один boss chest; grouped Join всей команды |
 
-В Different mode allocator выбирает target с минимальной текущей нагрузкой внутри первых N самых сильных живых целей, где N равен числу свободных pets плюс уже занятые цели. Смещение на основе `UserId` переставляет pets только внутри этого стабильного strongest-window: слабые короткоживущие объекты не попадают разным аккаунтам из-за modulo по полному пулу. Server-rejected обычный ID охлаждается 2.5 секунды, а освободившийся pet получает один локальный settle 180–270 мс с фазой по аккаунту перед reroute; это не добавляет remote-вызовов, polling или отдельный worker. Истёкшие cooldown-записи удаляются существующим редким telemetry-pass.
+В Different mode allocator выбирает target с минимальной текущей нагрузкой. Стабильное смещение на основе `UserId` применяется к полному отсортированному пулу живых целей, поэтому разные аккаунты получают разные окна, а не переставляют pets внутри одних и тех же первых 15 объектов. Server-rejected обычный ID охлаждается 2.5 секунды, после чего освобождённый pet немедленно попадает в существующий coalesced reroute; сам rejected ID не повторяется. Истёкшие cooldown-записи удаляются существующим редким telemetry-pass без отдельного worker.
 
 ## 14. Pet farm engine
 

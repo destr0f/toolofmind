@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.40-regular-reject-settle"
+local VERSION = "1.4.1-candidate.54.41-http-failover-farm-restore"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -105,6 +105,24 @@ end
 
 validateRuntimeManifest()
 env.PSX_OG_RUNTIME_MANIFEST = RUNTIME_MANIFEST
+end
+
+env.PSX_OG_VERIFIED_RUNTIME_HTTP_GET = function(entry, urls)
+    local problems = {}
+    for index, url in ipairs(urls) do
+        if index > 1 then task.wait(0.15) end
+        local ok, source = pcall(game.HttpGet, game, url)
+        if ok then
+            local verified, verifyProblem = verifyRuntimeSource(entry, source)
+            if verified then return source, url, index, nil end
+            problems[#problems + 1] = "source " .. tostring(index)
+                .. " identity rejected: " .. tostring(verifyProblem)
+        else
+            problems[#problems + 1] = "source " .. tostring(index)
+                .. " transport failed: " .. tostring(source)
+        end
+    end
+    return nil, nil, nil, table.concat(problems, " || ")
 end
 
 env.PSX_OG_REQUEST_INSPECTOR_BOOT = {
@@ -663,8 +681,18 @@ local WindUI
 do
     trace("03 WindUI download")
     local windEntry = env.PSX_OG_RUNTIME_MANIFEST.windUI
-    local windSource = game:HttpGet(windEntry.url)
-    trace("04 WindUI received", #windSource)
+    local repository = env.PSX_OG_RUNTIME_MANIFEST.repository
+    local sourceCommit = env.PSX_OG_RUNTIME_MANIFEST.build.sourceCommit
+    local windURLs = {
+        windEntry.url,
+        "https://cdn.jsdelivr.net/gh/" .. tostring(repository.owner)
+            .. "/" .. tostring(repository.name) .. "@" .. tostring(sourceCommit)
+            .. "/" .. tostring(windEntry.vendorPath) .. "?psxv=" .. tostring(windEntry.djb2),
+    }
+    local windSource, _, windAttempt, windDownloadProblem = env.PSX_OG_VERIFIED_RUNTIME_HTTP_GET(windEntry, windURLs)
+    table.clear(windURLs)
+    if not windSource then error("WindUI download failed: " .. tostring(windDownloadProblem), 0) end
+    trace("04 WindUI received", tostring(#windSource) .. " | source=" .. tostring(windAttempt))
     local windVerified, windVerifyProblem = verifyRuntimeSource(windEntry, windSource)
     if not windVerified then error("WindUI identity rejected: " .. tostring(windVerifyProblem), 0) end
     trace("04 WindUI verified", "version=" .. tostring(windEntry.version)
@@ -832,12 +860,15 @@ function requestDiagnostics.Route(kind, commandName, resolved, problem)
     requestDiagnostics.Gauge("Routes", "unresolved", requestDiagnostics.UnresolvedRouteCount)
 end
 
-local function runtimeModuleURL(entry)
+local function runtimeModuleURLs(entry)
     local repository = env.PSX_OG_RUNTIME_MANIFEST.repository
-    return tostring(repository.rawBase) .. "/" .. tostring(repository.owner)
-        .. "/" .. tostring(repository.name) .. "/" .. tostring(entry.commit)
-        .. "/" .. tostring(entry.path)
-        .. "?psxv=" .. tostring(entry.djb2)
+    local suffix = "/" .. tostring(entry.path) .. "?psxv=" .. tostring(entry.djb2)
+    return {
+        tostring(repository.rawBase) .. "/" .. tostring(repository.owner)
+            .. "/" .. tostring(repository.name) .. "/" .. tostring(entry.commit) .. suffix,
+        "https://cdn.jsdelivr.net/gh/" .. tostring(repository.owner)
+            .. "/" .. tostring(repository.name) .. "@" .. tostring(entry.commit) .. suffix,
+    }
 end
 
 local function loadRemoteController(moduleKey, label, statusCallback)
@@ -926,7 +957,11 @@ local function loadRemoteController(moduleKey, label, statusCallback)
 
     local loaded, controllerOrProblem = pcall(function()
         timing.DownloadAt = os.clock()
-        local source = game:HttpGet(runtimeModuleURL(entry))
+        local urls = runtimeModuleURLs(entry)
+        local source, _, sourceAttempt, downloadProblem = env.PSX_OG_VERIFIED_RUNTIME_HTTP_GET(entry, urls)
+        table.clear(urls)
+        if not source then error("download failed: " .. tostring(downloadProblem), 0) end
+        requestDiagnostics.Gauge("Startup", "lastDownloadSource", sourceAttempt)
         requestDiagnostics.Gauge("Startup", "lastDownloadMs", (os.clock() - timing.DownloadAt) * 1000)
         timing.VerifyAt = os.clock()
         local verified, verifyProblem = verifyRuntimeSource(entry, source)
@@ -2897,7 +2932,6 @@ local petFarm = {
     FastPets = {},
     FastScheduled = false,
     FastToken = 0,
-    RejectSettleTokens = {},
     MembershipConfirms = 0,
     ProgressLeases = {},
     ProgressLeaseScheduled = false,
@@ -3018,7 +3052,6 @@ releaseAssignmentsForCoin = function(rawId, suppressFastDispatch)
         petFarm.ProgressLeaseScheduled = false
         petFarm.FastScheduled = false
         table.clear(petFarm.FastPets)
-        table.clear(petFarm.RejectSettleTokens)
         table.clear(petFarm.ProgressLeases)
         table.clear(petFarm.NextTargetByPet)
         if petFarm.Engine then pcall(petFarm.Engine, "reset") end
@@ -4011,28 +4044,6 @@ function petFarm:RefreshStats()
     return self.StatsCache
 end
 
-function petFarm:ScheduleRejectSettle(rawPetId)
-    local petId = tostring(rawPetId)
-    local token = (tonumber(self.RejectSettleTokens[petId]) or 0) + 1
-    self.RejectSettleTokens[petId] = token
-    local generation = farmGeneration
-    local phase = (math.abs(tonumber(player.UserId) or 0) % 7) * 0.015
-    task.delay(0.18 + phase, function()
-        if self.RejectSettleTokens[petId] ~= token then return end
-        self.RejectSettleTokens[petId] = nil
-        if not running() or not config.PetFarm or farmResetRunning
-            or generation ~= farmGeneration or petStates[petId] ~= nil then
-            return
-        end
-        self.FastPets[petId] = true
-        if type(self.QueueFastDispatch) == "function" then
-            self:QueueFastDispatch()
-        elseif type(requestAllocatorPulse) == "function" then
-            requestAllocatorPulse()
-        end
-    end)
-end
-
 function petFarm:BossStats()
     if not self.Engine then return nil end
     local ok, stats = pcall(self.Engine, "boss-stats")
@@ -4164,15 +4175,15 @@ function petFarm:EnsureEngine()
                     or "boss transport failed; waiting for next authoritative New Coin"
                 return
             end
+            self.FastPets[petId] = true
             if rejected then
                 self.FastReroutes = self.FastReroutes + 1
             else
-                self.FastPets[petId] = true
                 idleRecoveryCount = idleRecoveryCount + 1
             end
             lastRecovery = "join failed for " .. string.sub(petId, 1, 8)
             driverStatus = rejected
-                and "stale/contended target skipped; bounded settle queued"
+                and "stale/contended target skipped; fast reroute queued"
                 or "transport failed after bounded retry; fast reroute queued"
             self.SuppressedFailures = self.SuppressedFailures + 1
             if now >= self.NextFailureTraceAt then
@@ -4181,9 +4192,7 @@ function petFarm:EnsureEngine()
                 self.SuppressedFailures = 0
                 self.NextFailureTraceAt = now + 2
             end
-            if rejected then
-                self:ScheduleRejectSettle(petId)
-            elseif type(self.QueueFastDispatch) == "function" then
+            if type(self.QueueFastDispatch) == "function" then
                 self:QueueFastDispatch()
             elseif type(requestAllocatorPulse) == "function" then
                 requestAllocatorPulse()
@@ -4647,11 +4656,13 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
     end
 
     local targetWindow = math.min(#usable, math.max(#freePets + occupiedCount, 1))
-    -- Keep Different mode inside the strongest live window. Rotating the
-    -- window across the full pool made some accounts select short-lived weak
-    -- objects, while reject cooldowns continually changed the modulo base.
+    -- Different mode rotates each account across the complete sorted live
+    -- pool. This keeps the proven 54.39 multi-client spread while pets remain
+    -- balanced inside each account's bounded window.
+    local accountPoolSize = #usable
+    local accountOffset = math.abs(tonumber(player.UserId) or 0) % accountPoolSize
     for index = 1, targetWindow do
-        local record = usable[index]
+        local record = usable[((accountOffset + index - 1) % accountPoolSize) + 1]
         local coinId = tostring(record.Id)
         candidates[index] = record
         candidateById[coinId] = record
@@ -4662,7 +4673,7 @@ function petFarm:BuildDispatchPlans(freePets, usable, mode)
         if loads[coinId] ~= nil then loads[coinId] = loads[coinId] + 1 end
     end
 
-    local accountRotation = math.abs(tonumber(player.UserId) or 0) % targetWindow
+    local accountRotation = accountOffset % targetWindow
     for petIndex, rawPetId in ipairs(freePets) do
         local petId = tostring(rawPetId)
         local minimumLoad = math.huge
@@ -7629,7 +7640,6 @@ local function finishShutdown()
     table.clear(petFarm.DispatchPayload)
     petFarm:ResetBossPetWarp("shutdown")
     table.clear(petFarm.FastPets)
-    table.clear(petFarm.RejectSettleTokens)
     petFarm.ProgressLeaseToken = petFarm.ProgressLeaseToken + 1
     petFarm.ProgressLeaseScheduled = false
     table.clear(petFarm.ProgressLeases)

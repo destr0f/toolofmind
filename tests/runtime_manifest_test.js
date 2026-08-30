@@ -101,6 +101,14 @@ assert(!afterManifestHandoff.includes("RUNTIME_MANIFEST."),
 assert(!sourceText.includes("RAW_MODULE_BASE"), "source still has a second module URL registry");
 assert(sourceText.includes('"?psxv=" .. tostring(entry.djb2)'),
     "pinned runtime module URLs are missing their identity cache-buster");
+assert(sourceText.includes("env.PSX_OG_VERIFIED_RUNTIME_HTTP_GET = function(entry, urls)")
+    && sourceText.includes("pcall(game.HttpGet, game, url)")
+    && sourceText.includes("https://cdn.jsdelivr.net/gh/")
+    && sourceText.includes("if index > 1 then task.wait(0.15) end")
+    && sourceText.includes("local urls = runtimeModuleURLs(entry)"),
+    "runtime dependencies do not have bounded identity-verified HTTPS failover");
+assert(!sourceText.includes("game:HttpGet("),
+    "a runtime dependency bypasses the bounded HTTPS failover helper");
 verifyIdentity("source", source, manifest.build.source);
 if (process.env.PSX_ALLOW_DIRTY_MANIFEST !== "1") {
     assert(manifest.build.sourceTree === "clean", "release artifacts were built from a dirty source tree");
