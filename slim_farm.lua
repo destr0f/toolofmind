@@ -4000,6 +4000,17 @@ function petFarm:ConfirmCoinPets(rawCoinId, payload)
     end
 end
 
+local function resetSupportCoordinator()
+    if supportController then pcall(supportController, "reset", supportContext) end
+end
+
+function petFarm:RefreshStats()
+    if not self.Engine then return self.StatsCache end
+    local ok, stats = pcall(self.Engine, "stats")
+    if ok and type(stats) == "table" then self.StatsCache = stats end
+    return self.StatsCache
+end
+
 function petFarm:ScheduleRejectSettle(rawPetId)
     local petId = tostring(rawPetId)
     local token = (tonumber(self.RejectSettleTokens[petId]) or 0) + 1
@@ -4020,17 +4031,6 @@ function petFarm:ScheduleRejectSettle(rawPetId)
             requestAllocatorPulse()
         end
     end)
-end
-
-local function resetSupportCoordinator()
-    if supportController then pcall(supportController, "reset", supportContext) end
-end
-
-function petFarm:RefreshStats()
-    if not self.Engine then return self.StatsCache end
-    local ok, stats = pcall(self.Engine, "stats")
-    if ok and type(stats) == "table" then self.StatsCache = stats end
-    return self.StatsCache
 end
 
 function petFarm:BossStats()
