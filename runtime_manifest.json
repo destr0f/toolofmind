@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.43-enchant-event-pacing",
+    "version": "1.4.1-candidate.54.44-cat-egg-live-map",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+    "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.5.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -112,7 +112,7 @@
       "version": "1.4.8",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.8.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -141,17 +141,17 @@
     "autoEgg": {
       "id": "autoEgg",
       "label": "Auto egg",
-      "version": "1.8.0",
+      "version": "1.8.1",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
       "path": "auto_egg_module.lua",
-      "commit": "f6ef7f3b1bf832dbe68cf8f7f092073a9fdd82d7",
-      "bytes": 125185,
-      "sha256": "39225ea2ba9e88d80e0d08ef414bae3e6b36faed1d5d0e407231ffb19cfa586a",
-      "djb2": "e3d43b9f"
+      "commit": "dbbcb0666e3d98ca17d37fdb98581f8420ecce79",
+      "bytes": 126881,
+      "sha256": "271fcaefa2d6238b41d94c3a05194d5832a2c92b88f0d3000984d849e27329bf",
+      "djb2": "66b252f1"
     },
     "enchant": {
       "id": "enchant",
@@ -159,7 +159,7 @@
       "version": "1.2.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.43-enchant-event-pacing",
+      "compatibleSuite": "1.4.1-candidate.54.44-cat-egg-live-map",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -356,32 +356,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "62834583440bc175014702a40f896b5d01bf0915",
+    "generatedFromCommit": "dbbcb0666e3d98ca17d37fdb98581f8420ecce79",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7185,
-      "sha256": "d45b5c92102c54538d62b3d718d50ae0930ac498161a4c8fb5782bdeb09a0800",
-      "djb2": "2518184e"
+      "bytes": 7125,
+      "sha256": "dc2b292e74dcb918f7f031f3aa4b15b423d039a4856c22b0265218cb15e41415",
+      "djb2": "0a86594d"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.43-enchant-event-pacing",
-      "bytes": 351283,
-      "sha256": "5d63a504db70637995bc9a0bac07d5f53101280936b821728b1de976176c5405",
-      "djb2": "f9232309"
+      "version": "1.4.1-candidate.54.44-cat-egg-live-map",
+      "bytes": 351279,
+      "sha256": "8682772a521130641c7d8ae31e860ee720dd33dcfe341dba5d692ad6e8658d32",
+      "djb2": "e1af039b"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 271518,
-        "sha256": "9ed59beff206ffbcc8f5dae70e97e2f49096fbe2d5c35b9a263ddc4e8add7f9e",
-        "djb2": "71f9ee45"
+        "bytes": 271454,
+        "sha256": "e1d7d2aa8b6ca607861cb63744dc9e497564ec564186b5556eb81773f6189559",
+        "djb2": "00eb7d98"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 271518,
-        "sha256": "9ed59beff206ffbcc8f5dae70e97e2f49096fbe2d5c35b9a263ddc4e8add7f9e",
-        "djb2": "71f9ee45"
+        "bytes": 271454,
+        "sha256": "e1d7d2aa8b6ca607861cb63744dc9e497564ec564186b5556eb81773f6189559",
+        "djb2": "00eb7d98"
       }
     }
   }
