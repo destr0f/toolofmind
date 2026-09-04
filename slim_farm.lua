@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.42-cat-world-equipped-x8"
+local VERSION = "1.4.1-candidate.54.43-enchant-event-pacing"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -5363,11 +5363,13 @@ function enchantRuntime:Start()
         GetTargets = function() return config.EnchantTargets end,
         GetEquippedPetSet = token.GetAuthoritativeEquippedSet,
         InvokeCommand = invokeCommand,
+        GetEventRemote = getEventRemote,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
         ReleaseOperation = releaseOperation,
         CancelOperation = cancelOperation,
         OperationOwner = "AutoEnchant",
+        StartupPhase = token.AutomationStartupPhase(6),
         GetNetworkPressure = function()
             local pingMs
             local pingOk, ping = pcall(function()

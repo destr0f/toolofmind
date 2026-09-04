@@ -53,7 +53,8 @@ Evidence used:
 | `Leave Coin` | `Leave Coin mmm`, `Leave The Coin`, `Leave Coin` | `coinId`, `{petUid...}` | boolean/message when supplied | function result; used only during reset/explicit release | forbidden | Captured |
 | `Buy Egg Yay` | `Egg: Buy Egg`, `Buy Egg Ok`, `Buy Egg Yay` | `eggName`, `triple:boolean`, `octuple:boolean` | boolean plus hatch payload/message depending game path | function result, then `openegggg`/`Opening Egg` or exact inventory delta | forbidden | Captured; x8=`false,true` |
 | `Delete Several Pets` | same | `{petUid...}` | boolean/message | exact inventory delta | forbidden | Captured |
-| `Enchant Pet` | same | `petUid` | boolean/result payload | changed enchant in `Save.Pets` | forbidden | Source |
+| `Enchant Pet` | same | `petUid` | boolean/result payload | `Enchanted Pets` event, with `Save.Pets` as fallback | forbidden | Captured |
+| `Enchanted Pets` | same | inbound `petUid`, `powers` | inbound event only | authoritative per-roll result, including an unchanged duplicate roll | not applicable | Captured |
 | `Get Golden Machine Info` | same | none | machine tier table | valid tier table, cached after success | read-only result cache allowed | Source |
 | `Use Golden Machine` | same | `{petUid...}` | boolean/message | `Save.Pets` version change | forbidden | Source |
 | `Get Rainbow Machine Info` | same | none | machine tier table | valid tier table, cached after success | read-only result cache allowed | Source |

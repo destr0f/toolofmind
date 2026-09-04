@@ -1,21 +1,23 @@
 -- Serialized equipped-pet enchant worker for PSX OG Nova develop.
--- One UID remains selected until any requested enchant is confirmed in Save.Pets.
+-- One UID remains selected until the server event or Save.Pets confirms a roll.
 
-local MODULE_VERSION = "1.1.0"
+local MODULE_VERSION = "1.2.0"
 local activeState
 
 local CONFIRM_POLL = 0.04
-local CONFIRM_TIMEOUT = 8
+local CONFIRM_TIMEOUT = 1.25
 local GATE_RETRY = 0.10
 local REJECT_RETRY = 1.00
 local IDLE_RECHECK = 1.00
 local MAX_TRANSPORT_BACKOFF = 3.00
-local SUCCESS_MIN_DELAY = 0.20
-local SUCCESS_MAX_DELAY = 0.90
+local SUCCESS_MIN_DELAY = 0.55
+local SUCCESS_MAX_DELAY = 1.20
 local SUCCESS_RTT_FACTOR = 0.75
 local FARM_QUEUE_DELAY = 0.35
 local HIGH_PING_MS = 350
 local HIGH_PING_DELAY = 0.50
+local PROGRESS_TRACE_INTERVAL = 10
+local ENCHANT_EVENT = "Enchanted Pets"
 
 local ROMAN_LEVELS = { I = 1, II = 2, III = 3, IV = 4, V = 5 }
 local LEVEL_ROMANS = { "I", "II", "III", "IV", "V" }
@@ -129,6 +131,10 @@ local function powerSignature(pet)
     return table.concat(entries, "|")
 end
 
+local function powersView(powers)
+    return { powers = type(powers) == "table" and powers or {} }
+end
+
 local function petDefinition(library, pet)
     local pets = library and library.Directory and library.Directory.Pets
     if type(pets) ~= "table" or type(pet) ~= "table" then return nil end
@@ -198,6 +204,108 @@ local function releaseOperation(state)
     pcall(state.Context.ReleaseOperation, state.Context.OperationOwner)
 end
 
+local function connectionMethod(connection, name)
+    if connection == nil then return nil end
+    local ok, method = pcall(function() return connection[name] end)
+    return ok and type(method) == "function" and method or nil
+end
+
+local function connectionScript(connection)
+    if type(getfenv) ~= "function" then return nil end
+    local ok, callback = pcall(function() return connection.Function end)
+    if not ok or type(callback) ~= "function" then return nil end
+    local envOk, environment = pcall(getfenv, callback)
+    if not envOk or type(environment) ~= "table" then return nil end
+    local scriptObject = rawget(environment, "script")
+    if scriptObject == nil then
+        local inheritedOk, inherited = pcall(function() return environment.script end)
+        if inheritedOk then scriptObject = inherited end
+    end
+    return scriptObject
+end
+
+local function suppressNativeVisual(state, signal)
+    if type(getconnections) ~= "function" then return 0 end
+    local ok, candidates = pcall(getconnections, signal)
+    if not ok or type(candidates) ~= "table" then return 0 end
+    local suppressed = 0
+    for _, connection in pairs(candidates) do
+        local scriptObject = connectionScript(connection)
+        local fullName = ""
+        if scriptObject ~= nil then
+            local nameOk, value = pcall(function() return scriptObject:GetFullName() end)
+            fullName = string.lower(tostring(nameOk and value or scriptObject))
+        end
+        if string.find(fullName, "enchantment circle animation", 1, true) then
+            local disable = connectionMethod(connection, "Disable")
+            local enable = connectionMethod(connection, "Enable")
+            if disable and enable then
+                local disabled = pcall(disable, connection)
+                if disabled then
+                    state.SuppressedVisualConnections[#state.SuppressedVisualConnections + 1] = connection
+                    suppressed = suppressed + 1
+                end
+            end
+        end
+    end
+    return suppressed
+end
+
+local function restoreNativeVisuals(state)
+    for index = 1, #(state.SuppressedVisualConnections or {}) do
+        local connection = state.SuppressedVisualConnections[index]
+        local enable = connectionMethod(connection, "Enable")
+        if enable then pcall(enable, connection) end
+        state.SuppressedVisualConnections[index] = nil
+    end
+end
+
+local function bindEnchantAcknowledgement(state)
+    if type(state.Context.GetEventRemote) ~= "function" then
+        state.EventRoute = "save fallback"
+        return false
+    end
+    local ok, remote, sourceName, sessionIndex, problem = pcall(
+        state.Context.GetEventRemote, ENCHANT_EVENT)
+    if not ok or remote == nil then
+        state.EventRoute = "save fallback: " .. tostring(ok and problem or remote)
+        return false
+    end
+    local signalOk, signal = pcall(function() return remote.OnClientEvent end)
+    if not signalOk or signal == nil or type(signal.Connect) ~= "function" then
+        state.EventRoute = "save fallback: invalid Enchanted Pets signal"
+        return false
+    end
+
+    local suppressed = suppressNativeVisual(state, signal)
+    local connected, connection = pcall(function()
+        return signal:Connect(function(rawUID, powers)
+            if not stateActive(state) or type(powers) ~= "table" then return end
+            local uid = tostring(rawUID or "")
+            if uid == "" or uid ~= tostring(state.CurrentUID or "") then return end
+            state.EventSerial = state.EventSerial + 1
+            local view = powersView(powers)
+            state.EventRecord = {
+                UID = uid,
+                Serial = state.EventSerial,
+                Signature = powerSignature(view),
+                Matched = matchingEnchant(state.Context.Library, view, state.Targets),
+                At = os.clock(),
+            }
+        end)
+    end)
+    if not connected or connection == nil then
+        restoreNativeVisuals(state)
+        state.EventRoute = "save fallback: " .. tostring(connection)
+        return false
+    end
+    state.EventConnection = connection
+    state.EventRoute = state.Context.RouteText(sourceName, sessionIndex)
+    state.Context.Trace("auto enchant acknowledgement", state.EventRoute
+        .. " | native visuals suppressed=" .. tostring(suppressed))
+    return true
+end
+
 local runStep
 
 local function schedule(state, delay)
@@ -231,6 +339,19 @@ local function clearCurrent(state)
     state.CurrentSignature = nil
     state.AttemptsOnCurrent = 0
     state.Awaiting = nil
+    state.EventRecord = nil
+end
+
+local function traceProgress(state, source)
+    state.ProgressTraceRolls = state.ProgressTraceRolls + 1
+    local now = os.clock()
+    if now < state.NextProgressTraceAt then return end
+    state.Context.Trace("auto enchant progress", "rolls=" .. tostring(state.TotalRolls)
+        .. " | recent=" .. tostring(state.ProgressTraceRolls)
+        .. " | ack=" .. tostring(source)
+        .. " | pace=" .. string.format("%.2fs", tonumber(state.LastPacingDelay) or 0))
+    state.ProgressTraceRolls = 0
+    state.NextProgressTraceAt = now + PROGRESS_TRACE_INTERVAL
 end
 
 local function successfulRollDelay(state)
@@ -277,7 +398,8 @@ local function selectNext(state, save, equippedSet)
             equipped = equipped + 1
             local allowed = eligiblePet(state.Context.Library, pet, true)
             if allowed then
-                if matchingEnchant(state.Context.Library, pet, state.Targets) then
+                if state.CompletedUIDs[uid]
+                    or matchingEnchant(state.Context.Library, pet, state.Targets) then
                     alreadyReady = alreadyReady + 1
                 else
                     candidates[#candidates + 1] = pet
@@ -305,34 +427,47 @@ local function selectNext(state, save, equippedSet)
     return false
 end
 
+local function finishConfirmedRoll(state, signature, matched, source)
+    state.Awaiting = nil
+    state.CurrentSignature = signature
+    state.TransportFailures = 0
+    if matched then
+        state.CompletedPets = state.CompletedPets + 1
+        state.CompletedUIDs[state.CurrentUID] = true
+        state.Context.SetStatus(string.format(
+            "%s [%s] completed with %s after %d roll(s). Moving to the next equipped pet.\nCompleted pets: %d | total rolls: %d",
+            state.CurrentName, shortUID(state.CurrentUID), matched,
+            state.AttemptsOnCurrent, state.CompletedPets, state.TotalRolls
+        ))
+        clearCurrent(state)
+    end
+    local delay = successfulRollDelay(state)
+    traceProgress(state, source)
+    schedule(state, delay)
+end
+
 local function confirmRoll(state, save, pet)
     local awaiting = state.Awaiting
     if not awaiting then return false end
+    local eventRecord = state.EventRecord
+    if eventRecord and eventRecord.UID == state.CurrentUID
+        and eventRecord.Serial > (tonumber(awaiting.EventSerial) or 0) then
+        state.EventRecord = nil
+        finishConfirmedRoll(state, eventRecord.Signature, eventRecord.Matched, "Enchanted Pets")
+        return true
+    end
     local signature = powerSignature(pet)
     if signature ~= awaiting.Signature then
-        state.Awaiting = nil
-        state.CurrentSignature = signature
-        state.TransportFailures = 0
         local matched = matchingEnchant(state.Context.Library, pet, state.Targets)
-        if matched then
-            state.CompletedPets = state.CompletedPets + 1
-            state.Context.SetStatus(string.format(
-                "%s [%s] completed with %s after %d roll(s). Moving immediately to the next equipped pet.\nCompleted pets: %d | total rolls: %d",
-                state.CurrentName, shortUID(state.CurrentUID), matched,
-                state.AttemptsOnCurrent, state.CompletedPets, state.TotalRolls
-            ))
-            clearCurrent(state)
-        end
-        schedule(state, successfulRollDelay(state))
+        finishConfirmedRoll(state, signature, matched, "Save.Pets")
         return true
     end
     if os.clock() >= awaiting.Deadline then
         state.Awaiting = nil
-        state.Context.SetStatus(string.format(
-            "Server accepted roll %d for %s [%s], but Save.Pets did not change within %ds.\nHolding the same UID; one guarded retry follows after a final local recheck.",
-            state.AttemptsOnCurrent, state.CurrentName, shortUID(state.CurrentUID), CONFIRM_TIMEOUT
-        ))
-        schedule(state, 0.5)
+        state.ConfirmFallbacks = state.ConfirmFallbacks + 1
+        local delay = successfulRollDelay(state)
+        traceProgress(state, "server accepted fallback=" .. tostring(state.ConfirmFallbacks))
+        schedule(state, delay)
         return true
     end
     schedule(state, CONFIRM_POLL)
@@ -372,6 +507,12 @@ local function requestRoll(state, pet)
     end
 
     local before = powerSignature(exact)
+    local awaiting = {
+        Signature = before,
+        Deadline = math.huge,
+        EventSerial = state.EventSerial,
+    }
+    state.Awaiting = awaiting
     local result = table.pack(pcall(state.Context.InvokeCommand, "Enchant Pet", state.CurrentUID))
     releaseOperation(state)
     if not stateActive(state) then return end
@@ -382,6 +523,7 @@ local function requestRoll(state, pet)
     local sourceName = result[5]
     local sessionIndex = result[6]
     if not transportOk then
+        if state.Awaiting == awaiting then state.Awaiting = nil end
         state.TransportFailures = state.TransportFailures + 1
         local delay = math.min(MAX_TRANSPORT_BACKOFF, 0.15 * (2 ^ (state.TransportFailures - 1)))
         state.Context.SetStatus(string.format(
@@ -393,6 +535,7 @@ local function requestRoll(state, pet)
         return
     end
     if not accepted then
+        if state.Awaiting == awaiting then state.Awaiting = nil end
         state.TransportFailures = 0
         state.Context.SetStatus("Enchant Pet reached the server via "
             .. state.Context.RouteText(sourceName, sessionIndex) .. " but was rejected: "
@@ -405,10 +548,7 @@ local function requestRoll(state, pet)
     state.TransportFailures = 0
     state.AttemptsOnCurrent = state.AttemptsOnCurrent + 1
     state.TotalRolls = state.TotalRolls + 1
-    state.Awaiting = { Signature = before, Deadline = os.clock() + CONFIRM_TIMEOUT }
-    state.Context.Trace("auto enchant roll", state.CurrentName .. " " .. shortUID(state.CurrentUID)
-        .. " | attempt=" .. tostring(state.AttemptsOnCurrent)
-        .. " | route=" .. state.Context.RouteText(sourceName, sessionIndex))
+    awaiting.Deadline = os.clock() + CONFIRM_TIMEOUT
     schedule(state, CONFIRM_POLL)
 end
 
@@ -461,6 +601,11 @@ local function stop()
         state.ScheduleSerial = state.ScheduleSerial + 1
         releaseOperation(state)
         pcall(state.Context.CancelOperation, state.Context.OperationOwner)
+        if state.EventConnection then
+            pcall(function() state.EventConnection:Disconnect() end)
+            state.EventConnection = nil
+        end
+        restoreNativeVisuals(state)
         activeState = nil
     end
     return true
@@ -487,11 +632,22 @@ local function start(context)
         TotalRolls = 0,
         CompletedPets = 0,
         TransportFailures = 0,
+        ConfirmFallbacks = 0,
+        EventSerial = 0,
+        EventRecord = nil,
+        EventConnection = nil,
+        EventRoute = "save fallback",
+        CompletedUIDs = {},
+        SuppressedVisualConnections = {},
+        ProgressTraceRolls = 0,
+        NextProgressTraceAt = os.clock() + PROGRESS_TRACE_INTERVAL,
     }
     activeState = state
+    bindEnchantAcknowledgement(state)
     context.Trace("auto enchant module", "serialized worker started | targets="
-        .. (#ordered > 0 and table.concat(ordered, ", ") or "none"))
-    schedule(state, 0)
+        .. (#ordered > 0 and table.concat(ordered, ", ") or "none")
+        .. " | ack=" .. tostring(state.EventRoute))
+    schedule(state, math.max(0, tonumber(context.StartupPhase) or 0))
     return true
 end
 

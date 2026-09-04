@@ -18,6 +18,13 @@ assert(moduleSource.includes("SUCCESS_MIN_DELAY") && moduleSource.includes("succ
     "auto-enchant does not pace confirmed rolls");
 assert(moduleSource.includes("HIGH_PING_MS") && moduleSource.includes("FARM_QUEUE_DELAY"),
     "auto-enchant does not adapt to ping and farm queue pressure");
+assert(moduleSource.includes('ENCHANT_EVENT = "Enchanted Pets"')
+    && moduleSource.includes("bindEnchantAcknowledgement"),
+    "auto-enchant does not consume the authoritative per-roll event");
+assert(!moduleSource.includes('Trace("auto enchant roll"'),
+    "auto-enchant still prints every hot-path roll");
+assert(moduleSource.includes("suppressNativeVisual") && moduleSource.includes("restoreNativeVisuals"),
+    "auto-enchant does not gate and restore its native visual callback");
 assert(moduleSource.includes("Library.Save.Get"),
     "auto-enchant does not confirm powers from the exact live save");
 assert(ui.includes('Flag = "auto_enchant_targets"') && ui.includes("Multi = true"),
@@ -28,5 +35,8 @@ assert(source.includes("enchantRuntime:Stop()") && source.includes("config.AutoE
     "reload/STOP does not cancel auto-enchant");
 assert(source.includes("GetNetworkPressure = function()") && source.includes('ServerStatsItem["Data Ping"]'),
     "auto-enchant context does not expose guarded live network pressure");
+assert(source.includes("GetEventRemote = getEventRemote")
+    && source.includes("StartupPhase = token.AutomationStartupPhase(6)"),
+    "auto-enchant context does not provide event acknowledgement and per-account startup phase");
 
 console.log("PASS auto-enchant named-route, serialization, UI and cleanup integration");

@@ -93,7 +93,7 @@ assert(#calls == 3, "expected exactly three confirmed rolls")
 assert(calls[1] == "pet-a" and calls[2] == "pet-a" and calls[3] == "pet-b",
     "worker did not keep one UID until a selected enchant appeared")
 assert(maximumInFlight == 1, "more than one enchant request was in flight")
-assert(table.find(delays, 0.5) ~= nil,
+assert(table.find(delays, 0.55) ~= nil,
     "high-ping farm pressure did not pace the next confirmed enchant roll")
 assert(find("pet-a").powers[1][1] == "Royalty", "first pet did not reach a selected enchant")
 assert(find("pet-b").powers[1][2] == 5, "second pet did not reach a selected enchant")
