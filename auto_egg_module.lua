@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.8.0"
+local MODULE_VERSION = "1.8.1"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -21,6 +21,7 @@ local POST_PROCESS_TIMEOUT = 8
 local NATIVE_SKIP_ARM_TIMEOUT = 8
 local NATIVE_SKIP_CONNECTION_WINDOW = 0.35
 local PHYSICAL_RESCAN_COOLDOWN = 2
+local ROOT_RECHECK_INTERVAL = 0.75
 local MAX_NETWORK_ATTEMPTS = 12
 local NETWORK_RETRY_WINDOW = 600
 local NETWORK_RETRY_DELAYS = { 1, 2, 5, 10, 20, 40, 70, 90, 110, 120, 120 }
@@ -46,6 +47,7 @@ local physicalCache = {
     ById = {},
     Dirty = true,
     LastScanAt = -math.huge,
+    NextRootCheckAt = 0,
     Connections = {},
 }
 
@@ -103,6 +105,7 @@ local function clearPhysicalBindings(clearRoot)
     physicalCache.Dirty = true
     physicalCache.ById = {}
     physicalCache.LastScanAt = -math.huge
+    physicalCache.NextRootCheckAt = 0
     if clearRoot ~= false then physicalCache.Root = nil end
 end
 
@@ -186,16 +189,37 @@ local function instancePosition(object)
     return part and part.Position or nil
 end
 
-local function currentEggRoot()
+local function currentEggRoot(context)
     local cached = physicalCache.Root
-    if cached and cached.Parent and cached:IsDescendantOf(workspace) then return cached end
+    local cachedValid = cached and cached.Parent and cached:IsDescendantOf(workspace)
+    local now = os.clock()
+    if now < physicalCache.NextRootCheckAt then
+        return cachedValid and cached or nil
+    end
+    physicalCache.NextRootCheckAt = now + ROOT_RECHECK_INTERVAL
+
+    -- Native Game/Eggs follows WorldCmds.GetMap(), not a permanent
+    -- workspace.__MAP reference. Cat World can keep the previous map alive
+    -- briefly, so a still-parented cached Eggs folder is not authoritative.
+    local worldCmds = context.Library and context.Library.WorldCmds
+    if worldCmds and type(worldCmds.GetMap) == "function" then
+        local mapOk, liveMap = pcall(worldCmds.GetMap)
+        if mapOk and typeof(liveMap) == "Instance"
+            and liveMap.Parent and liveMap:IsDescendantOf(workspace) then
+            return liveMap:FindFirstChild("Eggs") or liveMap:FindFirstChild("Eggs", true)
+        end
+    end
+
     local map = workspace:FindFirstChild("__MAP")
-    if not map then return nil end
-    return map:FindFirstChild("Eggs") or map:FindFirstChild("Eggs", true)
+    if map then
+        local root = map:FindFirstChild("Eggs") or map:FindFirstChild("Eggs", true)
+        if root then return root end
+    end
+    return cachedValid and cached or nil
 end
 
 local function scanPhysical(context, force)
-    local root = currentEggRoot()
+    local root = currentEggRoot(context)
     bindPhysicalRoot(root)
     if not root then
         return physicalCache.ById
@@ -210,13 +234,30 @@ local function scanPhysical(context, force)
 
     local directory = directoryFor(context)
     local byId = {}
-    for _, object in ipairs(root:GetDescendants()) do
-        if (object:IsA("Model") or object:IsA("Folder")) and object:FindFirstChild("Center") then
-            local eggId = instanceEggId(object)
-            if eggId and (not directory or directory[eggId]) then
-                byId[eggId] = byId[eggId] or {}
-                byId[eggId][#byId[eggId] + 1] = object
+    local function indexEgg(object)
+        if not object or not object.Parent or not object:FindFirstChild("Center") then return false end
+        local eggId = instanceEggId(object)
+        if not eggId or (directory and not directory[eggId]) then return false end
+        byId[eggId] = byId[eggId] or {}
+        byId[eggId][#byId[eggId] + 1] = object
+        return true
+    end
+
+    -- Match the game's GetAllEggs layout exactly:
+    -- currentMap.Eggs/<group>/Eggs/<egg instance>. Do not require the egg
+    -- instance to be a Model/Folder; the native client does not either.
+    local structuredCount = 0
+    for _, group in ipairs(root:GetChildren()) do
+        local eggs = group:IsA("Folder") and group:FindFirstChild("Eggs") or nil
+        if eggs then
+            for _, object in ipairs(eggs:GetChildren()) do
+                if indexEgg(object) then structuredCount = structuredCount + 1 end
             end
+        end
+    end
+    if structuredCount == 0 then
+        for _, object in ipairs(root:GetDescendants()) do
+            indexEgg(object)
         end
     end
     physicalCache.ById = byId

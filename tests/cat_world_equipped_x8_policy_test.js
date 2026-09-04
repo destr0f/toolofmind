@@ -54,6 +54,14 @@ for (const route of [
 assert(egg.includes("save.OwnsOctupleEggs")
     && egg.includes('"Buy Egg Yay", pending.Egg, pending.Triple, pending.Octuple'),
     "native x8 ownership/request protocol is missing");
+assert(egg.includes("worldCmds.GetMap")
+    && egg.includes('liveMap:FindFirstChild("Eggs")')
+    && egg.includes("local ROOT_RECHECK_INTERVAL = 0.75"),
+    "Cat World egg discovery does not follow the bounded live WorldCmds map");
+assert(egg.includes("for _, group in ipairs(root:GetChildren())")
+    && egg.includes("for _, object in ipairs(eggs:GetChildren())")
+    && !egg.includes('(object:IsA("Model") or object:IsA("Folder")) and object:FindFirstChild("Center")'),
+    "egg discovery does not match the native group/Eggs hierarchy");
 assert(ui.includes('Values = { "Single (x1)", "Triple (x3)", "Octuple (x8)" }'),
     "x8 is not exposed in the egg UI");
 
