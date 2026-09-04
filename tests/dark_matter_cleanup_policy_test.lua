@@ -4,6 +4,7 @@ local function decide(pet, values)
     values = values or {}
     values.Pet = pet
     values.IsTarget = values.IsTarget ~= false
+    if values.IsEquipped == nil then values.IsEquipped = false end
     values.Scope = values.Scope or "All Dark Matter Pets"
     return darkMatter("cleanup-policy", values)
 end
@@ -13,8 +14,8 @@ assert(decide(base, { MatchDecision = "MATCH" }) == "KEEP")
 assert(decide(base, { MatchDecision = "NO_MATCH" }) == "DELETE")
 assert(decide(base, { MatchDecision = "DEFER" }) == "DEFER")
 assert(decide(base, { MatchDecision = "EMPTY" }) == "DISABLED")
-assert(decide({ uid = "dm-2", id = "404", dm = true, e = true }, {
-    MatchDecision = "NO_MATCH",
+assert(decide({ uid = "dm-2", id = "404", dm = true, e = false }, {
+    MatchDecision = "NO_MATCH", IsEquipped = true,
 }) == "KEEP")
 assert(decide({ uid = "dm-3", id = "404", dm = true, l = true }, {
     MatchDecision = "NO_MATCH",
@@ -33,4 +34,4 @@ assert(decide(base, {
 }) == "SKIP")
 assert(decide({ id = "404", dm = true }, { MatchDecision = "NO_MATCH" }) == "DEFER")
 
-print("PASS DM cleanup can delete only exact Pixel Demon DM; protected/equipped/locked stay safe")
+print("PASS DM cleanup can delete only exact Cat target DM; protected/equipped/locked stay safe")

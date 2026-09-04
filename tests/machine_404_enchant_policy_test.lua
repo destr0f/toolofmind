@@ -23,4 +23,4 @@ assert(protected(darkMatter, { Powers = { ["Rainbow Coins"] = 5 } }) == true)
 assert(protected(darkMatter, { powers = { { "Strength", 5 } } }) == false)
 assert(protected(darkMatter, { powers = { { "Tech Coins", 5 } } }) == false)
 
-print("PASS Pixel Demon Rainbow Coins protection formats")
+print("PASS Cat target Rainbow Coins protection formats")

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.41-http-failover-farm-restore"
+local VERSION = "1.4.1-candidate.54.42-cat-world-equipped-x8"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -1291,7 +1291,7 @@ local WorldZones = {
     },
     ["Axolotl Ocean"] = { "Axolotl Ocean", "Axolotl Deep Ocean", "Axolotl Cave" },
     ["Pixel World"] = { "Pixel Forest", "Pixel Kyoto", "Pixel Alps", "Pixel Vault" },
-    ["Cat World"] = { "Cat Paradise", "Cat Backyard", "Cat Taiga", "Cat Kingdom", "Cat Throne Room" },
+    ["Cat World"] = { "Cat Paradise", "Cat Backyard", "Cat Taiga", "Cat Kingdom" },
     ["The Void"] = { "The Void" },
     ["Doodle World"] = {
         "Doodle Shop", "Doodle Meadow", "Doodle Peaks", "Doodle Farm", "Doodle Barn",
@@ -1623,6 +1623,8 @@ BossChestZones = {
     ["giant pixel chest"] = "Pixel Vault",
     ["giant pixel vault chest"] = "Pixel Vault",
     ["pixel vault giant pixel chest"] = "Pixel Vault",
+    ["giant cat chest"] = "Cat Kingdom",
+    ["giant throne chest"] = "Cat Kingdom",
 }
 
 local cachedWorld, nextWorldCheck = nil, 0
@@ -2754,21 +2756,54 @@ end
 
 local cachedPetIds = {}
 local petCacheValid = false
+function token.ReadAuthoritativeEquippedSet(save)
+    if type(save) ~= "table" then
+        return nil, false, "player save is unavailable", {}
+    end
+    local hardcore = Library.Shared and Library.Shared.IsHardcore == true
+    local raw = hardcore and save.HardcorePetsEquipped or save.PetsEquipped
+    if type(raw) ~= "table" then
+        return nil, false, hardcore and "Save.HardcorePetsEquipped is unavailable"
+            or "Save.PetsEquipped is unavailable", {}
+    end
+    local equipped, ids = {}, {}
+    for key, value in pairs(raw) do
+        if value then
+            local uid
+            if type(key) == "string" then
+                uid = key
+            elseif type(value) == "string" or type(value) == "number" then
+                uid = tostring(value)
+            elseif type(value) == "table" then
+                uid = value.uid or value.UID or value.id or value.ID
+            elseif type(key) == "number" then
+                uid = tostring(key)
+            end
+            uid = uid ~= nil and tostring(uid) or nil
+            if uid and uid ~= "" and not equipped[uid] then
+                equipped[uid] = true
+                ids[#ids + 1] = uid
+            end
+        end
+    end
+    table.sort(ids)
+    return equipped, true, nil, ids
+end
+
 local function getEquippedPetIds()
     if petCacheValid then return cachedPetIds end
     local save
     if Library.Save and type(Library.Save.Get) == "function" then
         pcall(function() save = Library.Save.Get() end)
     end
-    local ids = {}
-    for _, pet in pairs((save and save.Pets) or {}) do
-        if type(pet) == "table" and pet.e and pet.uid then
-            table.insert(ids, tostring(pet.uid))
-        end
+    local _, ready, problem, ids = token.ReadAuthoritativeEquippedSet(save)
+    if not ready then
+        driverStatus = "equipped map unavailable: " .. tostring(problem)
     end
-    table.sort(ids)
     cachedPetIds = ids
-    petCacheValid = true
+    -- Save membership may appear a frame after inventory data. Do not turn a
+    -- transiently missing authoritative map into a permanently empty farm.
+    petCacheValid = ready == true
     return cachedPetIds
 end
 
@@ -5171,6 +5206,9 @@ local machinePetSnapshot = {
     Save = nil,
     Pets = {},
     ByUID = {},
+    Equipped = {},
+    EquippedReady = false,
+    EquippedProblem = "not scanned",
     Dirty = true,
     DirtyAt = 0,
     Revision = 0,
@@ -5200,16 +5238,38 @@ local function getMachinePetSnapshot(force)
             if pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
         end
     end
+    local equipped, equippedReady, equippedProblem = token.ReadAuthoritativeEquippedSet(save)
     machinePetSnapshot = {
         At = now,
         Save = save,
         Pets = pets,
         ByUID = byUID,
-        Dirty = false,
-        DirtyAt = 0,
+        Equipped = equipped or {},
+        EquippedReady = equippedReady == true,
+        EquippedProblem = equippedProblem,
+        Dirty = equippedReady ~= true,
+        DirtyAt = equippedReady == true and 0 or now,
         Revision = (tonumber(machinePetSnapshot.Revision) or 0) + 1,
     }
     return machinePetSnapshot
+end
+
+function token.GetAuthoritativeEquippedSet(source)
+    if type(source) == "table" and source.Save ~= nil then
+        if source.EquippedReady ~= true then
+            return nil, false, source.EquippedProblem or "equipped map is unavailable"
+        end
+        return source.Equipped, true, nil
+    end
+    if type(source) == "table"
+        and (source.PetsEquipped ~= nil or source.HardcorePetsEquipped ~= nil) then
+        return token.ReadAuthoritativeEquippedSet(source)
+    end
+    local snapshot = getMachinePetSnapshot(false)
+    if snapshot.EquippedReady ~= true then
+        return nil, false, snapshot.EquippedProblem or "equipped map is unavailable"
+    end
+    return snapshot.Equipped, true, nil
 end
 
 local enchantRuntime = {
@@ -5301,6 +5361,7 @@ function enchantRuntime:Start()
         Running = running,
         Enabled = function() return config.AutoEnchant end,
         GetTargets = function() return config.EnchantTargets end,
+        GetEquippedPetSet = token.GetAuthoritativeEquippedSet,
         InvokeCommand = invokeCommand,
         RouteText = routeText,
         AcquireOperation = acquireOperation,
@@ -5385,6 +5446,7 @@ function machineModules:Start(kind)
         GetSave = function() return getMachinePetSnapshot(false).Save end,
         GetPetSnapshot = getMachinePetSnapshot,
         InvalidatePetSnapshot = invalidateMachinePetSnapshot,
+        GetEquippedPetSet = token.GetAuthoritativeEquippedSet,
         GetCurrency = function(currencyName)
             local snapshot = getMachinePetSnapshot(false)
             return getCurrentCurrency(currencyName, snapshot.Save, true, snapshot.At)
@@ -8061,7 +8123,7 @@ function requestDiagnostics.UpdateTelemetry()
             requestDiagnostics.Egg.LastState = lifecycleState
             requestDiagnostics.Transition("Egg", pendingId, lifecycleState, {
                 egg = tostring(pending.Egg or "unknown"),
-                count = pending.Triple and 3 or 1,
+                count = pending.Octuple and 8 or pending.Triple and 3 or 1,
                 attempt = tonumber(pending.Attempt) or 1,
                 response = pending.ResponseDone == true,
                 event = pending.EventReceived == true,
@@ -8096,7 +8158,8 @@ function requestDiagnostics.UpdateTelemetry()
         end
         requestDiagnostics.Gauge("Egg", "autoDeletePending", pendingDeletes)
         requestDiagnostics.Gauge("Egg", "selected", tostring(pending.Egg or "unknown"))
-        requestDiagnostics.Gauge("Egg", "count", pending.Triple and 3 or 1)
+        requestDiagnostics.Gauge("Egg", "count",
+            pending.Octuple and 8 or pending.Triple and 3 or 1)
     else
         if requestDiagnostics.Egg.Id then
             local successes = type(eggState) == "table" and tonumber(eggState.Successes) or 0

@@ -2,8 +2,8 @@
 -- Queues verified rainbow pets and redeems completed queue slots serially.
 
 local activeState
-local MODULE_VERSION = "1.5.1"
-local TARGET_PET_NAME = "Pixel Demon"
+local MODULE_VERSION = "1.6.0"
+local TARGET_PET_NAME = "Rich Cat / Helicopter Cat"
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 20
 local IDLE_CHECK_DELAY = 5
@@ -125,6 +125,15 @@ local function targetCatalog(context)
         tostring(summary or (TARGET_PET_NAME .. " exact-name catalog"))
 end
 
+local function authoritativeEquipped(context, source)
+    local ok, equipped, ready, problem = pcall(context.GetEquippedPetSet, source)
+    if not ok then return nil, "equipped map error: " .. tostring(equipped) end
+    if ready ~= true or type(equipped) ~= "table" then
+        return nil, tostring(problem or "authoritative equipped map is unavailable")
+    end
+    return equipped, nil
+end
+
 local function acquireOperation(state, context)
     if state.OperationOwned then return true end
     local ok, acquired, owner = pcall(context.AcquireOperation, context.OperationOwner)
@@ -225,7 +234,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Pixel Demon found: %d | rainbow: %d | eligible: %d | rule protected/deferred: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
+        "Cat targets found: %d | rainbow: %d | eligible: %d | rule protected/deferred: %d | equipped skipped: %d | locked: %d | other forms: %d | pending: %d",
         stats.All, stats.Rainbow, stats.Eligible, stats.Protected,
         stats.Equipped, stats.Locked, stats.Other, stats.Pending
     )
@@ -341,13 +350,14 @@ local function cleanupPolicy(input)
     if not uid then return "DEFER", "UID unavailable" end
     if input.AlreadyHandled then return "SKIP", "already pending/deleted" end
     if input.IsTarget ~= true or pet.dm ~= true then
-        return "SKIP", "not exact Pixel Demon Dark Matter form"
+        return "SKIP", "not an exact Cat World target Dark Matter form"
     end
     local newlyClaimedOnly = input.Scope == "Newly Claimed"
         or input.Scope == "New Pixel Demon Only"
         or input.Scope == "Newly Claimed Pixel Demon"
     if newlyClaimedOnly and input.IsNew ~= true then return "SKIP", "not newly claimed" end
-    if pet.e == true then return "KEEP", "equipped" end
+    if input.IsEquipped == nil then return "DEFER", "equipped state unavailable" end
+    if input.IsEquipped == true then return "KEEP", "equipped" end
     if pet.l == true or pet.locked == true then return "KEEP", "locked" end
     local decision, detail = input.MatchDecision, input.MatchDetail
     decision = tostring(decision or "DEFER")
@@ -357,7 +367,7 @@ local function cleanupPolicy(input)
     return "DELETE", tostring(detail or "no protection rule matched")
 end
 
-local function cleanupDecision(state, context, pet, targetIds, scope)
+local function cleanupDecision(state, context, pet, targetIds, scope, equippedSet)
     local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
     local decision, detail
     if type(pet) == "table" and uid ~= nil then
@@ -369,6 +379,7 @@ local function cleanupDecision(state, context, pet, targetIds, scope)
         IsTarget = type(pet) == "table" and targetIds[tostring(pet.id or "")] == true,
         Scope = scope,
         IsNew = uid ~= nil and state.NewDMUIDs[uid] == true,
+        IsEquipped = uid ~= nil and equippedSet[uid] == true or false,
         MatchDecision = decision,
         MatchDetail = detail,
     })
@@ -404,6 +415,11 @@ local function runCleanup(state, context, snapshot)
         return false
     end
     local pets = snapshot and snapshot.Pets or {}
+    local equippedSet, equippedProblem = authoritativeEquipped(context, snapshot)
+    if not equippedSet then
+        state.CleanupSummary = "DM cleanup blocked: " .. tostring(equippedProblem)
+        return false
+    end
     local targetIds = discoverNewDMPets(state, context, pets)
     local scope = tostring(context.DMCleanupScope()) == "All Dark Matter Pets"
         and "All Dark Matter Pets" or "Newly Claimed"
@@ -415,7 +431,7 @@ local function runCleanup(state, context, snapshot)
 
     local candidates, kept, deferred = {}, 0, 0
     for _, pet in pairs(pets) do
-        local decision, detail = cleanupDecision(state, context, pet, targetIds, scope)
+        local decision, detail = cleanupDecision(state, context, pet, targetIds, scope, equippedSet)
         if decision == "DELETE" then
             candidates[#candidates + 1] = tostring(pet.uid)
             pushCleanupAudit(state, "DELETE " .. auditLabel(pet) .. " | " .. detail)
@@ -428,7 +444,7 @@ local function runCleanup(state, context, snapshot)
     local limit = math.clamp(math.floor(tonumber(context.DMCleanupBatchSize()) or 25), 20, 30)
     while #candidates > limit do table.remove(candidates) end
     local scopeLabel = scope == "All Dark Matter Pets"
-        and "All Dark Matter Pixel Demon" or "New Pixel Demon Only"
+        and "All Dark Matter Cat targets" or "New Cat targets only"
     state.CleanupSummary = string.format(
         "DM cleanup %s | planned: %d | protected: %d | deferred: %d | scope: %s",
         context.DMCleanupDryRun() and "DRY RUN" or "armed",
@@ -447,10 +463,18 @@ local function runCleanup(state, context, snapshot)
     end
     local fresh = context.GetPetSnapshot(true)
     local freshTargets = targetCatalog(context)
+    local freshEquipped, freshEquippedProblem = authoritativeEquipped(context, fresh)
+    if not freshEquipped then
+        releaseOperation(state, context)
+        state.CleanupSummary = state.CleanupSummary .. " | fresh equipped recheck failed: "
+            .. tostring(freshEquippedProblem)
+        return false
+    end
     local revalidated = {}
     for _, uid in ipairs(candidates) do
         local pet = fresh and fresh.ByUID and fresh.ByUID[uid]
-        local decision = pet and cleanupDecision(state, context, pet, freshTargets, scope) or "SKIP"
+        local decision = pet
+            and cleanupDecision(state, context, pet, freshTargets, scope, freshEquipped) or "SKIP"
         if decision == "DELETE" then revalidated[#revalidated + 1] = uid end
     end
     if #revalidated == 0 then
@@ -530,7 +554,7 @@ local function resolveMachineInfo(state, context)
     return info, state.MaxBatch, nil
 end
 
-local function collectCandidates(state, context, pets)
+local function collectCandidates(state, context, pets, equippedSet)
     local groups = {}
     local targetIds, _, catalogSummary = targetCatalog(context)
     local stats = {
@@ -549,7 +573,7 @@ local function collectCandidates(state, context, pets)
                     stats.Rainbow = stats.Rainbow + 1
                     local uid = pet.uid ~= nil and tostring(pet.uid) or nil
                     local protected = protectionDecision(context, pet)
-                    local equipped = pet.e == true
+                    local equipped = uid ~= nil and equippedSet[uid] == true
                     local locked = pet.l == true or pet.locked == true
                     if protected then stats.Protected = stats.Protected + 1 end
                     if equipped then stats.Equipped = stats.Equipped + 1 end
@@ -601,6 +625,8 @@ local function validateSelection(context, candidates)
             if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
         end
     end
+    local equippedSet, equippedProblem = authoritativeEquipped(context, snapshot or save)
+    if not equippedSet then return false, nil, nil, equippedProblem end
     local selectedUIDs, labels, expectedId = {}, {}, nil
     for index, candidate in ipairs(candidates) do
         local uid = tostring(candidate.Uid)
@@ -619,7 +645,7 @@ local function validateSelection(context, candidates)
             return false, nil, nil, shortUID(uid) .. " protection " .. tostring(decision)
                 .. ": " .. tostring(detail)
         end
-        if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
+        if equippedSet[uid] == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then
             return false, nil, nil, shortUID(uid) .. " is locked"
         end
@@ -677,9 +703,17 @@ local function runCheck(state, context)
     local snapshot = type(context.GetPetSnapshot) == "function"
         and context.GetPetSnapshot(false) or nil
     local pets = snapshot and snapshot.Pets or save.Pets
+    local equippedSet, equippedProblem = authoritativeEquipped(context, snapshot or save)
+    if not equippedSet then
+        setStatus(state, context, "Authoritative equipped map is unavailable; no Dark Matter action was sent: "
+            .. tostring(equippedProblem))
+        finish(2)
+        return
+    end
     initializeDMCatalog(state, context, pets)
     local pendingCreate = refreshPendingCreate(state, context, pets)
-    local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, pets)
+    local candidates, stats, catalogSummary, groupSummary =
+        collectCandidates(state, context, pets, equippedSet)
     local serverTime, clockProblem = getServerTime(state, context)
     local ready, nearest = queueSnapshot(queue, serverTime)
 
@@ -938,6 +972,7 @@ return function(action, context)
     local required = {
         "Library", "Running", "Enabled", "CreateEnabled", "ClaimEnabled",
         "GetSave", "GetCurrency", "FormatNumber", "GetMachinePetCatalog", "BatchSize",
+        "GetEquippedPetSet",
         "GetCommandRemote", "InvalidateCommand", "InvokeCommand", "RouteText",
         "AcquireOperation", "ReleaseOperation", "CancelOperation", "OperationOwner",
         "ProtectionDryRun",

@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.4.7"
+local MODULE_VERSION = "1.4.8"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -1001,6 +1001,7 @@ local function process(job)
             .. " rejected=" .. tostring(#rejectedEntries))
     end
 
+    local rejectedBoss = false
     if #acceptedEntries > 0 and job.BossGeneration ~= nil
         and bossGenerationCurrent(job.CoinId, job.BossGeneration) then
         boss.State = "ACTIVE"
@@ -1008,10 +1009,11 @@ local function process(job)
         if boss.Current then boss.Current.JoinAcceptedAt = os.clock() end
     elseif #rejectedEntries > 0 and job.BossGeneration ~= nil
         and bossGenerationCurrent(job.CoinId, job.BossGeneration) then
-        bossRemoved(job.CoinId, "server reject")
+        rejectedBoss = true
     end
 
     if not contextActive(job) then
+        if rejectedBoss then bossRemoved(job.CoinId, "server reject") end
         leaveStale(job, acceptedEntries)
         clearPending(entries)
         return false
@@ -1027,6 +1029,9 @@ local function process(job)
         run.Rejected = run.Rejected + #rejectedEntries
         run.LastProblem = "Join Coin rejected " .. tostring(#rejectedEntries) .. " pet(s)"
         failEntries(job, rejectedEntries, run.LastProblem)
+        -- Release every parent assignment before the generation becomes
+        -- absent; otherwise OnBossRemoved can race stale joining pets.
+        if rejectedBoss then bossRemoved(job.CoinId, "server reject") end
     elseif #signalFailures == 0 then
         run.LastProblem = "none"
     end

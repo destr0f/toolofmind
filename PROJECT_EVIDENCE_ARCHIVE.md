@@ -702,6 +702,19 @@ Subagent transcripts не следует считать отдельными н�
 - C54.4 core rescue после dead-farm regressions;
 - финальный smoke snapshot без lag и с корректным 49/50 boss lifecycle.
 
+#### Фаза J — Cat World и authoritative equip
+
+- Cobalt full session `20260904_112629`;
+- farm aliases подтверждены как `Get Coins Data`, `Change Pet Target NOW`,
+  `Join Coin mmm`, `Farm Coin mmm`, `Leave Coin mmm`;
+- native `Game.Pets` использует `Save.PetsEquipped` или
+  `Save.HardcorePetsEquipped`, а не inventory-поле `pet.e`;
+- x8 покупка подтверждена как `Egg: Buy Egg(eggName, false, true)`, ownership
+  хранится в `Save.OwnsOctupleEggs`, а `openegggg` возвращает восемь результатов;
+- текущие machine targets: `Rich Cat` (Legendary) и `Helicopter Cat` (Mythical);
+- Cat World areas: Cat Paradise, Cat Backyard, Cat Taiga, Cat Kingdom;
+  Giant Cat Chest относится к Cat Kingdom.
+
 ## 12. Скриншоты как визуальный evidence
 
 Корень:
@@ -816,7 +829,7 @@ Config не должен коммититься с account-specific данным
 3. Inventory scan нужен shared/dirty-driven.
 4. Destructive DM cleanup обязан fail closed, поддерживать dry run, confirmation и scope new/all.
 5. Gold/Rainbow/DM protection profiles независимы; внутри rule AND, между rules OR.
-6. Current production species — exact Pixel Demon; исторические tests могут называться `404`.
+6. Current production species — exact Rich Cat и Helicopter Cat; исторические tests могут называться `404`.
 7. Rainbow Coins IV protection удалена; активная защита V only.
 
 ### 15.5 Lifecycle и release
@@ -906,6 +919,11 @@ Current Network5 decompile from `20260820_084121` additionally proves that
 shared physical `RemoteEvent.OnClientEvent` or the shared command bridge event
 and does not send a server request. This supersedes the older assumption that
 every injected `Fired` call receives an orphaned stand-in.
+
+Fresh Cat World capture `20260904_112629` additionally proves the authoritative
+equipped UID maps, current `mmm` farm aliases, x8 egg request shape and exact
+Rich Cat/Helicopter Cat Directory entries. It supersedes all earlier logic that
+treated `pet.e` or physical `Pets` folder children as equip authority.
 
 ## 19. Как проводить следующий доказуемый тест
 

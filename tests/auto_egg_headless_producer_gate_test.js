@@ -8,7 +8,7 @@ function requireText(fragment, message) {
     if (!source.includes(fragment)) throw new Error(message);
 }
 
-requireText('local MODULE_VERSION = "1.7.8"',
+requireText('local MODULE_VERSION = "1.8.0"',
     "auto egg module version was not advanced");
 requireText('local OPEN_EGG_EVENT_NAMES = { "openegggg", "Open Egg" }',
     "the renamed live hatch event is not resolved before the legacy alias");
@@ -123,7 +123,7 @@ if (source.includes('pcall(context.FireCommand, "Opening Egg"')) {
 
 const beginRequest = source.indexOf("local function beginRequest");
 const producerPreflight = source.indexOf("ensureHeadlessProducerGate(state, context)", beginRequest);
-const invoke = source.indexOf('context.InvokeCommand("Buy Egg Yay"', beginRequest);
+const invoke = source.indexOf('"Buy Egg Yay", pending.Egg, pending.Triple, pending.Octuple', beginRequest);
 if (beginRequest < 0 || producerPreflight < beginRequest || invoke < 0 || producerPreflight > invoke) {
     throw new Error("headless producer gate is not installed before Buy Egg Yay");
 }

@@ -18,8 +18,8 @@ function functionBody(name, nextName) {
 
 assert(source.includes("local MAX_NETWORK_ATTEMPTS = 12"),
     "poor-connection retry budget must remain 12 attempts");
-assert(source.includes('local MODULE_VERSION = "1.7.8"'),
-    "the native-openegggg acknowledgement build must expose Auto Egg v1.7.8");
+assert(source.includes('local MODULE_VERSION = "1.8.0"'),
+    "the Cat World octuple build must expose Auto Egg v1.8.0");
 assert(source.includes("local NETWORK_RETRY_WINDOW = 600"),
     "poor-connection retry window must remain bounded at 600 seconds");
 assert(source.includes("local RESPONSE_WAIT_SLICE = 54"),
@@ -81,7 +81,7 @@ assert(request.includes("pending.RequestThread = task.spawn(function()"),
     "Buy Egg request thread is not retained for bounded cleanup");
 assert(request.includes("state.Pending = pending")
     && request.indexOf("state.Pending = pending")
-        < request.indexOf("context.InvokeCommand(\"Buy Egg Yay\""),
+        < request.indexOf('"Buy Egg Yay", pending.Egg, pending.Triple, pending.Octuple'),
     "pending ownership must be installed before invoking Buy Egg Yay");
 assert(request.includes("pending.RequestThread = nil"),
     "the completed Buy Egg request thread is still retained");

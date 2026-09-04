@@ -1,6 +1,6 @@
 local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
     local machine = require(modulePath)
-    assert(machine("version") == (darkMatter and "1.5.1" or "1.5.0"))
+    assert(machine("version") == "1.6.0")
 
     local callback
     local calls = {}
@@ -17,7 +17,10 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         DarkMatterSlots = 1,
     }
     local context = {
-        Library = { Directory = { Pets = { ["404"] = { name = "Pixel Demon" } } } },
+        Library = { Directory = { Pets = {
+            ["403"] = { name = "Helicopter Cat" },
+            ["404"] = { name = "Rich Cat" },
+        } } },
         Task = workerTask,
         Running = function() return true end,
         Enabled = function() return enabled end,
@@ -27,8 +30,10 @@ local function exercise(modulePath, pet, infoCommand, actionCommand, darkMatter)
         GetCurrency = function() return 1e15 end,
         FormatNumber = tostring,
         GetMachinePetCatalog = function()
-            return { ["404"] = true }, { "Pixel Demon" }, "live exact-name catalog"
+            return { ["403"] = true, ["404"] = true },
+                { "Helicopter Cat", "Rich Cat" }, "live exact-name catalog"
         end,
+        GetEquippedPetSet = function() return {}, true, nil end,
         BatchSize = function() return 1 end,
         MaxWaitSeconds = function() return nil end,
         MatchProtection = function() return "EMPTY", "test has no enchant protection" end,
@@ -86,19 +91,19 @@ end
 
 exercise("../gold_machine_module", {
     id = "404",
-    uid = "pixel-demon-normal",
+    uid = "rich-cat-normal",
 }, "Get Golden Machine Info", "Use Golden Machine", false)
 
 exercise("../rainbow_machine_module", {
     id = "404",
-    uid = "pixel-demon-golden",
+    uid = "rich-cat-golden",
     g = true,
 }, "Get Rainbow Machine Info", "Use Rainbow Machine", false)
 
 exercise("../dark_matter_module", {
-    id = "404",
-    uid = "pixel-demon-rainbow",
+    id = "403",
+    uid = "helicopter-cat-rainbow",
     r = true,
 }, "Get Dark Matter Machine Info", "Convert To Dark Matter", true)
 
-print("PASS Gold, Rainbow and Dark Matter use the live Pixel Demon catalog")
+print("PASS Gold, Rainbow and Dark Matter use the live Cat target catalog")

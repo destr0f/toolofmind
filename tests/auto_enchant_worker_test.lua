@@ -10,9 +10,10 @@ local fakeTask = {
 
 local save = {
     Pets = {
-        { id = 288, uid = "pet-a", e = true, powers = { { "Strength", 1 } } },
-        { id = 288, uid = "pet-b", e = true, powers = { { "Agility", 1 } } },
+        { id = 288, uid = "pet-a", e = false, powers = { { "Strength", 1 } } },
+        { id = 288, uid = "pet-b", powers = { { "Agility", 1 } } },
     },
+    PetsEquipped = { ["pet-a"] = true, ["pet-b"] = true },
 }
 local library = {
     Save = { Get = function() return save end },
@@ -46,6 +47,9 @@ local accepted, problem = enchant("start", {
     Library = library,
     Running = function() return true end,
     Enabled = function() return enabled end,
+    GetEquippedPetSet = function()
+        return save.PetsEquipped, true, nil
+    end,
     GetTargets = function() return { "Royalty", "Tech Coins V" } end,
     InvokeCommand = function(command, uid)
         assert(command == "Enchant Pet", "unexpected command")

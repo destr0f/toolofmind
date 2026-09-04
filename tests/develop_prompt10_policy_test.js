@@ -17,14 +17,14 @@ const machineFiles = [
 
 for (const [file, minimum] of machineFiles) {
     const source = read(file);
-    assert(source.includes('local TARGET_PET_NAME = "Pixel Demon"')
+    assert(source.includes('local TARGET_PET_NAME = "Rich Cat / Helicopter Cat"')
         && source.includes("context.GetMachinePetCatalog"),
-        `${file} does not resolve exact Pixel Demon from the live catalog`);
+        `${file} does not resolve exact Cat targets from the live catalog`);
     assert(source.includes(`level >= ${minimum}`),
         `${file} has the wrong Rainbow Coins protection floor`);
     assert(source.includes('compactName == "rainbowcoins"'),
         `${file} does not protect Rainbow Coins`);
-    assert(source.includes("Pixel Demon found:"),
+    assert(source.includes("Cat targets found:"),
         `${file} does not expose the target inventory count`);
 }
 
@@ -126,5 +126,5 @@ assert(coveredTargets.size >= 45,
     `full-pool account sharding only covered ${coveredTargets.size}/55 targets`);
 
 process.stdout.write(
-    "Prompt 10 policy OK | machines=Pixel Demon | regular pool=account-sharded | allocator=balanced/16 | stale=no-retry\n"
+    "Prompt 10 policy OK | machines=Cat targets | regular pool=account-sharded | allocator=balanced/16 | stale=no-retry\n"
 );

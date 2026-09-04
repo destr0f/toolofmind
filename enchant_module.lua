@@ -1,7 +1,7 @@
 -- Serialized equipped-pet enchant worker for PSX OG Nova develop.
 -- One UID remains selected until any requested enchant is confirmed in Save.Pets.
 
-local MODULE_VERSION = "1.0.1"
+local MODULE_VERSION = "1.1.0"
 local activeState
 
 local CONFIRM_POLL = 0.04
@@ -142,16 +142,16 @@ local function petName(library, pet)
         or (type(pet) == "table" and pet.id) or "Pet")
 end
 
-local function eligiblePet(library, pet)
+local function eligiblePet(library, pet, isEquipped)
     if type(pet) ~= "table" then return false, "invalid pet" end
-    if pet.e ~= true then return false, "not equipped" end
+    if isEquipped ~= true then return false, "not equipped" end
     if pet.uid == nil then return false, "missing UID" end
     local definition = petDefinition(library, pet)
     if type(definition) ~= "table" then return false, "directory definition unavailable" end
     local rarity = string.lower(tostring(definition.rarity or definition.Rarity or ""))
     if definition.isPremium == true or definition.IsPremium == true
-        or rarity == "exclusive" or rarity == "mythical" then
-        return false, "premium/mythical pet"
+        or rarity == "exclusive" then
+        return false, "premium/exclusive pet"
     end
     return true
 end
@@ -162,6 +162,15 @@ local function getSave(context)
         pcall(function() save = context.Library.Save.Get() end)
     end
     return type(save) == "table" and save or nil
+end
+
+local function authoritativeEquipped(context, save)
+    local ok, equipped, ready, problem = pcall(context.GetEquippedPetSet, save)
+    if not ok then return nil, "equipped map error: " .. tostring(equipped) end
+    if ready ~= true or type(equipped) ~= "table" then
+        return nil, tostring(problem or "authoritative equipped map is unavailable")
+    end
+    return equipped, nil
 end
 
 local function findPet(save, uid)
@@ -259,13 +268,14 @@ local function successfulRollDelay(state)
     return delay
 end
 
-local function selectNext(state, save)
+local function selectNext(state, save, equippedSet)
     local candidates = {}
     local equipped, alreadyReady, blocked = 0, 0, 0
     for _, pet in pairs(type(save and save.Pets) == "table" and save.Pets or {}) do
-        if type(pet) == "table" and pet.e == true then
+        local uid = type(pet) == "table" and pet.uid ~= nil and tostring(pet.uid) or nil
+        if uid and equippedSet[uid] == true then
             equipped = equipped + 1
-            local allowed = eligiblePet(state.Context.Library, pet)
+            local allowed = eligiblePet(state.Context.Library, pet, true)
             if allowed then
                 if matchingEnchant(state.Context.Library, pet, state.Targets) then
                     alreadyReady = alreadyReady + 1
@@ -341,8 +351,17 @@ local function requestRoll(state, pet)
     state.OperationOwned = true
 
     local save = getSave(state.Context)
+    local equippedSet, equippedProblem = authoritativeEquipped(state.Context, save)
+    if not equippedSet then
+        releaseOperation(state)
+        state.Context.SetStatus("Authoritative equipped map is unavailable; no enchant request was sent: "
+            .. tostring(equippedProblem))
+        schedule(state, 0.5)
+        return
+    end
     local exact = findPet(save, state.CurrentUID)
-    local allowed = exact and eligiblePet(state.Context.Library, exact)
+    local allowed = exact and eligiblePet(state.Context.Library, exact,
+        equippedSet[state.CurrentUID] == true)
     local matched = exact and matchingEnchant(state.Context.Library, exact, state.Targets)
     if not exact or not allowed or matched then
         releaseOperation(state)
@@ -401,17 +420,25 @@ runStep = function(state)
         schedule(state, 0.5)
         return
     end
+    local equippedSet, equippedProblem = authoritativeEquipped(state.Context, save)
+    if not equippedSet then
+        state.Context.SetStatus("Authoritative equipped map is unavailable; no enchant request was sent: "
+            .. tostring(equippedProblem))
+        schedule(state, 0.5)
+        return
+    end
     if next(state.Targets) == nil then
         state.Context.SetStatus("Select at least one target enchant. No request is being sent.")
         schedule(state, IDLE_RECHECK)
         return
     end
     if not state.CurrentUID then
-        if not selectNext(state, save) then schedule(state, IDLE_RECHECK) return end
+        if not selectNext(state, save, equippedSet) then schedule(state, IDLE_RECHECK) return end
     end
 
     local pet = findPet(save, state.CurrentUID)
-    local allowed = pet and eligiblePet(state.Context.Library, pet)
+    local allowed = pet and eligiblePet(state.Context.Library, pet,
+        equippedSet[state.CurrentUID] == true)
     if not pet or not allowed then
         clearCurrent(state)
         schedule(state, 0)
@@ -445,7 +472,7 @@ local function start(context)
     for _, key in ipairs({
         "Library", "Running", "Enabled", "GetTargets", "InvokeCommand", "RouteText",
         "AcquireOperation", "ReleaseOperation", "CancelOperation", "OperationOwner",
-        "SetStatus", "Trace",
+        "SetStatus", "Trace", "GetEquippedPetSet",
     }) do
         if context[key] == nil then return false, "module context is missing " .. key end
     end
@@ -480,7 +507,8 @@ return function(action, context)
         return matchingEnchant(context and context.Library, context and context.Pet, targets)
     end
     if action == "eligible" then
-        return eligiblePet(context and context.Library, context and context.Pet)
+        return eligiblePet(context and context.Library, context and context.Pet,
+            context and context.Equipped == true)
     end
     return false, "unknown action"
 end

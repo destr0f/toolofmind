@@ -82,15 +82,15 @@ flowchart TD
 | `slim_farm.lua` | Composition root: startup, общая state-модель, UI, coin catalog, farm allocator, конфиг, shutdown | Всегда, внутри generated artifact |
 | `request_state_inspector.lua` | Пассивный bounded inspector запросов, ping, очередей и incidents | Startup, optional |
 | `network4_transport_module.lua` | Resolver хешированных remotes и безопасный Invoke/Fire ladder | Lazy, при первом сетевом пользователе |
-| `automation_support_module.lua` | Mutex операций с inventory, каталог Pixel Demon, enchant matcher, route health | Lazy, при automation UI/машинах |
+| `automation_support_module.lua` | Mutex операций с inventory, exact-каталог Rich Cat/Helicopter Cat, enchant matcher, route health | Lazy, при automation UI/машинах |
 | `automation_ui_module.lua` | UI яиц, машин, boost, enchant rules и привязка контролов | Startup, required |
 | `pet_farm_lite_engine.lua` | Ограниченная очередь grouped Join, dispatch и жизненный цикл UID | Предзагружается после UI, работает при Auto Farm |
 | `loot_reactor.lua` | Producer gates и сбор Orbs/Lootbags без retention визуальной физики | Через ~0.75 с, потому что loot по умолчанию включён |
 | `auto_egg_module.lua` | Каталог яиц, preflight, покупка, ACK, adaptive/manual delay, headless | Lazy при использовании egg UI/Auto Hatch |
 | `enchant_module.lua` | Быстрый последовательный enchant одного equipped пета до совпадения | Lazy при Auto Enchant |
-| `gold_machine_module.lua` | Normal Pixel Demon → Golden, с protection rules | Lazy при включении Gold |
-| `rainbow_machine_module.lua` | Golden Pixel Demon → Rainbow, с отдельными rules | Lazy при включении Rainbow |
-| `dark_matter_module.lua` | Rainbow Pixel Demon → DM, claim и безопасный DM cleanup | Lazy при включении DM функций |
+| `gold_machine_module.lua` | Normal Rich Cat/Helicopter Cat → Golden, с protection rules | Lazy при включении Gold |
+| `rainbow_machine_module.lua` | Golden Rich Cat/Helicopter Cat → Rainbow, с отдельными rules | Lazy при включении Rainbow |
+| `dark_matter_module.lua` | Rainbow Rich Cat/Helicopter Cat → DM, claim и безопасный DM cleanup | Lazy при включении DM функций |
 | `boost_module.lua` | Продление boost и покупка bundle при нулевом stock | Lazy при включении boosts |
 | `graphics_module.lua` | Bounded anti-lag/potato очередь и FPS cap | Lazy при изменении graphics-настроек |
 
@@ -215,16 +215,16 @@ Manifest содержит:
 | № | Key | Version | Startup policy |
 |---:|---|---:|---|
 | 1 | `requestInspector` | 1.0.2 | startup optional/passive |
-| 2 | `networkTransport` | 1.3.0 | lazy |
-| 3 | `automationSupport` | 1.5.0 | lazy |
-| 4 | `automationUI` | 1.5.3 | startup required |
-| 5 | `petFarmEngine` | 1.4.3 | lazy, preloaded after UI |
+| 2 | `networkTransport` | 1.5.4 | lazy |
+| 3 | `automationSupport` | 1.6.0 | lazy |
+| 4 | `automationUI` | 1.6.0 | startup required |
+| 5 | `petFarmEngine` | 1.4.8 | lazy, preloaded after UI |
 | 6 | `lootReactor` | 3.8.0 | lazy, deferred start |
-| 7 | `autoEgg` | 1.7.0 | lazy |
-| 8 | `enchant` | 1.0.1 | lazy |
-| 9 | `goldMachine` | 1.5.0 | lazy |
-| 10 | `rainbowMachine` | 1.5.0 | lazy |
-| 11 | `darkMatter` | 1.5.1 | lazy |
+| 7 | `autoEgg` | 1.8.0 | lazy |
+| 8 | `enchant` | 1.1.0 | lazy |
+| 9 | `goldMachine` | 1.6.0 | lazy |
+| 10 | `rainbowMachine` | 1.6.0 | lazy |
+| 11 | `darkMatter` | 1.6.0 | lazy |
 | 12 | `boost` | 1.2.0 | lazy |
 | 13 | `graphics` | 4.1.0 | lazy |
 
@@ -390,7 +390,7 @@ STOP не равен простому скрытию UI. Он должен:
 |---|---|
 | Farm | Включение farm, стратегия целей, boss mode, world/zone, boss diagnostics/instant arrival |
 | Monitor | Live assignment/controller health, currency rate, Quick HUD и видимость строк |
-| Eggs | Egg catalog/scope, x1/x3, adaptive/manual delay, Headless/Native, Auto Hatch |
+| Eggs | Egg catalog/scope, x1/x3/x8, adaptive/manual delay, Headless/Native, Auto Hatch |
 | Machines | Gold, Rainbow, Dark Matter, batch/time, claim, DM cleanup, enchant protection rules |
 | Boosts | Автопродление четырёх boost и fallback покупки bundle |
 | Loot | Orbs, Lootbags и producer-gated режимы |
@@ -445,7 +445,7 @@ OR
 Rule 2: Royalty AND Rainbow Coins V
 ```
 
-Защищён будет пет, совпавший хотя бы с одной веткой. Для машин защищённые не идут в craft; для DM cleanup совпавшие остаются, остальные подходящие DM Pixel Demon могут быть удалены только после Dry Run/confirm/scope проверок.
+Защищён будет пет, совпавший хотя бы с одной веткой. Для машин защищённые не идут в craft; для DM cleanup совпавшие остаются, остальные подходящие DM Rich Cat/Helicopter Cat могут быть удалены только после Dry Run/confirm/scope проверок.
 
 ## 9. Module API и передаваемые контексты
 
@@ -465,7 +465,7 @@ Main передаёт модулю только разрешённые зави�
 | Loot reactor | start/sync/stop/stats/version | game producers, route Fire, coin readiness, Things, RTT |
 | Auto egg | start/stop/catalog/inspect/invalidate | Library, player, egg config, Invoke/Fire, operation gate |
 | Enchant | start/stop/match/status | equipped inventory, Save, Invoke, operation gate |
-| Gold/Rainbow | start/stop/status/policy | snapshot, Pixel Demon catalog, rule matcher, machine routes |
+| Gold/Rainbow | start/stop/status/policy | snapshot, Rich Cat/Helicopter Cat catalog, authoritative equipped set, rule matcher, machine routes |
 | Dark Matter | create/claim/cleanup/stop/status | snapshot, server clock, routes, matcher, destructive guards |
 | Boost | start/stop/status | Save, currency, boost/bundle routes, phase |
 | Graphics | apply/stop/status | game roots, FPS cap, token/generation |
@@ -578,7 +578,7 @@ Alias нужен для совместимости конкретного обн
 | Get Coins | Coin sync/recovery | world/area context игры | таблица snapshot | Можно ограниченно повторить только при transport fail |
 | Join Coin | Farm | coin ID + массив pet UID | response/accepted UID + coin events | Reject terminal для этой монеты; transport retry ограничен |
 | Leave Coin | Farm cleanup | coin ID + UID/list | локальная очистка + события | Не спамить |
-| Buy Egg Yay | Eggs | egg name + x1/x3 | hatch event или точная inventory delta | Никогда не overlap; неизвестный результат не дублировать |
+| Buy Egg Yay | Eggs | egg name + `triple`, `octuple` (x1/x3/x8) | hatch event или точная inventory delta | Никогда не overlap; неизвестный результат не дублировать |
 | Delete Several Pets | Egg cleanup/DM cleanup | массив UID | inventory delta | Только после свежей revalidation и destructive guards |
 | Enchant Pet | Enchant | pet UID | powers delta в Save | Один in-flight |
 | Get Golden Machine Info | Gold | info request | server tiers/info | Read-only, редкий refresh |
@@ -664,7 +664,7 @@ Pet
   discovered/source metadata
 ```
 
-Точный species для всех машин — `Pixel Demon`. Catalog fail closed: если Directory/Save не доказывают exact species, машина не отправляет pet.
+Точные species для всех машин — `Rich Cat` (Legendary) и `Helicopter Cat` (Mythical). Catalog fail closed: если `Directory.Pets` не доказывает exact species, машина не отправляет pet. Equipped state всегда берётся из `Save.PetsEquipped`/`Save.HardcorePetsEquipped`, а не из `pet.e`.
 
 ## 13. Coin discovery, индексы и target selection
 
@@ -1031,9 +1031,9 @@ acquire(owner, operation)
 
 Это не большая FIFO-очередь запросов. Если gate занят, модуль отступает и повторно проверяет своё due-состояние позже. Stale owner автоматически очищается примерно через 45 секунд, а generation change снимает gate немедленно.
 
-### 19.2 Pixel Demon catalog
+### 19.2 Cat World machine catalog
 
-Каталог exact species строится из `Directory.Pets` и Save metadata. Он не доверяет только UI name/substring. Все Gold/Rainbow/DM и DM cleanup работают исключительно с `Pixel Demon` и fail closed при неоднозначности.
+Каталог exact species строится одним холодным проходом по `Directory.Pets`. Он не доверяет UI name/substring и не угадывает numeric ID. Все Gold/Rainbow/DM и DM cleanup работают исключительно с `Rich Cat` и `Helicopter Cat`, группируют каждый species отдельно и fail closed при неоднозначности.
 
 ### 19.3 Enchant matcher
 
@@ -1057,8 +1057,8 @@ Support хранит компактный локальный статус route 
 Перед каждой машиной:
 
 1. получить/использовать свежий inventory snapshot;
-2. выбрать exact Pixel Demon нужной формы;
-3. исключить equipped и locked;
+2. выбрать exact Rich Cat/Helicopter Cat нужной формы;
+3. исключить UID из authoritative equipped map и locked;
 4. исключить pets, совпавших с protection profile;
 5. исключить wrong form и pending UID другой операции;
 6. сгруппировать одинаковый species/form;
@@ -1071,15 +1071,15 @@ Support хранит компактный локальный статус route 
 
 ### 20.2 Gold
 
-Вход: normal Pixel Demon. Выход: golden Pixel Demon. Свой независимый protection profile и variation list. Batch по умолчанию 6, но UI может выбирать поддерживаемый сервером tier.
+Вход: normal Rich Cat/Helicopter Cat. Выход: golden форма того же species. Свой независимый protection profile и variation list. Batch по умолчанию 6, но UI может выбирать поддерживаемый сервером tier.
 
 ### 20.3 Rainbow
 
-Вход: golden Pixel Demon. Выход: rainbow Pixel Demon. Защита и list variations полностью независимы от Gold.
+Вход: golden Rich Cat/Helicopter Cat. Выход: rainbow форма того же species. Защита и list variations полностью независимы от Gold.
 
 ### 20.4 Dark Matter create
 
-Вход: rainbow Pixel Demon. Модуль учитывает:
+Вход: rainbow Rich Cat/Helicopter Cat. Модуль учитывает:
 
 - выбранное число pets в batch;
 - максимальное допустимое время;
@@ -1100,7 +1100,7 @@ Destructive cleanup допускается только при одноврем�
 - Dry Run выключен;
 - destructive confirmation включён;
 - protection rules не пусты и валидны;
-- pet — exact Dark Matter Pixel Demon;
+- pet — exact Dark Matter Rich Cat/Helicopter Cat;
 - pet не equipped и не locked;
 - pet входит в выбранный scope;
 - pet не совпадает ни с одним protection rule;
@@ -1431,7 +1431,8 @@ Incident — наблюдение, не автоматическое разре�
 
 | Тест | Что защищает |
 |---|---|
-| `tests/automation_support_catalog_test.lua` | Exact Pixel Demon catalog и normalization |
+| `tests/automation_support_catalog_test.lua` | Exact Rich Cat/Helicopter Cat catalog и normalization |
+| `tests/cat_world_equipped_x8_policy_test.js` | Cat areas/remotes, authoritative equip membership и x8 protocol |
 | `tests/automation_ui_status_test.lua` | Status/UI contract |
 | `tests/machine_sparse_directory_test.lua` | Fail closed при неполном Directory |
 | `tests/machine_404_enchant_policy_test.lua` | Историческая machine/protection regression |
@@ -1451,7 +1452,7 @@ Incident — наблюдение, не автоматическое разре�
 | `tests/autogifts_rainbow_pack_policy_test.js` | Gifts и Rainbow pack threshold |
 | `tests/reward_clock_hotfix_test.js` | Server timing/due behavior |
 
-Примечание: некоторые тесты сохраняют исторические названия (`404`), но проверяемая текущая production species — Pixel Demon. Название теста само по себе не делает старого пета активным.
+Примечание: некоторые имена тестов сохраняют исторический номер `404`, но текущие production species — Rich Cat и Helicopter Cat. Имя файла не является runtime-конфигурацией.
 
 ## 30. Release gate
 

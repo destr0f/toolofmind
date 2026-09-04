@@ -1,7 +1,7 @@
 -- Lazy UI extension for PSX OG Nova develop.
 -- Keeps optional automation controls outside the main executor chunk.
 
-local MODULE_VERSION = "1.5.3"
+local MODULE_VERSION = "1.6.0"
 
 local function requireKeys(context, keys)
     if type(context) ~= "table" then return false, "UI context is missing" end
@@ -91,12 +91,16 @@ local function build(context)
     eggAutomation:Dropdown({
         Flag = "egg_open_count",
         Title = "Eggs Per Purchase",
-        Desc = "x3 requires Triple Egg Open and three free inventory slots.",
-        Values = { "Single (x1)", "Triple (x3)" },
-        Value = "Single (x1)",
+        Desc = "x3 requires Triple Egg Open; x8 requires Octuple ownership and eight free slots.",
+        Values = { "Single (x1)", "Triple (x3)", "Octuple (x8)" },
+        Value = config.EggCount == 8 and "Octuple (x8)"
+            or config.EggCount == 3 and "Triple (x3)" or "Single (x1)",
         Multi = false,
         AllowNone = false,
-        Callback = function(value) config.EggCount = value == "Triple (x3)" and 3 or 1 end,
+        Callback = function(value)
+            config.EggCount = value == "Octuple (x8)" and 8
+                or value == "Triple (x3)" and 3 or 1
+        end,
     })
     eggAutomation:Dropdown({
         Flag = "egg_delay_mode",
@@ -175,7 +179,7 @@ local function build(context)
     local machines = UI.MachinesTab:Section({ Title = "Safe Conversion Pipeline", Box = true, Opened = true })
     machines:Paragraph({
         Title = "NORMAL > GOLD > RAINBOW > DARK MATTER",
-        Desc = "Pixel Demon only; its live Directory.Pets ID is resolved per session and every batch is revalidated from Save.",
+        Desc = "Rich Cat and Helicopter Cat only; live Directory.Pets IDs are resolved per session and every batch is revalidated from Save.",
     })
     machines:Slider({
         Flag = "machine_batch_size",
@@ -188,8 +192,8 @@ local function build(context)
         end,
     })
     machines:Button({
-        Title = "VERIFY PIXEL DEMON CATALOG",
-        Desc = "Resolves the exact Pixel Demon species from live Directory.Pets; no machine request.",
+        Title = "VERIFY CAT WORLD TARGETS",
+        Desc = "Resolves exact Rich Cat and Helicopter Cat species from live Directory.Pets; no machine request.",
         Icon = "refresh-cw",
         Callback = function()
             task.spawn(function()
@@ -587,8 +591,8 @@ local function build(context)
     local gold = UI.MachinesTab:Section({ Title = "Golden Machine / Stage 1", Box = true, Opened = true })
     gold:Toggle({
         Flag = "auto_golden_galaxy_fox",
-        Title = "Auto Golden Pixel Demon",
-        Desc = "Crafts unprotected normal Pixel Demon. Uses the independent Gold Machine variation list above.",
+        Title = "Auto Golden Cat Targets",
+        Desc = "Crafts unprotected normal Rich Cat and Helicopter Cat in separate species batches.",
         Value = false,
         Callback = function(value)
             config.AutoGoldenGalaxyFox = value == true
@@ -610,8 +614,8 @@ local function build(context)
     local rainbow = UI.MachinesTab:Section({ Title = "Rainbow Machine / Stage 2", Box = true, Opened = true })
     rainbow:Toggle({
         Flag = "auto_rainbow_galaxy_fox",
-        Title = "Auto Rainbow Pixel Demon",
-        Desc = "Crafts unprotected golden Pixel Demon. Uses the independent Rainbow Machine variation list above.",
+        Title = "Auto Rainbow Cat Targets",
+        Desc = "Crafts unprotected golden Rich Cat and Helicopter Cat in separate species batches.",
         Value = false,
         Callback = function(value)
             config.AutoRainbowGalaxyFox = value == true
@@ -663,8 +667,8 @@ local function build(context)
     })
     darkMatter:Toggle({
         Flag = "auto_dark_matter_galaxy_fox",
-        Title = "Auto Dark Matter Pixel Demon",
-        Desc = "Only rainbow Pixel Demon; protects Rainbow Coins V, equipped and locked pets.",
+        Title = "Auto Dark Matter Cat Targets",
+        Desc = "Only rainbow Rich Cat and Helicopter Cat; protects configured enchants, equipped and locked pets.",
         Value = false,
         Callback = function(value)
             config.AutoDarkMatterGalaxyFox = value == true
@@ -678,50 +682,50 @@ local function build(context)
         end,
     })
     darkMatter:Paragraph({
-        Title = "PIXEL DEMON DM ONLY",
-        Desc = "Cleanup never targets another pet species. Exact Dark Matter Pixel Demon matching any enabled protection rule are kept; unmatched exact Dark Matter Pixel Demon become delete candidates.",
+        Title = "CAT WORLD TARGETS DM ONLY",
+        Desc = "Cleanup only considers exact Dark Matter Rich Cat and Helicopter Cat. Protection matches, equipped and locked pets stay safe.",
     })
     darkMatter:Dropdown({
         Flag = "dm_cleanup_scope",
-        Title = "Pixel Demon Delete Scope",
-        Desc = "Choose only newly claimed Pixel Demon or include older Dark Matter Pixel Demon. No other species is scanned for deletion.",
-        Values = { "New Pixel Demon Only", "All Dark Matter Pixel Demon" },
+        Title = "Cat Target Delete Scope",
+        Desc = "Choose only newly claimed Cat targets or include older Dark Matter Cat targets. Other species are ignored.",
+        Values = { "New Cat Targets Only", "All Dark Matter Cat Targets" },
         Value = config.DMCleanupScope == "All Dark Matter Pets"
-            and "All Dark Matter Pixel Demon" or "New Pixel Demon Only",
+            and "All Dark Matter Cat Targets" or "New Cat Targets Only",
         Multi = false,
         AllowNone = false,
         Callback = function(value)
-            config.DMCleanupScope = value == "All Dark Matter Pixel Demon"
+            config.DMCleanupScope = value == "All Dark Matter Cat Targets"
                 and "All Dark Matter Pets" or "Newly Claimed"
             config.DMCleanupConfirmed = false
         end,
     })
     darkMatter:Slider({
         Flag = "dm_cleanup_batch",
-        Title = "Pixel Demon Delete Batch",
-        Desc = "Maximum exact Dark Matter Pixel Demon UIDs in one Delete Several Pets request.",
+        Title = "Cat Target Delete Batch",
+        Desc = "Maximum exact Dark Matter Cat target UIDs in one Delete Several Pets request.",
         Step = 1,
         Value = { Min = 20, Max = 30, Default = tonumber(config.DMCleanupBatchSize) or 25 },
         Callback = function(value) config.DMCleanupBatchSize = math.clamp(math.floor(tonumber(value) or 25), 20, 30) end,
     })
     darkMatter:Toggle({
         Flag = "dm_cleanup_dry_run",
-        Title = "Preview Pixel Demon Deletions",
+        Title = "Preview Cat Target Deletions",
         Desc = "Enabled by default. Shows KEEP/DELETE decisions but sends no deletion request.",
         Value = true,
         Callback = function(value) config.DMCleanupDryRun = value ~= false end,
     })
     darkMatter:Toggle({
         Flag = "dm_cleanup_confirmed",
-        Title = "Confirm Pixel Demon Deletion",
+        Title = "Confirm Cat Target Deletion",
         Desc = "Second safety switch. Changing the scope clears this confirmation.",
         Value = false,
         Callback = function(value) config.DMCleanupConfirmed = value == true end,
     })
     darkMatter:Toggle({
         Flag = "dm_cleanup_enabled",
-        Title = "Enable Pixel Demon DM Auto Delete",
-        Desc = "Only exact Dark Matter Pixel Demon can be deleted. Protection matches, equipped, locked and incomplete pets always stay safe.",
+        Title = "Enable Cat Target DM Auto Delete",
+        Desc = "Only exact Dark Matter Rich Cat and Helicopter Cat can be deleted. Protected, equipped, locked and incomplete pets stay safe.",
         Value = false,
         Callback = function(value)
             config.DMCleanupEnabled = value == true

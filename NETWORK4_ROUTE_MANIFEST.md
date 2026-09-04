@@ -1,6 +1,6 @@
 # Active Network4/Network5 Route Manifest
 
-Suite: `1.4.1-candidate.54.34-native-farm-feed`
+Suite: `1.4.1-candidate.54.42-cat-world-equipped-x8`
 
 Evidence used:
 
@@ -11,6 +11,8 @@ Evidence used:
 - Cobalt archive session `20260820_084121`: 40,620 traffic records over
   roughly 656 seconds, 89 unique calls, 534 snapshots and zero recorder
   drops/errors;
+- Cobalt archive session `20260904_112629`: Cat World protocol, native Pets
+  equip membership, octuple hatch and current farm/machine routes;
 - `PSX_COBALT_NETWORK_CONSPECT_20260813.md`;
 - command call sites in `slim_farm.lua`, `pet_farm_lite_engine.lua`, `loot_reactor.lua`, `auto_egg_module.lua`, machine, boost, enchant and reward workers.
 
@@ -49,7 +51,7 @@ Evidence used:
 | `Get Coins` | `Get Coins Data`, `Get The Coins`, `Get Coins` | none | coin catalog table keyed by coin ID | valid non-empty table, then live coin deltas | read-only startup/world-change snapshot only | Captured |
 | `Join Coin` | `Join Coin mmm`, `Join The Coin`, `Join Coin` | `coinId`, `{petUid...}` | table/map of accepted pet UIDs, or boolean rejection | returned UID map; later `Update Coin Pets`, health and removal are state events | forbidden | Captured; native batch 16 |
 | `Leave Coin` | `Leave Coin mmm`, `Leave The Coin`, `Leave Coin` | `coinId`, `{petUid...}` | boolean/message when supplied | function result; used only during reset/explicit release | forbidden | Captured |
-| `Buy Egg Yay` | `Egg: Buy Egg`, `Buy Egg Ok`, `Buy Egg Yay` | `eggName`, `triple:boolean` | boolean plus hatch payload/message depending game path | function result, then `openegggg`/`Opening Egg` or exact inventory delta | forbidden | Captured |
+| `Buy Egg Yay` | `Egg: Buy Egg`, `Buy Egg Ok`, `Buy Egg Yay` | `eggName`, `triple:boolean`, `octuple:boolean` | boolean plus hatch payload/message depending game path | function result, then `openegggg`/`Opening Egg` or exact inventory delta | forbidden | Captured; x8=`false,true` |
 | `Delete Several Pets` | same | `{petUid...}` | boolean/message | exact inventory delta | forbidden | Captured |
 | `Enchant Pet` | same | `petUid` | boolean/result payload | changed enchant in `Save.Pets` | forbidden | Source |
 | `Get Golden Machine Info` | same | none | machine tier table | valid tier table, cached after success | read-only result cache allowed | Source |
@@ -103,6 +105,17 @@ compatibility fallback. The farm never fabricates its own BindableEvent and
 never treats `Connect` alone as proof that events are flowing. Missing
 observations do not retroactively turn a successful outbound RemoteEvent into
 a transport error.
+
+## Equipped pet authority
+
+The Cat World `Game.Pets` decompile in session `20260904_112629` proves that
+equipped membership is keyed by UID in `Save.PetsEquipped`, or
+`Save.HardcorePetsEquipped` in Hardcore mode. Physical children under the local
+`Pets` folder and the inventory record field `pet.e` are not authoritative.
+Farm allocation, pet warp, Gold/Rainbow/Dark Matter selection, destructive DM
+cleanup and Auto Enchant therefore share this Save-map authority and fail
+closed when it is temporarily unavailable. `Added Client Pet` and
+`Removed Client Pet` invalidate the local bounded cache without polling.
 
 ## Cache and lifecycle policy
 

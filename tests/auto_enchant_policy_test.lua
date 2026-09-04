@@ -38,8 +38,8 @@ local function matches(pet, targets)
     return enchant("matches", { Library = library, Pet = pet, Targets = targets })
 end
 
-local function eligible(pet)
-    return enchant("eligible", { Library = library, Pet = pet })
+local function eligible(pet, equipped)
+    return enchant("eligible", { Library = library, Pet = pet, Equipped = equipped })
 end
 
 assert(matches({ powers = { { "Tech Coins", 5 } } }, { "Tech Coins V" }) == "Tech Coins V")
@@ -50,10 +50,10 @@ assert(matches({ powers = { { "Chests", 3 } } }, { "Chest Breaker III" }) == "Ch
 assert(matches({ powers = { Presents = "III" } }, { "Gifts III" }) == "Gifts III")
 assert(matches({ powers = { "Tech Coins V" } }, { "Tech Coins V" }) == "Tech Coins V")
 
-assert(eligible({ id = 288, uid = "ok", e = true }) == true)
-assert(eligible({ id = 288, uid = "off", e = false }) == false)
-assert(eligible({ id = 900, uid = "premium", e = true }) == false)
-assert(eligible({ id = 901, uid = "mythical", e = true }) == false)
+assert(eligible({ id = 288, uid = "ok", e = false }, true) == true)
+assert(eligible({ id = 288, uid = "off", e = true }, false) == false)
+assert(eligible({ id = 900, uid = "premium" }, true) == false)
+assert(eligible({ id = 901, uid = "mythical" }, true) == true)
 
 assert(enchant("power-title", { Library = library, Name = "Chests", Level = 2 }) == "Chest Breaker II")
 assert(enchant("power-title", { Library = library, Name = "Presents", Level = 3 }) == "Gifts III")

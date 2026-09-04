@@ -25,7 +25,9 @@ modules are declared at startup but downloaded only when their feature is used.
 `loot_reactor.lua` owns the only orb/lootbag subscriptions. Lazy loading does
 not weaken identity checks.
 
-`enchant_module.lua` owns the equipped-pet enchant pipeline. It resolves only
+`enchant_module.lua` owns the equipped-pet enchant pipeline. Equipped membership
+comes from the native `Save.PetsEquipped`/`Save.HardcorePetsEquipped` map, never
+from the stale per-inventory-record `pet.e` field. The worker resolves only
 the stable named `Enchant Pet` command, keeps one UID selected until an exact
 `Save.Pets[uid].powers` change is observed, accepts any selected live power-tier
 title, and permits only one request in flight. It never depends on a floating
@@ -41,7 +43,7 @@ indexes and wake at most one feature-owned coalesced runner.
   world. `ChildAdded`, `ChildRemoved` and named coin deltas maintain the live
   registry afterwards.
 - Pet allocation is event-driven. Accepted pets stay locked until their target
-  disappears; one eight-wide writer owns Join/Target/Farm traffic and permits
+  disappears; one sixteen-wide writer owns Join/Target/Farm traffic and permits
   only one delayed retry. `Update Coin Pets` is intentionally outside the hot
   path, so other players cannot trigger a full local contention rebuild.
 - The Orbs LocalScript is gated at its global `AddOrb` producer when `getsenv`

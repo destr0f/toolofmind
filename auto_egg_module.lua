@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.7.8"
+local MODULE_VERSION = "1.8.0"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -308,7 +308,8 @@ end
 
 local function inspectEgg(context)
     local eggId = tostring(context.Egg or "")
-    local count = tonumber(context.Count) == 3 and 3 or 1
+    local requestedCount = tonumber(context.Count)
+    local count = requestedCount == 8 and 8 or requestedCount == 3 and 3 or 1
     local directory = directoryFor(context)
     local entry = directory and directory[eggId]
     if not isHatchable(entry) then return false, "Selected egg is not hatchable: " .. eggId end
@@ -318,6 +319,9 @@ local function inspectEgg(context)
     if not ownsEgg then return false, "Selected egg is locked: " .. tostring(unlockProblem) end
     if count == 3 and not hasGamepass(save, "Triple Egg Open") then
         return false, "x3 requires the Triple Egg Open gamepass"
+    end
+    if count == 8 and save.OwnsOctupleEggs ~= true then
+        return false, "x8 requires Octuple Egg Open ownership"
     end
 
     local physical, distance = physicalEgg(context, eggId, false)
@@ -1216,13 +1220,14 @@ local function suspiciousReply(message)
 end
 
 local function requestLabel(pending)
-    return tostring(pending.Egg) .. " " .. (pending.Triple and "x3" or "x1")
+    return tostring(pending.Egg) .. " "
+        .. (pending.Octuple and "x8" or pending.Triple and "x3" or "x1")
 end
 
 local function requestRetryKey(eggName, count, animation)
     return table.concat({
         normalizedEggName(eggName),
-        tonumber(count) == 3 and "3" or "1",
+        tonumber(count) == 8 and "8" or tonumber(count) == 3 and "3" or "1",
         tostring(animation or ""),
     }, "|")
 end
@@ -1839,7 +1844,7 @@ local function startHeadlessReconcile(state, context, pending)
     pending.ReconcileStartedAt = now
 
     pending.ReconcileThread = task.spawn(function()
-        local expected = pending.Triple and 3 or 1
+        local expected = pending.Octuple and 8 or pending.Triple and 3 or 1
         local deadline = os.clock() + HEADLESS_REPLICATION_TIMEOUT
         local lastObserved = 0
 
@@ -2281,7 +2286,7 @@ local function handlePending(state, context, now)
         setStatus(state, context, "Open Egg received for " .. requestLabel(pending)
             .. "; waiting for the single Buy Egg Yay call to return...")
     elseif pending.Headless and pending.ResponseDone and pending.Accepted and not pending.EventReceived then
-        local expected = pending.Triple and 3 or 1
+        local expected = pending.Octuple and 8 or pending.Triple and 3 or 1
         setStatus(state, context, string.format(
             "Headless purchase accepted for %s; confirming the replicated inventory delta...\n"
                 .. "Observed: %d/%d new pet(s) | no duplicate request is allowed",
@@ -2401,7 +2406,9 @@ local function beginRequest(state, context, options, inspection)
 
     local pending = {
         Egg = options.Egg,
+        Count = options.Count == 8 and 8 or options.Count == 3 and 3 or 1,
         Triple = options.Count == 3,
+        Octuple = options.Count == 8,
         Headless = headless,
         StartedAt = os.clock(),
         TimeoutSeconds = headless and HEADLESS_EVENT_TIMEOUT or NATIVE_EVENT_TIMEOUT,
@@ -2465,7 +2472,8 @@ local function beginRequest(state, context, options, inspection)
 
     pending.RequestThread = task.spawn(function()
         if state.Pending ~= pending or not state.Running then return end
-        local result = table.pack(context.InvokeCommand("Buy Egg Yay", pending.Egg, pending.Triple))
+        local result = table.pack(context.InvokeCommand(
+            "Buy Egg Yay", pending.Egg, pending.Triple, pending.Octuple))
         if state.Pending ~= pending or not state.Running then return end
         pending.RequestThread = nil
         pending.ResponseDone = true
@@ -2512,7 +2520,8 @@ local function runCycle(state, context)
         setStatus(state, context, "Select a hatchable egg. No purchase request was sent.")
         return
     end
-    options.Count = tonumber(options.Count) == 3 and 3 or 1
+    local requestedCount = tonumber(options.Count)
+    options.Count = requestedCount == 8 and 8 or requestedCount == 3 and 3 or 1
     state.DelayMode = options.DelayMode
     state.ManualDelay = options.ManualDelay
 

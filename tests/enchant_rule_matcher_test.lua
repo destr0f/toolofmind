@@ -1,6 +1,6 @@
 local support = require("../automation_support_module")
 
-assert(support("version") == "1.5.0")
+assert(support("version") == "1.6.0")
 
 local function profile(rules, revision)
     return { Enabled = true, Revision = revision or 1, Rules = rules }

@@ -2,8 +2,8 @@
 -- The parent supplies a live pet catalog and a shared inventory-operation gate.
 
 local activeState
-local MODULE_VERSION = "1.5.0"
-local TARGET_PET_NAME = "Pixel Demon"
+local MODULE_VERSION = "1.6.0"
+local TARGET_PET_NAME = "Rich Cat / Helicopter Cat"
 
 local RETRY_DELAY = 10
 local PENDING_TIMEOUT = 15
@@ -131,6 +131,15 @@ local function targetCatalog(context)
         tostring(summary or (TARGET_PET_NAME .. " exact-name catalog"))
 end
 
+local function authoritativeEquipped(context, source)
+    local ok, equipped, ready, problem = pcall(context.GetEquippedPetSet, source)
+    if not ok then return nil, "equipped map error: " .. tostring(equipped) end
+    if ready ~= true or type(equipped) ~= "table" then
+        return nil, tostring(problem or "authoritative equipped map is unavailable")
+    end
+    return equipped, nil
+end
+
 local function acquireOperation(state, context)
     if state.OperationOwned then return true end
     local ok, acquired, owner = pcall(context.AcquireOperation, context.OperationOwner)
@@ -148,7 +157,7 @@ end
 
 local function statsText(stats)
     return string.format(
-        "Pixel Demon found: %d | eligible: %d | rule protected/deferred: %d | equipped skipped: %d | locked: %d | upgraded: %d | pending: %d",
+        "Cat targets found: %d | eligible: %d | rule protected/deferred: %d | equipped skipped: %d | locked: %d | upgraded: %d | pending: %d",
         stats.Found, stats.Eligible, stats.Protected, stats.Equipped,
         stats.Locked, stats.Upgraded, stats.Pending
     )
@@ -191,7 +200,7 @@ local function refreshPending(state, context, pets)
     return count
 end
 
-local function collectCandidates(state, context, pets)
+local function collectCandidates(state, context, pets, equippedSet)
     local groups = {}
     local targetIds, _, catalogSummary = targetCatalog(context)
     local stats = {
@@ -205,7 +214,7 @@ local function collectCandidates(state, context, pets)
             if targetIds[petId] then
                 stats.Found = stats.Found + 1
                 local uid = pet.uid ~= nil and tostring(pet.uid) or nil
-                local equipped = pet.e == true
+                local equipped = uid ~= nil and equippedSet[uid] == true
                 local locked = pet.l == true or pet.locked == true
                 local directoryBlocked = type(definition) == "table"
                     and (definition.isPremium or definition.rarity == "Exclusive")
@@ -272,6 +281,8 @@ local function validateSelection(context, selectedCandidates)
             if type(pet) == "table" and pet.uid ~= nil then byUID[tostring(pet.uid)] = pet end
         end
     end
+    local equippedSet, equippedProblem = authoritativeEquipped(context, snapshot or save)
+    if not equippedSet then return false, nil, nil, equippedProblem end
     local selectedUIDs, auditLabels = {}, {}
     local expectedId
     for index, candidate in ipairs(selectedCandidates) do
@@ -291,7 +302,7 @@ local function validateSelection(context, selectedCandidates)
             return false, nil, nil, shortUID(uid) .. " protection " .. tostring(decision)
                 .. ": " .. tostring(detail)
         end
-        if pet.e == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
+        if equippedSet[uid] == true then return false, nil, nil, shortUID(uid) .. " is equipped" end
         if pet.l == true or pet.locked == true then
             return false, nil, nil, shortUID(uid) .. " is locked"
         end
@@ -352,8 +363,16 @@ local function runCheck(state, context)
     local snapshot = type(context.GetPetSnapshot) == "function"
         and context.GetPetSnapshot(false) or nil
     local pets = snapshot and snapshot.Pets or save.Pets
+    local equippedSet, equippedProblem = authoritativeEquipped(context, snapshot or save)
+    if not equippedSet then
+        context.SetStatus("Authoritative equipped map is unavailable; no pets were sent: "
+            .. tostring(equippedProblem))
+        finish(2)
+        return
+    end
     local pendingCount = refreshPending(state, context, pets)
-    local candidates, stats, catalogSummary, groupSummary = collectCandidates(state, context, pets)
+    local candidates, stats, catalogSummary, groupSummary =
+        collectCandidates(state, context, pets, equippedSet)
     reportInventory(state, context, stats)
     local batchSize, batchCost, tierChance, batchProblem = resolveBatch(state, context)
     if not batchSize then
@@ -493,6 +512,7 @@ return function(action, context)
 
     local required = {
         "Library", "Running", "Enabled", "GetSave", "GetCurrency", "FormatNumber",
+        "GetEquippedPetSet",
         "GetMachinePetCatalog", "BatchSize", "GetCommandRemote", "InvalidateCommand",
         "InvokeCommand", "RouteText", "AcquireOperation", "ReleaseOperation",
         "CancelOperation", "OperationOwner", "ProtectionDryRun", "SetStatus", "Trace",
