@@ -131,7 +131,7 @@ for (const marker of [
     assert(farm.includes(marker), `main STOP misses generation cleanup: ${marker}`);
 }
 const petLifecycleOwner = farm.slice(
-    farm.indexOf("local function connectPetLifecycleSignal"),
+    farm.indexOf("function token.ConnectPetDataSignal"),
     farm.indexOf("local function bindPetLifecycleSignals")
 );
 assert(!petLifecycleOwner.includes("track(connection)"),

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.46-native-pet-target-cache"
+local VERSION = "1.4.1-candidate.54.47-legacy-farm-equipped-cache"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2761,7 +2761,6 @@ token.PetIdentityStats = {
     SaveReads = 0,
     EquippedRebuilds = 0,
     MembershipChanges = 0,
-    PhysicalEvents = 0,
     CoalescedEvents = 0,
 }
 function token.ReadAuthoritativeEquippedSet(save)
@@ -3016,10 +3015,6 @@ local petFarm = {
     BossPetWarp = {
         NativePets = nil,
         NativeScript = nil,
-        NetworkUpdate = nil,
-        PollUpvalueIndex = nil,
-        PollOriginalValue = nil,
-        PollSuppressed = false,
         PetSignature = nil,
         ResolveRetryAt = 0,
         LastGenerationKey = nil,
@@ -3033,8 +3028,6 @@ local petFarm = {
         PetsMoved = 0,
         Skipped = 0,
         Errors = 0,
-        PollSuppressions = 0,
-        LocalTargetSyncs = 0,
         LastProblem = "disabled",
     },
 }
@@ -3183,32 +3176,11 @@ local function functionUpvalueAt(callback, index)
     return nil, "upvalue #" .. tostring(index) .. " is unavailable"
 end
 
-function token.SetFunctionUpvalueAt(callback, index, value)
-    local setters = {
-        debug and type(debug.setupvalue) == "function" and debug.setupvalue or nil,
-        type(setupvalue) == "function" and setupvalue or nil,
-    }
-    local seen = {}
-    for _, setter in next, setters do
-        if type(setter) == "function" and not seen[setter] then
-            seen[setter] = true
-            local ok = pcall(setter, callback, index, value)
-            if ok then return true end
-        end
-    end
-    return false, "setupvalue is unavailable"
-end
-
 function petFarm:ResetBossPetWarp(reason)
     local warp = self.BossPetWarp
     if type(warp) ~= "table" then return end
-    self:SetNativePetTargetPollSuppressed(false)
     warp.NativePets = nil
     warp.NativeScript = nil
-    warp.NetworkUpdate = nil
-    warp.PollUpvalueIndex = nil
-    warp.PollOriginalValue = nil
-    warp.PollSuppressed = false
     warp.PetSignature = nil
     warp.ResolveRetryAt = 0
     warp.LastGenerationKey = nil
@@ -3294,8 +3266,6 @@ function petFarm:ResolveBossPetRuntime(rawPetIds)
                     if typeof(physical) == "Instance" and physical:IsA("BasePart") then
                         warp.NativePets = candidate
                         warp.NativeScript = petsScript
-                        warp.NetworkUpdate = type(scriptEnv.NetworkUpdate) == "function"
-                            and scriptEnv.NetworkUpdate or nil
                         warp.ResolveRetryAt = 0
                         warp.LastProblem = "native Game.Pets table ready"
                         table.clear(callbacks)
@@ -3308,98 +3278,6 @@ function petFarm:ResolveBossPetRuntime(rawPetIds)
     table.clear(callbacks)
     warp.LastProblem = "native Game.Pets table not resolved; normal C54 path retained"
     return nil, warp.LastProblem
-end
-
-function petFarm:SetNativePetTargetPollSuppressed(enabled)
-    local warp = self.BossPetWarp
-    if type(warp) ~= "table" then return false end
-    local callback = warp.NetworkUpdate
-    local index = tonumber(warp.PollUpvalueIndex)
-
-    if enabled ~= true then
-        if warp.PollSuppressed and type(callback) == "function" and index then
-            token.SetFunctionUpvalueAt(callback, index,
-                tonumber(warp.PollOriginalValue) or os.clock())
-        end
-        warp.PollSuppressed = false
-        return true
-    end
-    if warp.PollSuppressed then return true end
-    if type(callback) ~= "function" then
-        return false, "Game.Pets.NetworkUpdate is unavailable"
-    end
-
-    -- Current Game.Pets invokes Get Coin Targets every 1.5s and downloads the
-    -- target of every pet on the server. Ten clients turn that response into a
-    -- quadratic stream. Keep the native local-target pass intact and freeze
-    -- only its last-poll timestamp while our farm owns the local pet targets.
-    local now = os.clock()
-    if not index then
-        for candidateIndex = 1, 12 do
-            local candidate = functionUpvalueAt(callback, candidateIndex)
-            if type(candidate) == "number" and candidate >= 0
-                and candidate ~= math.huge and math.abs(now - candidate) <= 3 then
-                index = candidateIndex
-                warp.PollOriginalValue = candidate
-                break
-            end
-        end
-    end
-    if not index then
-        return false, "Get Coin Targets poll timestamp was not identified"
-    end
-    local set, problem = token.SetFunctionUpvalueAt(callback, index, math.huge)
-    if not set then return false, problem end
-    local retained = functionUpvalueAt(callback, index) == math.huge
-    if not retained then
-        return false, "Get Coin Targets poll suppression was not retained"
-    end
-    warp.PollUpvalueIndex = index
-    warp.PollSuppressed = true
-    warp.PollSuppressions = (tonumber(warp.PollSuppressions) or 0) + 1
-    return true
-end
-
-function petFarm:SyncNativePetTarget(record, rawPetIds)
-    if not config.PetFarm or not recordAlive(record) then return false end
-    local nativePets, petIdsOrProblem = self:ResolveBossPetRuntime(rawPetIds)
-    if type(nativePets) ~= "table" then return false, petIdsOrProblem end
-
-    local model = record.Model
-    if not model or model.Parent == nil then
-        local things = workspace:FindFirstChild("__THINGS")
-        local coins = things and things:FindFirstChild("Coins")
-        model = coins and coins:FindFirstChild(tostring(record.Id))
-    end
-    local target = model and (model:FindFirstChild("POS", true)
-        or (model:IsA("Model") and model.PrimaryPart) or nil)
-    if not target or not target:IsA("BasePart") then
-        return false, "coin target part is unavailable"
-    end
-
-    local synced = 0
-    for _, rawPet in ipairs(petIdsOrProblem) do
-        local petId = type(rawPet) == "table" and rawPet.PetId or rawPet
-        local state = nativePets[tostring(petId)] or nativePets[tonumber(petId)]
-        if type(state) == "table" then
-            state.target = target
-            state.networkTarget = target
-            state.farming = true
-            state.follower = nil
-            synced = synced + 1
-        end
-    end
-    if synced > 0 then
-        local suppressed, problem = self:SetNativePetTargetPollSuppressed(true)
-        if not suppressed then
-            self.BossPetWarp.LastProblem = tostring(problem)
-            return false, problem
-        end
-        self.BossPetWarp.LocalTargetSyncs =
-            (tonumber(self.BossPetWarp.LocalTargetSyncs) or 0) + synced
-        return true
-    end
-    return false, "native equipped pet states are unavailable"
 end
 
 function petFarm:AnchorCharacterToBoss(record)
@@ -4287,10 +4165,6 @@ function petFarm:EnsureEngine()
             return true
         end,
         OnBatchAccepted = function(record, petIds, spawnGeneration)
-            -- Mirror the accepted server target into Game.Pets before freezing
-            -- its all-server Get Coin Targets poll. This prevents the native
-            -- NetworkUpdate loop from "correcting" our pets back to Player.
-            pcall(self.SyncNativePetTarget, self, record, petIds)
             if config.BossPetInstantArrival and config.Mode == "Boss Chest Only" then
                 pcall(self.WarpBossPetsOnce, self, record, petIds, spawnGeneration)
             end
@@ -6140,27 +6014,6 @@ function token.SchedulePetMembershipReconcile(reason)
     end)
 end
 
-local function connectPetLifecycleSignal(name)
-    if petLifecycle.Signals[name] then return true end
-    local signal = Library and Library.Signal
-    if not signal or type(signal.Fired) ~= "function" then return false end
-
-    local eventOk, event = pcall(signal.Fired, name)
-    if not eventOk or not event or type(event.Connect) ~= "function" then return false end
-    local connected, connection = pcall(function()
-        return event:Connect(function()
-            -- This signal describes a physical model, not authoritative save
-            -- membership. Models can be rebuilt during teleports/anti-lag, so
-            -- never drop a server assignment from this edge alone.
-            token.PetIdentityStats.PhysicalEvents = token.PetIdentityStats.PhysicalEvents + 1
-            token.SchedulePetMembershipReconcile(name)
-        end)
-    end)
-    if not connected or not connection then return false end
-    petLifecycle.Signals[name] = connection
-    return true
-end
-
 function token.ConnectPetDataSignal()
     local name = "Data Key Updated"
     if petLifecycle.Signals[name] then return true end
@@ -6186,10 +6039,8 @@ end
 
 local function bindPetLifecycleSignals(attempt, bindToken)
     if bindToken ~= petLifecycle.BindToken or not running() then return end
-    local added = connectPetLifecycleSignal("Added Client Pet")
-    local removed = connectPetLifecycleSignal("Removed Client Pet")
     local data = token.ConnectPetDataSignal()
-    if added and removed and data then return end
+    if data then return end
     attempt = (tonumber(attempt) or 0) + 1
     if attempt < 20 then
         task.delay(0.5, function()
@@ -8262,14 +8113,7 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "equippedSaveReads", token.PetIdentityStats.SaveReads)
     requestDiagnostics.Gauge("Farm", "equippedRebuilds", token.PetIdentityStats.EquippedRebuilds)
     requestDiagnostics.Gauge("Farm", "equippedMembershipChanges", token.PetIdentityStats.MembershipChanges)
-    requestDiagnostics.Gauge("Farm", "petPhysicalEvents", token.PetIdentityStats.PhysicalEvents)
     requestDiagnostics.Gauge("Farm", "petEventsCoalesced", token.PetIdentityStats.CoalescedEvents)
-    requestDiagnostics.Gauge("Farm", "nativeTargetPoll",
-        petFarm.BossPetWarp.PollSuppressed and "suppressed" or "native")
-    requestDiagnostics.Gauge("Farm", "nativeTargetPollSuppressions",
-        tonumber(petFarm.BossPetWarp.PollSuppressions) or 0)
-    requestDiagnostics.Gauge("Farm", "nativeTargetSyncs",
-        tonumber(petFarm.BossPetWarp.LocalTargetSyncs) or 0)
     requestDiagnostics.Gauge("Farm", "working", working)
     requestDiagnostics.Gauge("Farm", "joining", joining)
     requestDiagnostics.Gauge("Farm", "trueIdle", math.max(equipped - assigned, 0))
