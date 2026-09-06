@@ -4,11 +4,15 @@
 -- technique only while the suite's full headless/anti-lag mode is enabled.
 -- Unsupported executors fall back to read-only ID observation.
 
-local MODULE_VERSION = "3.8.0"
+local MODULE_VERSION = "3.8.1"
 local ORB_MIN_BATCH = 8
 local ORB_BATCH_SIZE = 128
 local MAX_PENDING_ORBS = 8192
 local ORB_FLUSH_INTERVAL = 0.65
+local ORB_PRESSURE_RTT_START = 0.40
+local ORB_PRESSURE_RTT_FULL = 0.85
+local ORB_PRESSURE_MAX_INTERVAL = 2.50
+local ORB_PRESSURE_PHASE_MAX = 0.60
 local ORB_CONFIRM_MIN_DELAY = 2.5
 local ORB_CONFIRM_MAX_DELAY = 8
 local CLIENT_STAGGER_SLOTS = 16
@@ -75,6 +79,9 @@ local run = {
     OrbFlushArmed = false,
     OrbConfirmArmed = false,
     OrbLastFlushAt = 0,
+    OrbCurrentFlushInterval = ORB_FLUSH_INTERVAL,
+    OrbNetworkPressure = 0,
+    OrbPressureRTT = 0,
     BagById = {},
     BagQueue = {},
     BagQueueHead = 1,
@@ -303,7 +310,27 @@ local function currentRTT()
 end
 
 local function orbFlushInterval()
-    return ORB_FLUSH_INTERVAL
+    local rtt = currentRTT()
+    local pressure = math.clamp(
+        (rtt - ORB_PRESSURE_RTT_START)
+            / (ORB_PRESSURE_RTT_FULL - ORB_PRESSURE_RTT_START),
+        0,
+        1
+    )
+    local interval = ORB_FLUSH_INTERVAL
+        + (ORB_PRESSURE_MAX_INTERVAL - ORB_FLUSH_INTERVAL) * pressure
+    if pressure > 0 then
+        local player = Players.LocalPlayer
+        local userId = math.abs(tonumber(player and player.UserId) or 0)
+        local slot = (userId + run.OrbBatches * 7) % CLIENT_STAGGER_SLOTS
+        interval = interval + pressure
+            * (slot / math.max(CLIENT_STAGGER_SLOTS - 1, 1))
+            * ORB_PRESSURE_PHASE_MAX
+    end
+    run.OrbCurrentFlushInterval = interval
+    run.OrbNetworkPressure = pressure
+    run.OrbPressureRTT = rtt
+    return interval
 end
 
 local function orbConfirmationDelay()
@@ -318,6 +345,7 @@ local function statusText()
             .. "Prevented visual calls: %d | Claim IDs sent: %d\n"
             .. "Orbs: pending/unconfirmed/ack %d/%d/%d | events/batches %d/%d | retry/expired/error/overflow/drop %d/%d/%d/%d/%d\n"
             .. "Lootbags: waiting %d/%d | lanes %d | events/sent/committed/ack/retry/skip/error/overflow %d/%d/%d/%d/%d/%d/%d/%d\n"
+            .. "Orb pacing: %.2fs | network pressure %.0f%% | observed RTT %.0fms\n"
             .. "Retention: one-shot orb commit; Orb Removed is cleanup/statistics only",
         run.OrbsProducer,
         run.OrbGateReason,
@@ -351,7 +379,10 @@ local function statusText()
         run.BagRetried,
         run.BagSkipped,
         run.BagErrors,
-        run.BagOverflow
+        run.BagOverflow,
+        run.OrbCurrentFlushInterval,
+        run.OrbNetworkPressure * 100,
+        run.OrbPressureRTT * 1000
     )
 end
 
@@ -1657,6 +1688,9 @@ local function resetStats()
     run.OrbDropped = 0
     run.OrbDeduplicated = 0
     run.OrbMaxBatch = 0
+    run.OrbCurrentFlushInterval = ORB_FLUSH_INTERVAL
+    run.OrbNetworkPressure = 0
+    run.OrbPressureRTT = 0
     run.OrbLocalSentUnacked = 0
     run.OrbTransportCommitted = 0
     run.OrbAckAvailable = false
@@ -1806,6 +1840,9 @@ local function stats()
         OrbDropped = run.OrbDropped,
         OrbDeduplicated = run.OrbDeduplicated,
         OrbMaxBatch = run.OrbMaxBatch,
+        OrbFlushInterval = run.OrbCurrentFlushInterval,
+        OrbNetworkPressure = run.OrbNetworkPressure,
+        OrbPressureRTT = run.OrbPressureRTT,
         -- Compatibility field consumed by the passive request inspector.
         -- It must reflect the live bounded confirmation set instead of the
         -- obsolete monotonically-written counter.

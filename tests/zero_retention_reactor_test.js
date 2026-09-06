@@ -103,7 +103,7 @@ assert(!farm.includes("runtimePetCounts")
 // Loot owns Orbs/Lootbags and gates game producers before Instance creation.
 // The hot path is one deferred orb batch plus one scalar four-lane bag pump.
 for (const marker of [
-    'local MODULE_VERSION = "3.8.0"',
+    'local MODULE_VERSION = "3.8.1"',
     "ORB_MIN_BATCH = 8",
     "ORB_BATCH_SIZE = 128",
     "MAX_PENDING_ORBS = 8192",
@@ -180,7 +180,8 @@ assert(loot.includes("run.OrbAckAvailable")
 assert(loot.includes("local function currentRTT()")
     && loot.includes("local function orbFlushInterval()")
     && loot.includes("context.GetPingSeconds")
-    && loot.includes("return ORB_FLUSH_INTERVAL")
+    && loot.includes("ORB_PRESSURE_MAX_INTERVAL")
+    && loot.includes("run.OrbCurrentFlushInterval = interval")
     && loot.includes("local function orbConfirmationDelay()"),
     "fixed native orb pacing and bounded confirmation retention are missing");
 assert(loot.includes("run.PendingOrbCount >= ORB_MIN_BATCH")

@@ -13,7 +13,7 @@ const manifest = JSON.parse(read("runtime_manifest.json"));
 assert(manifest.suite.version.startsWith("1.4.1-candidate.54"));
 assert.strictEqual(manifest.modules.networkTransport.version, "1.5.4");
 assert.strictEqual(manifest.modules.petFarmEngine.version, "1.4.8");
-assert.strictEqual(manifest.modules.lootReactor.version, "3.8.0");
+assert.strictEqual(manifest.modules.lootReactor.version, "3.8.1");
 assert.strictEqual(manifest.modules.requestInspector.version, "1.0.2");
 
 // Current-session resolver: live maps first, current Network5 VLG hash,
@@ -71,6 +71,14 @@ assert(loot.includes("local ORB_MIN_BATCH = 8"));
 assert(loot.includes("local ORB_FLUSH_INTERVAL = 0.65"));
 assert(loot.includes("local ORB_BATCH_SIZE = 128"));
 assert(loot.includes("run.PendingOrbCount >= ORB_MIN_BATCH"));
+for (const marker of [
+    "ORB_PRESSURE_RTT_START = 0.40",
+    "ORB_PRESSURE_RTT_FULL = 0.85",
+    "ORB_PRESSURE_MAX_INTERVAL = 2.50",
+    "ORB_PRESSURE_PHASE_MAX = 0.60",
+    "run.OrbCurrentFlushInterval = interval",
+]) assert(loot.includes(marker), `adaptive orb pacing misses ${marker}`);
+assert(farm.includes('requestDiagnostics.Gauge("Loot", "orbNetworkPressure"));
 for (const forbidden of [
     "MAX_ORB_DELIVERY_ATTEMPTS", "OrbDeliveryAttempts", "OrbAckObserved", "OrbRetryArmed",
 ]) assert(!loot.includes(forbidden), `orb global retry state returned: ${forbidden}`);

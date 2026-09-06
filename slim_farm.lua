@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.44-cat-egg-live-map"
+local VERSION = "1.4.1-candidate.54.45-multiclient-ping-pressure"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -5144,6 +5144,12 @@ local function startAutoEggModule()
         Library = Library,
         Player = player,
         UserId = tonumber(player and player.UserId) or 0,
+        GetPingSeconds = function()
+            local ok, pingMs = pcall(function()
+                return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+            end)
+            return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
+        end,
         Running = running,
         Enabled = function() return config.AutoEgg end,
         GetOptions = function()
@@ -8186,6 +8192,10 @@ function requestDiagnostics.UpdateTelemetry()
         requestDiagnostics.Gauge("Egg", "postProcessRetries", tonumber(eggState.PostProcessRetries) or 0)
         requestDiagnostics.Gauge("Egg", "autoDeleted", tonumber(eggState.AutoDeleted) or 0)
         requestDiagnostics.Gauge("Egg", "eventRoute", tostring(eggState.EventRoute or "unresolved"))
+        requestDiagnostics.Gauge("Egg", "pressureDelay", tonumber(eggState.PressureDelay) or 0)
+        requestDiagnostics.Gauge("Egg", "networkPressure", tonumber(eggState.NetworkPressure) or 0)
+        requestDiagnostics.Gauge("Egg", "observedPingMs",
+            (tonumber(eggState.ObservedPingSeconds) or 0) * 1000)
         local windowStart = tonumber(eggState["NetworkWindow" .. "StartedAt"]) or 0
         requestDiagnostics.Gauge("Egg", "recoveryWindowRemaining", windowStart > 0
             and math.max(600 - (now - windowStart), 0) or 600)
@@ -8211,6 +8221,10 @@ function requestDiagnostics.UpdateTelemetry()
         requestDiagnostics.Gauge("Loot", "orbIdsSent", tonumber(lootStats.OrbIdsSent) or 0)
         requestDiagnostics.Gauge("Loot", "orbBatches", tonumber(lootStats.OrbBatches) or 0)
         requestDiagnostics.Gauge("Loot", "orbMaxBatch", tonumber(lootStats.OrbMaxBatch) or 0)
+        requestDiagnostics.Gauge("Loot", "orbFlushInterval", tonumber(lootStats.OrbFlushInterval) or 0)
+        requestDiagnostics.Gauge("Loot", "orbNetworkPressure", tonumber(lootStats.OrbNetworkPressure) or 0)
+        requestDiagnostics.Gauge("Loot", "orbPressureRttMs",
+            (tonumber(lootStats.OrbPressureRTT) or 0) * 1000)
         requestDiagnostics.Gauge("Loot", "orbLocalSentUnacked", tonumber(lootStats.OrbLocalSentUnacked) or 0)
         requestDiagnostics.Gauge("Loot", "orbTransportCommitted", tonumber(lootStats.OrbTransportCommitted) or 0)
         requestDiagnostics.Gauge("Loot", "orbErrors", tonumber(lootStats.OrbErrors) or 0)

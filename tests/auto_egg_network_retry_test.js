@@ -18,8 +18,16 @@ function functionBody(name, nextName) {
 
 assert(source.includes("local MAX_NETWORK_ATTEMPTS = 12"),
     "poor-connection retry budget must remain 12 attempts");
-assert(source.includes('local MODULE_VERSION = "1.8.1"'),
-    "the Cat World live-map build must expose Auto Egg v1.8.1");
+assert(source.includes('local MODULE_VERSION = "1.8.2"'),
+    "the multi-client pressure build must expose Auto Egg v1.8.2");
+for (const marker of [
+    "PRESSURE_PING_START = 0.40",
+    "PRESSURE_PING_FULL = 0.85",
+    "PRESSURE_BASE_DELAY = 0.40",
+    "PRESSURE_PHASE_DELAY = 1.40",
+    "local function networkPressureDelay(state, context)",
+    "state.NextAction = completedAt + state.RequestDelay + pressureDelay",
+]) assert(source.includes(marker), `multi-client egg pacing misses ${marker}`);
 assert(source.includes("local NETWORK_RETRY_WINDOW = 600"),
     "poor-connection retry window must remain bounded at 600 seconds");
 assert(source.includes("local RESPONSE_WAIT_SLICE = 54"),

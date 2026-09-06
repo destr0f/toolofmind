@@ -2,7 +2,7 @@
 -- Resolves named Network routes at runtime and never relies on session child indices.
 
 local activeState
-local MODULE_VERSION = "1.8.1"
+local MODULE_VERSION = "1.8.2"
 
 local ARM_DELAY = 0.65
 local LOCAL_RECHECK_DELAY = 0.18
@@ -22,6 +22,11 @@ local NATIVE_SKIP_ARM_TIMEOUT = 8
 local NATIVE_SKIP_CONNECTION_WINDOW = 0.35
 local PHYSICAL_RESCAN_COOLDOWN = 2
 local ROOT_RECHECK_INTERVAL = 0.75
+local PRESSURE_PING_START = 0.40
+local PRESSURE_PING_FULL = 0.85
+local PRESSURE_BASE_DELAY = 0.40
+local PRESSURE_PHASE_DELAY = 1.40
+local PRESSURE_PHASE_SLOTS = 17
 local MAX_NETWORK_ATTEMPTS = 12
 local NETWORK_RETRY_WINDOW = 600
 local NETWORK_RETRY_DELAYS = { 1, 2, 5, 10, 20, 40, 70, 90, 110, 120, 120 }
@@ -59,6 +64,28 @@ local function timingOptions(context)
     options.DelayMode = options.DelayMode == "Manual" and "Manual" or "Adaptive"
     options.ManualDelay = math.clamp(tonumber(options.ManualDelay) or 0, 0, 10)
     return options
+end
+
+local function networkPressureDelay(state, context)
+    local ping = 0
+    if type(context.GetPingSeconds) == "function" then
+        local ok, value = pcall(context.GetPingSeconds)
+        if ok then ping = math.max(tonumber(value) or 0, 0) end
+    end
+    local pressure = math.clamp(
+        (ping - PRESSURE_PING_START) / (PRESSURE_PING_FULL - PRESSURE_PING_START),
+        0,
+        1
+    )
+    local userId = math.abs(tonumber(context.UserId) or 0)
+    local sequence = tonumber(state.Successes) or 0
+    local slot = (userId + sequence * 7) % PRESSURE_PHASE_SLOTS
+    local delay = pressure * (PRESSURE_BASE_DELAY
+        + PRESSURE_PHASE_DELAY * slot / math.max(PRESSURE_PHASE_SLOTS - 1, 1))
+    state.ObservedPingSeconds = ping
+    state.NetworkPressure = pressure
+    state.PressureDelay = delay
+    return delay
 end
 
 local function rememberResponse(state, pending)
@@ -2017,11 +2044,12 @@ local function finishSuccess(state, context, pending, note)
         store[jobId] = state.RequestDelay
     end
     local completedAt = os.clock()
+    local pressureDelay = networkPressureDelay(state, context)
     if state.DelayMode == "Manual" then
-        -- Manual means an exact post-completion pause. Starting it at the
-        -- request/ACK timestamp silently shortens the configured delay when
-        -- native post-processing takes time.
-        state.NextAction = completedAt + state.RequestDelay
+        -- Manual remains the configured minimum post-completion pause.
+        -- Proven server pressure may add a small rotating account phase so
+        -- ten clients do not submit Buy/Delete pairs in the same wave.
+        state.NextAction = completedAt + state.RequestDelay + pressureDelay
     else
         local pacingAnchor = math.max(
             tonumber(pending.ResponseAt) or 0,
@@ -2029,15 +2057,20 @@ local function finishSuccess(state, context, pending, note)
             tonumber(pending.StartedAt) or 0
         )
         state.NextAction = math.max(completedAt, pacingAnchor + state.RequestDelay)
+            + pressureDelay
     end
     setStatus(state, context, string.format(
-        "Hatched %s | completed: %d\n%s | %s delay: %.2fs | response p50/p95 %.2f/%.2fs | clean streak %d | %s",
+        "Hatched %s | completed: %d\n%s | %s delay: %.2fs | response p50/p95 %.2f/%.2fs | clean streak %d | %s\n"
+            .. "Network pressure: %.0f%% at %.0fms | cross-account phase +%.2fs",
         requestLabel(pending),
         state.Successes,
         tostring(note or pending.Route or "Open Egg event confirmed"),
         string.lower(state.DelayMode), state.RequestDelay,
         state.ResponseP50, state.ResponseP95, state.CleanSuccesses,
-        state.LastAdjustmentReason
+        state.LastAdjustmentReason,
+        state.NetworkPressure * 100,
+        state.ObservedPingSeconds * 1000,
+        state.PressureDelay
     ))
 end
 
@@ -2717,6 +2750,9 @@ return function(action, context)
         OpenEvents = 0,
         CleanSuccesses = 0,
         ConsecutiveFailures = 0,
+        ObservedPingSeconds = 0,
+        NetworkPressure = 0,
+        PressureDelay = 0,
         NetworkAttempt = 1,
         NetworkRetryKey = nil,
         NetworkWindowStartedAt = 0,
