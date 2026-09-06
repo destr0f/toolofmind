@@ -78,7 +78,7 @@ for (const marker of [
     "ORB_PRESSURE_PHASE_MAX = 0.60",
     "run.OrbCurrentFlushInterval = interval",
 ]) assert(loot.includes(marker), `adaptive orb pacing misses ${marker}`);
-assert(farm.includes('requestDiagnostics.Gauge("Loot", "orbNetworkPressure"));
+assert(farm.includes('requestDiagnostics.Gauge("Loot", "orbNetworkPressure",'));
 for (const forbidden of [
     "MAX_ORB_DELIVERY_ATTEMPTS", "OrbDeliveryAttempts", "OrbAckObserved", "OrbRetryArmed",
 ]) assert(!loot.includes(forbidden), `orb global retry state returned: ${forbidden}`);
