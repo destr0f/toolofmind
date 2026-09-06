@@ -60,14 +60,18 @@ assert(farm.includes("CoinRecordReady = function(rawId)")
     && farm.includes("coinIndex:IndexModel(model, true)"),
     "per-ID readiness/recovery is missing from the farm context");
 
-// Empty/failed/raced responses never replace live state. A world transition
-// clears old records and explicitly re-arms the bounded three-attempt probe.
+// Empty/failed responses never replace live state. If live events win a slow
+// snapshot race, their catalog is retained and another full response is not requested.
 assert(farm.includes('local responseAccepted = ok and type(response) == "table"')
     && farm.includes("and validCount > 0 and coinMutationSerial == serialAtStart"),
     "empty or raced snapshots can overwrite live state");
-assert(farm.includes("coinSync.SnapshotPrimed = responseAccepted")
-    && farm.includes("if not responseAccepted then"),
-    "failed snapshots are incorrectly treated as primed");
+assert(farm.includes('local liveCatalogWon = ok and type(response) == "table"')
+    && farm.includes("coinSync.SnapshotPrimed = responseAccepted or liveCatalogWon")
+    && farm.includes("if not responseAccepted and not liveCatalogWon then"),
+    "live snapshot races can still trigger repeated full catalog requests");
+assert(farm.includes("primeCoinCatalogFromWorkspace()")
+    && farm.includes("local workspace catalog ready with %d records"),
+    "a populated local event-driven catalog still triggers a remote startup snapshot");
 assert(farm.includes('resetCoinSnapshot("world changed; awaiting fresh catalog")')
     && farm.includes("scheduleCoinSnapshotRetry(0.15, coinSync.LastProblem)"),
     "world transitions do not reset/re-arm the bounded snapshot path");

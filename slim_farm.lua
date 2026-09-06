@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.47-legacy-farm-equipped-cache"
+local VERSION = "1.4.1-candidate.54.48-66c-network-parity"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -2358,6 +2358,19 @@ local function refreshWorkspaceCoins()
     end
 end
 
+local function primeCoinCatalogFromWorkspace()
+    if coinSync.SnapshotPrimed or coinSync.SnapshotBusy
+        or coinSync.RecordCount <= 0 or coinIndex.ScannedFolder == nil then return false end
+    -- The local Coins folder plus ChildAdded/ChildRemoved is the zero-request
+    -- catalog used by the legacy C54 path. Do not download the same catalog.
+    coinSync.SnapshotPrimed = true
+    coinSync.TargetsValidated = true
+    coinSync.RetryToken = coinSync.RetryToken + 1
+    coinSync.RetryArmed = false
+    coinSync.LastProblem = string.format("local workspace catalog ready with %d records", coinSync.RecordCount)
+    return true
+end
+
 local refreshCoinSnapshot
 local function resetCoinSnapshot(reason)
     coinSync.RetryToken = coinSync.RetryToken + 1
@@ -2468,6 +2481,8 @@ refreshCoinSnapshot = function()
     end
     local responseAccepted = ok and type(response) == "table"
         and validCount > 0 and coinMutationSerial == serialAtStart
+    local liveCatalogWon = ok and type(response) == "table" and validCount > 0
+        and coinMutationSerial ~= serialAtStart and coinSync.RecordCount > 0
     if responseAccepted then
         coinSync.TargetsValidated = false
         local seen = coinSync.SnapshotSeen or {}
@@ -2489,9 +2504,12 @@ refreshCoinSnapshot = function()
         for _, id in ipairs(stale) do removeCoin(id, false) end
         if type(requestAllocatorPulse) == "function" then requestAllocatorPulse() end
     end
-    coinSync.SnapshotPrimed = responseAccepted
+    coinSync.SnapshotPrimed = responseAccepted or liveCatalogWon
     if responseAccepted then
         coinSync.LastProblem = string.format("ready with %d records", validCount)
+    elseif liveCatalogWon then
+        coinSync.TargetsValidated = true
+        coinSync.LastProblem = "live coin events won snapshot race; retry retired"
     elseif not ok then
         coinSync.LastProblem = "Get Coins failed: " .. tostring(response)
     elseif type(response) ~= "table" then
@@ -2502,7 +2520,7 @@ refreshCoinSnapshot = function()
         coinSync.LastProblem = "Get Coins raced a live coin event"
     end
     coinSync.SnapshotBusy = false
-    if not responseAccepted then
+    if not responseAccepted and not liveCatalogWon then
         if coinSync.SnapshotAttempts >= coinSync.MaxSnapshotAttempts then
             coinSync.SnapshotFailOpen = true
             coinSync.LastProblem = coinSync.LastProblem .. "; event-driven fail-open"
@@ -2719,6 +2737,9 @@ local function connectCoinSignals(forceName)
                 local farmController = coinSync.PetFarm
                 if farmController and type(farmController.ResetBossPetWarp) == "function" then
                     farmController:ResetBossPetWarp("world changed")
+                end
+                if farmController and type(farmController.ArmNativeTargetPollSuppression) == "function" then
+                    farmController:ArmNativeTargetPollSuppression(0)
                 end
                 currentZone = nil
                 currentZoneAnchor = nil
@@ -3030,6 +3051,16 @@ local petFarm = {
         Errors = 0,
         LastProblem = "disabled",
     },
+    NativeTargetPoll = {
+        Script = nil,
+        Callback = nil,
+        OriginalValue = nil,
+        OriginalCaptured = false,
+        Suppressed = false,
+        Attempts = 0,
+        RetryToken = 0,
+        LastProblem = "pending",
+    },
 }
 coinSync.PetFarm = petFarm
 
@@ -3175,6 +3206,112 @@ local function functionUpvalueAt(callback, index)
     end
     return nil, "upvalue #" .. tostring(index) .. " is unavailable"
 end
+
+function token.SetFunctionUpvalueAt(callback, index, value)
+    local setters = {
+        debug and type(debug.setupvalue) == "function" and debug.setupvalue or nil,
+        type(setupvalue) == "function" and setupvalue or nil,
+    }
+    local seen = {}
+    for _, setter in next, setters do
+        if type(setter) == "function" and not seen[setter] then
+            seen[setter] = true
+            local ok = pcall(setter, callback, index, value)
+            if ok and functionUpvalueAt(callback, index) == value then return true end
+        end
+    end
+    return false, "setupvalue is unavailable or did not retain the exact value"
+end
+
+function petFarm:SuppressNativeTargetPoll()
+    local state = self.NativeTargetPoll
+    if type(state) ~= "table" then return false, "native target poll state is unavailable" end
+    if state.Suppressed and type(state.Callback) == "function"
+        and functionUpvalueAt(state.Callback, 3) == math.huge then return true end
+    if type(getsenv) ~= "function" then
+        state.LastProblem = "getsenv unavailable; native target poll unchanged"
+        return false, state.LastProblem
+    end
+
+    local playerScripts = player and (player:FindFirstChild("PlayerScripts")
+        or player:FindFirstChildOfClass("PlayerScripts"))
+    local scripts = playerScripts and playerScripts:FindFirstChild("Scripts")
+    local gameScripts = scripts and scripts:FindFirstChild("Game")
+    local petsScript = gameScripts and gameScripts:FindFirstChild("Pets")
+    if not petsScript then
+        state.LastProblem = "Game.Pets LocalScript unavailable"
+        return false, state.LastProblem
+    end
+    local envOk, scriptEnv = pcall(getsenv, petsScript)
+    local callback = envOk and type(scriptEnv) == "table" and scriptEnv.NetworkUpdate or nil
+    if type(callback) ~= "function" then
+        state.LastProblem = "Game.Pets.NetworkUpdate unavailable"
+        return false, state.LastProblem
+    end
+
+    -- Cobalt identifies this exact function as (pet table, Library, last poll).
+    -- Refuse to mutate anything unless all positions still match that contract.
+    local nativePets = functionUpvalueAt(callback, 1)
+    local nativeLibrary = functionUpvalueAt(callback, 2)
+    local lastPoll = functionUpvalueAt(callback, 3)
+    if type(nativePets) ~= "table" or type(nativeLibrary) ~= "table"
+        or type(lastPoll) ~= "number" then
+        state.LastProblem = "Game.Pets.NetworkUpdate upvalue contract changed"
+        return false, state.LastProblem
+    end
+    if lastPoll == math.huge then
+        state.Script = petsScript
+        state.Callback = callback
+        state.Suppressed = true
+        state.LastProblem = "suppressed (already applied)"
+        return true
+    end
+
+    state.Script = petsScript
+    state.Callback = callback
+    state.OriginalValue = lastPoll
+    state.OriginalCaptured = true
+    local set, problem = token.SetFunctionUpvalueAt(callback, 3, math.huge)
+    if not set then
+        state.LastProblem = tostring(problem)
+        return false, state.LastProblem
+    end
+    state.Suppressed = true
+    state.LastProblem = "suppressed exact Game.Pets Get Coin Targets poll"
+    return true
+end
+
+function petFarm:ArmNativeTargetPollSuppression(attempt)
+    local state = self.NativeTargetPoll
+    if type(state) ~= "table" or not running() then return end
+    attempt = math.max(math.floor(tonumber(attempt) or 0), 0)
+    state.Attempts = (tonumber(state.Attempts) or 0) + 1
+    local suppressed = self:SuppressNativeTargetPoll()
+    if suppressed or attempt >= 11 then return end
+    state.RetryToken = state.RetryToken + 1
+    local retryToken = state.RetryToken
+    task.delay(0.5, function()
+        if running() and retryToken == state.RetryToken and not state.Suppressed then
+            self:ArmNativeTargetPollSuppression(attempt + 1)
+        end
+    end)
+end
+
+function petFarm:RestoreNativeTargetPoll()
+    local state = self.NativeTargetPoll
+    if type(state) ~= "table" then return end
+    state.RetryToken = state.RetryToken + 1
+    if state.OriginalCaptured and type(state.Callback) == "function"
+        and functionUpvalueAt(state.Callback, 3) == math.huge then
+        token.SetFunctionUpvalueAt(state.Callback, 3, state.OriginalValue)
+    end
+    state.Suppressed = false
+    state.LastProblem = "restored"
+end
+
+task.defer(function()
+    if running() then petFarm:ArmNativeTargetPollSuppression(0) end
+end)
 
 function petFarm:ResetBossPetWarp(reason)
     local warp = self.BossPetWarp
@@ -5846,6 +5983,7 @@ allocatorPass = function()
     local ok, problem = pcall(function()
         connectCoinSignals()
         refreshWorkspaceCoins()
+        primeCoinCatalogFromWorkspace()
         if not coinSync.SnapshotPrimed and not coinSync.SnapshotBusy
             and not coinSync.SnapshotFailOpen and coinSync.SnapshotAttempts == 0
             and not coinSync.RetryArmed then
@@ -7752,6 +7890,7 @@ local function finishShutdown()
     table.clear(petFarm.DispatchEntryPool)
     table.clear(petFarm.DispatchPayload)
     petFarm:ResetBossPetWarp("shutdown")
+    petFarm:RestoreNativeTargetPoll()
     table.clear(petFarm.FastPets)
     petFarm.ProgressLeaseToken = petFarm.ProgressLeaseToken + 1
     petFarm.ProgressLeaseScheduled = false
@@ -8114,6 +8253,9 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "equippedRebuilds", token.PetIdentityStats.EquippedRebuilds)
     requestDiagnostics.Gauge("Farm", "equippedMembershipChanges", token.PetIdentityStats.MembershipChanges)
     requestDiagnostics.Gauge("Farm", "petEventsCoalesced", token.PetIdentityStats.CoalescedEvents)
+    requestDiagnostics.Gauge("Farm", "nativeTargetPoll",
+        petFarm.NativeTargetPoll.Suppressed and "suppressed" or petFarm.NativeTargetPoll.LastProblem)
+    requestDiagnostics.Gauge("Farm", "nativeTargetPollAttempts", petFarm.NativeTargetPoll.Attempts)
     requestDiagnostics.Gauge("Farm", "working", working)
     requestDiagnostics.Gauge("Farm", "joining", joining)
     requestDiagnostics.Gauge("Farm", "trueIdle", math.max(equipped - assigned, 0))
@@ -8445,10 +8587,11 @@ local function updateRuntimeTelemetry()
                 bossLine
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s%s",
+                "Network: %s | %s | allocator: %s\nNative target poll: %s\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s%s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
+                tostring(petFarm.NativeTargetPoll.LastProblem),
                 tonumber(dispatchStats.Limit) or 0,
                 tonumber(dispatchStats.PolicyMaxLanes) or tonumber(petFarm.PolicyLanes) or 16,
                 tonumber(dispatchStats.Active) or 0,
