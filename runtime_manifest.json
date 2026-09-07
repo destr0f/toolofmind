@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.50-66c-native-pet-sync",
+    "version": "1.4.1-candidate.54.51-cat-throne-save-diet",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+    "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.5.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -112,7 +112,7 @@
       "version": "1.4.8",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.8.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.8.2",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.2.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.50-66c-native-pet-sync",
+      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -357,32 +357,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "cb504fe514d4b6a86da458538df5e7b3ff472baa",
+    "generatedFromCommit": "76a9f476b878beee69ad3a461d2d39f69a739999",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7170,
-      "sha256": "651ec48f55ce0e981f505d32c0c118395bec7896f9bcd657aa34960f4de4e3d6",
-      "djb2": "fe3d46bf"
+      "bytes": 7185,
+      "sha256": "b190672a28e7247971ae2f0e0ae46a226c732090ac837d612046d62240ce8e28",
+      "djb2": "5ce8d292"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.50-66c-native-pet-sync",
-      "bytes": 355214,
-      "sha256": "1aed8dd977c510f2bf5ca672e653e12bd5f040785367316d9c357397d41fc8dd",
-      "djb2": "91443e68"
+      "version": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "bytes": 355660,
+      "sha256": "746c10ca59e27f1c9f1c103ec074bdeea76d58746ec94e34117015c777af090a",
+      "djb2": "e3b52bce"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 274645,
-        "sha256": "96796c683a691408cfdbf80d3c5321a02a12d76198086fad0780215010825dab",
-        "djb2": "20c7b041"
+        "bytes": 274987,
+        "sha256": "f3c76ab0c69743053bac548689cba5284ccaff629d87de721404db3e469a0950",
+        "djb2": "f5038a0c"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 274645,
-        "sha256": "96796c683a691408cfdbf80d3c5321a02a12d76198086fad0780215010825dab",
-        "djb2": "20c7b041"
+        "bytes": 274987,
+        "sha256": "f3c76ab0c69743053bac548689cba5284ccaff629d87de721404db3e469a0950",
+        "djb2": "f5038a0c"
       }
     }
   }
