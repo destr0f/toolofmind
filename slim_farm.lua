@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.48-66c-network-parity"
+local VERSION = "1.4.1-candidate.54.49-live-ping-pressure"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -310,6 +310,15 @@ token.InitialCamera = workspace.CurrentCamera
 function token.AutomationStartupPhase(lane)
     lane = math.max(math.floor(tonumber(lane) or 0), 0)
     return (((tonumber(player and player.UserId) or 0) + lane * 7) % 17) * 0.035
+end
+
+-- Keep one live ping reader for every automation lane. The quick HUD owns a
+-- scoped Stats binding below, so callbacks created later must not depend on it.
+function token.GetPingSeconds()
+    local ok, pingMs = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
 end
 local connections = {}
 local zoneCatalogDirty = true
@@ -5292,12 +5301,7 @@ local function startAutoEggModule()
         Library = Library,
         Player = player,
         UserId = tonumber(player and player.UserId) or 0,
-        GetPingSeconds = function()
-            local ok, pingMs = pcall(function()
-                return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-            end)
-            return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
-        end,
+        GetPingSeconds = token.GetPingSeconds,
         Running = running,
         Enabled = function() return config.AutoEgg end,
         GetOptions = function()
@@ -5525,11 +5529,7 @@ function enchantRuntime:Start()
         OperationOwner = "AutoEnchant",
         StartupPhase = token.AutomationStartupPhase(6),
         GetNetworkPressure = function()
-            local pingMs
-            local pingOk, ping = pcall(function()
-                return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-            end)
-            if pingOk then pingMs = tonumber(ping) end
+            local pingMs = token.GetPingSeconds() * 1000
             local farmStats = petFarm:RefreshStats()
             if type(farmStats) ~= "table" then farmStats = {} end
             return pingMs,
@@ -6449,12 +6449,7 @@ lootCollector.Context = {
         local stats = petFarm:RefreshStats()
         return math.max(tonumber(stats and stats.AverageRTT) or 0, 0)
     end,
-    GetPingSeconds = function()
-        local ok, pingMs = pcall(function()
-            return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-        end)
-        return ok and math.max((tonumber(pingMs) or 0) / 1000, 0) or 0
-    end,
+    GetPingSeconds = token.GetPingSeconds,
     LocalLootOwner = function(item)
         for _, key in ipairs({ "OwnerUserId", "UserId", "Owner", "Player", "User" }) do
             local value = readObjectValue(item, key)

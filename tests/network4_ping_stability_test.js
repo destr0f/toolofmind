@@ -79,6 +79,9 @@ for (const marker of [
     "run.OrbCurrentFlushInterval = interval",
 ]) assert(loot.includes(marker), `adaptive orb pacing misses ${marker}`);
 assert(farm.includes('requestDiagnostics.Gauge("Loot", "orbNetworkPressure",'));
+assert(farm.includes("function token.GetPingSeconds()"));
+assert.strictEqual((farm.match(/GetPingSeconds = token\.GetPingSeconds/g) || []).length, 2);
+assert(farm.includes("local pingMs = token.GetPingSeconds() * 1000"));
 for (const forbidden of [
     "MAX_ORB_DELIVERY_ATTEMPTS", "OrbDeliveryAttempts", "OrbAckObserved", "OrbRetryArmed",
 ]) assert(!loot.includes(forbidden), `orb global retry state returned: ${forbidden}`);
