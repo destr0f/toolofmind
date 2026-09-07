@@ -317,6 +317,9 @@ assert(boost.includes("IDLE_SAFETY_DELAY = 30")
     "boost worker does not schedule the nearest renewal/retry");
 assert(farm.includes("MACHINE_PET_SNAPSHOT_TTL = 30")
     && farm.includes("MACHINE_PET_RECONCILE_DELAY = 1.25")
+    && farm.includes("MACHINE_PET_MIN_REBUILD_INTERVAL = 5")
+    && farm.includes("MACHINE_PET_MAX_DIRTY_DEFERRAL = 15")
+    && farm.includes("quietAge < MACHINE_PET_RECONCILE_DELAY")
     && farm.includes("GetPetSnapshot = getMachinePetSnapshot")
     && farm.includes("InvalidatePetSnapshot = invalidateMachinePetSnapshot"),
     "machine workers do not share an invalidation-aware pet snapshot");

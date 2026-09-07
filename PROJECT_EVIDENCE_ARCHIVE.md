@@ -712,8 +712,22 @@ Subagent transcripts не следует считать отдельными н�
 - x8 покупка подтверждена как `Egg: Buy Egg(eggName, false, true)`, ownership
   хранится в `Save.OwnsOctupleEggs`, а `openegggg` возвращает восемь результатов;
 - текущие machine targets: `Rich Cat` (Legendary) и `Helicopter Cat` (Mythical);
-- Cat World areas: Cat Paradise, Cat Backyard, Cat Taiga, Cat Kingdom;
-  Giant Cat Chest относится к Cat Kingdom.
+- Cat World areas: Cat Paradise, Cat Backyard, Cat Taiga, Cat Kingdom,
+  Cat Throne Room; Giant Cat Chest относится к Cat Kingdom, а Giant Throne
+  Chest — к Cat Throne Room.
+
+#### Фаза K — Save pressure и Cat Throne
+
+- Cobalt full session `20260907_135641` показывает `New Stats` как входной
+  Save-feed; исходящего steady-state вызова из модуля `Save` не зафиксировано;
+- декомпил `Client.4 - Save` подтверждает: `Save.Get()` возвращает локальный
+  `v5.save`, а `Get Stats` вызывается только из `Save.Update` при отсутствии
+  загруженного cache entry;
+- частые `Pets`-дельты могут нагружать клиент обходом большого инвентаря, но не
+  создают сами по себе серверный poll; routine machine snapshot rebuild теперь
+  имеет minimum interval и bounded maximum deferral;
+- Cat Throne Room добавлен в Cat World, Giant Throne Chest привязан к этой
+  зоне, а Royal Egg продолжает обнаруживаться через live `WorldCmds.GetMap()`.
 
 ## 12. Скриншоты как визуальный evidence
 

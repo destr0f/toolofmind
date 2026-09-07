@@ -36,8 +36,10 @@ for (const file of petConsumers) {
 assert(support.includes('["rich cat"] = "Rich Cat"')
     && support.includes('["helicopter cat"] = "Helicopter Cat"'),
     "Cat World conversion targets are incomplete");
-assert(farm.includes('["Cat World"] = { "Cat Paradise", "Cat Backyard", "Cat Taiga", "Cat Kingdom" }')
-    && farm.includes('["giant cat chest"] = "Cat Kingdom"'),
+assert(farm.includes('"Cat Paradise", "Cat Backyard", "Cat Taiga", "Cat Kingdom", "Cat Throne Room"')
+    && farm.includes('["Cat Throne"] = "Cat Throne Room"')
+    && farm.includes('["giant cat chest"] = "Cat Kingdom"')
+    && farm.includes('["giant throne chest"] = "Cat Throne Room"'),
     "Cat World area/chest map is stale");
 
 for (const route of [
@@ -66,5 +68,5 @@ assert(ui.includes('Values = { "Single (x1)", "Triple (x3)", "Octuple (x8)" }'),
     "x8 is not exposed in the egg UI");
 
 process.stdout.write(
-    "Cat World policy OK | equip=Save membership | remotes=fresh | machines=Rich+Helicopter | egg=x8\n"
+    "Cat World policy OK | throne=ready | equip=Save membership | remotes=fresh | machines=Rich+Helicopter | egg=x8\n"
 );

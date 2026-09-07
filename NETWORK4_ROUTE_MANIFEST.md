@@ -118,6 +118,12 @@ cleanup and Auto Enchant therefore share this Save-map authority and fail
 closed when it is temporarily unavailable. `Added Client Pet` and
 `Removed Client Pet` invalidate the local bounded cache without polling.
 
+`Library.Save.Get()` returns the already loaded local save table. The current
+Save decompile only invokes `Get Stats` from `Save.Update` when that player has
+no cached save; normal `Pets`/`PetsEquipped` reads do not issue a request. The
+machine inventory snapshot is therefore local-only and rate-limits full
+`Save.Pets` table rebuilds after rapid hatch/delete deltas.
+
 ## Cache and lifecycle policy
 
 - `network4_transport_module.lua`: route/bridge caches contain only current-generation live instances; exact invalidation and full reload clear are separate operations.

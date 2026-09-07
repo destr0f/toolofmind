@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.50-66c-native-pet-sync"
+local VERSION = "1.4.1-candidate.54.51-cat-throne-save-diet"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -1300,7 +1300,9 @@ local WorldZones = {
     },
     ["Axolotl Ocean"] = { "Axolotl Ocean", "Axolotl Deep Ocean", "Axolotl Cave" },
     ["Pixel World"] = { "Pixel Forest", "Pixel Kyoto", "Pixel Alps", "Pixel Vault" },
-    ["Cat World"] = { "Cat Paradise", "Cat Backyard", "Cat Taiga", "Cat Kingdom" },
+    ["Cat World"] = {
+        "Cat Paradise", "Cat Backyard", "Cat Taiga", "Cat Kingdom", "Cat Throne Room",
+    },
     ["The Void"] = { "The Void" },
     ["Doodle World"] = {
         "Doodle Shop", "Doodle Meadow", "Doodle Peaks", "Doodle Farm", "Doodle Barn",
@@ -1325,6 +1327,8 @@ local ZoneAliases = {
     ["Giant Pixel Chest"] = "Pixel Vault",
     ["Pixel Vault Chest"] = "Pixel Vault",
     ["Giant Pixel Vault Chest"] = "Pixel Vault",
+    ["Cat Throne"] = "Cat Throne Room",
+    ["Throne Room"] = "Cat Throne Room",
 }
 
 local WorldAliases = {
@@ -1633,7 +1637,7 @@ BossChestZones = {
     ["giant pixel vault chest"] = "Pixel Vault",
     ["pixel vault giant pixel chest"] = "Pixel Vault",
     ["giant cat chest"] = "Cat Kingdom",
-    ["giant throne chest"] = "Cat Kingdom",
+    ["giant throne chest"] = "Cat Throne Room",
 }
 
 local cachedWorld, nextWorldCheck = nil, 0
@@ -5240,6 +5244,8 @@ local machineModules = {
 
 local MACHINE_PET_SNAPSHOT_TTL = 30
 local MACHINE_PET_RECONCILE_DELAY = 1.25
+local MACHINE_PET_MIN_REBUILD_INTERVAL = 5
+local MACHINE_PET_MAX_DIRTY_DEFERRAL = 15
 local machinePetSnapshot = {
     At = -math.huge,
     Save = nil,
@@ -5265,8 +5271,13 @@ local function getMachinePetSnapshot(force)
         if not machinePetSnapshot.Dirty and age < MACHINE_PET_SNAPSHOT_TTL then
             return machinePetSnapshot
         end
-        if machinePetSnapshot.Dirty and age < MACHINE_PET_RECONCILE_DELAY then
-            return machinePetSnapshot
+        if machinePetSnapshot.Dirty then
+            local quietAge = now - (tonumber(machinePetSnapshot.DirtyAt) or now)
+            if age < MACHINE_PET_MIN_REBUILD_INTERVAL
+                or (quietAge < MACHINE_PET_RECONCILE_DELAY
+                    and age < MACHINE_PET_MAX_DIRTY_DEFERRAL) then
+                return machinePetSnapshot
+            end
         end
     end
     local save = getRewardSave()
