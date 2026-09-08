@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.53-health-pressure-hotfix"
+local VERSION = "1.4.1-candidate.54.54-farm-replay-guard"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3438,117 +3438,68 @@ end
 function petFarm:PrepareNativeBossBatch(record, entries)
     if config.Mode ~= "Boss Chest Only" or not recordAlive(record) then return nil end
     local nativeFarm = self.NativeFarm
-    local target = self:ResolveRecordTargetPart(record)
-    if not target then
-        nativeFarm.LastProblem = "native handoff unavailable: coin target part missing"
-        return nil
-    end
-    local nativePets, problem = self:ResolveBossPetRuntime(entries)
-    if type(nativePets) ~= "table" then
-        nativeFarm.LastProblem = "native handoff unavailable: " .. tostring(problem)
+    local targetRemote = getFireRemote("Change Pet Target")
+    local farmRemote = getFireRemote("Farm Coin")
+    if not targetRemote or not farmRemote then
+        nativeFarm.LastProblem = "paced direct handoff unavailable; engine fallback retained"
         return nil
     end
 
-    local handoffs, pending = {}, {}
-    for index, entry in ipairs(entries or {}) do
-        local petId = tostring(type(entry) == "table" and entry.PetId or entry)
-        local nativeState = nativePets[petId] or nativePets[tonumber(petId)]
-        local physical = type(nativeState) == "table" and nativeState.physical or nil
-        if typeof(physical) == "Instance" and physical:IsA("BasePart")
-            and physical.Parent ~= nil then
-            -- Match Game.Pets' native selection transition. Reusing a stale
-            -- arrived=true starts every server damage loop in one burst.
-            nativeState.targetuid = (tonumber(nativeState.targetuid) or 0) + 1
-            nativeState.arrived = false
-            nativeState.target = target
-            nativeState.farming = true
-            nativeState.follower = nil
-            handoffs[petId] = true
-            pending[#pending + 1] = {
-                PetId = petId,
-                State = type(entry) == "table" and entry.State or nil,
-                NativeState = nativeState,
-                Order = index,
-            }
-            local state = type(entry) == "table" and entry.State or nil
-            if type(state) == "table" then
-                state.NativeManaged = true
-                state.NativeState = nativeState
-            end
-        end
-    end
-    if #pending == 0 then
-        nativeFarm.LastProblem = "native handoff unavailable: local pet states missing"
-        return nil
-    end
-
-    nativeFarm.HandoffBatches = nativeFarm.HandoffBatches + 1
-    nativeFarm.HandoffPets = nativeFarm.HandoffPets + #pending
-    nativeFarm.LastProblem = "native arrival gate owns " .. tostring(#pending) .. " pet(s)"
-    local handoffToken = nativeFarm.Token
-    local runtimeGeneration = farmGeneration
+    -- One accepted Join owns exactly one Target/Farm pair per pet. Pace that
+    -- pair across pets and accounts so 10 clients do not start every server
+    -- damage loop in the same network frame. Returning only successful IDs
+    -- prevents the engine from duplicating them; failed IDs keep its normal
+    -- direct fallback path.
+    local handoffs = {}
+    local sentCount = 0
     local coinId = tostring(record.Id)
     local accountPhase = (math.abs(tonumber(player.UserId) or 0) % 17) * 0.11
-    local remoteMode = config.BossDistanceSafety ~= true
-        and config.BossPetInstantArrival ~= true
-    task.defer(function()
-        local deadline = os.clock() + 15
-        local farmRemote
-        while #pending > 0 and handoffToken == nativeFarm.Token
-            and runtimeGeneration == farmGeneration and running() and config.PetFarm
-            and recordAlive(record) do
-            local now = os.clock()
-            for index = #pending, 1, -1 do
-                local item = pending[index]
-                local current = item.State and petStates[item.PetId] == item.State
-                if not current then
-                    table.remove(pending, index)
-                else
-                    local arrived = item.NativeState.arrived == true
-                    local physical = item.NativeState.physical
-                    local closeEnough = typeof(physical) == "Instance"
-                        and physical:IsA("BasePart") and physical.Parent ~= nil
-                        and (physical.Position - target.Position).Magnitude <= 35
-                    if arrived or closeEnough or remoteMode then
-                        -- Spread all equipped pets, including slots 17+, and
-                        -- phase accounts deterministically to avoid a server-wide
-                        -- synchronized Farm Coin/damage burst.
-                        item.DueAt = item.DueAt
-                            or (now + accountPhase + (item.Order - 1) * 0.075)
-                        if now >= item.DueAt then
-                            farmRemote = farmRemote or getFireRemote("Farm Coin")
-                            local sent = farmRemote ~= nil
-                                and pcall(farmRemote.FireServer, farmRemote, coinId, item.PetId)
-                            if sent then
-                                nativeFarm.FarmSignals = nativeFarm.FarmSignals + 1
-                                if not arrived then
-                                    nativeFarm.FallbackSignals = nativeFarm.FallbackSignals + 1
-                                end
-                            else
-                                nativeFarm.Errors = nativeFarm.Errors + 1
-                                nativeFarm.LastProblem = "native arrival Farm Coin send failed"
-                                if farmRemote then
-                                    coinSync.NetworkTransport:ClearRoute(
-                                        coinSync.RemoteCaches.Fire, "Farm Coin", farmRemote)
-                                end
-                                farmRemote = nil
-                            end
-                            table.remove(pending, index)
-                        end
-                    elseif now >= deadline then
-                        -- Native Game.Pets never starts damage before arrival.
-                        -- A blind remote fallback leaves invisible far-away pets
-                        -- damaging forever and multiplies Update Coin Health.
-                        nativeFarm.Errors = nativeFarm.Errors + 1
-                        nativeFarm.LastProblem = "native arrival timed out; Farm Coin suppressed"
-                        table.remove(pending, index)
-                    end
+    if accountPhase > 0 then task.wait(accountPhase) end
+    for index, entry in ipairs(entries or {}) do
+        local petId = tostring(type(entry) == "table" and entry.PetId or entry)
+        local state = type(entry) == "table" and entry.State or nil
+        local current = type(state) == "table" and petStates[petId] == state
+            and state.Generation == farmGeneration
+        if current and index > 1 then task.wait(0.075) end
+        if current and recordAlive(record) then
+            local targetSent = pcall(
+                targetRemote.FireServer,
+                targetRemote,
+                petId,
+                "Coin",
+                coinId
+            )
+            local farmSent = targetSent and pcall(
+                farmRemote.FireServer,
+                farmRemote,
+                coinId,
+                petId
+            )
+            if targetSent and farmSent then
+                handoffs[petId] = true
+                sentCount = sentCount + 1
+            else
+                nativeFarm.Errors = nativeFarm.Errors + 1
+                nativeFarm.LastProblem = "paced direct signal failed; engine fallback retained"
+                if not targetSent then
+                    coinSync.NetworkTransport:ClearRoute(
+                        coinSync.RemoteCaches.Fire, "Change Pet Target", targetRemote)
+                    targetRemote = getFireRemote("Change Pet Target") or targetRemote
+                end
+                if not farmSent then
+                    coinSync.NetworkTransport:ClearRoute(
+                        coinSync.RemoteCaches.Fire, "Farm Coin", farmRemote)
+                    farmRemote = getFireRemote("Farm Coin") or farmRemote
                 end
             end
-            if #pending > 0 then task.wait(0.05) end
         end
-        table.clear(pending)
-    end)
+    end
+    if sentCount == 0 then return nil end
+    nativeFarm.HandoffBatches = nativeFarm.HandoffBatches + 1
+    nativeFarm.HandoffPets = nativeFarm.HandoffPets + sentCount
+    nativeFarm.FarmSignals = nativeFarm.FarmSignals + sentCount
+    nativeFarm.LastProblem = "paced direct Target/Farm sent for "
+        .. tostring(sentCount) .. " pet(s)"
     return handoffs
 end
 
@@ -6353,6 +6304,7 @@ local farmWatch = {
     ZoneToken = 0,
     LivenessToken = 0,
     LastRearmAt = 0,
+    LastStaleBossKey = nil,
     StallRecoveries = 0,
 }
 
@@ -6471,9 +6423,13 @@ local function restartFarmWatchers()
             local orphanedBoss = bossId ~= nil and bossState == "ACTIVE"
                 and idleBossLane and indexedBoss == nil and not recordAlive(bossRecord)
             local stalled = idleBossLane and indexedBoss ~= nil
+            local staleBossKey = tostring(bossId or "none") .. "@"
+                .. tostring(bossRecord and bossRecord.Model or bossRecord or "none")
             if staleWorkingLane
+                and farmWatch.LastStaleBossKey ~= staleBossKey
                 and now - (tonumber(farmWatch.LastRearmAt) or 0) >= 4 then
                 farmWatch.LastRearmAt = now
+                farmWatch.LastStaleBossKey = staleBossKey
                 farmWatch.StallRecoveries = farmWatch.StallRecoveries + 1
                 coinSync:RebindNewCoinSignal()
                 if indexedBoss and petFarm:HandleBossSpawn(

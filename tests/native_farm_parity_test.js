@@ -10,13 +10,10 @@ for (const marker of [
     "function petFarm:AdoptNativeBossAssignments",
     "already-working native pet(s); zero farm requests",
     "function petFarm:PrepareNativeBossBatch",
-    "nativeState.target = target",
-    "nativeState.farming = true",
-    "nativeState.targetuid = (tonumber(nativeState.targetuid) or 0) + 1",
-    "nativeState.arrived = false",
-    "native arrival timed out; Farm Coin suppressed",
-    'farmRemote.FireServer, farmRemote, coinId, item.PetId',
-    "item.NativeState.arrived == true",
+    "paced direct Target/Farm sent for ",
+    'targetRemote.FireServer',
+    'farmRemote.FireServer',
+    'task.wait(0.075)',
     'pcall(self.Engine, "boss-adopt"',
     "DuplicateBossEvents = self.NativeFarm.DuplicateBossEvents + 1",
 ]) assert(farm.includes(marker), `missing native farm parity marker: ${marker}`);
@@ -30,13 +27,19 @@ const handoff = farm.slice(
     farm.indexOf("function petFarm:PrepareNativeBossBatch"),
     farm.indexOf("function petFarm:AnchorCharacterToBoss")
 );
-assert(!handoff.includes('getFireRemote("Change Pet Target")'),
-    "native handoff duplicates Game.Pets Change Pet Target NOW");
-assert(handoff.indexOf("item.NativeState.arrived == true")
-    < handoff.indexOf("farmRemote.FireServer"),
-    "Farm Coin is no longer gated by native arrival");
-assert(handoff.includes("if arrived or closeEnough or remoteMode then"),
-    "remote egg farming lost its bounded paced path");
+assert(handoff.includes('getFireRemote("Change Pet Target")'));
+assert(handoff.includes('getFireRemote("Farm Coin")'));
+assert(handoff.indexOf("targetRemote.FireServer") < handoff.indexOf("farmRemote.FireServer"),
+    "Target/Farm ordering changed");
+assert(!handoff.includes("item.NativeState.arrived == true")
+    && !handoff.includes("native arrival timed out"),
+    "remote egg farming is still blocked by unreliable local arrival state");
+assert(!handoff.includes("ResolveBossPetRuntime")
+    && !handoff.includes("ResolveRecordTargetPart"),
+    "accepted boss dispatch still scans or mutates the native pet runtime");
+assert(handoff.includes("handoffs[petId] = true")
+    && handoff.includes("if sentCount == 0 then return nil end"),
+    "engine fallback is not retained for failed paced signals");
 assert(!handoff.includes("((item.Order - 1) % 16) * 0.015"),
     "slots 17+ are still synchronized with the first 16 pets");
 assert(farm.includes("HealthObserveNextAt") && farm.includes("now + 0.25"),

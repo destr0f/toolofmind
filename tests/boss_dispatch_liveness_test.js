@@ -56,6 +56,9 @@ assert(watchers.includes("local staleWorkingLane = expected > 0 and assigned == 
 assert(watchers.includes("working == assigned and joining == 0"));
 assert(watchers.includes("assignmentAge >= 4.75 and oldestWorkingSilence >= 4.75"));
 assert(watchers.includes('state.Phase == "working"'));
+assert(watchers.includes("LastStaleBossKey = nil"));
+assert(watchers.includes("farmWatch.LastStaleBossKey ~= staleBossKey"));
+assert(watchers.includes("farmWatch.LastStaleBossKey = staleBossKey"));
 assert(watchers.includes("coinSync:RebindNewCoinSignal()"));
 assert(watchers.includes('"stale working local re-arm"'));
 assert(watchers.includes('driverStatus = "stale WORKING generation replaced; pets dispatched"'));
