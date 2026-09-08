@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.51-cat-throne-save-diet",
+    "version": "1.4.1-candidate.54.52-native-farm-parity",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+    "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.5.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -109,18 +109,18 @@
     "petFarmEngine": {
       "id": "petFarmEngine",
       "label": "Pet farm engine",
-      "version": "1.4.8",
+      "version": "1.4.9",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
       "path": "pet_farm_lite_engine.lua",
-      "commit": "f6ef7f3b1bf832dbe68cf8f7f092073a9fdd82d7",
-      "bytes": 45180,
-      "sha256": "899b7edef1cd72e1c07acb4e90593f94dc9c1452c222c748e4c2d6b6f6232a2a",
-      "djb2": "8d4a6c50"
+      "commit": "a48819c76a0aa88d1478d51ac8f9084a883ddec5",
+      "bytes": 47435,
+      "sha256": "6c73384fe0f0257b9be51a5c606894741f4e5634c56df3edb7460de979fe7ea8",
+      "djb2": "e2fe7a2c"
     },
     "lootReactor": {
       "id": "lootReactor",
@@ -128,7 +128,7 @@
       "version": "3.8.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.8.2",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.2.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.51-cat-throne-save-diet",
+      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -305,6 +305,7 @@
         "tests/cat_world_equipped_x8_policy_test.js",
         "tests/generation_cleanup_test.js",
         "tests/native_pet_target_poll_policy_test.js",
+        "tests/native_farm_parity_test.js",
         "tests/auto_egg_network_retry_test.js",
         "tests/auto_egg_headless_producer_gate_test.js",
         "tests/auto_egg_manual_concurrency_test.js",
@@ -357,32 +358,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "76a9f476b878beee69ad3a461d2d39f69a739999",
+    "generatedFromCommit": "a48819c76a0aa88d1478d51ac8f9084a883ddec5",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7185,
-      "sha256": "b190672a28e7247971ae2f0e0ae46a226c732090ac837d612046d62240ce8e28",
-      "djb2": "5ce8d292"
+      "bytes": 7155,
+      "sha256": "aa17237542c7c69d7abf43484a4ab3b9fa63a35169f476a104ac1f335d796336",
+      "djb2": "e0defa85"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.51-cat-throne-save-diet",
-      "bytes": 355660,
-      "sha256": "746c10ca59e27f1c9f1c103ec074bdeea76d58746ec94e34117015c777af090a",
-      "djb2": "e3b52bce"
+      "version": "1.4.1-candidate.54.52-native-farm-parity",
+      "bytes": 366978,
+      "sha256": "224850cf9e6e6bcef7393eed893323a0b1787a5b139308f433bf8c090f170e91",
+      "djb2": "ae86c922"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 274987,
-        "sha256": "f3c76ab0c69743053bac548689cba5284ccaff629d87de721404db3e469a0950",
-        "djb2": "f5038a0c"
+        "bytes": 283171,
+        "sha256": "25f3b2f1c6528f882f7ebf6ee321945a01840f60f3824cd31cf448279be8ccb0",
+        "djb2": "28d58fdb"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 274987,
-        "sha256": "f3c76ab0c69743053bac548689cba5284ccaff629d87de721404db3e469a0950",
-        "djb2": "f5038a0c"
+        "bytes": 283171,
+        "sha256": "25f3b2f1c6528f882f7ebf6ee321945a01840f60f3824cd31cf448279be8ccb0",
+        "djb2": "28d58fdb"
       }
     }
   }
