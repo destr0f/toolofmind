@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.53-health-pressure-hotfix",
+    "version": "1.4.1-candidate.54.54-farm-replay-guard",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+    "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.5.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -112,7 +112,7 @@
       "version": "1.4.9",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.8.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.8.2",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.2.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "compatibleSuite": "1.4.1-candidate.54.54-farm-replay-guard",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -358,32 +358,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "8341b703936f7b7ff7413fab83de9b707bf43c4b",
+    "generatedFromCommit": "7b96be8fbc04f7958a013244a206bab207a73a91",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7215,
-      "sha256": "762d97214c9e8e8e6ca584c407c93f7a4d9e10dd20a797b3b32f0b4e8bbbc3f0",
-      "djb2": "56fbd60b"
+      "bytes": 7140,
+      "sha256": "aab6ae7cfab8efbae0166a5badc98ea7b8c95a53553bd38f0dbccc53e1e7008c",
+      "djb2": "e7f9e2b0"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.53-health-pressure-hotfix",
-      "bytes": 369347,
-      "sha256": "cacdbb547184a20b1d7ca59df6fe7691e962ac3e40e1c48cfb51a7c82fa55094",
-      "djb2": "a5cb0ba6"
+      "version": "1.4.1-candidate.54.54-farm-replay-guard",
+      "bytes": 366831,
+      "sha256": "3fa6d01d7bdc52ae3166c084ff9c516b077554eec2890a8e494ababe27345815",
+      "djb2": "01f67f8f"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 284242,
-        "sha256": "5edeb2bbaac4d0957a8c653be5b96a2efe50fa7070bd41efa211080e829081d3",
-        "djb2": "2882b716"
+        "bytes": 282891,
+        "sha256": "dfe522b17bd20a859dd6948410978738317452f249c3d994341fa7df37afcf23",
+        "djb2": "a43ecf38"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 284242,
-        "sha256": "5edeb2bbaac4d0957a8c653be5b96a2efe50fa7070bd41efa211080e829081d3",
-        "djb2": "2882b716"
+        "bytes": 282891,
+        "sha256": "dfe522b17bd20a859dd6948410978738317452f249c3d994341fa7df37afcf23",
+        "djb2": "a43ecf38"
       }
     }
   }
