@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suite": {
     "name": "PSX OG Nova Candidate",
-    "version": "1.4.1-candidate.54.52-native-farm-parity",
+    "version": "1.4.1-candidate.54.53-health-pressure-hotfix",
     "sourceEntry": "slim_farm.lua",
     "runtimeEntry": "toolofmind.lua"
   },
@@ -16,7 +16,7 @@
     "label": "WindUI",
     "version": "1.6.64-fix",
     "versionAuthority": "release",
-    "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+    "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
     "required": true,
     "load": "startup",
     "role": "ui-runtime",
@@ -48,7 +48,7 @@
       "version": "1.0.2",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "startup",
       "role": "passive-request-state-inspector",
@@ -64,7 +64,7 @@
       "version": "1.5.4",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "session-safe-network4-network5-transport",
@@ -80,7 +80,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "shared-automation-coordinator",
@@ -96,7 +96,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": true,
       "load": "startup",
       "role": "automation-ui-extension",
@@ -112,7 +112,7 @@
       "version": "1.4.9",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "event-driven-lite-pet-transport",
@@ -128,7 +128,7 @@
       "version": "3.8.1",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "producer-gated-native-loot-reactor",
@@ -143,7 +143,7 @@
       "label": "Auto egg",
       "version": "1.8.2",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "egg-hatch-worker",
@@ -159,7 +159,7 @@
       "version": "1.2.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "serialized-equipped-pet-enchant-worker",
@@ -175,7 +175,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "golden-conversion-worker",
@@ -191,7 +191,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "rainbow-conversion-worker",
@@ -207,7 +207,7 @@
       "version": "1.6.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "dark-matter-queue-worker",
@@ -222,7 +222,7 @@
       "label": "Auto boost",
       "version": "1.2.0",
       "versionAuthority": "source-constant+content-hash",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "boost-renewal-worker",
@@ -238,7 +238,7 @@
       "version": "4.1.0",
       "versionAuthority": "module-api",
       "versionAction": "version",
-      "compatibleSuite": "1.4.1-candidate.54.52-native-farm-parity",
+      "compatibleSuite": "1.4.1-candidate.54.53-health-pressure-hotfix",
       "required": false,
       "load": "lazy",
       "role": "graphics-runtime",
@@ -358,32 +358,32 @@
     }
   },
   "build": {
-    "generatedFromCommit": "a48819c76a0aa88d1478d51ac8f9084a883ddec5",
+    "generatedFromCommit": "8341b703936f7b7ff7413fab83de9b707bf43c4b",
     "sourceTree": "clean",
     "embeddedRuntimeFingerprint": {
-      "bytes": 7155,
-      "sha256": "aa17237542c7c69d7abf43484a4ab3b9fa63a35169f476a104ac1f335d796336",
-      "djb2": "e0defa85"
+      "bytes": 7215,
+      "sha256": "762d97214c9e8e8e6ca584c407c93f7a4d9e10dd20a797b3b32f0b4e8bbbc3f0",
+      "djb2": "56fbd60b"
     },
     "source": {
       "path": "slim_farm.lua",
-      "version": "1.4.1-candidate.54.52-native-farm-parity",
-      "bytes": 366978,
-      "sha256": "224850cf9e6e6bcef7393eed893323a0b1787a5b139308f433bf8c090f170e91",
-      "djb2": "ae86c922"
+      "version": "1.4.1-candidate.54.53-health-pressure-hotfix",
+      "bytes": 369347,
+      "sha256": "cacdbb547184a20b1d7ca59df6fe7691e962ac3e40e1c48cfb51a7c82fa55094",
+      "djb2": "a5cb0ba6"
     },
     "artifacts": {
       "loader": {
         "path": "loader.lua",
-        "bytes": 283171,
-        "sha256": "25f3b2f1c6528f882f7ebf6ee321945a01840f60f3824cd31cf448279be8ccb0",
-        "djb2": "28d58fdb"
+        "bytes": 284242,
+        "sha256": "5edeb2bbaac4d0957a8c653be5b96a2efe50fa7070bd41efa211080e829081d3",
+        "djb2": "2882b716"
       },
       "toolofmind": {
         "path": "toolofmind.lua",
-        "bytes": 283171,
-        "sha256": "25f3b2f1c6528f882f7ebf6ee321945a01840f60f3824cd31cf448279be8ccb0",
-        "djb2": "28d58fdb"
+        "bytes": 284242,
+        "sha256": "5edeb2bbaac4d0957a8c653be5b96a2efe50fa7070bd41efa211080e829081d3",
+        "djb2": "2882b716"
       }
     }
   }
