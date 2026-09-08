@@ -12,6 +12,9 @@ for (const marker of [
     "function petFarm:PrepareNativeBossBatch",
     "nativeState.target = target",
     "nativeState.farming = true",
+    "nativeState.targetuid = (tonumber(nativeState.targetuid) or 0) + 1",
+    "nativeState.arrived = false",
+    "native arrival timed out; Farm Coin suppressed",
     'farmRemote.FireServer, farmRemote, coinId, item.PetId',
     "item.NativeState.arrived == true",
     'pcall(self.Engine, "boss-adopt"',
@@ -32,5 +35,11 @@ assert(!handoff.includes('getFireRemote("Change Pet Target")'),
 assert(handoff.indexOf("item.NativeState.arrived == true")
     < handoff.indexOf("farmRemote.FireServer"),
     "Farm Coin is no longer gated by native arrival");
+assert(handoff.includes("if arrived or closeEnough or remoteMode then"),
+    "remote egg farming lost its bounded paced path");
+assert(!handoff.includes("((item.Order - 1) % 16) * 0.015"),
+    "slots 17+ are still synchronized with the first 16 pets");
+assert(farm.includes("HealthObserveNextAt") && farm.includes("now + 0.25"),
+    "high-rate shared chest health progress is not coalesced");
 
 console.log("native_farm_parity_test: ok");

@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.52-native-farm-parity"
+local VERSION = "1.4.1-candidate.54.53-health-pressure-hotfix"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -1995,6 +1995,8 @@ local coinSync = {
     SignalConnections = {},
     SignalSources = {},
     SignalHealth = {},
+    HealthObserveNextAt = {},
+    HealthEventsCoalesced = 0,
     WorldSignalReady = false,
     BossFallbackTimes = {},
     BossWatchdogToken = 0,
@@ -2219,6 +2221,7 @@ end
 
 local function removeCoin(rawId, fromEvent)
     local id = tostring(rawId)
+    coinSync.HealthObserveNextAt[id] = nil
     coinMutationSerial = coinMutationSerial + 1
     if fromEvent then coinSync.EventConfirmed = true end
     local record = coinRecords[id]
@@ -2671,7 +2674,8 @@ local function connectCoinSignals(forceName)
         end
     end)
     connect("Update Coin Health", function(id, health)
-        local record = coinRecords[tostring(id)]
+        local coinId = tostring(id)
+        local record = coinRecords[coinId]
         if record then
             local previous = tonumber(record.Health)
             local value = tonumber(health) or record.Health
@@ -2684,7 +2688,16 @@ local function connectCoinSignals(forceName)
                 local controller = coinSync.PetFarm
                 if previous and value and value < previous and controller
                     and type(controller.ObserveCoinHealth) == "function" then
-                    controller:ObserveCoinHealth(id, previous, value)
+                    -- A shared boss can emit hundreds of reliable health updates
+                    -- per second. Progress leases only need a bounded heartbeat;
+                    -- never rescan every equipped assignment for every damage tick.
+                    local now = os.clock()
+                    if now >= (tonumber(coinSync.HealthObserveNextAt[coinId]) or 0) then
+                        coinSync.HealthObserveNextAt[coinId] = now + 0.25
+                        controller:ObserveCoinHealth(id, previous, value)
+                    else
+                        coinSync.HealthEventsCoalesced = coinSync.HealthEventsCoalesced + 1
+                    end
                 end
             end
         elseif (tonumber(health) or 0) > 0 then
@@ -2729,6 +2742,7 @@ local function connectCoinSignals(forceName)
                 table.clear(coinSync.BossTemplates)
                 coinSync.BossTemplateCount = 0
                 table.clear(coinSync.SignalHealth)
+                table.clear(coinSync.HealthObserveNextAt)
                 table.clear(coinSync.BossFallbackTimes)
                 resetCoinSnapshot("world changed; awaiting fresh catalog")
                 table.clear(coinRecords)
@@ -3442,6 +3456,10 @@ function petFarm:PrepareNativeBossBatch(record, entries)
         local physical = type(nativeState) == "table" and nativeState.physical or nil
         if typeof(physical) == "Instance" and physical:IsA("BasePart")
             and physical.Parent ~= nil then
+            -- Match Game.Pets' native selection transition. Reusing a stale
+            -- arrived=true starts every server damage loop in one burst.
+            nativeState.targetuid = (tonumber(nativeState.targetuid) or 0) + 1
+            nativeState.arrived = false
             nativeState.target = target
             nativeState.farming = true
             nativeState.follower = nil
@@ -3470,6 +3488,9 @@ function petFarm:PrepareNativeBossBatch(record, entries)
     local handoffToken = nativeFarm.Token
     local runtimeGeneration = farmGeneration
     local coinId = tostring(record.Id)
+    local accountPhase = (math.abs(tonumber(player.UserId) or 0) % 17) * 0.11
+    local remoteMode = config.BossDistanceSafety ~= true
+        and config.BossPetInstantArrival ~= true
     task.defer(function()
         local deadline = os.clock() + 15
         local farmRemote
@@ -3484,8 +3505,16 @@ function petFarm:PrepareNativeBossBatch(record, entries)
                     table.remove(pending, index)
                 else
                     local arrived = item.NativeState.arrived == true
-                    if arrived or now >= deadline then
-                        item.DueAt = item.DueAt or (now + ((item.Order - 1) % 16) * 0.015)
+                    local physical = item.NativeState.physical
+                    local closeEnough = typeof(physical) == "Instance"
+                        and physical:IsA("BasePart") and physical.Parent ~= nil
+                        and (physical.Position - target.Position).Magnitude <= 35
+                    if arrived or closeEnough or remoteMode then
+                        -- Spread all equipped pets, including slots 17+, and
+                        -- phase accounts deterministically to avoid a server-wide
+                        -- synchronized Farm Coin/damage burst.
+                        item.DueAt = item.DueAt
+                            or (now + accountPhase + (item.Order - 1) * 0.075)
                         if now >= item.DueAt then
                             farmRemote = farmRemote or getFireRemote("Farm Coin")
                             local sent = farmRemote ~= nil
@@ -3506,6 +3535,13 @@ function petFarm:PrepareNativeBossBatch(record, entries)
                             end
                             table.remove(pending, index)
                         end
+                    elseif now >= deadline then
+                        -- Native Game.Pets never starts damage before arrival.
+                        -- A blind remote fallback leaves invisible far-away pets
+                        -- damaging forever and multiplies Update Coin Health.
+                        nativeFarm.Errors = nativeFarm.Errors + 1
+                        nativeFarm.LastProblem = "native arrival timed out; Farm Coin suppressed"
+                        table.remove(pending, index)
                     end
                 end
             end
@@ -7983,6 +8019,7 @@ local function finishShutdown()
     table.clear(coinSync.BossTemplates)
     coinSync.BossTemplateCount = 0
     table.clear(coinSync.SignalSources)
+    table.clear(coinSync.HealthObserveNextAt)
     table.clear(coinSync.SignalHealth)
     table.clear(coinSync.BossFallbackTimes)
     table.clear(coinSync.SnapshotSeen)
