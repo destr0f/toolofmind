@@ -68,6 +68,14 @@ local ok2, _, generation2 = engine("boss-spawn", {
 })
 assert(ok2 == true and generation2 > generation1 and #spawns == 2,
     "a reused coin ID must receive a fresh spawn generation")
+assert(engine("boss-adopt", {
+    CoinId = "boss-reused-id",
+    Generation = generation2,
+    PetIds = { "already-working-pet" },
+}) == true)
+local adoptedStats = engine("boss-stats")
+assert(adoptedStats.State == "ACTIVE")
+assert(adoptedStats.NativeAdoptions == 1 and adoptedStats.NativePetsAdopted == 1)
 
 local stale = { Phase = "joining" }
 states.stale = stale

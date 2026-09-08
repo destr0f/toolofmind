@@ -1,7 +1,7 @@
 -- PSX OG Slim Farm
 -- Pet farming, auto hatch, conversion machines, boosts, loot and timer-gated automation.
 
-local VERSION = "1.4.1-candidate.54.51-cat-throne-save-diet"
+local VERSION = "1.4.1-candidate.54.52-native-farm-parity"
 local env = type(getgenv) == "function" and getgenv() or _G
 
 local function trace(stage, detail)
@@ -3061,6 +3061,20 @@ local petFarm = {
         Errors = 0,
         LastProblem = "disabled",
     },
+    NativeFarm = {
+        Token = 0,
+        AdoptionAttempts = 0,
+        AdoptionHits = 0,
+        PetsAdopted = 0,
+        HandoffBatches = 0,
+        HandoffPets = 0,
+        FarmSignals = 0,
+        FallbackSignals = 0,
+        Errors = 0,
+        DuplicateBossEvents = 0,
+        LastProblem = "waiting",
+        AdoptedIds = {},
+    },
 }
 coinSync.PetFarm = petFarm
 
@@ -3088,6 +3102,8 @@ local function acquirePetState(coinId, petId)
     state.ProgressObservedHealth = nil
     state.ProgressObservedAt = nil
     state.ProgressDeadline = nil
+    state.NativeManaged = false
+    state.NativeState = nil
     return state
 end
 
@@ -3095,6 +3111,15 @@ local function releasePetState(state, forceReusable)
     if type(state) ~= "table" then return end
     local reusable = forceReusable == true or state.Phase == "working"
     local petId = state.PetId
+    local nativeState = state.NativeManaged == true and state.NativeState or nil
+    if type(nativeState) == "table" then
+        nativeState.target = nativeState.owner
+        nativeState.networkTarget = nativeState.owner
+        nativeState.farming = false
+        nativeState.follower = nil
+        nativeState.arrived = false
+        nativeState.moving = false
+    end
     if petId and petFarm.ProgressLeases[petId] == state then
         petFarm.ProgressLeases[petId] = nil
     end
@@ -3114,6 +3139,8 @@ local function releasePetState(state, forceReusable)
     state.ProgressObservedHealth = nil
     state.ProgressObservedAt = nil
     state.ProgressDeadline = nil
+    state.NativeManaged = nil
+    state.NativeState = nil
     local pool = petFarm.StatePool
     -- A JOINING state can still be referenced by a yielding InvokeServer job.
     -- Do not recycle it unless the engine is synchronously returning control
@@ -3210,6 +3237,12 @@ end
 function petFarm:ResetBossPetWarp(reason)
     local warp = self.BossPetWarp
     if type(warp) ~= "table" then return end
+    local nativeFarm = self.NativeFarm
+    if type(nativeFarm) == "table" then
+        nativeFarm.Token = nativeFarm.Token + 1
+        nativeFarm.LastProblem = tostring(reason or "reset")
+        table.clear(nativeFarm.AdoptedIds)
+    end
     warp.NativePets = nil
     warp.NativeScript = nil
     warp.PetSignature = nil
@@ -3309,6 +3342,178 @@ function petFarm:ResolveBossPetRuntime(rawPetIds)
     table.clear(callbacks)
     warp.LastProblem = "native Game.Pets table not resolved; normal C54 path retained"
     return nil, warp.LastProblem
+end
+
+function petFarm:ResolveRecordTargetPart(record)
+    if type(record) ~= "table" then return nil end
+    local model = record.Model
+    if not model or model.Parent == nil then
+        local things = workspace:FindFirstChild("__THINGS")
+        local coins = things and things:FindFirstChild("Coins")
+        model = coins and coins:FindFirstChild(tostring(record.Id))
+    end
+    local target = model and (model:FindFirstChild("POS", true)
+        or (model:IsA("Model") and model.PrimaryPart) or nil)
+    return target and target:IsA("BasePart") and target or nil
+end
+
+function petFarm:NativeStateTargetsRecord(nativeState, target, record)
+    if type(nativeState) ~= "table" or nativeState.farming ~= true then return false end
+    local current = nativeState.target
+    if typeof(current) ~= "Instance" then return false end
+    if target and current == target then return true end
+    local model = current.Parent
+    if not model then return false end
+    local id = readObjectValue(model, "ID")
+    return id ~= nil and tostring(id) == tostring(record.Id)
+end
+
+function petFarm:AdoptNativeBossAssignments(record, rawPetIds)
+    local nativeFarm = self.NativeFarm
+    nativeFarm.AdoptionAttempts = nativeFarm.AdoptionAttempts + 1
+    if config.Mode ~= "Boss Chest Only" or not recordAlive(record) then return 0 end
+    local target = self:ResolveRecordTargetPart(record)
+    if not target then
+        nativeFarm.LastProblem = "native adoption skipped: coin target part unavailable"
+        return 0
+    end
+    local nativePets, problem = self:ResolveBossPetRuntime(rawPetIds)
+    if type(nativePets) ~= "table" then
+        nativeFarm.LastProblem = "native adoption skipped: " .. tostring(problem)
+        return 0
+    end
+
+    local now = os.clock()
+    local adoptedIds = nativeFarm.AdoptedIds
+    table.clear(adoptedIds)
+    for _, rawPet in ipairs(rawPetIds or {}) do
+        local petId = tostring(type(rawPet) == "table" and rawPet.PetId or rawPet)
+        local nativeState = nativePets[petId] or nativePets[tonumber(petId)]
+        if not petStates[petId]
+            and self:NativeStateTargetsRecord(nativeState, target, record) then
+            local state = acquirePetState(tostring(record.Id), petId)
+            state.Phase = "working"
+            state.AcceptedAt = now
+            state.MembershipConfirmed = true
+            state.MembershipConfirmedAt = now
+            state.ProgressConfirmed = true
+            state.ProgressConfirmedAt = now
+            state.ProgressConfirmSource = "native Game.Pets adoption"
+            state.ProgressInitialHealth = tonumber(record.Health)
+            state.ProgressObservedHealth = state.ProgressInitialHealth
+            state.ProgressObservedAt = now
+            state.ProgressDeadline = now + self:ProgressLeaseSeconds()
+            state.NativeManaged = true
+            state.NativeState = nativeState
+            petStates[petId] = state
+            self.ProgressLeases[petId] = state
+            adoptedIds[#adoptedIds + 1] = petId
+        end
+    end
+    local adopted = #adoptedIds
+    if adopted > 0 then
+        nativeFarm.AdoptionHits = nativeFarm.AdoptionHits + 1
+        nativeFarm.PetsAdopted = nativeFarm.PetsAdopted + adopted
+        nativeFarm.LastProblem = "adopted " .. tostring(adopted)
+            .. " already-working native pet(s); zero farm requests"
+        self:ScheduleProgressLease(0.5)
+    end
+    return adopted, adoptedIds
+end
+
+function petFarm:PrepareNativeBossBatch(record, entries)
+    if config.Mode ~= "Boss Chest Only" or not recordAlive(record) then return nil end
+    local nativeFarm = self.NativeFarm
+    local target = self:ResolveRecordTargetPart(record)
+    if not target then
+        nativeFarm.LastProblem = "native handoff unavailable: coin target part missing"
+        return nil
+    end
+    local nativePets, problem = self:ResolveBossPetRuntime(entries)
+    if type(nativePets) ~= "table" then
+        nativeFarm.LastProblem = "native handoff unavailable: " .. tostring(problem)
+        return nil
+    end
+
+    local handoffs, pending = {}, {}
+    for index, entry in ipairs(entries or {}) do
+        local petId = tostring(type(entry) == "table" and entry.PetId or entry)
+        local nativeState = nativePets[petId] or nativePets[tonumber(petId)]
+        local physical = type(nativeState) == "table" and nativeState.physical or nil
+        if typeof(physical) == "Instance" and physical:IsA("BasePart")
+            and physical.Parent ~= nil then
+            nativeState.target = target
+            nativeState.farming = true
+            nativeState.follower = nil
+            handoffs[petId] = true
+            pending[#pending + 1] = {
+                PetId = petId,
+                State = type(entry) == "table" and entry.State or nil,
+                NativeState = nativeState,
+                Order = index,
+            }
+            local state = type(entry) == "table" and entry.State or nil
+            if type(state) == "table" then
+                state.NativeManaged = true
+                state.NativeState = nativeState
+            end
+        end
+    end
+    if #pending == 0 then
+        nativeFarm.LastProblem = "native handoff unavailable: local pet states missing"
+        return nil
+    end
+
+    nativeFarm.HandoffBatches = nativeFarm.HandoffBatches + 1
+    nativeFarm.HandoffPets = nativeFarm.HandoffPets + #pending
+    nativeFarm.LastProblem = "native arrival gate owns " .. tostring(#pending) .. " pet(s)"
+    local handoffToken = nativeFarm.Token
+    local runtimeGeneration = farmGeneration
+    local coinId = tostring(record.Id)
+    task.defer(function()
+        local deadline = os.clock() + 15
+        local farmRemote
+        while #pending > 0 and handoffToken == nativeFarm.Token
+            and runtimeGeneration == farmGeneration and running() and config.PetFarm
+            and recordAlive(record) do
+            local now = os.clock()
+            for index = #pending, 1, -1 do
+                local item = pending[index]
+                local current = item.State and petStates[item.PetId] == item.State
+                if not current then
+                    table.remove(pending, index)
+                else
+                    local arrived = item.NativeState.arrived == true
+                    if arrived or now >= deadline then
+                        item.DueAt = item.DueAt or (now + ((item.Order - 1) % 16) * 0.015)
+                        if now >= item.DueAt then
+                            farmRemote = farmRemote or getFireRemote("Farm Coin")
+                            local sent = farmRemote ~= nil
+                                and pcall(farmRemote.FireServer, farmRemote, coinId, item.PetId)
+                            if sent then
+                                nativeFarm.FarmSignals = nativeFarm.FarmSignals + 1
+                                if not arrived then
+                                    nativeFarm.FallbackSignals = nativeFarm.FallbackSignals + 1
+                                end
+                            else
+                                nativeFarm.Errors = nativeFarm.Errors + 1
+                                nativeFarm.LastProblem = "native arrival Farm Coin send failed"
+                                if farmRemote then
+                                    coinSync.NetworkTransport:ClearRoute(
+                                        coinSync.RemoteCaches.Fire, "Farm Coin", farmRemote)
+                                end
+                                farmRemote = nil
+                            end
+                            table.remove(pending, index)
+                        end
+                    end
+                end
+            end
+            if #pending > 0 then task.wait(0.05) end
+        end
+        table.clear(pending)
+    end)
+    return handoffs
 end
 
 function petFarm:AnchorCharacterToBoss(record)
@@ -4196,9 +4401,11 @@ function petFarm:EnsureEngine()
             return true
         end,
         OnBatchAccepted = function(record, petIds, spawnGeneration)
+            local nativeHandoffs = self:PrepareNativeBossBatch(record, petIds)
             if config.BossPetInstantArrival and config.Mode == "Boss Chest Only" then
                 pcall(self.WarpBossPetsOnce, self, record, petIds, spawnGeneration)
             end
+            return nativeHandoffs
         end,
         OnSignalsSent = function(petId, state, record, targetSent, farmSent, targetRoute, farmRoute)
             if type(state) ~= "table" then return end
@@ -4554,19 +4761,41 @@ function petFarm:DispatchBossRecord(record, spawnGeneration)
     self.LastZone = selectedZone or "unknown"
     if #petIds == 0 then return false end
     pcall(self.Engine, "limit", math.min(#petIds, 16))
+    local adopted, adoptedIds = self:AdoptNativeBossAssignments(record, petIds)
+    if adopted > 0 then
+        pcall(self.Engine, "boss-adopt", {
+            CoinId = coinId,
+            Generation = spawnGeneration,
+            PetIds = adoptedIds,
+        })
+    end
     dispatchPlan(record, petIds)
     return assignmentCount() > 0
 end
 
 function petFarm:HandleBossSpawn(record, source, direct, payload, forceNew)
     if not self.Engine or config.Mode ~= "Boss Chest Only" or not config.PetFarm then return false end
+    local now = os.clock()
+    if forceNew == true and record.BossSpawnGeneration ~= nil
+        and now - (tonumber(record.BossSelectableAt) or -math.huge) <= 2.5 then
+        local current = self:BossStats()
+        if type(current) == "table" and tostring(current.CoinId) == tostring(record.Id)
+            and tonumber(current.SpawnGeneration) == tonumber(record.BossSpawnGeneration)
+            and current.State ~= "ABSENT" and current.State ~= "DEAD" then
+            -- Coins.ChildAdded and New Coin can describe the same live model.
+            -- Treat the second edge as a duplicate; a real same-ID respawn has
+            -- either a fresh record or arrives outside this narrow window.
+            forceNew = false
+            self.NativeFarm.DuplicateBossEvents = self.NativeFarm.DuplicateBossEvents + 1
+        end
+    end
     local info = {
         CoinId = tostring(record.Id),
         Record = record,
         Source = tostring(source or "unknown"),
         Direct = direct == true,
         ForceNew = forceNew == true,
-        ReceivedAt = os.clock(),
+        ReceivedAt = now,
         PayloadComplete = type(payload) == "table"
             and (payload.n ~= nil or payload.Name ~= nil or record.Name ~= nil)
             and (payload.a ~= nil or payload.Area ~= nil or record.Area ~= nil),
@@ -8109,6 +8338,8 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "localTimeouts", tonumber(dispatchStats.LocalTimeouts) or 0)
     requestDiagnostics.Gauge("Farm", "targetSignals", tonumber(dispatchStats.TargetSignals) or 0)
     requestDiagnostics.Gauge("Farm", "farmSignals", tonumber(dispatchStats.FarmSignals) or 0)
+    requestDiagnostics.Gauge("Farm", "nativeSignalHandoffs",
+        tonumber(dispatchStats.NativeSignalHandoffs) or 0)
     requestDiagnostics.Gauge("Farm", "joinInvokes", tonumber(dispatchStats.JoinInvokes) or 0)
     requestDiagnostics.Gauge("Farm", "joinInvokesPerSecond", requestDiagnostics.SampleRate(
         "farm.join", dispatchStats.JoinInvokes, now))
@@ -8139,6 +8370,15 @@ function requestDiagnostics.UpdateTelemetry()
     requestDiagnostics.Gauge("Farm", "equippedRebuilds", token.PetIdentityStats.EquippedRebuilds)
     requestDiagnostics.Gauge("Farm", "equippedMembershipChanges", token.PetIdentityStats.MembershipChanges)
     requestDiagnostics.Gauge("Farm", "petEventsCoalesced", token.PetIdentityStats.CoalescedEvents)
+    requestDiagnostics.Gauge("Farm", "nativeAdoptionAttempts", petFarm.NativeFarm.AdoptionAttempts)
+    requestDiagnostics.Gauge("Farm", "nativeAdoptionHits", petFarm.NativeFarm.AdoptionHits)
+    requestDiagnostics.Gauge("Farm", "nativePetsAdopted", petFarm.NativeFarm.PetsAdopted)
+    requestDiagnostics.Gauge("Farm", "nativeHandoffBatches", petFarm.NativeFarm.HandoffBatches)
+    requestDiagnostics.Gauge("Farm", "nativeHandoffPets", petFarm.NativeFarm.HandoffPets)
+    requestDiagnostics.Gauge("Farm", "nativeFarmSignals", petFarm.NativeFarm.FarmSignals)
+    requestDiagnostics.Gauge("Farm", "nativeFarmFallbackSignals", petFarm.NativeFarm.FallbackSignals)
+    requestDiagnostics.Gauge("Farm", "nativeFarmErrors", petFarm.NativeFarm.Errors)
+    requestDiagnostics.Gauge("Farm", "duplicateBossEvents", petFarm.NativeFarm.DuplicateBossEvents)
     requestDiagnostics.Gauge("Farm", "working", working)
     requestDiagnostics.Gauge("Farm", "joining", joining)
     requestDiagnostics.Gauge("Farm", "trueIdle", math.max(equipped - assigned, 0))
@@ -8470,10 +8710,14 @@ local function updateRuntimeTelemetry()
                 bossLine
             ))
             statusSetters.Health(string.format(
-                "Network: %s | %s | allocator: %s\nNative pet target sync: game-owned (66c parity)\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s%s",
+                "Network: %s | %s | allocator: %s\nNative farm: adopt/handoff/farm %d/%d/%d | duplicate edges %d\nLite pump: %d/%d | active/queued: %d/%d | avg RTT: %dms\nJoin ok/retry/reject/error: %d/%d/%d/%d\nFast reroutes: %d | lease evictions: %d | slow recoveries: %d | last: %s\nDriver: %s%s",
                 networkState,
                 petFarm.RouteSummary,
                 farmResetRunning and "reconfiguring" or "stable",
+                tonumber(petFarm.NativeFarm.PetsAdopted) or 0,
+                tonumber(dispatchStats.NativeSignalHandoffs) or 0,
+                tonumber(petFarm.NativeFarm.FarmSignals) or 0,
+                tonumber(petFarm.NativeFarm.DuplicateBossEvents) or 0,
                 tonumber(dispatchStats.Limit) or 0,
                 tonumber(dispatchStats.PolicyMaxLanes) or tonumber(petFarm.PolicyLanes) or 16,
                 tonumber(dispatchStats.Active) or 0,

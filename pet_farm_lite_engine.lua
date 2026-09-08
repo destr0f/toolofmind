@@ -2,7 +2,7 @@
 -- Target selection and lifetime locks belong to the caller. This module only
 -- sends a bounded number of Join Coin requests and never polls game state.
 
-local MODULE_VERSION = "1.4.8"
+local MODULE_VERSION = "1.4.9"
 local DEFAULT_DISPATCH_WIDTH = 16
 local MAX_QUEUED_JOBS = 32
 local MAX_JOIN_ATTEMPTS = 2
@@ -96,6 +96,7 @@ local run = {
     ActiveInvokes = {},
     TargetSignals = 0,
     FarmSignals = 0,
+    NativeSignalHandoffs = 0,
     SignalFailures = 0,
     TransportFailures = 0,
     JoinInvokes = 0,
@@ -124,6 +125,8 @@ local boss = {
     JoinsSent = 0,
     JoinsAccepted = 0,
     MissedBeforeDispatch = 0,
+    NativeAdoptions = 0,
+    NativePetsAdopted = 0,
 }
 
 local function bossGenerationCurrent(coinId, generation)
@@ -210,6 +213,29 @@ local function bossRemoved(rawCoinId, source)
     return true, generation
 end
 
+local function bossAdopt(info)
+    if type(info) ~= "table" or info.CoinId == nil then
+        return false, "boss adoption info is invalid"
+    end
+    local coinId = tostring(info.CoinId)
+    local generation = tonumber(info.Generation)
+    if not bossGenerationCurrent(coinId, generation) then
+        return false, "stale boss adoption"
+    end
+    local petIds = type(info.PetIds) == "table" and info.PetIds or {}
+    boss.State = "ACTIVE"
+    boss.NativeAdoptions = boss.NativeAdoptions + 1
+    boss.NativePetsAdopted = boss.NativePetsAdopted + #petIds
+    run.LastAssignmentAt = os.clock()
+    if boss.Current then
+        boss.Current.AdoptedAt = run.LastAssignmentAt
+        for _, petId in ipairs(petIds) do
+            boss.Current.Dispatched[tostring(petId)] = true
+        end
+    end
+    return true
+end
+
 local function percentile(values, ratio)
     if #values == 0 then return 0 end
     table.sort(values)
@@ -262,6 +288,8 @@ local function bossStats()
         JoinsSent = boss.JoinsSent,
         JoinsAccepted = boss.JoinsAccepted,
         MissedBeforeDispatch = boss.MissedBeforeDispatch,
+        NativeAdoptions = boss.NativeAdoptions,
+        NativePetsAdopted = boss.NativePetsAdopted,
         RingCount = boss.RingCount,
         CyclesPerMinute = minutes > 0 and boss.RingCount / minutes or 0,
         NewToSelectable = summary(selectable),
@@ -445,6 +473,8 @@ local function clearBossHistory()
     boss.JoinsSent = 0
     boss.JoinsAccepted = 0
     boss.MissedBeforeDispatch = 0
+    boss.NativeAdoptions = 0
+    boss.NativePetsAdopted = 0
     table.clear(boss.Ring)
 end
 
@@ -460,6 +490,7 @@ local function resetStats()
     run.LastProblem = "none"
     run.TargetSignals = 0
     run.FarmSignals = 0
+    run.NativeSignalHandoffs = 0
     run.SignalFailures = 0
     run.TransportFailures = 0
     run.JoinInvokes = 0
@@ -851,28 +882,40 @@ local function scheduleRetry(job, entries, reason, joined)
     return true
 end
 
-local function signalEntries(job, entries, route)
+local function signalEntries(job, entries, route, nativeHandoffs)
     local failed = job.SignalFailures
     table.clear(failed)
     local context = run.Context
     for _, entry in ipairs(entries) do
         if entryCurrent(entry) then
-            local targetSent, targetRoute = callNamedFire(
-                "Change Pet Target",
-                entry.PetId,
-                "Coin",
-                job.CoinId
-            )
-            local farmSent, farmRoute = callNamedFire(
-                "Farm Coin",
-                job.CoinId,
-                entry.PetId
-            )
-            if targetSent then
+            local nativeHandoff = type(nativeHandoffs) == "table"
+                and nativeHandoffs[tostring(entry.PetId)] == true
+            local targetSent, targetRoute, farmSent, farmRoute
+            if nativeHandoff then
+                -- Game.Pets now owns the same two transitions as a normal click:
+                -- Change Pet Target NOW on its next local target pass, followed
+                -- by Farm Coin only after the physical pet reports arrived.
+                targetSent, farmSent = true, true
+                targetRoute, farmRoute = "native Game.Pets", "native arrival gate"
+                run.NativeSignalHandoffs = run.NativeSignalHandoffs + 1
+            else
+                targetSent, targetRoute = callNamedFire(
+                    "Change Pet Target",
+                    entry.PetId,
+                    "Coin",
+                    job.CoinId
+                )
+                farmSent, farmRoute = callNamedFire(
+                    "Farm Coin",
+                    job.CoinId,
+                    entry.PetId
+                )
+            end
+            if targetSent and not nativeHandoff then
                 run.TargetSignals = run.TargetSignals + 1
                 run.LastTargetChangeAt = os.clock()
             end
-            if farmSent then run.FarmSignals = run.FarmSignals + 1 end
+            if farmSent and not nativeHandoff then run.FarmSignals = run.FarmSignals + 1 end
             if context and type(context.OnSignalsSent) == "function" then
                 pcall(
                     context.OnSignalsSent,
@@ -919,8 +962,15 @@ local function notifyBatchAccepted(job, entries)
         -- One local callback per accepted Join batch. It does not send another
         -- request; the runtime uses the accepted entries to move the same pets
         -- onto the freshly spawned boss and mark their native state arrived.
-        pcall(context.OnBatchAccepted, job.Record, entries, job.BossGeneration)
+        local ok, handoffs = pcall(
+            context.OnBatchAccepted,
+            job.Record,
+            entries,
+            job.BossGeneration
+        )
+        return ok and type(handoffs) == "table" and handoffs or nil
     end
+    return nil
 end
 
 local function process(job)
@@ -931,8 +981,8 @@ local function process(job)
     end
 
     if job.Joined then
-        notifyBatchAccepted(job, entries)
-        local failures = signalEntries(job, entries, "accepted join retry")
+        local nativeHandoffs = notifyBatchAccepted(job, entries)
+        local failures = signalEntries(job, entries, "accepted join retry", nativeHandoffs)
         if #failures > 0 then
             run.Errors = run.Errors + #failures
             run.LastProblem = "post-join signal failure"
@@ -1019,8 +1069,8 @@ local function process(job)
         return false
     end
 
-    notifyBatchAccepted(job, acceptedEntries)
-    local signalFailures = signalEntries(job, acceptedEntries, route)
+    local nativeHandoffs = notifyBatchAccepted(job, acceptedEntries)
+    local signalFailures = signalEntries(job, acceptedEntries, route, nativeHandoffs)
     if #signalFailures > 0 then
         run.Errors = run.Errors + #signalFailures
         run.LastProblem = "post-join signal failure"
@@ -1252,6 +1302,7 @@ local function stats()
         OldestInvokeAge = oldestInvokeAge,
         TargetSignals = run.TargetSignals,
         FarmSignals = run.FarmSignals,
+        NativeSignalHandoffs = run.NativeSignalHandoffs,
         SignalFailures = run.SignalFailures,
         TransportFailures = run.TransportFailures,
         JoinInvokes = run.JoinInvokes,
@@ -1278,6 +1329,7 @@ return function(action, context, value)
     if action == "stop" then resetQueue(); clearBossHistory(); run.Context = nil; return true end
     if action == "stats" then return stats() end
     if action == "boss-spawn" then return bossSpawn(context) end
+    if action == "boss-adopt" then return bossAdopt(context) end
     if action == "boss-remove" then return bossRemoved(context, value) end
     if action == "boss-current" then return bossGenerationCurrent(context, value) end
     if action == "boss-stats" then return bossStats() end

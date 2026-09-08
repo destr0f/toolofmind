@@ -115,6 +115,26 @@ assert(engine("dispatch", {
 }) == true)
 assert(groupedCalls == 1, "one target group must use one Join Coin request")
 
+-- A verified Game.Pets handoff owns Change Target + arrived-gated Farm Coin;
+-- the engine must accept the lock without duplicating either fire itself.
+local firesBeforeNative = fireCalls
+assert(engine("start", context({
+    OnBatchAccepted = function()
+        return { ["native-pet"] = true }
+    end,
+})) == true)
+local nativeState = { Phase = "joining" }
+states["native-pet"] = nativeState
+assert(engine("dispatch", {
+    CoinId = "native-boss",
+    Record = { Alive = true },
+    Entries = { { PetId = "native-pet", State = nativeState } },
+}) == true)
+local nativeStats = engine("stats")
+assert(nativeStats.NativeSignalHandoffs == 1)
+assert(fireCalls == firesBeforeNative,
+    "engine duplicated native Game.Pets target/farm signals")
+
 -- Completed state-changing responses are never replayed from a TTL cache.
 local replayCalls = 0
 network.Invoke = function(_, coinId, requested)

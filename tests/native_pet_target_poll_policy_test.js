@@ -17,7 +17,8 @@ assert(!farm.includes("RestoreNativeTargetPoll"));
 assert(!farm.includes("SetFunctionUpvalueAt"));
 assert(!farm.includes("setupvalue"));
 assert(!farm.includes("functionUpvalueAt(callback, 3)"));
-assert(farm.includes("Native pet target sync: game-owned (66c parity)"));
+assert(farm.includes("Native farm: adopt/handoff/farm"));
+assert(farm.includes("function petFarm:PrepareNativeBossBatch"));
 assert(!farm.includes("for candidateIndex = 1, 12"));
 assert(!farm.includes("math.abs(now - candidate) <= 3"));
 

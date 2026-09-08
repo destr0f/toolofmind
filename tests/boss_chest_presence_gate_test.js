@@ -72,7 +72,7 @@ assert(engine.includes("local function notifyBatchAccepted(job, entries)"));
 assert(engine.includes("notifyBatchAccepted(job, acceptedEntries)"),
     "accepted Join batches never reach the post-Join warp callback");
 assert(engine.indexOf("notifyBatchAccepted(job, acceptedEntries)")
-    < engine.indexOf("local signalFailures = signalEntries(job, acceptedEntries, route)"),
+    < engine.indexOf("local signalFailures = signalEntries(job, acceptedEntries, route, nativeHandoffs)"),
     "post-Join warp must mark native arrival before farm signals are sent");
 assert(engine.includes("notifyBatchAccepted(job, entries)"),
     "accepted signal retries never reach the post-Join warp callback");
